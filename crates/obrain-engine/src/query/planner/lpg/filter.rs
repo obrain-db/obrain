@@ -944,6 +944,169 @@ impl super::Planner {
         }
     }
 
+    /// (2026-11-23, obrain#189) Réécrit le sous-motif d'un EXISTS en sous-requête
+    /// CORRÉLÉE, quand son point de départ est déjà lié par le scope externe.
+    ///
+    /// Le défaut qu'elle ferme : `EXISTS { MATCH (n)<-[:CONTAINS*1..2]-(p) }` avec
+    /// `n` et `p` déjà liés passait par la semi-jointure par hachage, qui planifie
+    /// le sous-motif comme NON corrélé : elle énumère `(x)<-[:CONTAINS*1..2]-(y)`
+    /// pour TOUS les nœuds du graphe avant de joindre sur `(n, p)`. Coût du graphe,
+    /// pas du voisinage : mesuré 44 → 156 → 641 ms pour 2 000 → 8 000 → 32 000
+    /// fichiers, résultat constant, alors que la traversée seule coûte 0,1 ms.
+    ///
+    /// Forme acceptée : une colonne vertébrale `Expand`/`Filter` posée sur un unique
+    /// `NodeScan` SANS label ni entrée dont la variable est externe. Ce `NodeScan`
+    /// devient un `ParameterScan` : la ligne externe amorce la traversée. Chaque
+    /// extrémité déjà liée dans le scope externe est RENOMMÉE dans le sous-motif
+    /// (`<nom>__ex<k>`) puis ramenée à la valeur externe par un filtre d'égalité :
+    /// c'est la sémantique de la semi-jointure (bug #95-2, l'extrémité compte), sans
+    /// son énumération globale.
+    ///
+    /// Rend `None` (le chemin semi-jointure d'origine, qui fait autorité) pour toute
+    /// forme non couverte : label sur le départ, entrée chaînée, variable d'arête
+    /// externe, départ égal à une extrémité, saut qui ne part pas de la colonne
+    /// vertébrale, filtre qui lit une variable étrangère au motif. Perdre
+    /// l'accélération est permis ; changer la réponse ne l'est pas.
+    ///
+    /// Rend aussi le nom des paramètres à importer (départ, puis extrémités liées).
+    fn reecrire_exists_correle(
+        subplan: &LogicalOperator,
+        outer_vars: &HashSet<String>,
+    ) -> Option<(LogicalOperator, Vec<String>)> {
+        // Passe 1 : descendre la colonne vertébrale, de l'extérieur vers le départ.
+        let mut pile: Vec<&LogicalOperator> = Vec::new();
+        let mut courant = subplan;
+        let depart = loop {
+            match courant {
+                LogicalOperator::Expand(e) => {
+                    pile.push(courant);
+                    courant = &e.input;
+                }
+                LogicalOperator::Filter(f) => {
+                    pile.push(courant);
+                    courant = &f.input;
+                }
+                LogicalOperator::NodeScan(scan) => {
+                    if scan.input.is_some() || scan.label.is_some() {
+                        return None;
+                    }
+                    break scan.variable.clone();
+                }
+                _ => return None,
+            }
+        };
+        if !outer_vars.contains(&depart) {
+            return None;
+        }
+
+        // Variables produites par la colonne vertébrale, et extrémités déjà liées.
+        let mut produites: HashSet<String> = HashSet::from([depart.clone()]);
+        let mut extremites: Vec<String> = Vec::new();
+        for op in pile.iter().rev() {
+            if let LogicalOperator::Expand(e) = op {
+                if !produites.contains(&e.from_variable) {
+                    return None;
+                }
+                if e.edge_variable
+                    .as_ref()
+                    .is_some_and(|v| outer_vars.contains(v))
+                {
+                    return None;
+                }
+                if outer_vars.contains(&e.to_variable) {
+                    if e.to_variable == depart || extremites.contains(&e.to_variable) {
+                        return None;
+                    }
+                    extremites.push(e.to_variable.clone());
+                }
+                produites.insert(e.to_variable.clone());
+            }
+        }
+        for op in &pile {
+            if let LogicalOperator::Filter(f) = op {
+                let mut vues = HashSet::new();
+                Self::collect_expression_variables(&f.predicate, &mut vues);
+                if vues.iter().any(|v| !produites.contains(v)) {
+                    return None;
+                }
+            }
+        }
+
+        // Sans extrémité liée, la réécriture n'apporte rien au coût (l'énumération
+        // était déjà bornée par le départ) et l'`ApplyOperator` corrélé perd les
+        // colonnes d'arête du motif externe : `RETURN r.c` rendait NULL (#184).
+        // On garde donc la semi-jointure d'origine dans ce cas.
+        if extremites.is_empty() {
+            return None;
+        }
+
+        // Passe 2 : reconstruire de bas en haut, le départ devenant un ParameterScan.
+        let mut parametres = vec![depart];
+        parametres.extend(extremites.iter().cloned());
+        let mut plan = LogicalOperator::ParameterScan(crate::query::plan::ParameterScanOp {
+            columns: parametres.clone(),
+        });
+        let mut rang = 0usize;
+        for op in pile.iter().rev() {
+            match op {
+                LogicalOperator::Expand(e) => {
+                    let lie = extremites.contains(&e.to_variable);
+                    let to_variable = if lie {
+                        rang += 1;
+                        format!("{}__ex{rang}", e.to_variable)
+                    } else {
+                        e.to_variable.clone()
+                    };
+                    plan = LogicalOperator::Expand(ExpandOp {
+                        from_variable: e.from_variable.clone(),
+                        to_variable: to_variable.clone(),
+                        edge_variable: e.edge_variable.clone(),
+                        direction: e.direction,
+                        edge_types: e.edge_types.clone(),
+                        min_hops: e.min_hops,
+                        max_hops: e.max_hops,
+                        input: Box::new(plan),
+                        path_alias: e.path_alias.clone(),
+                        path_mode: e.path_mode,
+                    });
+                    if lie {
+                        // `id(fraîche) = id(externe)` et NON `fraîche = externe` :
+                        // `variable_de_fermeture` reconnaît `Filter(to = t)` sur une
+                        // expansion de longueur variable et la planifie GUIDÉE par la
+                        // cible, ce qui calcule d'abord la portée inverse DEPUIS `t`
+                        // — ici le projet, tout son sous-arbre. Mesuré : c'était le
+                        // coût restant (30 ms à 32 000 fichiers, croissant avec le
+                        // graphe). Partir du petit côté (le départ lié) ne coûte que
+                        // son voisinage ; l'égalité d'identifiants garde la sémantique.
+                        let id = |nom: String| LogicalExpression::FunctionCall {
+                            name: "id".to_string(),
+                            args: vec![LogicalExpression::Variable(nom)],
+                            distinct: false,
+                        };
+                        plan = LogicalOperator::Filter(FilterOp {
+                            predicate: LogicalExpression::Binary {
+                                left: Box::new(id(to_variable)),
+                                op: BinaryOp::Eq,
+                                right: Box::new(id(e.to_variable.clone())),
+                            },
+                            input: Box::new(plan),
+                            pushdown_hint: None,
+                        });
+                    }
+                }
+                LogicalOperator::Filter(f) => {
+                    plan = LogicalOperator::Filter(FilterOp {
+                        predicate: f.predicate.clone(),
+                        input: Box::new(plan),
+                        pushdown_hint: f.pushdown_hint.clone(),
+                    });
+                }
+                _ => return None,
+            }
+        }
+        Some((plan, parametres))
+    }
+
     /// Sur-approximation syntaxique des variables liees par un plan logique.
     ///
     /// Sert au routage EXISTS fast-path / semi-join AVANT toute
@@ -1041,6 +1204,23 @@ impl super::Planner {
         }
 
         let (left_op, left_columns) = self.plan_operator(outer_input)?;
+
+        // (obrain#189) Départ du sous-motif déjà lié : sous-requête corrélée, au lieu
+        // d'énumérer le sous-motif de tout le graphe pour le joindre ensuite.
+        let colonnes_externes: HashSet<String> = left_columns.iter().cloned().collect();
+        if let Some((correle, parametres)) =
+            Self::reecrire_exists_correle(subquery, &colonnes_externes)
+        {
+            return self.plan_correlated_exists_with_left(
+                left_op,
+                left_columns,
+                &correle,
+                &parametres,
+                is_negated,
+                remaining_predicate,
+            );
+        }
+
         let (right_op, right_columns) = self.plan_operator(subquery)?;
 
         // Semi/anti join only outputs left (outer) columns
@@ -1144,7 +1324,26 @@ impl super::Planner {
         remaining_predicate: Option<LogicalExpression>,
     ) -> Result<(Box<dyn Operator>, Vec<String>)> {
         let (left_op, left_columns) = self.plan_operator(outer_input)?;
+        self.plan_correlated_exists_with_left(
+            left_op,
+            left_columns,
+            subquery,
+            param_vars,
+            is_negated,
+            remaining_predicate,
+        )
+    }
 
+    /// Cœur de `plan_correlated_exists`, pour une entrée externe DÉJÀ planifiée.
+    fn plan_correlated_exists_with_left(
+        &self,
+        left_op: Box<dyn Operator>,
+        left_columns: Vec<String>,
+        subquery: &LogicalOperator,
+        param_vars: &[String],
+        is_negated: bool,
+        remaining_predicate: Option<LogicalExpression>,
+    ) -> Result<(Box<dyn Operator>, Vec<String>)> {
         // Set up ParameterState for correlated variables
         let param_state = std::sync::Arc::new(
             obrain_core::execution::operators::ParameterState::new(param_vars.to_vec()),
@@ -1212,6 +1411,21 @@ impl super::Planner {
         is_negated: bool,
         remaining_predicate: Option<LogicalExpression>,
     ) -> Result<(Box<dyn Operator>, Vec<String>)> {
+        // (obrain#189) Même réécriture corrélée que dans `plan_exists_as_semi_join`.
+        let colonnes_externes: HashSet<String> = left_columns.iter().cloned().collect();
+        if let Some((correle, parametres)) =
+            Self::reecrire_exists_correle(subquery, &colonnes_externes)
+        {
+            return self.plan_correlated_exists_with_left(
+                left_op,
+                left_columns.to_vec(),
+                &correle,
+                &parametres,
+                is_negated,
+                remaining_predicate,
+            );
+        }
+
         let (right_op, right_columns) = self.plan_operator(subquery)?;
 
         let output_columns = left_columns.to_vec();
@@ -3966,4 +4180,202 @@ fn plafond_materialisation() -> u64 {
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(1024)
     })
+}
+
+/// Réécriture corrélée du sous-motif d'un EXISTS (obrain#189) : la forme acceptée
+/// et CHAQUE repli vers la semi-jointure d'origine.
+#[cfg(test)]
+mod tests_exists_correle {
+    use super::*;
+    use crate::query::plan::{
+        ExpandDirection, ExpandOp, FilterOp, LogicalExpression, LogicalOperator, NodeScanOp,
+        ParameterScanOp,
+    };
+
+    fn externes(noms: &[&str]) -> HashSet<String> {
+        noms.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn scan(variable: &str) -> LogicalOperator {
+        LogicalOperator::NodeScan(NodeScanOp {
+            variable: variable.to_string(),
+            label: None,
+            input: None,
+            pushdown_hint: None,
+        })
+    }
+
+    fn expand(from: &str, to: &str, edge: Option<&str>, input: LogicalOperator) -> LogicalOperator {
+        LogicalOperator::Expand(ExpandOp {
+            from_variable: from.to_string(),
+            to_variable: to.to_string(),
+            edge_variable: edge.map(str::to_string),
+            direction: ExpandDirection::Incoming,
+            edge_types: vec!["CONTAINS".to_string()],
+            min_hops: 1,
+            max_hops: Some(2),
+            input: Box::new(input),
+            path_alias: None,
+            path_mode: PathMode::default(),
+        })
+    }
+
+    fn filtre(predicat: LogicalExpression, input: LogicalOperator) -> LogicalOperator {
+        LogicalOperator::Filter(FilterOp {
+            predicate: predicat,
+            input: Box::new(input),
+            pushdown_hint: None,
+        })
+    }
+
+    fn a_label(variable: &str) -> LogicalExpression {
+        LogicalExpression::FunctionCall {
+            name: "hasLabel".to_string(),
+            args: vec![
+                LogicalExpression::Variable(variable.to_string()),
+                LogicalExpression::Literal(Value::String("File".into())),
+            ],
+            distinct: false,
+        }
+    }
+
+    /// Colonnes du `ParameterScan` au pied du plan réécrit.
+    fn colonnes_du_pied(plan: &LogicalOperator) -> Vec<String> {
+        match plan {
+            LogicalOperator::ParameterScan(ParameterScanOp { columns }) => columns.clone(),
+            LogicalOperator::Expand(e) => colonnes_du_pied(&e.input),
+            LogicalOperator::Filter(f) => colonnes_du_pied(&f.input),
+            autre => panic!("pied inattendu : {autre:?}"),
+        }
+    }
+
+    #[test]
+    fn depart_externe_sans_extremite_liee_reste_sur_la_semi_jointure() {
+        // Pas d'extrémité liée : la réécriture refuse (cf. #184, colonnes d'arête).
+        refuse(&expand("n", "x", None, scan("n")), &["n"]);
+    }
+
+    #[test]
+    fn extremite_liee_est_renommee_et_verifiee_par_egalite_d_identifiants() {
+        let sous_plan = expand("n", "p", None, scan("n"));
+        let (plan, params) =
+            super::super::Planner::reecrire_exists_correle(&sous_plan, &externes(&["n", "p"]))
+                .expect("forme couverte");
+        assert_eq!(params, vec!["n".to_string(), "p".to_string()]);
+        assert_eq!(
+            colonnes_du_pied(&plan),
+            vec!["n".to_string(), "p".to_string()]
+        );
+        // `Filter(id(p__ex1) = id(p))` au sommet, jamais `Variable = Variable` (qui
+        // déclencherait l'expansion guidée par la cible, coûteuse depuis un projet).
+        let LogicalOperator::Filter(f) = &plan else {
+            panic!("Filter attendu au sommet : {plan:?}");
+        };
+        let LogicalExpression::Binary { left, op, right } = &f.predicate else {
+            panic!("égalité attendue : {:?}", f.predicate);
+        };
+        assert_eq!(*op, BinaryOp::Eq);
+        for (cote, nom) in [(left, "p__ex1"), (right, "p")] {
+            match cote.as_ref() {
+                LogicalExpression::FunctionCall { name, args, .. } => {
+                    assert_eq!(name, "id");
+                    assert!(matches!(&args[0], LogicalExpression::Variable(v) if v == nom));
+                }
+                autre => panic!("id(...) attendu : {autre:?}"),
+            }
+        }
+        let LogicalOperator::Expand(e) = f.input.as_ref() else {
+            panic!("Expand attendu sous le filtre");
+        };
+        assert_eq!(e.to_variable, "p__ex1");
+    }
+
+    #[test]
+    fn deux_extremites_liees_recoivent_deux_noms_distincts() {
+        // (n)<-[]-(m)<-[]-(p), m et p déjà liés.
+        let sous_plan = expand("m", "p", None, expand("n", "m", None, scan("n")));
+        let (plan, params) =
+            super::super::Planner::reecrire_exists_correle(&sous_plan, &externes(&["n", "m", "p"]))
+                .expect("forme couverte");
+        assert_eq!(params, vec!["n", "m", "p"]);
+        let rendu = format!("{plan:?}");
+        assert!(rendu.contains("m__ex1"), "{rendu}");
+        assert!(rendu.contains("p__ex2"), "{rendu}");
+    }
+
+    #[test]
+    fn un_filtre_sur_la_colonne_vertebrale_est_conserve() {
+        // Extrémité `x` liée : la forme est couverte, le filtre survit à la réécriture.
+        let sous_plan = filtre(a_label("x"), expand("n", "x", None, scan("n")));
+        let (plan, _) =
+            super::super::Planner::reecrire_exists_correle(&sous_plan, &externes(&["n", "x"]))
+                .expect("forme couverte");
+        assert!(matches!(plan, LogicalOperator::Filter(_)));
+    }
+
+    fn refuse(sous_plan: &LogicalOperator, externes_: &[&str]) {
+        assert!(
+            super::super::Planner::reecrire_exists_correle(sous_plan, &externes(externes_))
+                .is_none(),
+            "devait retomber sur la semi-jointure : {sous_plan:?}"
+        );
+    }
+
+    #[test]
+    fn repli_si_le_depart_n_est_pas_externe() {
+        refuse(&expand("n", "x", None, scan("n")), &["autre"]);
+    }
+
+    #[test]
+    fn repli_si_le_depart_porte_un_label() {
+        let mut depart = scan("n");
+        if let LogicalOperator::NodeScan(s) = &mut depart {
+            s.label = Some("File".to_string());
+        }
+        refuse(&expand("n", "x", None, depart), &["n"]);
+    }
+
+    #[test]
+    fn repli_si_le_depart_est_un_scan_chaine() {
+        let mut depart = scan("n");
+        if let LogicalOperator::NodeScan(s) = &mut depart {
+            s.input = Some(Box::new(scan("m")));
+        }
+        refuse(&expand("n", "x", None, depart), &["n"]);
+    }
+
+    #[test]
+    fn repli_sur_un_operateur_hors_colonne_vertebrale() {
+        let hors = LogicalOperator::ParameterScan(ParameterScanOp {
+            columns: vec!["n".to_string()],
+        });
+        refuse(&hors, &["n"]);
+    }
+
+    #[test]
+    fn repli_si_la_variable_d_arete_est_externe() {
+        refuse(&expand("n", "x", Some("r"), scan("n")), &["n", "r"]);
+    }
+
+    #[test]
+    fn repli_si_l_extremite_boucle_sur_le_depart() {
+        refuse(&expand("n", "n", None, scan("n")), &["n"]);
+    }
+
+    #[test]
+    fn repli_si_la_meme_extremite_est_liee_deux_fois() {
+        let sous_plan = expand("p", "p", None, expand("n", "p", None, scan("n")));
+        refuse(&sous_plan, &["n", "p"]);
+    }
+
+    #[test]
+    fn repli_si_un_saut_ne_part_pas_de_la_colonne_vertebrale() {
+        refuse(&expand("ailleurs", "x", None, scan("n")), &["n"]);
+    }
+
+    #[test]
+    fn repli_si_un_filtre_lit_une_variable_etrangere_au_motif() {
+        let sous_plan = filtre(a_label("etranger"), expand("n", "x", None, scan("n")));
+        refuse(&sous_plan, &["n"]);
+    }
 }
