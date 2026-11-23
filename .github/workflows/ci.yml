@@ -50,6 +50,7 @@ env:
 #   dtolnay/rust-toolchain (branche stable) -> b725eda525362e7cf34af9a7243cac1e3f01a7ec
 #   Swatinem/rust-cache@v2.9.3           -> d1527c8f67ef9af357290475d4af4b0fab8f12e0
 #   EmbarkStudios/cargo-deny-action@v2.1.1 -> 3c6349835b2b7b196a839186cb8b78e02f7b5f25
+#   actions/upload-artifact@v7.0.2       -> cf430e030ddbb5b0abf93d22962f4752f3646cd9 (résolu le 2026-11-23)
 # Une mise à jour change le SHA ET le commentaire, jamais l'un sans l'autre.
 
 jobs:
@@ -217,6 +218,13 @@ jobs:
   # (mesuré : cognitive position::scale_tests, index_concurrency,
   # annulation_bout_en_bout, wal_group_commit_needle) sans rien dire du code ;
   # les verdicts réussite/échec restent ceux des jobs « Tests ».
+  # BADGE (2026-11-23) : sur `main` seulement, le job dépose en artefact
+  # (`couverture-pages`) le badge et la page produits par
+  # scripts/couverture_badge.py, AVANT le contrôle du plancher : le vrai chiffre se
+  # publie même s'il passe sous le plancher. La publication sur GitHub Pages est
+  # faite par couverture-badge.yml (workflow_run), pas ici : ce workflow reste en
+  # `contents: read` et n'a aucun droit d'écriture, y compris quand release.yml
+  # l'appelle.
   couverture:
     name: Couverture (code neuf ≥ 95 %, plancher global)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -241,6 +249,8 @@ jobs:
           fetch-depth: 0
       - name: Le contrôle du code neuf est lui-même testé (cas négatifs compris)
         run: python3 scripts/test_couverture_code_neuf.py
+      - name: Le badge de couverture est lui-même testé (valeurs et refus)
+        run: python3 scripts/test_couverture_badge.py
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
           # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
@@ -304,6 +314,21 @@ jobs:
             echo ""
             echo "Lignes couvertes : **${total}** — plancher ${COUVERTURE_PLANCHER} %, cible du projet 95 %."
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Badge et page de couverture (main seulement)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          total=$(awk '/^TOTAL/ {print $10}' "$RUNNER_TEMP/couverture/resume.txt")
+          python3 scripts/couverture_badge.py "$RUNNER_TEMP/couverture/lcov.info" \
+            --total "$total" --commit "$GITHUB_SHA" --date "$(date -u +%Y-%m-%d)" \
+            --sortie "$RUNNER_TEMP/couverture/site"
+      - name: Artefact du badge (main seulement)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: couverture-pages
+          path: ${{ runner.temp }}/couverture/site
+          if-no-files-found: error
+          retention-days: 30
       - name: Plancher global (cliquet)
         run: |
           cargo llvm-cov report --ignore-filename-regex "$COUVERTURE_EXCLUS" \
