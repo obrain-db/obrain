@@ -622,28 +622,47 @@ lignes différents : `code_21` et `code_37` rendent 0 ligne (Neo4j 20 et 67),
 `sampler_01` 500 (Neo4j 7 615), `plan_12` 8 511 (8 751), `ana_22` et `chat_25`
 0 (1), `code_48` 443 (441), `plan_05` 11 (12).
 
-**Erreurs** : obrain **18**, Neo4j **3**. Les 3 de Neo4j sont des fonctions
-APOC absentes du conteneur (`apoc.coll.toSet`, `apoc.coll.sort`,
-`apoc.meta.schema`) : hors sujet, et deux d'entre elles échouent aussi côté
-obrain pour la même raison. Les 15 propres à obrain, par famille :
+**Erreurs** (rejeu corrigé, moteur `4a37c0be`, harnais compilé avec `cypher`,
+`algos` et `vector-index` — la première passe n'avait que `cypher`, ce qui
+fabriquait deux erreurs, voir plus bas) : obrain **16**, Neo4j **3**. Les 3 de
+Neo4j sont des fonctions APOC absentes du conteneur (`apoc.coll.toSet`,
+`apoc.coll.sort`, `apoc.meta.schema`) : hors sujet ; **3 requêtes échouent des
+deux côtés** (`note_45`, `ana_11`, `schema_03`). Les **13 propres à obrain**,
+par famille :
 
 | Famille | Requêtes | Message |
 |---|---|---|
-| écriture refusée en **lecture seule** sur des procédures de lecture | `note_31/32/33/35`, `dec_04`, `chat_07` (`db.index.vector.queryNodes`), `schema_01/02` (`db.labels`, `db.relationshipTypes`) | `Cannot write in read-only transaction` |
+| index vectoriel **absent de la base rejouée** (état du banc, pas un défaut du moteur : la passe indexée précédente en avait 8) | `note_31/32/33/35`, `dec_04`, `chat_07` | `aucun index vectoriel nommé '…'` |
 | `PatternComprehension` non réécrite | `chat_23` (`[…][0]` après un `WITH` agrégeant), `persona_10` (dans un `WHERE`) | `reached the planner without being rewritten` |
 | sous-motif corrélé par un nœud qui n'est **pas le premier** | `nbh_01`, `nbh_02` (`[(op:Project)-[:HAS_PLAN]->(m) \| op.id]`) | `sous-requête de motif corrélée par 'm'… non prise en charge` |
 | identifiant interne **partagé nœud/arête** dans une liste | `ana_09` (`nodes(path)`), `ws_14` (`collect(DISTINCT t1) + collect(DISTINCT t2)`) | `désigne à la fois un nœud et une arête` |
 | produit cartésien refusé | `code_44` | `scan imbriqué (produit cartésien) refusé` |
-| `WITH *, expr AS alias` | `ana_11` | `Expected end of query` à la virgule après `WITH *` |
 
-Chaque famille a son issue, avec une reproduction **en mémoire** quand elle
-existe (six formes sur sept ; `code_44` ne se reproduit pas sur un petit graphe,
-la garde étant une estimation de cardinalité) : lecture seule #354 ;
-`PatternComprehension` #357 ; corrélé par un nœud non premier #355 ; identifiant
-partagé **#229 rouverte** ; produit cartésien **#228 rouverte** ; `WITH *, …`
-#356. #228 et #229 avaient été fermées par #231 sur la forme de `chat_11` et
-`topo_04` : la forme de PO n'est pas celle que leurs tests figent. La colonne
-de tri fuitée des 79 + 6 requêtes ci-dessus : #353.
+`ana_11` (`WITH *, expr AS alias` → `Expected end of query`) est un défaut
+d'analyse réel côté obrain, reproduit en mémoire, mais la requête échoue aussi
+sur Neo4j (APOC) : elle ne compte pas dans les 13.
+
+**Correction du 24/11.** La première version de ce tableau comptait 15 erreurs
+propres à obrain dont une famille « écriture refusée en lecture seule » sur
+`db.labels`, `db.relationshipTypes` et `db.index.vector.queryNodes`
+(obrain#354). C'était un **artefact du banc** : le harnais n'était pas compilé
+avec la fonctionnalité `algos`, qui porte ces procédures. Avec `algos`,
+`schema_01/02` passent (mesuré : 2 requêtes passent d'erreur à ok, **0
+empreinte modifiée** sur les autres) ; les 6 requêtes vectorielles échouent
+parce que la base rejouée n'a pas d'index vectoriel, non parce qu'une écriture
+est refusée. #354 est donc à fermer ; la reproduction en mémoire
+(`examples/repro_po_20261123.rs`) montre `db.labels()` et `db.relationshipTypes()`
+corrects en lecture seule. Reste à élucider : `db.index.vector.queryNodes` rend 0
+ligne sur une petite base avec index nommé, y compris en session d'écriture.
+
+Chaque famille restante a son issue, avec une reproduction **en mémoire** quand
+elle existe (`code_44` ne se reproduit pas sur un petit graphe, la garde étant
+une estimation de cardinalité) : `PatternComprehension` #357 ; corrélé par un
+nœud non premier #355 ; identifiant partagé **#229 rouverte** ; produit
+cartésien **#228 rouverte** ; `WITH *, …` #356. #228 et #229 avaient été
+fermées par #231 sur la forme de `chat_11` et `topo_04` : la forme de PO n'est
+pas celle que leurs tests figent. La colonne de tri fuitée des 79 + 6
+requêtes ci-dessus : #353.
 
 ### Temps — moteur `bd9b3b4f`, index natifs présents, **avant** #345
 
