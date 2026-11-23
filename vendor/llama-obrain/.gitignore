@@ -1,0 +1,19 @@
+build/
+.cache/
+*.o
+*.a
+*.so
+!*.so.*
+compile_commands.json
+.cache/
+.vscode/
+
+# obrain-adapter / pont KV (artefacts de run, caches optionnels)
+/kv-states/
+/jspace-server.log
+
+__pycache__/
+*.pyc
+
+# [obrain] artefacts de compilation Vulkan (1,1 Go) — jamais dans l historique
+build-vk/

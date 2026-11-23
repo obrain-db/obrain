@@ -1,0 +1,15 @@
+diff --git i/ggml/src/ggml-cuda/vendors/hip.h w/ggml/src/ggml-cuda/vendors/hip.h
+index d01f153..f7b695d 100644
+--- i/ggml/src/ggml-cuda/vendors/hip.h
++++ w/ggml/src/ggml-cuda/vendors/hip.h
+@@ -250,6 +250,10 @@ typedef __hip_bfloat162 nv_bfloat162;
+ 
+ #if HIP_VERSION >= 60200000
+ #include <hip/hip_fp8.h>
++// ROCm 6.2 n'exporte que la variante fnuz (__hip_fp8_e4m3 non-fnuz : ROCm >= 6.3).
++#if HIP_VERSION < 60300000
++typedef __hip_fp8_e4m3_fnuz __hip_fp8_e4m3;
++#endif
+ typedef __hip_fp8_e4m3 __nv_fp8_e4m3;
+ #define FP8_AVAILABLE
+ #endif // HIP_VERSION >= 60200000

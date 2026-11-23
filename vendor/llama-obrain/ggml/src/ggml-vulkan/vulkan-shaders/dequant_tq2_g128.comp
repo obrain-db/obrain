@@ -1,0 +1,44 @@
+#version 450
+
+// [obrain] TQ2_G128 — ternaire à groupe 128 en cases de 2 bits (2,125 bpw).
+//
+// Même structure que dequant_q1_0.comp, dont le bloc fait aussi 128 poids : 4 blocs par groupe de
+// travail, 64 fils par bloc. La différence est la DENSITÉ : Q1_0 range 8 poids par octet (16 octets
+// par bloc), TQ2_G128 en range 4 (32 octets par bloc). Chaque fil traite donc DEUX octets = 8 poids,
+// ce qui garde la même foulée de sortie (8*il) que Q1_0.
+//
+// Sémantique copiée de la référence CPU (ggml-quants.c) : le poids i vit dans les bits 2*(i%4) de
+// qs[i/4] ; 0 → −1, 1 → 0, 2 → +1, 3 inutilisé (replié sur +1, pour qu'un octet corrompu dégrade au
+// lieu de mentir). Une seule échelle `d` par groupe de 128.
+
+#include "dequant_head.glsl"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer A {block_tq2_g128 data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
+
+void main() {
+    const uint i = gl_WorkGroupID.x * 4 + gl_LocalInvocationID.x / 64;
+
+    const uint tid = gl_LocalInvocationID.x % 64;
+    const uint il  = tid / 4;          // 0..15 → paire d'octets (2*il, 2*il+1)
+    const uint ir  = tid % 4;
+    const uint ib  = 4*i + ir;
+    if (ib >= p.nel / 128) {
+        return;
+    }
+
+    const uint b_idx = 512*i + 128*ir + 8*il;
+
+    const float d = float(data_a[ib].d);
+
+    [[unroll]] for (uint j = 0; j < 2; ++j) {
+        const uint q = uint(data_a[ib].qs[2*il + j]);
+        [[unroll]] for (uint l = 0; l < 4; ++l) {
+            const uint c = (q >> (2u*l)) & 3u;
+            const float v = (c > 2u) ? 1.0f : (float(int(c)) - 1.0f);
+            data_b[b_idx + 4*j + l] = D_TYPE(v * d);
+        }
+    }
+}

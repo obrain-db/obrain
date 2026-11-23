@@ -1,0 +1,38 @@
+// obrain-certified-config.h -- CONFIGURATION CERTIFIEE, GENEREE. NE PAS EDITER A LA MAIN.
+//
+// Chaine de provenance :
+//   sources certifiees (r1fast/traj, R1 ferme)  -> verification des hashes -> generation -> hash du header
+// Ce fichier n'est PAS sa propre source de verite : il est rejoue par son generateur.
+//
+//   OBRAIN_CFG_SOURCE            = obrain-r1fast.cpp   (standalone certifie)
+//   OBRAIN_CFG_SOURCE_HASH       = b960e01cc68d1ac5
+//   OBRAIN_CFG_T0_CANONICAL_HASH = e31e6f75712ac08d  (verifie a la generation)
+//   OBRAIN_CFG_GENERATOR         = tools/server/obrain-config-gen.py
+#pragma once
+
+static const int    OBRAIN_POLICY_PROF = 48;
+static const int    OBRAIN_POLICY_NL   = 7;
+static const double OBRAIN_POLICY_Z    = 6;
+static const double OBRAIN_POLICY_T_PLAIN  = 62.5;
+static const double OBRAIN_POLICY_T_LOOKUP = 0.023;
+
+static const int OBRAIN_POLICY_LONGUEURS[7] = { 48, 32, 24, 16, 12, 8, 4 };
+
+static const double OBRAIN_POLICY_T0[50] = {
+    0.0, 0.0,
+    73.278999999999996, 74.095500000000001, 75.614000000000004, 76.015000000000001,
+    77.753500000000003, 81.757999999999996, 83.647000000000006, 89.980999999999995,
+    92.875500000000002, 95.352999999999994, 102.71299999999999, 104.61199999999999,
+    108.706, 113.26900000000001, 117.041, 123.91,
+    131.80799999999999, 129.24299999999999, 140.452, 144.62,
+    137.245, 146, 149.58699999999999, 152.99700000000001,
+    154.976, 161.54400000000001, 160.429, 169.81,
+    176.13999999999999, 172.44900000000001, 179.756, 175.48500000000001,
+    185.76599999999999, 180.66249999999999, 185.19900000000001, 189.68100000000001,
+    207.751, 203.298, 210.41300000000001, 213.482,
+    219.80000000000001, 219.68799999999999, 215.739, 221.91899999999998,
+    229.214, 234.03899999999999, 231.13800000000001, 236.23599999999999
+};
+
+static const char * OBRAIN_CFG_T0_CANONICAL_HASH = "e31e6f75712ac08d";
+static const char * OBRAIN_CFG_SOURCE_HASH       = "b960e01cc68d1ac5";
