@@ -11,6 +11,13 @@ yanked = "warn"
 ignore = [
     # bincode team ceased development; we use v2.0 which is stable and complete
     { id = "RUSTSEC-2025-0141", reason = "bincode 2.0 is stable; no migration needed yet" },
+    # RUSTSEC-2026-0595 : Apache Arrow écrit les filtres Bloom en CLAIR dans un
+    # Parquet CHIFFRÉ (fuite de données). Vérifié dans le code : obrain ne fait
+    # que LIRE du Parquet — `parquet::file::reader::SerializedFileReader` et
+    # `parquet::record`, dans `load_data.rs` (feature `parquet-import`,
+    # `LOAD DATA ... FORMAT PARQUET`). Aucun writer, aucune option de
+    # chiffrement, donc la voie vulnérable n'est jamais atteinte.
+    { id = "RUSTSEC-2026-0595", reason = "obrain only READS Parquet (SerializedFileReader); never writes, never encrypts" },
 ]
 
 [licenses]
