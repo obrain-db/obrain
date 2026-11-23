@@ -3121,3 +3121,1000 @@ mod tests {
         assert_eq!(noms(&a_b, &ab), (n_ab, n_a_b), "indépendant de l'ordre");
     }
 }
+
+/// Tests de couverture du schéma du catalogue : types de graphe, espaces de
+/// noms, définitions de types de nœuds et d'arêtes (héritage compris),
+/// contraintes nommées, `alter_*`, procédures, liaisons de type de graphe,
+/// `PropertyDataType`, `TypeConstraint`, et le validateur de contraintes sans
+/// store. Tout est en mémoire. Les branches `SchemaNotEnabled` ne sont pas
+/// exercées : `Catalog::new()` crée toujours un `SchemaCatalog`.
+#[cfg(test)]
+mod tests_couverture_catalog {
+    use super::*;
+
+    fn prop(name: &str, data_type: PropertyDataType, nullable: bool) -> TypedProperty {
+        TypedProperty {
+            name: name.into(),
+            data_type,
+            nullable,
+            default_value: None,
+        }
+    }
+
+    fn node_type(
+        name: &str,
+        properties: Vec<TypedProperty>,
+        parents: &[&str],
+    ) -> NodeTypeDefinition {
+        NodeTypeDefinition {
+            name: name.into(),
+            properties,
+            constraints: vec![],
+            constraint_names: vec![],
+            implicit: false,
+            parent_types: parents.iter().map(|p| (*p).to_string()).collect(),
+        }
+    }
+
+    fn edge_type(name: &str, properties: Vec<TypedProperty>) -> EdgeTypeDefinition {
+        EdgeTypeDefinition {
+            name: name.into(),
+            properties,
+            constraints: vec![],
+            source_node_types: vec![],
+            target_node_types: vec![],
+        }
+    }
+
+    fn graph_type(name: &str) -> GraphTypeDefinition {
+        GraphTypeDefinition {
+            name: name.into(),
+            allowed_node_types: vec![],
+            allowed_edge_types: vec![],
+            open: false,
+        }
+    }
+
+    fn procedure(name: &str) -> ProcedureDefinition {
+        ProcedureDefinition {
+            name: name.into(),
+            params: vec![("x".into(), "INT".into())],
+            returns: vec![],
+            body: "RETURN 1".into(),
+        }
+    }
+
+    fn s(v: &str) -> Value {
+        Value::String(v.into())
+    }
+
+    // --- types de graphe ---
+
+    #[test]
+    fn types_de_graphe_enregistrement_lecture_suppression() {
+        let catalog = Catalog::new();
+        assert_eq!(catalog.all_graph_type_names().len(), 0);
+        assert_eq!(catalog.register_graph_type(graph_type("Social")), Ok(()));
+        assert_eq!(
+            catalog.register_graph_type(graph_type("Social")),
+            Err(CatalogError::TypeAlreadyExists("Social".into()))
+        );
+        assert_eq!(catalog.all_graph_type_names(), vec!["Social".to_string()]);
+        assert_eq!(catalog.all_graph_type_defs().len(), 1);
+        assert!(catalog.get_graph_type_def("Social").is_some());
+        assert!(catalog.get_graph_type_def("Autre").is_none());
+        assert_eq!(catalog.drop_graph_type("Social"), Ok(()));
+        assert_eq!(
+            catalog.drop_graph_type("Social"),
+            Err(CatalogError::TypeNotFound("Social".into()))
+        );
+        assert_eq!(catalog.all_graph_type_defs().len(), 0);
+    }
+
+    #[test]
+    fn types_de_graphe_alter_noeuds_et_aretes_autorises() {
+        let catalog = Catalog::new();
+        catalog.register_graph_type(graph_type("G")).unwrap();
+        assert_eq!(
+            catalog.alter_graph_type_add_node_type("G", "Person".into()),
+            Ok(())
+        );
+        assert_eq!(
+            catalog.alter_graph_type_add_node_type("G", "Person".into()),
+            Ok(())
+        );
+        assert_eq!(
+            catalog.alter_graph_type_add_edge_type("G", "KNOWS".into()),
+            Ok(())
+        );
+        assert_eq!(
+            catalog.alter_graph_type_add_edge_type("G", "KNOWS".into()),
+            Ok(())
+        );
+        let def = catalog.get_graph_type_def("G").unwrap();
+        assert_eq!(
+            def.allowed_node_types,
+            vec!["Person".to_string()],
+            "ajout idempotent"
+        );
+        assert_eq!(def.allowed_edge_types, vec!["KNOWS".to_string()]);
+
+        assert_eq!(
+            catalog.alter_graph_type_drop_node_type("G", "Person"),
+            Ok(())
+        );
+        assert_eq!(
+            catalog.alter_graph_type_drop_edge_type("G", "KNOWS"),
+            Ok(())
+        );
+        let def = catalog.get_graph_type_def("G").unwrap();
+        assert_eq!(def.allowed_node_types.len(), 0);
+        assert_eq!(def.allowed_edge_types.len(), 0);
+
+        let absent = Err(CatalogError::TypeNotFound("X".into()));
+        assert_eq!(
+            catalog.alter_graph_type_add_node_type("X", "P".into()),
+            absent.clone()
+        );
+        assert_eq!(
+            catalog.alter_graph_type_drop_node_type("X", "P"),
+            absent.clone()
+        );
+        assert_eq!(
+            catalog.alter_graph_type_add_edge_type("X", "E".into()),
+            absent.clone()
+        );
+        assert_eq!(catalog.alter_graph_type_drop_edge_type("X", "E"), absent);
+    }
+
+    #[test]
+    fn liaison_d_un_graphe_a_un_type_de_graphe() {
+        let catalog = Catalog::new();
+        assert_eq!(
+            catalog.bind_graph_type("g1", "Inconnu".into()),
+            Err(CatalogError::TypeNotFound("Inconnu".into()))
+        );
+        catalog.register_graph_type(graph_type("Social")).unwrap();
+        assert_eq!(catalog.bind_graph_type("g1", "Social".into()), Ok(()));
+        assert_eq!(
+            catalog.get_graph_type_binding("g1"),
+            Some("Social".to_string())
+        );
+        assert_eq!(catalog.get_graph_type_binding("g2"), None);
+        assert_eq!(
+            catalog.all_graph_type_bindings(),
+            vec![("g1".to_string(), "Social".to_string())]
+        );
+    }
+
+    // --- espaces de noms ---
+
+    #[test]
+    fn espaces_de_noms_du_schema() {
+        let catalog = Catalog::new();
+        assert!(!catalog.schema_exists("app"));
+        assert_eq!(catalog.schema_names().len(), 0);
+        assert_eq!(catalog.register_schema_namespace("app".into()), Ok(()));
+        assert_eq!(
+            catalog.register_schema_namespace("app".into()),
+            Err(CatalogError::SchemaAlreadyExists("app".into()))
+        );
+        assert!(catalog.schema_exists("app"));
+        assert_eq!(catalog.schema_names(), vec!["app".to_string()]);
+        assert_eq!(catalog.drop_schema_namespace("app"), Ok(()));
+        assert_eq!(
+            catalog.drop_schema_namespace("app"),
+            Err(CatalogError::SchemaNotFound("app".into()))
+        );
+        assert!(!catalog.schema_exists("app"));
+    }
+
+    // --- définitions de types de nœuds ---
+
+    #[test]
+    fn types_de_noeuds_enregistrement_remplacement_suppression() {
+        let catalog = Catalog::new();
+        let personne = node_type(
+            "Person",
+            vec![prop("name", PropertyDataType::String, false)],
+            &[],
+        );
+        assert_eq!(catalog.register_node_type(personne.clone()), Ok(()));
+        assert_eq!(
+            catalog.register_node_type(personne),
+            Err(CatalogError::TypeAlreadyExists("Person".into()))
+        );
+        assert_eq!(catalog.get_node_type("Person").unwrap().properties.len(), 1);
+
+        catalog.register_or_replace_node_type(node_type("Person", vec![], &[]));
+        assert!(
+            catalog
+                .get_node_type("Person")
+                .unwrap()
+                .properties
+                .is_empty()
+        );
+
+        assert_eq!(catalog.all_node_type_names(), vec!["Person".to_string()]);
+        assert_eq!(catalog.all_node_type_defs().len(), 1);
+        assert_eq!(catalog.drop_node_type("Person"), Ok(()));
+        assert_eq!(
+            catalog.drop_node_type("Person"),
+            Err(CatalogError::TypeNotFound("Person".into()))
+        );
+        assert!(catalog.get_node_type("Person").is_none());
+        assert!(catalog.resolved_node_type("Person").is_none());
+    }
+
+    #[test]
+    fn type_resolu_herite_des_parents_et_surcharge_leurs_proprietes() {
+        let catalog = Catalog::new();
+        let mut base = node_type(
+            "Base",
+            vec![
+                prop("id", PropertyDataType::Int64, false),
+                prop("name", PropertyDataType::String, true),
+            ],
+            &[],
+        );
+        base.constraints.push(TypeConstraint::NotNull("id".into()));
+        catalog.register_node_type(base).unwrap();
+        let mut enfant = node_type(
+            "Enfant",
+            vec![prop("name", PropertyDataType::String, false)],
+            &["Base", "Inexistant"],
+        );
+        enfant
+            .constraints
+            .push(TypeConstraint::Unique(vec!["name".into()]));
+        catalog.register_node_type(enfant).unwrap();
+
+        let resolu = catalog.resolved_node_type("Enfant").expect("type résolu");
+        assert_eq!(resolu.name, "Enfant");
+        let noms: Vec<&str> = resolu.properties.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(noms, vec!["id", "name"], "parent d'abord, puis l'enfant");
+        let name = resolu.properties.iter().find(|p| p.name == "name").unwrap();
+        assert!(
+            !name.nullable,
+            "la propriété de l'enfant surcharge celle du parent"
+        );
+        assert_eq!(
+            resolu.constraints.len(),
+            2,
+            "les contraintes s'additionnent"
+        );
+        assert_eq!(
+            resolu.parent_types,
+            vec!["Base".to_string(), "Inexistant".to_string()]
+        );
+
+        let sans_parent = catalog.resolved_node_type("Base").unwrap();
+        assert_eq!(sans_parent.properties.len(), 2);
+    }
+
+    #[test]
+    fn type_resolu_tolere_un_cycle_de_parents() {
+        let catalog = Catalog::new();
+        catalog
+            .register_node_type(node_type(
+                "A",
+                vec![prop("a", PropertyDataType::Any, true)],
+                &["B"],
+            ))
+            .unwrap();
+        catalog
+            .register_node_type(node_type(
+                "B",
+                vec![prop("b", PropertyDataType::Any, true)],
+                &["A"],
+            ))
+            .unwrap();
+        let resolu = catalog
+            .resolved_node_type("A")
+            .expect("pas de boucle infinie");
+        let noms: Vec<&str> = resolu.properties.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(noms, vec!["b", "a"]);
+    }
+
+    // --- définitions de types d'arêtes ---
+
+    #[test]
+    fn types_d_aretes_enregistrement_remplacement_suppression() {
+        let catalog = Catalog::new();
+        let knows = edge_type("KNOWS", vec![prop("since", PropertyDataType::Date, true)]);
+        assert_eq!(catalog.register_edge_type_def(knows.clone()), Ok(()));
+        assert_eq!(
+            catalog.register_edge_type_def(knows),
+            Err(CatalogError::TypeAlreadyExists("KNOWS".into()))
+        );
+        assert_eq!(
+            catalog.get_edge_type_def("KNOWS").unwrap().properties.len(),
+            1
+        );
+        catalog.register_or_replace_edge_type_def(edge_type("KNOWS", vec![]));
+        assert!(
+            catalog
+                .get_edge_type_def("KNOWS")
+                .unwrap()
+                .properties
+                .is_empty()
+        );
+        assert_eq!(catalog.all_edge_type_names(), vec!["KNOWS".to_string()]);
+        assert_eq!(catalog.all_edge_type_defs().len(), 1);
+        assert_eq!(catalog.drop_edge_type_def("KNOWS"), Ok(()));
+        assert_eq!(
+            catalog.drop_edge_type_def("KNOWS"),
+            Err(CatalogError::TypeNotFound("KNOWS".into()))
+        );
+    }
+
+    // --- alter_* : propriétés des types ---
+
+    #[test]
+    fn alter_proprietes_des_types_de_noeuds_et_d_aretes() {
+        let catalog = Catalog::new();
+        catalog
+            .register_node_type(node_type("Person", vec![], &[]))
+            .unwrap();
+        catalog
+            .register_edge_type_def(edge_type("KNOWS", vec![]))
+            .unwrap();
+
+        let age = || prop("age", PropertyDataType::Int64, true);
+        assert_eq!(
+            catalog.alter_node_type_add_property("Person", age()),
+            Ok(())
+        );
+        assert_eq!(
+            catalog.alter_node_type_add_property("Person", age()),
+            Err(CatalogError::TypeAlreadyExists(
+                "property age on Person".into()
+            ))
+        );
+        assert_eq!(
+            catalog.alter_node_type_add_property("Absent", age()),
+            Err(CatalogError::TypeNotFound("Absent".into()))
+        );
+        assert_eq!(
+            catalog.alter_node_type_drop_property("Person", "age"),
+            Ok(())
+        );
+        assert_eq!(
+            catalog.alter_node_type_drop_property("Person", "age"),
+            Err(CatalogError::TypeNotFound("property age on Person".into()))
+        );
+        assert_eq!(
+            catalog.alter_node_type_drop_property("Absent", "age"),
+            Err(CatalogError::TypeNotFound("Absent".into()))
+        );
+
+        assert_eq!(catalog.alter_edge_type_add_property("KNOWS", age()), Ok(()));
+        assert_eq!(
+            catalog.alter_edge_type_add_property("KNOWS", age()),
+            Err(CatalogError::TypeAlreadyExists(
+                "property age on KNOWS".into()
+            ))
+        );
+        assert_eq!(
+            catalog.alter_edge_type_add_property("Absent", age()),
+            Err(CatalogError::TypeNotFound("Absent".into()))
+        );
+        assert_eq!(
+            catalog.alter_edge_type_drop_property("KNOWS", "age"),
+            Ok(())
+        );
+        assert_eq!(
+            catalog.alter_edge_type_drop_property("KNOWS", "age"),
+            Err(CatalogError::TypeNotFound("property age on KNOWS".into()))
+        );
+        assert_eq!(
+            catalog.alter_edge_type_drop_property("Absent", "age"),
+            Err(CatalogError::TypeNotFound("Absent".into()))
+        );
+    }
+
+    // --- contraintes nommées ---
+
+    #[test]
+    fn declarer_une_contrainte_cree_un_type_implicite_et_pose_les_drapeaux() {
+        let catalog = Catalog::new();
+        let email_unique = TypeConstraint::Unique(vec!["email".into()]);
+        let declaration = catalog
+            .declare_constraint("Person", None, vec![email_unique.clone()])
+            .unwrap();
+        assert_eq!(
+            declaration,
+            ConstraintDeclaration::Created {
+                name: "Person_unique_email".into()
+            }
+        );
+        let def = catalog
+            .get_node_type("Person")
+            .expect("type implicite créé");
+        assert!(def.implicit);
+        assert_eq!(
+            def.constraint_name(&email_unique),
+            Some("Person_unique_email")
+        );
+
+        let person = catalog
+            .get_label_id("Person")
+            .expect("label créé par la synchro");
+        let email = catalog.get_property_key_id("email").expect("clé créée");
+        assert!(catalog.is_property_unique(person, email));
+        assert!(!catalog.is_property_required(person, email));
+
+        // Redéclarer la même contrainte : déjà là, sous son nom.
+        assert_eq!(
+            catalog.declare_constraint("Person", None, vec![email_unique.clone()]),
+            Ok(ConstraintDeclaration::AlreadyExists {
+                name: "Person_unique_email".into()
+            })
+        );
+        // add_constraint_to_type est idempotent.
+        assert_eq!(
+            catalog.add_constraint_to_type("Person", email_unique),
+            Ok(())
+        );
+        assert_eq!(
+            catalog.get_node_type("Person").unwrap().constraints.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn declarer_avec_un_nom_explicite_et_refuser_un_nom_pris() {
+        let catalog = Catalog::new();
+        let cle = TypeConstraint::PrimaryKey(vec!["id".into()]);
+        let declaration = catalog
+            .declare_constraint("Person", Some("pk_person"), vec![cle.clone()])
+            .unwrap();
+        assert_eq!(
+            declaration,
+            ConstraintDeclaration::Created {
+                name: "pk_person".into()
+            }
+        );
+        let person = catalog.get_label_id("Person").unwrap();
+        let id = catalog.get_property_key_id("id").unwrap();
+        assert!(
+            catalog.is_property_unique(person, id),
+            "clé primaire ⇒ unique"
+        );
+        assert!(
+            catalog.is_property_required(person, id),
+            "clé primaire ⇒ requise"
+        );
+
+        assert_eq!(
+            catalog.declare_constraint(
+                "Company",
+                Some("pk_person"),
+                vec![TypeConstraint::NotNull("name".into())]
+            ),
+            Err(CatalogError::ConstraintNameInUse("pk_person".into()))
+        );
+
+        // Deux contraintes dans une déclaration sans nom : deux noms par défaut.
+        let deux = catalog
+            .declare_constraint(
+                "Company",
+                None,
+                vec![
+                    TypeConstraint::NotNull("name".into()),
+                    TypeConstraint::Unique(vec!["siren".into()]),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            deux,
+            ConstraintDeclaration::Created {
+                name: "Company_not_null_name, Company_unique_siren".into()
+            }
+        );
+    }
+
+    #[test]
+    fn supprimer_une_contrainte_retire_le_type_implicite_devenu_vide() {
+        let catalog = Catalog::new();
+        catalog
+            .declare_constraint(
+                "Person",
+                None,
+                vec![TypeConstraint::Unique(vec!["email".into()])],
+            )
+            .unwrap();
+        let supprimees = catalog.drop_constraint("Person_unique_email").unwrap();
+        assert_eq!(supprimees.len(), 1);
+        assert_eq!(supprimees[0].label, "Person");
+        assert!(
+            supprimees[0].type_removed,
+            "type implicite sans contrainte : retiré"
+        );
+        assert_eq!(
+            supprimees[0].removed,
+            vec![TypeConstraint::Unique(vec!["email".into()])]
+        );
+        assert!(supprimees[0].previous.implicit);
+        assert!(catalog.get_node_type("Person").is_none());
+        let person = catalog.get_label_id("Person").unwrap();
+        let email = catalog.get_property_key_id("email").unwrap();
+        assert!(
+            !catalog.is_property_unique(person, email),
+            "drapeau resynchronisé"
+        );
+
+        assert!(matches!(
+            catalog.drop_constraint("Person_unique_email"),
+            Err(CatalogError::ConstraintNotFound(n)) if n == "Person_unique_email"
+        ));
+    }
+
+    #[test]
+    fn supprimer_une_contrainte_d_un_type_explicite_le_conserve() {
+        let catalog = Catalog::new();
+        catalog
+            .register_node_type(node_type(
+                "Person",
+                vec![prop("name", PropertyDataType::String, true)],
+                &[],
+            ))
+            .unwrap();
+        catalog
+            .declare_constraint(
+                "Person",
+                Some("nom_requis"),
+                vec![TypeConstraint::NotNull("name".into())],
+            )
+            .unwrap();
+        let supprimees = catalog.drop_constraint("nom_requis").unwrap();
+        assert!(!supprimees[0].type_removed);
+        let def = catalog
+            .get_node_type("Person")
+            .expect("type explicite conservé");
+        assert_eq!(def.constraints.len(), 0);
+        assert_eq!(def.constraint_names.len(), 0);
+    }
+
+    #[test]
+    fn normalisation_dedoublonne_et_nomme_les_contraintes() {
+        let mut def = node_type("Person", vec![], &[]);
+        def.constraints = vec![
+            TypeConstraint::Unique(vec!["email".into()]),
+            TypeConstraint::Unique(vec!["email".into()]),
+            TypeConstraint::NotNull("name".into()),
+            TypeConstraint::Check {
+                name: Some("majeur".into()),
+                expression: "age >= 18".into(),
+            },
+        ];
+        assert!(def.normalize_constraints(), "quelque chose a changé");
+        assert_eq!(def.constraints.len(), 3);
+        assert_eq!(def.constraint_names.len(), 3);
+        assert_eq!(
+            def.constraint_name(&TypeConstraint::Unique(vec!["email".into()])),
+            Some("Person_unique_email")
+        );
+        assert_eq!(
+            def.constraint_name(&TypeConstraint::NotNull("name".into())),
+            Some("Person_not_null_name")
+        );
+        assert_eq!(
+            def.constraint_name(&TypeConstraint::Check {
+                name: Some("majeur".into()),
+                expression: "age >= 18".into(),
+            }),
+            Some("Person_check")
+        );
+        assert!(
+            !def.normalize_constraints(),
+            "déjà normalisé : rien ne change"
+        );
+        assert_eq!(
+            def.constraint_name(&TypeConstraint::NotNull("absent".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn nom_par_defaut_avec_soulignement_porte_une_empreinte() {
+        let catalog = Catalog::new();
+        let declaration = catalog
+            .declare_constraint(
+                "Person",
+                None,
+                vec![TypeConstraint::Unique(vec![
+                    "first_name".into(),
+                    "last".into(),
+                ])],
+            )
+            .unwrap();
+        let ConstraintDeclaration::Created { name } = declaration else {
+            panic!("création attendue");
+        };
+        assert!(name.starts_with("Person_unique_first_name_last_"), "{name}");
+        let suffixe = name.rsplit('_').next().unwrap();
+        assert_eq!(
+            suffixe.len(),
+            6,
+            "empreinte hexadécimale sur 6 chiffres : {name}"
+        );
+        assert!(suffixe.chars().all(|c| c.is_ascii_hexdigit()), "{name}");
+    }
+
+    #[test]
+    fn type_constraint_kind_et_proprietes() {
+        assert_eq!(
+            TypeConstraint::PrimaryKey(vec!["a".into()]).kind_str(),
+            "node_key"
+        );
+        assert_eq!(
+            TypeConstraint::Unique(vec!["a".into()]).kind_str(),
+            "unique"
+        );
+        assert_eq!(TypeConstraint::NotNull("a".into()).kind_str(), "not_null");
+        let check = TypeConstraint::Check {
+            name: None,
+            expression: "a > 0".into(),
+        };
+        assert_eq!(check.kind_str(), "check");
+        assert_eq!(
+            TypeConstraint::PrimaryKey(vec!["a".into(), "b".into()]).properties(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(
+            TypeConstraint::NotNull("a".into()).properties(),
+            vec!["a".to_string()]
+        );
+        assert_eq!(check.properties().len(), 0);
+    }
+
+    // --- procédures ---
+
+    #[test]
+    fn procedures_enregistrement_remplacement_suppression() {
+        let catalog = Catalog::new();
+        assert!(catalog.get_procedure("p").is_none());
+        assert_eq!(catalog.register_procedure(procedure("p")), Ok(()));
+        assert_eq!(
+            catalog.register_procedure(procedure("p")),
+            Err(CatalogError::TypeAlreadyExists("p".into()))
+        );
+        let mut v2 = procedure("p");
+        v2.body = "RETURN 2".into();
+        assert_eq!(catalog.replace_procedure(v2), Ok(()));
+        assert_eq!(catalog.get_procedure("p").unwrap().body, "RETURN 2");
+        assert_eq!(catalog.all_procedure_defs().len(), 1);
+        assert_eq!(catalog.drop_procedure("p"), Ok(()));
+        assert_eq!(
+            catalog.drop_procedure("p"),
+            Err(CatalogError::TypeNotFound("p".into()))
+        );
+        assert_eq!(catalog.all_procedure_defs().len(), 0);
+    }
+
+    // --- PropertyDataType ---
+
+    #[test]
+    fn property_data_type_depuis_un_nom() {
+        use PropertyDataType as T;
+        let cas = [
+            ("string", T::String),
+            ("VARCHAR", T::String),
+            ("text", T::String),
+            ("INT", T::Int64),
+            ("int64", T::Int64),
+            ("INTEGER", T::Int64),
+            ("BIGINT", T::Int64),
+            ("FLOAT", T::Float64),
+            ("float64", T::Float64),
+            ("DOUBLE", T::Float64),
+            ("REAL", T::Float64),
+            ("BOOL", T::Bool),
+            ("boolean", T::Bool),
+            ("DATE", T::Date),
+            ("TIME", T::Time),
+            ("TIMESTAMP", T::Timestamp),
+            ("DATETIME", T::Timestamp),
+            ("DURATION", T::Duration),
+            ("INTERVAL", T::Duration),
+            ("LIST", T::List),
+            ("ARRAY", T::List),
+            ("MAP", T::Map),
+            ("RECORD", T::Map),
+            ("BYTES", T::Bytes),
+            ("BINARY", T::Bytes),
+            ("BLOB", T::Bytes),
+            ("NODE", T::Node),
+            ("EDGE", T::Edge),
+            ("RELATIONSHIP", T::Edge),
+            ("n'importe quoi", T::Any),
+        ];
+        for (nom, attendu) in cas {
+            assert_eq!(
+                T::from_type_name(nom).to_string(),
+                attendu.to_string(),
+                "{nom}"
+            );
+        }
+        assert_eq!(T::from_type_name("LIST<INT>").to_string(), "LIST<INT64>");
+        assert_eq!(
+            T::from_type_name("list<list<string>>").to_string(),
+            "LIST<LIST<STRING>>"
+        );
+    }
+
+    #[test]
+    fn property_data_type_affichage() {
+        use PropertyDataType as T;
+        let cas = [
+            (T::String, "STRING"),
+            (T::Int64, "INT64"),
+            (T::Float64, "FLOAT64"),
+            (T::Bool, "BOOLEAN"),
+            (T::Date, "DATE"),
+            (T::Time, "TIME"),
+            (T::Timestamp, "TIMESTAMP"),
+            (T::Duration, "DURATION"),
+            (T::List, "LIST"),
+            (T::Map, "MAP"),
+            (T::Bytes, "BYTES"),
+            (T::Node, "NODE"),
+            (T::Edge, "EDGE"),
+            (T::Any, "ANY"),
+        ];
+        for (t, attendu) in cas {
+            assert_eq!(t.to_string(), attendu);
+        }
+    }
+
+    #[test]
+    fn property_data_type_correspondance_des_valeurs() {
+        use PropertyDataType as T;
+        assert!(T::Any.matches(&Value::Int64(1)));
+        assert!(
+            T::Int64.matches(&Value::Null),
+            "NULL correspond à tout type"
+        );
+        assert!(T::String.matches(&s("x")));
+        assert!(!T::String.matches(&Value::Int64(1)));
+        assert!(T::Int64.matches(&Value::Int64(1)));
+        assert!(T::Float64.matches(&Value::Float64(1.5)));
+        assert!(!T::Float64.matches(&Value::Int64(1)));
+        assert!(T::Bool.matches(&Value::Bool(true)));
+        assert!(T::Date.matches(&Value::Date(obrain_common::types::Date::from_days(0))));
+        assert!(T::Time.matches(&Value::Time(
+            obrain_common::types::Time::from_hms(1, 2, 3).unwrap()
+        )));
+        assert!(T::Timestamp.matches(&Value::Timestamp(
+            obrain_common::types::Timestamp::from_secs(0)
+        )));
+        assert!(
+            T::Duration.matches(&Value::Duration(obrain_common::types::Duration::from_days(
+                1
+            )))
+        );
+        let liste = Value::List(Arc::from(vec![Value::Int64(1), Value::Int64(2)]));
+        assert!(T::List.matches(&liste));
+        assert!(T::ListTyped(Box::new(T::Int64)).matches(&liste));
+        assert!(!T::ListTyped(Box::new(T::String)).matches(&liste));
+        assert!(T::Bytes.matches(&Value::Bytes(Arc::from(vec![1u8]))));
+        let map = Value::Map(Arc::new(Default::default()));
+        assert!(T::Node.matches(&map));
+        assert!(T::Edge.matches(&map));
+        assert!(!T::Map.matches(&Value::Int64(1)));
+    }
+
+    // --- validateur de contraintes (sans store) ---
+
+    fn catalogue_personne() -> Arc<Catalog> {
+        let catalog = Catalog::new();
+        let mut personne = node_type(
+            "Person",
+            vec![
+                prop("name", PropertyDataType::String, false),
+                prop("age", PropertyDataType::Int64, true),
+                TypedProperty {
+                    name: "pays".into(),
+                    data_type: PropertyDataType::String,
+                    nullable: false,
+                    default_value: Some(s("FR")),
+                },
+            ],
+            &[],
+        );
+        personne.constraints = vec![
+            TypeConstraint::NotNull("name".into()),
+            TypeConstraint::PrimaryKey(vec!["id".into()]),
+            TypeConstraint::Unique(vec!["email".into()]),
+            TypeConstraint::Check {
+                name: Some("majeur".into()),
+                expression: "age >= 18".into(),
+            },
+        ];
+        catalog.register_node_type(personne).unwrap();
+        let mut knows = edge_type("KNOWS", vec![prop("since", PropertyDataType::Int64, false)]);
+        knows.constraints = vec![TypeConstraint::Check {
+            name: None,
+            expression: "since > 2000".into(),
+        }];
+        catalog.register_edge_type_def(knows).unwrap();
+        Arc::new(catalog)
+    }
+
+    fn violation(resultat: Result<(), OperatorError>, attendu: &str) {
+        let err = resultat.expect_err(attendu);
+        let texte = format!("{err:?}");
+        assert!(texte.contains(attendu), "{texte}");
+    }
+
+    #[test]
+    fn validateur_propriete_de_noeud() {
+        let validateur =
+            CatalogConstraintValidator::new(catalogue_personne()).with_graph_name("g".into());
+        let labels = ["Person".to_string()];
+        assert!(
+            validateur
+                .validate_node_property(&labels, "name", &s("Alix"))
+                .is_ok()
+        );
+        assert!(
+            validateur
+                .validate_node_property(&labels, "age", &Value::Null)
+                .is_ok()
+        );
+        assert!(
+            validateur
+                .validate_node_property(&labels, "inconnue", &Value::Int64(1))
+                .is_ok()
+        );
+        assert!(
+            validateur
+                .validate_node_property(&["Autre".to_string()], "name", &Value::Null)
+                .is_ok(),
+            "label sans type : rien à vérifier"
+        );
+        violation(
+            validateur.validate_node_property(&labels, "name", &Value::Null),
+            "is NOT NULL",
+        );
+        violation(
+            validateur.validate_node_property(&labels, "age", &s("trente")),
+            "expects Int64",
+        );
+    }
+
+    #[test]
+    fn validateur_noeud_complet() {
+        let validateur = CatalogConstraintValidator::new(catalogue_personne());
+        let labels = ["Person".to_string()];
+        let complet = vec![
+            ("name".to_string(), s("Alix")),
+            ("id".to_string(), Value::Int64(1)),
+            ("age".to_string(), Value::Int64(30)),
+        ];
+        assert!(validateur.validate_node_complete(&labels, &complet).is_ok());
+        assert!(
+            validateur
+                .validate_node_complete(&["Autre".to_string()], &[])
+                .is_ok()
+        );
+        // `pays` a une valeur par défaut : son absence n'est pas une faute.
+        violation(
+            validateur.validate_node_complete(&labels, &[("id".to_string(), Value::Int64(1))]),
+            "missing required property 'name'",
+        );
+        violation(
+            validateur.validate_node_complete(
+                &labels,
+                &[
+                    ("name".to_string(), s("Alix")),
+                    ("age".to_string(), Value::Int64(30)),
+                ],
+            ),
+            "missing primary key property 'id'",
+        );
+        violation(
+            validateur.validate_node_complete(
+                &labels,
+                &[
+                    ("name".to_string(), s("Alix")),
+                    ("id".to_string(), Value::Int64(1)),
+                    ("age".to_string(), Value::Int64(12)),
+                ],
+            ),
+            "CHECK constraint 'majeur' violated",
+        );
+    }
+
+    #[test]
+    fn validateur_noeud_complet_not_null_par_contrainte_et_check_en_erreur() {
+        let catalog = Catalog::new();
+        let mut t = node_type("T", vec![], &[]);
+        t.constraints = vec![
+            TypeConstraint::NotNull("x".into()),
+            TypeConstraint::Check {
+                name: None,
+                expression: "x >".into(),
+            },
+        ];
+        catalog.register_node_type(t).unwrap();
+        let validateur = CatalogConstraintValidator::new(Arc::new(catalog));
+        let labels = ["T".to_string()];
+        violation(
+            validateur.validate_node_complete(&labels, &[]),
+            "(NOT NULL constraint)",
+        );
+        violation(
+            validateur.validate_node_complete(&labels, &[("x".to_string(), Value::Int64(1))]),
+            "CHECK constraint evaluation error",
+        );
+    }
+
+    #[test]
+    fn validateur_unicite_sans_store_ne_bloque_rien() {
+        let validateur = CatalogConstraintValidator::new(catalogue_personne());
+        let labels = ["Person".to_string()];
+        assert!(
+            validateur
+                .check_unique_node_properties(
+                    &labels,
+                    &[
+                        ("email".to_string(), s("a@b")),
+                        ("name".to_string(), s("Alix"))
+                    ],
+                    None
+                )
+                .is_ok()
+        );
+        assert!(
+            validateur
+                .check_unique_node_properties(&labels, &[("email".to_string(), Value::Null)], None)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn validateur_arete_propriete_et_complet() {
+        let validateur = CatalogConstraintValidator::new(catalogue_personne());
+        assert!(
+            validateur
+                .validate_edge_property("KNOWS", "since", &Value::Int64(2020))
+                .is_ok()
+        );
+        assert!(
+            validateur
+                .validate_edge_property("KNOWS", "autre", &Value::Null)
+                .is_ok()
+        );
+        assert!(
+            validateur
+                .validate_edge_property("INCONNU", "since", &Value::Null)
+                .is_ok()
+        );
+        violation(
+            validateur.validate_edge_property("KNOWS", "since", &Value::Null),
+            "is NOT NULL",
+        );
+        violation(
+            validateur.validate_edge_property("KNOWS", "since", &s("hier")),
+            "expects Int64",
+        );
+
+        assert!(
+            validateur
+                .validate_edge_complete("KNOWS", &[("since".to_string(), Value::Int64(2020))])
+                .is_ok()
+        );
+        assert!(validateur.validate_edge_complete("INCONNU", &[]).is_ok());
+        violation(
+            validateur.validate_edge_complete("KNOWS", &[]),
+            "missing required property 'since'",
+        );
+        violation(
+            validateur
+                .validate_edge_complete("KNOWS", &[("since".to_string(), Value::Int64(1999))]),
+            "CHECK constraint 'unnamed' violated",
+        );
+    }
+}
