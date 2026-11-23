@@ -162,6 +162,61 @@ de la durabilité, pas une régression. Pour écrire vite sans le payer à chaqu
 commit : transaction explicite (un seul `fsync`) ou `SyncMode::Group` avec
 `flush_wal()` par lot.
 
+
+### Série alternée — `a24632c5` contre `main` 0e2bd130, `m4max`, 2026-11-22 22:49–22:56
+
+La machine de référence n'est jamais descendue sous 2 depuis le 13/11, et la
+série du 13/11 avait elle-même été prise à charge 2,3–5,4. Quand on ne peut pas
+tenir le protocole, la comparaison reste possible **à condition d'alterner** :
+même gouverneur, même répertoire cible (`slot1`), deux arbres mesurés l'un
+après l'autre dans la même fenêtre, donc sous la même charge.
+
+Deux passages, `scripts/bench-v001.sh run` (warm-up 1 s, mesure 5 s, profil
+release), charge 1 min relevée avant et après : `main` **3,66 → 5,25**,
+`a24632c5` **5,25 → 3,54**. Les deux arbres partagent le répertoire cible : le
+second passage recompile les crates locaux avant de mesurer.
+
+| Bench | `a24632c5` (réf.) | `main` 0e2bd130 | Écart |
+|---|---|---|---|
+| `query_node_lookup_by_property` | 47,32 µs | **3,24 µs** | ÷ 14,6 |
+| `query_1hop_pattern` | 49,75 µs | **5,04 µs** | ÷ 9,9 |
+| `query_2hop_pattern` | 56,26 µs | **14,49 µs** | ÷ 3,9 |
+| `query_count_all` | 1,226 µs | 1,288 µs | + 5 % |
+| `query_fan_out_expand_1k` | 687,9 µs | 696,6 µs | dans le bruit |
+| `query_filter_range` | 102,84 µs | 102,85 µs | identique |
+| `query_insert_single_node` | 12,52 µs | 12,06 µs | identique |
+| `wal_append_unitaire/seul_ecrivain` | 1,366 µs | 1,295 µs | − 5 % |
+| `wal_append_unitaire/partage_oappend` | 1,383 µs | 1,317 µs | dans le bruit |
+| `wal_append_unitaire/partage_verrou` | 1,343 µs | 1,333 µs | identique |
+| `wal_append_batch/1` | 1,315 µs | 1,455 µs | + 11 % (seul écart > 10 %) |
+| `wal_append_batch/8` | 1,914 µs | 1,997 µs | dans le bruit |
+| `wal_append_batch/64` | 6,228 µs | 5,991 µs | dans le bruit |
+| `wal_append_batch/256` | 20,06 µs | 20,01 µs | identique |
+| `wal_append_batch/1024` | 74,54 µs | 76,00 µs | dans le bruit |
+| `phase_a_write/sessions_concurrentes_everycommit/4` | 2,154 s | 2,161 s | identique |
+| `phase_a_write/writer_unique_group_commit/4` | 83,25 ms | 82,08 ms | identique |
+| `phase_a_write/seq_1_thread_group` | 84,85 ms | 83,14 ms | identique |
+
+Lecture :
+
+- **Les lectures de motif vont 4 à 15 fois plus vite**, et l'écart est si
+  grand qu'aucune charge ne peut l'expliquer. Il vient des poussées de prédicat
+  et de `LIMIT`, de la graine d'index corrélée et de la jointure par hachage
+  (PR #272 à #275), atterries entre les deux arbres.
+- **Les écritures n'ont pas bougé** : WAL unitaire et par lots, insert
+  unitaire, group commit et `EveryCommit` sont identiques à quelques pour cent.
+  C'est le résultat attendu — aucune des PR perf de l'intervalle ne touche le
+  chemin d'écriture synchrone.
+- Un chiffre pris à charge 12 la même soirée donnait `insert_single_node` à
+  40,3 µs (× 3,3) et le WAL de × 2 à × 6. **Aucun de ces écarts n'existe à
+  charge comparable** : ils mesuraient la contention de la machine, pas le
+  code. C'est la démonstration, sur un cas réel, qu'un chiffre hors protocole
+  n'est pas un chiffre.
+
+Ce que cette série ne prouve pas : rien sur le p95 ni sur le rappel (aucun banc
+ne les mesure), rien sur les benches absents du tableau, et rien sur une machine
+au repos — elle reste **provisoire** au sens du protocole.
+
 <details>
 <summary>Ancienne référence — <code>main</code> e11bdd2a, 2026-11-01 15:22–15:29, charge 3 à 9 (provisoire)</summary>
 

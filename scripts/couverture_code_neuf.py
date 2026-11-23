@@ -136,6 +136,57 @@ def exemptions(chemin: str) -> set[str]:
     return sortie
 
 
+CFG_TEST = re.compile(r"#\[cfg\(\s*test\s*\)\]")
+
+
+def intervalles_cfg_test(lignes: list[str]) -> list[tuple[int, int]]:
+    """Intervalles (1-based, inclus) occupés par un item `#[cfg(test)]`.
+
+    Un item sous `#[cfg(test)]` n'existe QUE dans un binaire de test : ses
+    lignes ne peuvent pas être « non couvertes » au sens du produit livré, et
+    les compter dans le dénominateur pousse à de mauvais réflexes — supprimer
+    une aide de test, raccourcir le message d'une assertion, éviter un
+    vérificateur d'invariant, tous écrits uniquement pour les tests.
+
+    Constat d'origine (23/11/2026, obrain-db #282) : 7 des 112 lignes
+    « non couvertes » étaient dans des items `#[cfg(test)]` — un constructeur
+    documenté « (test-only) » dans `processor.rs`, les messages d'assertion de
+    `geo.rs` (qui ne s'exécutent que si le test ÉCHOUE), et les branches de
+    violation du vérificateur `incoherences()`. Aucune ne peut être couverte
+    par une suite verte.
+    """
+    regions: list[tuple[int, int]] = []
+    i, n = 0, len(lignes)
+    while i < n:
+        if not CFG_TEST.search(lignes[i]):
+            i += 1
+            continue
+        debut = i
+        j = i + 1
+        # Le corps de l'item : première ligne qui ouvre une accolade, ou une
+        # déclaration terminée par `;` (méthode de trait `#[cfg(test)] fn f();`).
+        while j < n and "{" not in lignes[j] and not lignes[j].rstrip().endswith(";"):
+            j += 1
+        if j >= n:
+            regions.append((debut + 1, n))
+            break
+        if "{" not in lignes[j]:
+            regions.append((debut + 1, j + 1))
+            i = j + 1
+            continue
+        profondeur = 0
+        k = j
+        while k < n:
+            profondeur += lignes[k].count("{") - lignes[k].count("}")
+            if profondeur <= 0:
+                break
+            k += 1
+        fin = min(k, n - 1)
+        regions.append((debut + 1, fin + 1))
+        i = fin + 1
+    return regions
+
+
 def lignes_ajoutees(base: str, fichier: str) -> list[tuple[int, str]]:
     """(numéro dans le fichier neuf, texte) des lignes de code ajoutées :
     ni vides ni commentaires."""
@@ -154,11 +205,35 @@ def lignes_ajoutees(base: str, fichier: str) -> list[tuple[int, str]]:
             if texte and not texte.startswith("//"):
                 sortie.append((n, texte))
             n += 1
-    return sortie
+    if not sortie:
+        return sortie
+    try:
+        with open(fichier, encoding="utf-8") as fh:
+            contenu = fh.read().splitlines()
+    except OSError:
+        return sortie
+    regions = intervalles_cfg_test(contenu)
+    if not regions:
+        return sortie
+    return [(n, t) for n, t in sortie if not any(d <= n <= f for d, f in regions)]
 
 
 def definit_une_fonction_a_corps(texte: str) -> bool:
     return bool(FN_DEF.search(texte)) and not texte.endswith(";")
+
+
+def declaration_sans_corps(lignes: list[str], n: int) -> bool:
+    """La signature qui commence à la ligne `n` (à partir de 1) se termine-t-elle
+    par `;` avant tout `{` ? Couvre les déclarations que rustfmt coupe sur
+    plusieurs lignes (méthode de trait sans corps, `extern`) : le `;` qui les
+    distingue d'une fonction à corps n'est pas sur la ligne `fn`."""
+    for brute in lignes[n - 1 : n - 1 + 64]:
+        texte = brute.split("//", 1)[0].strip()
+        if "{" in texte:
+            return False
+        if texte.endswith(";"):
+            return True
+    return False
 
 
 def ressemble_a_du_code_executable(texte: str) -> bool:
@@ -209,8 +284,15 @@ def main() -> int:
             except OSError:
                 pass
             continue
+        try:
+            with open(f, encoding="utf-8") as fh:
+                lignes_fichier = fh.read().splitlines()
+        except OSError:
+            lignes_fichier = []
         for n, texte in ajoutees:
-            est_fn = definit_une_fonction_a_corps(texte)
+            est_fn = definit_une_fonction_a_corps(texte) and not declaration_sans_corps(
+                lignes_fichier, n
+            )
             if est_fn and f not in exemptes and n not in rapport.fn[f]:
                 fonctions_non_mesurees.append((f, n, texte))
             # La ligne de signature compte aussi dans le seuil quand elle a une donnée.

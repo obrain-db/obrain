@@ -106,9 +106,19 @@ fn env_obligatoire(cle: &str) -> String {
     std::env::var(cle).unwrap_or_else(|_| panic!("{cle} manquant dans l'enfant"))
 }
 
+/// Annonce une ligne au parent sur stdout.
+///
+/// N'UTILISE PAS `println!` : celui-ci PANIQUE si le tuyau est fermé
+/// (« failed printing to stdout: Broken pipe »), et un enfant qui meurt sur
+/// cette panique fait échouer le scénario alors qu'il est correct — mesuré en
+/// CI le 22/11/2026, `ecriture_multi_processus.rs:512`, sur un test qui passe
+/// 35 fois sur 35 en local. Quand le parent a fini de lire, l'annonce n'a plus
+/// de lecteur : ce n'est pas une erreur, c'est la fin de la conversation.
 fn annoncer(ligne: &str) {
-    println!("{ligne}");
-    std::io::stdout().flush().ok();
+    // `Write` est déjà importé en tête du fichier (`BufRead as _, Write as _`).
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{ligne}");
+    let _ = out.flush();
 }
 
 /// Attend l'existence d'un fichier-drapeau (borne : 60 s).

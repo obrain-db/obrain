@@ -863,6 +863,8 @@ pub(crate) fn expression_kind(
                 "floor",
                 "round",
                 "sqrt",
+                "point",
+                "distance",
                 "exp",
                 "log",
                 "toupper",

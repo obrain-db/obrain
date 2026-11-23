@@ -6,6 +6,44 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 
 ## [0.0.1] — en préparation (branche de release, 2026-11)
 
+### Index spatial en GQL (PR #282)
+
+- **Nouveau, GQL** : `point(lon, lat)` et `distance(a, b)` (mètres, haversine) ;
+  `CREATE INDEX nom FOR (n:Label) ON (n.prop) USING SPATIAL` ; `DROP INDEX nom` et
+  `DROP INDEX IF EXISTS nom` ; `CALL obrain.spatial.within(...)` et
+  `CALL obrain.spatial.nearest(...)` (feature `algos`). Le planificateur sert
+  `WHERE distance(n.pos, point(lon, lat)) <= r` par l'index déclaré.
+- **Nouveau, API Rust** (`ObrainDB`) : `create_spatial_index`,
+  `create_named_spatial_index`, `name_spatial_index`, `rebuild_spatial_index`,
+  `spatial_index_names`, `spatial_search`, `spatial_knn` et
+  `drop_spatial_index(label, property) -> Result<bool>`. **Aucune n'existe dans une
+  version publiée** : le changement de signature de `drop_spatial_index` pendant la
+  revue (`bool` → `Result<bool>`) n'est pas une rupture d'API publiée. Elle est
+  **faillible** : la déclaration durable est retirée d'abord ; si ce retrait
+  échoue, l'erreur est rendue et rien n'est modifié (ni la mémoire, ni le
+  catalogue). Avant, l'échec était seulement journalisé et l'index revenait à la
+  réouverture. Un utilisateur d'une branche non fusionnée qui l'appelle doit
+  désormais traiter un `Result`.
+- **Contrat** : un index ne change ni les lignes d'une requête, ni son erreur. Un
+  nœud du label dont la propriété porte une valeur qui n'est pas un point, ou un
+  `point()` invalide, font refuser la requête comme sans index (le planificateur se
+  replie sur le balayage). L'égalité au balayage suppose que `sin`, `cos` et
+  `asin` de la libm soient exacts à 1 ulp : **vérifié sur des cas, non démontré**
+  (voir `obrain-core/src/index/spatial.rs`).
+- **Non accéléré** : la forme `distance(point(..), n.pos)` (point en premier) ;
+  une requête dont le point est hors de [-180, 180] × [-90, 90] ; un label dont au
+  moins un nœud porte une valeur non point sur la propriété. Dans tous ces cas, le
+  balayage sert le résultat.
+- **Coût assumé** : pendant la construction d'un index (DDL, reconstruction,
+  première lecture après réouverture), les requêtes spatiales et les écritures de
+  la propriété concernée attendent.
+- **Notifications** : `StoreMutationObserver` gagne `node_label_added`,
+  `node_label_removed` et `node_revived` (corps par défaut vides ; les observateurs
+  existants n'ont rien à changer).
+- **Performance** : mesures différées. Le protocole de `docs/BENCHMARKS.md` exige
+  `m4max` à charge inférieure à 2 ; les chiffres obtenus sur dgx sont provisoires et
+  antérieurs aux correctifs de revue.
+
 ### Atomicité des propriétés sous `kill -9` (obrain#164)
 
 - Un `SET` / `REMOVE` sur un nœud ou une arête EXISTANT, fait dans une

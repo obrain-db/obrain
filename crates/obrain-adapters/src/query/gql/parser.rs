@@ -5105,7 +5105,7 @@ impl<'a> Parser<'a> {
         if self.is_identifier() && self.get_identifier_name().eq_ignore_ascii_case("USING") {
             self.advance();
             if !self.is_identifier() && self.current.kind != TokenKind::Vector {
-                return Err(self.error("Expected TEXT, VECTOR, or BTREE after USING"));
+                return Err(self.error("Expected TEXT, VECTOR, BTREE, or SPATIAL after USING"));
             }
             let kind_text = if self.current.kind == TokenKind::Vector {
                 "VECTOR".to_string()
@@ -5167,6 +5167,9 @@ impl<'a> Parser<'a> {
                     }
                 }
                 "BTREE" => index_kind = IndexKind::BTree,
+                // Le seul ajout de cette PR : un index dont la clé est un
+                // point, interrogeable par distance.
+                "SPATIAL" => index_kind = IndexKind::Spatial,
                 _ => {
                     return Err(self.error(&format!("Unknown index type '{kind_text}'")));
                 }
