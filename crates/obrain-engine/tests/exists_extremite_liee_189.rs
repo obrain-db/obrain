@@ -362,3 +362,40 @@ fn le_travail_ne_depend_plus_de_la_taille_du_graphe() {
         "un opérateur traite encore {mesures:?} lignes : le sous-motif est de nouveau énuméré pour tout le graphe"
     );
 }
+
+/// Chaque forme du sous-motif que la réécriture touche doit rendre exactement la
+/// formulation par `MATCH`. Couvre : un intermédiaire non lié, un filtre écrit à
+/// l'intérieur du `EXISTS` sur la colonne vertébrale, et le `WITH` d'import (chemin
+/// `ParameterScan` du traducteur, enveloppe `plan_correlated_exists`).
+#[test]
+fn chaque_forme_du_sous_motif_rend_la_formulation_par_match() {
+    // (requête avec EXISTS, requête par MATCH équivalente) ; `{p}` = nom du projet.
+    let cas: [(&str, &str); 2] = [
+        (
+            "MATCH (p:Project {k: '{p}'}) MATCH (n) WHERE (n:File OR n:Function) \
+             AND EXISTS { MATCH (n)<-[:CONTAINS]-(m)<-[:CONTAINS]-(p) } RETURN n.k",
+            "MATCH (p:Project {k: '{p}'})-[:CONTAINS]->(m)-[:CONTAINS]->(n) \
+             WHERE n:File OR n:Function RETURN DISTINCT n.k",
+        ),
+        (
+            "MATCH (p:Project {k: '{p}'}) MATCH (n) WHERE (n:File OR n:Function) \
+             AND EXISTS { MATCH (n)<-[:CONTAINS*1..2]-(p) WHERE n.k <> 'zzz' } RETURN n.k",
+            "MATCH (p:Project {k: '{p}'})-[:CONTAINS*1..2]->(n) \
+             WHERE (n:File OR n:Function) AND n.k <> 'zzz' RETURN DISTINCT n.k",
+        ),
+    ];
+    for graine in [3, 11] {
+        let db = graphe_aleatoire(graine);
+        for projet in 0..4 {
+            let nom = format!("P{projet}");
+            for (avec_exists, par_match) in cas {
+                let obtenu = ensemble(&db, &avec_exists.replace("{p}", &nom));
+                let attendu = ensemble(&db, &par_match.replace("{p}", &nom));
+                assert_eq!(
+                    obtenu, attendu,
+                    "graine {graine}, projet {nom}, requête « {avec_exists} »"
+                );
+            }
+        }
+    }
+}

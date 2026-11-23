@@ -1048,60 +1048,56 @@ impl super::Planner {
         });
         let mut rang = 0usize;
         for op in pile.iter().rev() {
-            match op {
-                LogicalOperator::Expand(e) => {
-                    let lie = extremites.contains(&e.to_variable);
-                    let to_variable = if lie {
-                        rang += 1;
-                        format!("{}__ex{rang}", e.to_variable)
-                    } else {
-                        e.to_variable.clone()
+            if let LogicalOperator::Expand(e) = op {
+                let lie = extremites.contains(&e.to_variable);
+                let to_variable = if lie {
+                    rang += 1;
+                    format!("{}__ex{rang}", e.to_variable)
+                } else {
+                    e.to_variable.clone()
+                };
+                plan = LogicalOperator::Expand(ExpandOp {
+                    from_variable: e.from_variable.clone(),
+                    to_variable: to_variable.clone(),
+                    edge_variable: e.edge_variable.clone(),
+                    direction: e.direction,
+                    edge_types: e.edge_types.clone(),
+                    min_hops: e.min_hops,
+                    max_hops: e.max_hops,
+                    input: Box::new(plan),
+                    path_alias: e.path_alias.clone(),
+                    path_mode: e.path_mode,
+                });
+                if lie {
+                    // `id(fraîche) = id(externe)` et NON `fraîche = externe` :
+                    // `variable_de_fermeture` reconnaît `Filter(to = t)` sur une
+                    // expansion de longueur variable et la planifie GUIDÉE par la
+                    // cible, ce qui calcule d'abord la portée inverse DEPUIS `t`
+                    // — ici le projet, tout son sous-arbre. Mesuré : c'était le
+                    // coût restant (30 ms à 32 000 fichiers, croissant avec le
+                    // graphe). Partir du petit côté (le départ lié) ne coûte que
+                    // son voisinage ; l'égalité d'identifiants garde la sémantique.
+                    let id = |nom: String| LogicalExpression::FunctionCall {
+                        name: "id".to_string(),
+                        args: vec![LogicalExpression::Variable(nom)],
+                        distinct: false,
                     };
-                    plan = LogicalOperator::Expand(ExpandOp {
-                        from_variable: e.from_variable.clone(),
-                        to_variable: to_variable.clone(),
-                        edge_variable: e.edge_variable.clone(),
-                        direction: e.direction,
-                        edge_types: e.edge_types.clone(),
-                        min_hops: e.min_hops,
-                        max_hops: e.max_hops,
-                        input: Box::new(plan),
-                        path_alias: e.path_alias.clone(),
-                        path_mode: e.path_mode,
-                    });
-                    if lie {
-                        // `id(fraîche) = id(externe)` et NON `fraîche = externe` :
-                        // `variable_de_fermeture` reconnaît `Filter(to = t)` sur une
-                        // expansion de longueur variable et la planifie GUIDÉE par la
-                        // cible, ce qui calcule d'abord la portée inverse DEPUIS `t`
-                        // — ici le projet, tout son sous-arbre. Mesuré : c'était le
-                        // coût restant (30 ms à 32 000 fichiers, croissant avec le
-                        // graphe). Partir du petit côté (le départ lié) ne coûte que
-                        // son voisinage ; l'égalité d'identifiants garde la sémantique.
-                        let id = |nom: String| LogicalExpression::FunctionCall {
-                            name: "id".to_string(),
-                            args: vec![LogicalExpression::Variable(nom)],
-                            distinct: false,
-                        };
-                        plan = LogicalOperator::Filter(FilterOp {
-                            predicate: LogicalExpression::Binary {
-                                left: Box::new(id(to_variable)),
-                                op: BinaryOp::Eq,
-                                right: Box::new(id(e.to_variable.clone())),
-                            },
-                            input: Box::new(plan),
-                            pushdown_hint: None,
-                        });
-                    }
-                }
-                LogicalOperator::Filter(f) => {
                     plan = LogicalOperator::Filter(FilterOp {
-                        predicate: f.predicate.clone(),
+                        predicate: LogicalExpression::Binary {
+                            left: Box::new(id(to_variable)),
+                            op: BinaryOp::Eq,
+                            right: Box::new(id(e.to_variable.clone())),
+                        },
                         input: Box::new(plan),
-                        pushdown_hint: f.pushdown_hint.clone(),
+                        pushdown_hint: None,
                     });
                 }
-                _ => return None,
+            } else if let LogicalOperator::Filter(f) = op {
+                plan = LogicalOperator::Filter(FilterOp {
+                    predicate: f.predicate.clone(),
+                    input: Box::new(plan),
+                    pushdown_hint: f.pushdown_hint.clone(),
+                });
             }
         }
         Some((plan, parametres))
@@ -1203,23 +1199,22 @@ impl super::Planner {
             );
         }
 
-        let (left_op, left_columns) = self.plan_operator(outer_input)?;
-
         // (obrain#189) Départ du sous-motif déjà lié : sous-requête corrélée, au lieu
-        // d'énumérer le sous-motif de tout le graphe pour le joindre ensuite.
-        let colonnes_externes: HashSet<String> = left_columns.iter().cloned().collect();
+        // d'énumérer le sous-motif de tout le graphe pour le joindre ensuite. Les
+        // colonnes externes sont lues syntaxiquement, avant toute planification.
         if let Some((correle, parametres)) =
-            Self::reecrire_exists_correle(subquery, &colonnes_externes)
+            Self::reecrire_exists_correle(subquery, &Self::collect_plan_variables(outer_input))
         {
-            return self.plan_correlated_exists_with_left(
-                left_op,
-                left_columns,
+            return self.plan_correlated_exists(
+                outer_input,
                 &correle,
                 &parametres,
                 is_negated,
                 remaining_predicate,
             );
         }
+
+        let (left_op, left_columns) = self.plan_operator(outer_input)?;
 
         let (right_op, right_columns) = self.plan_operator(subquery)?;
 
@@ -1324,26 +1319,7 @@ impl super::Planner {
         remaining_predicate: Option<LogicalExpression>,
     ) -> Result<(Box<dyn Operator>, Vec<String>)> {
         let (left_op, left_columns) = self.plan_operator(outer_input)?;
-        self.plan_correlated_exists_with_left(
-            left_op,
-            left_columns,
-            subquery,
-            param_vars,
-            is_negated,
-            remaining_predicate,
-        )
-    }
 
-    /// Cœur de `plan_correlated_exists`, pour une entrée externe DÉJÀ planifiée.
-    fn plan_correlated_exists_with_left(
-        &self,
-        left_op: Box<dyn Operator>,
-        left_columns: Vec<String>,
-        subquery: &LogicalOperator,
-        param_vars: &[String],
-        is_negated: bool,
-        remaining_predicate: Option<LogicalExpression>,
-    ) -> Result<(Box<dyn Operator>, Vec<String>)> {
         // Set up ParameterState for correlated variables
         let param_state = std::sync::Arc::new(
             obrain_core::execution::operators::ParameterState::new(param_vars.to_vec()),
@@ -1411,21 +1387,6 @@ impl super::Planner {
         is_negated: bool,
         remaining_predicate: Option<LogicalExpression>,
     ) -> Result<(Box<dyn Operator>, Vec<String>)> {
-        // (obrain#189) Même réécriture corrélée que dans `plan_exists_as_semi_join`.
-        let colonnes_externes: HashSet<String> = left_columns.iter().cloned().collect();
-        if let Some((correle, parametres)) =
-            Self::reecrire_exists_correle(subquery, &colonnes_externes)
-        {
-            return self.plan_correlated_exists_with_left(
-                left_op,
-                left_columns.to_vec(),
-                &correle,
-                &parametres,
-                is_negated,
-                remaining_predicate,
-            );
-        }
-
         let (right_op, right_columns) = self.plan_operator(subquery)?;
 
         let output_columns = left_columns.to_vec();
