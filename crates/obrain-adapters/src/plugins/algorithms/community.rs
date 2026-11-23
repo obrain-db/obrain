@@ -152,7 +152,9 @@ pub struct LouvainResult {
 /// **conductance** répond localement : quelle part des arêtes d'un groupe fuit
 /// vers l'extérieur, rapportée à son volume ?
 ///
+/// ```text
 ///     conductance(S) = cut(S) / min(vol(S), vol(V \ S))
+/// ```
 ///
 /// 0 = groupe parfaitement isolé, 1 = groupe sans cohésion.
 ///
