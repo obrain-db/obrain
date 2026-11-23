@@ -556,6 +556,32 @@ mod tests {
     }
 
     #[test]
+    fn les_accesseurs_disent_ce_que_l_index_porte() {
+        // `is_empty` et `len_base` sont publics et n'étaient appelés par aucun
+        // test : une méthode publique non exercée est une promesse non tenue.
+        let vide = SpatialIndex::build(Vec::new());
+        assert!(vide.is_empty(), "un index sans point est vide");
+        assert_eq!(vide.len(), 0);
+        assert_eq!(vide.len_base(), 0);
+
+        let idx = SpatialIndex::build(points_grille(4, 0.001));
+        assert!(!idx.is_empty());
+        assert_eq!(idx.len(), 4);
+        assert_eq!(idx.len_base(), 4, "la base construite porte les quatre");
+    }
+
+    #[test]
+    fn une_coordonnee_non_finie_retire_le_point_et_le_dit() {
+        // Contrat documenté sur `inserer` : le balayage ne rendrait plus un
+        // point non fini, l'index ne doit pas le garder à son ancienne place.
+        let mut idx = SpatialIndex::build(vec![(1, 2.35, 48.85), (2, 2.36, 48.85)]);
+        assert!(!idx.inserer(1, f64::NAN, 48.85), "non finie → refusée");
+        assert_eq!(idx.len(), 1, "le point est SORTI de l'index");
+        assert!(!idx.inserer(2, 2.36, f64::INFINITY), "non finie → refusée");
+        assert_eq!(idx.len(), 0, "plus aucun point vivant");
+    }
+
+    #[test]
     fn surcouche_et_tombes_masquent_la_base() {
         let mut idx = SpatialIndex::build(vec![(1, 2.35, 48.85), (2, 2.36, 48.85)]);
         idx.inserer(1, 2.40, 48.90); // déplacement
