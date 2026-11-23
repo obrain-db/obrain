@@ -115,7 +115,7 @@ fn env_obligatoire(cle: &str) -> String {
 /// 35 fois sur 35 en local. Quand le parent a fini de lire, l'annonce n'a plus
 /// de lecteur : ce n'est pas une erreur, c'est la fin de la conversation.
 fn annoncer(ligne: &str) {
-    use std::io::Write as _;
+    // `Write` est déjà importé en tête du fichier (`BufRead as _, Write as _`).
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{ligne}");
     let _ = out.flush();
