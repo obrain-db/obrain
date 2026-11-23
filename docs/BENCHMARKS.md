@@ -11,6 +11,7 @@ sont lancés à la main (`make bench-v001`) ou par `mesures.yml` (manuel).
 | Nom | CPU | RAM | OS | rustc | Disque |
 |---|---|---|---|---|---|
 | `m4max` | Apple M4 Max (16 cœurs) | 128 Go | macOS 26.5.2 | 1.97.1 | SSD interne (APFS) |
+| `dgx` | NVIDIA GB10 (Grace, aarch64, 20 cœurs) | 121 Go | Ubuntu 24.04.4 LTS, noyau 6.17.0-1029-nvidia | 1.100.0 | NVMe Samsung MZALC4T0HBL1 (ext4) |
 
 Conditions : charge machine notée au moment de la mesure (`uptime`), profil
 `release`, Criterion (`--warm-up-time 1 --measurement-time 5`). Un chiffre
@@ -332,6 +333,65 @@ cargo bench -p obrain-engine --features cypher --bench contrainte_unique
 ```
 
 
+### Série `dgx` — `main` bd9b3b4f, 2026-11-23 15:11–15:15, charge 1,19 → 1,89
+
+Première mesure sur une autre architecture que `m4max` : `dgx` (aarch64, voir le
+matériel de référence), clone propre de `origin/main` à `bd9b3b4f`, `make
+bench-v001-save BASE=dgx-bd9b3b4`, Criterion `--warm-up-time 1 --measurement-time
+5`, profil release, aucune autre mesure en cours. Charge 1 min **1,19 au départ,
+1,89 à la fin** : sous le seuil de 2, la série est valide et sert de **ligne de
+base** `dgx-bd9b3b4` (dans `target/criterion` du clone `dgx`, non versionné) pour
+`make bench-v001-compare BASE=dgx-bd9b3b4`.
+
+La colonne `m4max` est la médiane de la série `a24632c5` du 2026-11-13 ci-dessus,
+pour fixer les idées. **Elle ne se compare pas en absolu** : autre architecture,
+autre charge (2,3 à 5,4 contre 1,2 à 1,9), et dix jours de commits entre les deux
+(`a24632c5` → `bd9b3b4f`). Seule une série alternée sur une même machine départage.
+
+| Bench | Médiane `dgx` | Intervalle Criterion | `m4max` a24632c5 (réf.) |
+|---|---|---|---|
+| `tiered_scan_top10/single_thread/1000000` | 1,0099 ms | 1,0092 – 1,0105 ms | 836,8 µs |
+| `tiered_scan_top10/rayon_pool/1000000` | 1,6388 ms | 1,6019 – 1,6703 ms | 710,5 µs |
+| `wal_append_unitaire/seul_ecrivain` | 568,56 ns | 562,89 – 573,83 ns | 1,217 µs |
+| `wal_append_unitaire/partage_oappend` | 510,08 ns | 503,46 – 518,30 ns | — |
+| `wal_append_unitaire/partage_verrou` | 636,87 ns | 634,53 – 640,59 ns | — |
+| `wal_append_batch/1` | 471,01 ns | 467,94 – 477,15 ns | — |
+| `wal_append_batch/8` | 1,4444 µs | 1,4318 – 1,4558 µs | — |
+| `wal_append_batch/64` | 9,1124 µs | 9,0510 – 9,1837 µs | — |
+| `wal_append_batch/256` | 34,093 µs | 34,040 – 34,141 µs | — |
+| `wal_append_batch/1024` | 125,52 µs | 125,12 – 126,21 µs | 78,2 µs |
+| `query_node_lookup_by_property` | 4,3772 µs | 4,3757 – 4,3789 µs | 47,0 µs |
+| `query_1hop_pattern` | 7,0635 µs | 7,0605 – 7,0667 µs | 49,2 µs |
+| `query_2hop_pattern` | 21,055 µs | 21,043 – 21,067 µs | 56,3 µs |
+| `query_fan_out_expand_1k` | 1,1705 ms | 1,1698 – 1,1714 ms | 717,2 µs |
+| `query_count_all` | 2,7604 µs | 2,7600 – 2,7608 µs | 1,236 µs |
+| `query_filter_range` | 190,90 µs | 190,68 – 191,17 µs | 103,4 µs |
+| `query_insert_single_node` | 19,054 µs | 18,929 – 19,203 µs | 15,2 µs |
+| `phase_a_write/sessions_concurrentes_everycommit/4` | 1,7065 s | 1,6808 – 1,7327 s | 2,134 s |
+| `phase_a_write/writer_unique_group_commit/4` | 91,350 ms | 89,266 – 93,455 ms | 79,2 ms |
+| `phase_a_write/seq_1_thread_group` | 92,054 ms | 84,648 – 99,259 ms | 78,8 ms |
+
+Le même `make bench-v001` joué le même jour sur `m4max` **à charge 25** (une
+autre session compilait) donnait 3,22 ms sur `tiered_scan` mono-thread et 17,3 ms
+sur `query_fan_out_expand_1k` : **provisoire**, cité ici pour qu'on ne le
+prenne jamais pour une régression. La charge mesure la charge.
+
+#### Ouverture d'une base dont le WAL n'a pas été compacté (obrain#264), `dgx`, 2026-11-23 15:39
+
+`cargo run -p obrain-engine --release --features cypher --example profil_open --
+200000 1000000` (base synthétique jetable, 200 000 nœuds, 1 000 000 d'arêtes,
+82 Mio compactée, 198 Mio avec son WAL), quatre ouvertures successives dans le
+même processus, charge 1,3 → 2,2 :
+
+| WAL | open 1 | open 2 | open 3 | open 4 |
+|---|---:|---:|---:|---:|
+| compacté (`flush` avant la mesure) | 6,7 ms | 5,6 ms | 5,8 ms | 5,9 ms |
+| plein, 121 Mo (`SANS_FLUSH=1`) | **546,1 ms** | 73,0 ms | 5,6 ms | 5,6 ms |
+
+Lecture : à WAL compacté, l'ouverture est dans la cible des 5 ms de #264 ; le
+« 276 ms à chaud » du ticket est le **premier** open d'un WAL jamais compacté.
+Le froid (cache disque vidé) n'a pas été mesuré.
+
 ## Ce qui n'est PAS reproductible depuis ce dépôt
 
 - Le tableau LDBC SNB (Obrain vs Kuzu, FalkorDB, Memgraph, Neo4j, ArangoDB)
@@ -343,6 +403,14 @@ cargo bench -p obrain-engine --features cypher --bench contrainte_unique
   la page est réécrite, elle renvoie ici et ne garde que des règles d'usage.
 - `crates/obrain-substrate/benches/REPORT.md` (avril 2026) cite un bench
   `crud_micro` qui n'existe plus : conservé avec un bandeau « historique ».
+- Le banc des **325 requêtes réelles de Project Orchestrator** (section
+  « Comparaison obrain / Neo4j » ci-dessous) utilise `spike-migrateur`, un
+  harnais du dépôt PO (commit `80025c5`), non versionné ici : il importe une
+  copie Neo4j dans obrain, vérifie la parité, puis joue le même plan TSV sur les
+  deux moteurs et compare les empreintes. Les scripts exacts, le plan, les
+  dumps de résultats et le manifeste sont dans le dépôt de bancs du propriétaire
+  (`s3://obrain-bancs/bancs/2026-11-23_bd9b3b4_dgx/`, privé) ; sans eux, cette
+  section se lit, elle ne se rejoue pas.
 - `docs/MIGRATION.md` présentait les cibles de la RFC Substrate (ouverture
   ≤ 100 ms, p95 ≤ 1 ms, recall ≥ 99 %) comme des faits : requalifiées en
   cibles, non mesurées.
@@ -464,6 +532,245 @@ Passent désormais par une copie privée (`obrain_bases_banc::copie_de`, chemin 
 | `obrain-engine/examples/verify_bases` | arguments |
 
 Les cibles `bench-baseline*`, `bench-substrate*`, `bench-compare`, `bench-smoke` et `check-substrate` du `Makefile` sont **retirées** : elles lançaient un harnais `bench/substrate` qui n'existe plus, sur des bases désignées par `PO_DB` / `MEGALAW_DB` hors du helper.
+
+## Comparaison obrain / Neo4j sur les 325 requêtes réelles de PO — `dgx`, 2026-11-23
+
+**Ce que cette section est** : les 325 requêtes de lecture que Project
+Orchestrator envoie à sa base (plan `plan_reel.tsv`, paramètres réels), jouées
+sur le **même jeu de données** par les deux moteurs, sur la même machine, l'un
+après l'autre (jamais en même temps). **Ce qu'elle n'est pas** : un banc
+reproductible depuis ce dépôt (voir ci-dessus), ni une mesure à froid.
+
+### Jeu de données : un clone, pas la copie figée
+
+La copie obrain figée `po-frozen-20261117` (3 901 829 nœuds, 6 013 429 relations)
+n'a plus de source Neo4j : sa référence `resultats_neo4j.tsv` du 17/11 décrit un
+**autre** instantané (4 105 288 nœuds). Comparée à lui, elle donnait 230 écarts
+sur 325 — presque tous des écarts de **données**, pas de moteur. Un chiffre
+d'exactitude n'a de sens que sur un jeu identique des deux côtés.
+
+Le jeu retenu est donc un **clone Neo4j** de la base vivante de PO, pris le
+23/11 puis arrêté (Neo4j 5.26.20 community dans Docker 29.2.1, tas 8 Go, cache de
+pages 16 Go, sans APOC) : **4 327 350 nœuds, 64 labels ; 6 549 502 relations,
+81 types**. La base obrain est **importée de ce clone** :
+
+| Import (`spike-migrateur import`, 8 lecteurs bolt, lots de 20 000) | |
+|---|---:|
+| A — identifiants et labels des nœuds | 3,1 s (1 418 764 nœuds/s) |
+| B — relations et leurs propriétés (104,0 Mo) | 8,5 s (766 604 relations/s) |
+| C — `bulk_import_refs` (nœuds + relations) | 0,59 s |
+| D — 32 531 119 propriétés de nœuds, 6 127 Mo utiles | 42,1 s (102 827 nœuds/s, 145,6 Mo/s) |
+| E — 5 296 457 propriétés sur 2 122 473 relations | 5,1 s |
+| F — checkpoint et fermeture | 15,7 s |
+| **Total** | **75,3 s**, RSS max **20,69 Go**, base **31,0 Go alloués** (52,6 Go de longueur logique) |
+
+Vérification (`spike-migrateur verif`, 46,4 s, RSS 4,95 Go) : comptes par label
+et par type **sans écart** (64 et 81 noms, mêmes sommes), **36 709 554**
+propriétés de nœuds et **5 296 457** de relations des deux côtés ; sur un
+échantillon de 1 247 nœuds (13 099 propriétés) et 1 473 relations
+(1 185 propriétés), **0 écart** sur tous les types sauf `LIST<FLOAT>` : 79
+embeddings sur 204 contrôlés diffèrent **au-delà de la précision f32**
+(`0.005389043` lu `0.005389043`, non exact en f32), c'est la représentation,
+pas la donnée. Aucune perte de conversion (fuseau, sous-microseconde, type sans
+équivalent : 0).
+
+### Méthode
+
+Plan TSV de 325 requêtes ; chaque requête est jouée 3 fois à blanc puis **15
+fois mesurées** (budget 30 s), médiane. Les résultats de chaque exécution sont
+canonisés (colonnes triées par nom, nœud rendu par sa propriété `id`/`path`/…)
+et hachés (FNV-1a 64) **hors chronomètre** ; les deux moteurs passent par les
+mêmes `Value` d'obrain. L'empreinte du harnais dépend de l'**ordre des lignes**
+: deux moteurs qui rendent les mêmes lignes dans un ordre différent ont des
+empreintes différentes. L'exactitude est donc relue sur les dumps, en
+**ensembles** (ordre ignoré, flottants arrondis à 9 chiffres, listes triées).
+
+Neo4j : client bolt (`neo4rs` 0.8, corrigé pour les entiers −16..−1) en
+processus séparé sur la même machine. obrain : **en processus**, `ObrainDB::
+open_read_only`. Les deux ont tourné **l'un après l'autre**, Neo4j arrêté
+pendant la mesure obrain.
+
+### Exactitude — moteur `bd9b3b4f`, index natifs présents
+
+Les index de Neo4j (188 RANGE, 8 VECTOR, 58 contraintes) sont recréés côté
+obrain : 8 index vectoriels (768 dimensions, cosinus) et **60 des 71**
+propriétés de nœud indexées (11 absentes après réouverture, non instruites) ;
+`spike-migrateur index-natif`, 26,2 s, RSS 62,1 Go. Sans ces index, la première
+passe donnait les **mêmes équivalences** et une somme des médianes de 332,7 s
+contre 329,3 s : sur ce plan, les index de propriété pèsent 1 %, la différence
+avec Neo4j est ailleurs (voir « Temps »).
+
+Sur **307 requêtes qui rendent un résultat des deux côtés** :
+
+| Verdict (ensembles normalisés) | Requêtes |
+|---|---:|
+| identiques | **173** |
+| identiques **à une colonne près** : la clé de tri (`e.seq`, `d.decided_at`…) apparaît comme colonne `e_seq` côté obrain | **79** |
+| 0 ligne des deux côtés (colonnes non comparables sur un résultat vide) | 13 |
+| mêmes lignes, **valeurs différentes** | 28 |
+| **nombre de lignes différent** | 8 |
+| valeurs différentes et colonne fuitée | 6 |
+
+Soit **265 équivalentes sur 307** si l'on tolère la colonne fuitée, 173 au
+sens strict. Les 28 + 6 écarts de valeurs mêlent le bénin (format de date
+`+00:00` contre `Z` : 4 ; départage arbitraire sur un score égal : au moins 3) et
+le réel, non classé exhaustivement : `NULL` là où Neo4j rend une valeur
+(`ana_14`, `ana_10`, `plan_06`, `schema_06`), `COALESCE(r2.source, 'manual')` qui
+rend `'manual'` (`chat_26`), une liste de maps rendue `[{}]` (`ws_19`), des
+comptes qui divergent (`dec_10` 253/251, `ws_20` 2 131/911). Les 8 nombres de
+lignes différents : `code_21` et `code_37` rendent 0 ligne (Neo4j 20 et 67),
+`sampler_01` 500 (Neo4j 7 615), `plan_12` 8 511 (8 751), `ana_22` et `chat_25`
+0 (1), `code_48` 443 (441), `plan_05` 11 (12).
+
+**Erreurs** (rejeu corrigé, moteur `4a37c0be`, harnais compilé avec `cypher`,
+`algos` et `vector-index` — la première passe n'avait que `cypher`, ce qui
+fabriquait deux erreurs, voir plus bas) : obrain **16**, Neo4j **3**. Les 3 de
+Neo4j sont des fonctions APOC absentes du conteneur (`apoc.coll.toSet`,
+`apoc.coll.sort`, `apoc.meta.schema`) : hors sujet ; **3 requêtes échouent des
+deux côtés** (`note_45`, `ana_11`, `schema_03`). Les **13 propres à obrain**,
+par famille :
+
+| Famille | Requêtes | Message |
+|---|---|---|
+| index vectoriel **absent de la base rejouée** (état du banc, pas un défaut du moteur : la passe indexée précédente en avait 8) | `note_31/32/33/35`, `dec_04`, `chat_07` | `aucun index vectoriel nommé '…'` |
+| `PatternComprehension` non réécrite | `chat_23` (`[…][0]` après un `WITH` agrégeant), `persona_10` (dans un `WHERE`) | `reached the planner without being rewritten` |
+| sous-motif corrélé par un nœud qui n'est **pas le premier** | `nbh_01`, `nbh_02` (`[(op:Project)-[:HAS_PLAN]->(m) \| op.id]`) | `sous-requête de motif corrélée par 'm'… non prise en charge` |
+| identifiant interne **partagé nœud/arête** dans une liste | `ana_09` (`nodes(path)`), `ws_14` (`collect(DISTINCT t1) + collect(DISTINCT t2)`) | `désigne à la fois un nœud et une arête` |
+| produit cartésien refusé | `code_44` | `scan imbriqué (produit cartésien) refusé` |
+
+`ana_11` (`WITH *, expr AS alias` → `Expected end of query`) est un défaut
+d'analyse réel côté obrain, reproduit en mémoire, mais la requête échoue aussi
+sur Neo4j (APOC) : elle ne compte pas dans les 13.
+
+**Correction du 24/11.** La première version de ce tableau comptait 15 erreurs
+propres à obrain dont une famille « écriture refusée en lecture seule » sur
+`db.labels`, `db.relationshipTypes` et `db.index.vector.queryNodes`
+(obrain#354). C'était un **artefact du banc** : le harnais n'était pas compilé
+avec la fonctionnalité `algos`, qui porte ces procédures. Avec `algos`,
+`schema_01/02` passent (mesuré : 2 requêtes passent d'erreur à ok, **0
+empreinte modifiée** sur les autres) ; les 6 requêtes vectorielles échouent
+parce que la base rejouée n'a pas d'index vectoriel, non parce qu'une écriture
+est refusée. #354 est donc à fermer ; la reproduction en mémoire
+(`examples/repro_po_20261123.rs`) montre `db.labels()` et `db.relationshipTypes()`
+corrects en lecture seule. Reste à élucider : `db.index.vector.queryNodes` rend 0
+ligne sur une petite base avec index nommé, y compris en session d'écriture.
+
+Chaque famille restante a son issue, avec une reproduction **en mémoire** quand
+elle existe (`code_44` ne se reproduit pas sur un petit graphe, la garde étant
+une estimation de cardinalité) : `PatternComprehension` #357 ; corrélé par un
+nœud non premier #355 ; identifiant partagé **#229 rouverte** ; produit
+cartésien **#228 rouverte** ; `WITH *, …` #356. #228 et #229 avaient été
+fermées par #231 sur la forme de `chat_11` et `topo_04` : la forme de PO n'est
+pas celle que leurs tests figent. La colonne de tri fuitée des 79 + 6
+requêtes ci-dessus : #353.
+
+### Temps — moteur `bd9b3b4f`, index natifs présents, **avant** #345
+
+Somme des médianes sur les 307 requêtes : **329,3 s côté obrain, 31,1 s côté
+Neo4j**. Rapport médian géométrique : **1,22** ; obrain est plus rapide sur 139
+requêtes, plus lent sur 168. La somme est portée par quelques traversées :
+
+| Requête | obrain | Neo4j | rapport |
+|---|---:|---:|---:|
+| `code_45_find_bridge_subgraph_noeuds_imports_1saut` | 21 410 ms | 2,9 ms | × 7 275 |
+| `code_40_find_impacted_files_depth3` | 18 192 ms | 6,5 ms | × 2 794 |
+| `code_24_get_function_callers_by_name_depth2` | 6 206 ms | 3,2 ms | × 1 953 |
+| `code_26_get_callers_with_confidence` | 4 510 ms | 2,8 ms | × 1 636 |
+| `code_33_get_function_caller_count` | 4 975 ms | 3,3 ms | × 1 521 |
+| `topo_04_check_max_distance` (`shortestPath` ×50 paires) | 80 068 ms | 255 ms | × 314 |
+| `ws_20_compute_coupling_matrix_shared_notes` | 36 914 ms | 2 473 ms | × 15 |
+| `note_23_get_propagated_notes_file_api` | 19 941 ms | 12 897 ms | × 1,5 |
+
+Et à l'inverse : `code_11_get_class_hierarchy_parents` 0,05 ms contre 1 526 ms,
+`code_46_find_bridge_subgraph_aretes_imports` 0,28 ms contre 591 ms, les
+lectures par clé (`proj_09`, `proj_15`, `code_03`) 0,01 à 0,02 ms contre 3 à 9 ms.
+
+### Temps — moteur `4a37c0be` (`main` après #345), même base, mêmes index, même plan
+
+Rejeu des 325 requêtes avec le seul changement de moteur (`bd9b3b4f` → `4a37c0be`,
+qui ajoute #345 : `EXISTS` corrélé quand son point de départ et une extrémité sont
+déjà liés) ; `dgx`, charge 1,0 → 2,3 au départ de la mesure (1,45 à son démarrage),
+même procédure (3 échauffements, 15 mesures, budget 30 s).
+
+| | `bd9b3b4f` | `4a37c0be` |
+|---|---:|---:|
+| somme des médianes (307 requêtes ok des deux côtés) | 329,3 s | **281,5 s** |
+| rapport médian géométrique obrain / Neo4j | 1,22 | **1,14** |
+| requêtes où obrain est plus rapide | 139 | 140 |
+| durée du banc | 34 min 01 s | 30 min 35 s |
+| RSS max d'obrain | 86,1 Go | **43,8 Go** |
+| requêtes dont l'**empreinte** a changé entre les deux passes | | **0** |
+| verdicts normalisés (équivalentes / valeurs / lignes / colonnes) | 173 / 79 / 28 / 13 / 8 / 6 | identiques |
+
+Les résultats n'ont pas bougé d'un octet : aucune des requêtes qui rendent un
+résultat ne change d'empreinte. Seules **quatre** requêtes changent de plus d'un
+facteur 2 :
+
+| Requête | avant | après | rapport |
+|---|---:|---:|---:|
+| `code_45_find_bridge_subgraph_noeuds_imports_1saut` | 21 410 ms | **13,6 ms** | × 1 570 |
+| `code_38_find_dependent_files_depth2` | 2 520 ms | **5,0 ms** | × 503 |
+| `code_22_find_symbol_references_file_imports` | 2 764 ms | **84,9 ms** | × 32,6 |
+| `code_48_find_bridge_subgraph_noeuds_defaut_api_3sauts` | 19 643 ms | **4 854 ms** | × 4,0 |
+
+`code_38` et `code_22` n'étaient pas visées : leur gain n'est pas expliqué, je ne
+l'attribue pas.
+
+**Ce que #345 ne corrige pas — et ce qui précède (version précédente de ce
+paragraphe) disait à tort le contraire.** `code_40` (18 192 → 16 434 ms),
+`code_24`, `code_26`, `code_33`, `code_25`, `code_41`, `code_20`, `code_27` : de
+4,5 à 16,4 s avant, de 4,7 à 16,4 s après, **inchangées**. Seule la forme
+`EXISTS { MATCH (n)<-[:CONTAINS*1..2]-(p) }`, sans nœud intermédiaire, est réparée.
+
+Reproduction en mémoire (`examples/mesure_exists_formes.rs`, 2 000 → 8 000 → 32 000
+fichiers, résultat constant 5, médiane de 3) :
+
+| Forme | 2 000 | 8 000 | 32 000 | Suit le graphe ? |
+|---|---:|---:|---:|---|
+| A `EXISTS { n<-CONTAINS*1..2-p }` (réparée) | 0,09 | 0,08 | 0,08 ms | non |
+| B `EXISTS { n<-CONTAINS-(:File)<-CONTAINS-p }` (intermédiaire **étiqueté**) | 4,98 | 20,2 | 90,1 ms | **oui** |
+| C `OPTIONAL MATCH … WHERE EXISTS { n<-CONTAINS*1..2-p }` | 2,67 | 10,5 | 49,0 ms | oui, mais le témoin E aussi |
+| D `OPTIONAL MATCH … WHERE EXISTS { chaîne étiquetée }` (`code_33`) | 7,18 | 29,9 | 138,8 ms | **oui** |
+| E témoin : D **sans** `EXISTS` | 2,51 | 10,2 | 47,3 ms | oui (voir ci-dessous) |
+
+Le témoin E croît lui aussi : ce graphe en mémoire n'a pas d'index sur
+`Function.name`, donc le `MATCH` de départ balaie les fonctions, et ce coût est
+**le même** avec ou sans `EXISTS`. Il se **soustrait** : l'`EXISTS` de la forme C
+coûte 1,7 ms de plus que le témoin (aucun surcoût), celui de la forme D en coûte
+**91 ms** de plus (× 4 par × 4 de taille). Donc : une chaîne passant par un nœud
+intermédiaire étiqueté n'est pas réécrite et reste en coût du graphe ; un `EXISTS`
+sous `OPTIONAL MATCH` n'est pas en cause.
+
+**Non établi** : pourquoi la forme B n'est pas réécrite (hypothèse non vérifiée :
+le traducteur représente `(:File)` comme un `NodeScan` étiqueté **chaîné**, et la
+réécriture le refuse volontairement) ; et la cause de `code_40`, dont les deux
+`EXISTS` sont directs (sans intermédiaire) mais placés sous `OPTIONAL MATCH … WHERE
+… OR EXISTS`, un chemin que cette reproduction ne couvre pas.
+
+Sur la base PO (4,3 M de nœuds, 130 fois le plus grand graphe ci-dessus), un
+surcoût de 91 ms à 32 000 fichiers donne un ordre de grandeur de 10 s, compatible
+avec les 4,5 à 6,4 s observés : une cohérence, pas une preuve.
+
+**Ressources** : obrain, processus unique, **RSS max 86,1 Go** avec index
+(81,1 Go sans), ~100 % d'un cœur, 34 min 01 s pour les 325 requêtes ; Neo4j
+**16,2 Gio** et jusqu'à 448 % CPU dans le conteneur, 6 min 21 s. Le pic de RAM
+d'obrain n'est **pas attribué** à une requête (échantillon RSS toutes les 2 s,
+pas par requête) : c'est le premier chiffre à instruire.
+
+### Ouverture et `obrain-indexer`, même machine, même journée
+
+`mesure_ouverture` sur `po-frozen-20261117` (3,9 M nœuds, 29 Go), trois
+ouvertures dans le même processus : **lecture seule** 27,8 / 1,45 / 1,41 ms,
+première requête de comptage 337 / 27 / 27 ms, RSS 786 Mo (charge 1,9) ;
+**écriture** 76,7 / 53,7 / 53,3 ms, RSS 774 Mo — **provisoire**, charge 15.
+
+`obrain-indexer` (`cargo run --release -p obrain-indexer --example bench_index`),
+trois essais, charge 1,3 à 1,5 : `obrain-db` à `bd9b3b4f` (1 326 fichiers
+parsés sur 1 362 découverts, 33 993 nœuds, 242 944 arêtes) **1,54 / 1,42 / 1,46 s**,
+RSS 484 Mo ; `rustorch-r1` à `32a30ed` (984 fichiers, 17 570 nœuds, 60 612
+arêtes) **0,54 / 0,47 / 0,48 s**, RSS 261 à 269 Mo. Persistance dans une base
+obrain (`example persist`) : 4,47 s au total dont 1,57 s d'écriture, RSS 611 Mo,
+187 Mo sur disque.
 
 ## Non-régression
 
