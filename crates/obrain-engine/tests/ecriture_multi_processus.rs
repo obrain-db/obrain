@@ -285,20 +285,13 @@ fn relever(db: &ObrainDB) -> String {
     champs.join(" ")
 }
 
-/// Marge admise sur le compte du processus TUÉ.
+/// Compare un relevé observé au relevé attendu, à l'ÉGALITÉ STRICTE pour tous
+/// les rôles, y compris le mort.
 ///
-/// Le nombre d'instructions que le mort a acquittées dépend du moment exact
-/// du SIGKILL et de la taille du groupe de commit : mesuré 94 pour un `K`
-/// attendu de 90. Exiger l'égalité stricte compare un nombre **mesuré dans une
-/// course** à une constante, et le test passe ou tombe selon l'ordonnancement.
-///
-/// L'invariant réel est double et ne demande aucun compte exact :
-///   - aucune PERTE d'acquitté → borne inférieure `K` ;
-///   - aucune écriture INVENTÉE → borne supérieure `K + marge`.
-
-/// Compare un relevé observé au relevé attendu, en tolérant la marge sur le
-/// seul rôle mort. Les survivants restent à l'égalité stricte : ils ont fini
-/// leur travail, leur compte n'est pas une course.
+/// La marge de #320 sur le compte du rôle tué a été RETIRÉE : elle reposait sur
+/// un diagnostic faux (le mort aurait écrit plus que `K`), alors que
+/// l'énumération valait toujours 90 et que c'était le COMPTEUR qui dérivait.
+/// #322 a corrigé le compteur ; accepter une plage masquerait sa réapparition.
 fn assert_releve(vu: &str, quoi: &str) {
     let (mort_min_n, mort_min_a) = attendu(K);
     let (survivant_n, survivant_a) = attendu(N + M);
