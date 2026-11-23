@@ -216,6 +216,19 @@ fn compte_noeuds(db: &ObrainDB, etiquette: &str) -> i64 {
     scalaire(db, &format!("MATCH (n:{etiquette}) RETURN count(n)"))
 }
 
+/// Les nœuds RÉELLEMENT présents, un par un.
+///
+/// `count(n:X)` passe par le raccourci du planificateur et le compteur de
+/// cardinalité entretenu à l'écriture ; cette énumération-ci ne peut pas
+/// mentir sur le contenu. Les deux doivent dire la même chose — c'est l'objet
+/// de `assert_compteurs`.
+fn compte_noeuds_enumere(db: &ObrainDB, etiquette: &str) -> i64 {
+    db.execute(&format!("MATCH (n:{etiquette}) RETURN n"))
+        .unwrap_or_else(|e| panic!("énumération de {etiquette} : {e}"))
+        .rows
+        .len() as i64
+}
+
 /// Arêtes du type `LIEN_X` dont les DEUX extrémités portent l'étiquette du
 /// rôle : c'est « des arêtes entre SES nœuds ».
 fn compte_aretes_propres(db: &ObrainDB, role: &str) -> i64 {
@@ -261,6 +274,9 @@ fn relever(db: &ObrainDB) -> String {
     let mut champs = Vec::new();
     for r in ROLES {
         champs.push(format!("{r}={}", compte_noeuds(db, r)));
+        // Deuxième source, indépendante du compteur : le nombre de nœuds
+        // réellement énumérés. Voir `assert_compteurs`.
+        champs.push(format!("enum_{r}={}", compte_noeuds_enumere(db, r)));
     }
     for r in ROLES {
         champs.push(format!("{}={}", lien(r), compte_aretes_toutes(db, r)));
@@ -315,6 +331,73 @@ fn assert_releve(vu: &str, quoi: &str) {
             "{quoi} : {cle} = {valeur}, attendu dans [{lo}, {hi}] — vu « {vu} »"
         );
     }
+}
+
+/// Le compteur de cardinalité doit dire la même chose que les nœuds présents.
+///
+/// `relever` publie les deux : `RoleX=<count(n:X)>` (le raccourci du
+/// planificateur, servi par le compteur entretenu à l'écriture) et
+/// `enum_RoleX=<nœuds énumérés>`. Un désaccord n'est pas une tolérance : c'est
+/// un `count()` faux servi à l'utilisateur, et en production personne ne le
+/// compare.
+///
+/// Constat d'origine (23/11/2026) : `RoleD=95` pour 90 nœuds attendus, après
+/// un `kill -9` et des réouvertures concurrentes. Les deux sources peuvent
+/// diverger, et dans les deux sens observés : le compteur à 95 pour 90 nœuds
+/// énumérés, ET l'énumération elle-même à 95 — les entités d'une transaction
+/// jamais validée restent VISIBLES tant qu'un pair n'a pas rejoué pour les
+/// écarter. C'est une fenêtre d'atomicité, pas un arrondi.
+///
+/// Corrigé par le verrou de rejeu (`file::verrou_rejeu_bloquant`) : rejeu et
+/// vérification des compteurs ne se chevauchent plus entre écrivains. Ce
+/// contrôle existe pour que la régression soit NOMMÉE si elle revient, au lieu
+/// de se cacher dans une marge.
+fn assert_compteurs(vu: &str, quoi: &str) {
+    use std::collections::BTreeMap;
+    let mut champs: BTreeMap<&str, i64> = BTreeMap::new();
+    for champ in vu.split_whitespace() {
+        let Some((cle, valeur)) = champ.split_once('=') else {
+            continue;
+        };
+        let Ok(valeur) = valeur.parse::<i64>() else {
+            continue;
+        };
+        champs.insert(cle, valeur);
+    }
+    let mut verifies = 0usize;
+    for r in ROLES {
+        let cle_enum = format!("enum_{r}");
+        let Some(&enumere) = champs.get(cle_enum.as_str()) else {
+            continue;
+        };
+        let attendu_exact = if r == ROLE_MORT {
+            attendu(K).0
+        } else {
+            attendu(N + M).0
+        };
+        // La DONNÉE est exacte : `K` est annoncé par le mort APRÈS ses
+        // acquittements, donc tout ce qui est acquitté est présent — et RIEN
+        // d'autre. Un surplus signifie que des entités d'une transaction
+        // jamais validée sont encore visibles.
+        assert_eq!(
+            enumere, attendu_exact,
+            "{quoi} : {cle_enum} = {enumere}, attendu exactement {attendu_exact} \
+             — des entités non validées sont visibles — vu « {vu} »"
+        );
+        // Le COMPTEUR doit s'accorder avec la donnée qu'il prétend compter.
+        if let Some(&compteur) = champs.get(r) {
+            assert_eq!(
+                compteur, enumere,
+                "{quoi} : le compteur de {r} dit {compteur} alors que {enumere} nœuds \
+                 existent — un count() faux, pas une course — vu « {vu} »"
+            );
+        }
+        verifies += 1;
+    }
+    assert!(
+        verifies > 0,
+        "{quoi} : aucun compte énuméré dans « {vu} » — le contrôle ne vérifierait rien"
+    );
 }
 
 /// Le comparateur doit ACCEPTER exactement le relevé qui faisait échouer la CI
@@ -598,6 +681,14 @@ fn scenario(test: &str, sortie_brutale: bool) {
             &vu,
             &format!("{} ne voit pas les écritures acquittées des autres", e.role),
         );
+        // …mais la DONNÉE reste exacte, et le compteur doit lui obéir.
+        assert_compteurs(
+            &vu,
+            &format!(
+                "{} sert un compte qui ne correspond pas à ses nœuds",
+                e.role
+            ),
+        );
     }
     for (_, e) in survivants {
         e.terminer();
@@ -615,6 +706,10 @@ fn verifier_en_exclusif(dir: &Path, _releve_voulu: &str) {
             "relevé après réouverture exclusive ≠ attendu (la transaction ouverte du mort \
              portait {FANTOMES} entités de plus)"
         ),
+    );
+    assert_compteurs(
+        &releve,
+        "réouverture exclusive : compteur et nœuds doivent s'accorder",
     );
     for r in ROLES {
         let k = if r == ROLE_MORT { K } else { N + M };

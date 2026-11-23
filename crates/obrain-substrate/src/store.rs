@@ -8554,6 +8554,9 @@ impl SubstrateStore {
         // slots dans la fenêtre rejouée → auto-guérison des stamps PropsZone
         // v2 juste avant Ok(store).
         let mut remaps_au_rejeu: u32 = 0;
+        // (2026-11-23) Verrou de rejeu : tenu du rejeu jusqu'à la vérification
+        // des compteurs. Voir `file::verrou_rejeu_bloquant`.
+        let mut verrou_rejeu: Option<crate::file::VerrouRejeu> = None;
         {
             let substrate_arc = store.writer.substrate();
             let guard = substrate_arc.lock();
@@ -8584,6 +8587,20 @@ impl SubstrateStore {
             // rouvrant écarte), mesuré 4 fois sur 15 après un `kill -9`
             // (`lecture_seule_kill9_blob_vecteur.rs`). `replay_from_lecteur`
             // (#60) datait des zones partagées.
+            // JAMAIS en lecture seule : une ouverture RO ne doit pas écrire un
+            // octet dans la base — le verrou crée un fichier, ce que
+            // `lecture_seule_kill9_blob_vecteur` vérifie à l'empreinte près.
+            if taille_wal > debut && !lecture_seule {
+                // Il y a quelque chose à rejouer : on sérialise avec les pairs
+                // qui rejouent la même base. Rien à rejouer => aucun verrou.
+                let racine = guard
+                    .wal_path()
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                verrou_rejeu =
+                    Some(crate::file::verrou_rejeu_bloquant(&racine).map_err(SubstrateError::Io)?);
+            }
             let rejeu = crate::replay::replay_from(&guard, debut);
             match rejeu {
                 Ok(st) => {
@@ -9108,6 +9125,9 @@ impl SubstrateStore {
         } else {
             store.verifier_compteurs_depuis_les_zones();
         }
+        // Le verrou de rejeu couvre exactement « rejouer puis recompter » : il
+        // tombe ici, une fois les compteurs confrontés aux zones.
+        drop(verrou_rejeu);
 
         // ── (2026-09-12) LE STORE A-T-IL ENCORE DES ENREGISTREMENTS ? ──────
         //
