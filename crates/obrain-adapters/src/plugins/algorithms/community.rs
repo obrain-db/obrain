@@ -1108,7 +1108,6 @@ mod tests {
         assert_eq!(communities.len(), 1);
     }
 
-    #[test]
     /// Louvain symétrise-t-il réellement ? Sur un graphe en étoile, inverser
     /// TOUTES les arêtes ne doit rien changer à la partition : chaque arête est
     /// lue depuis sa source puis ajoutée dans les deux sens (l.190), donc la
