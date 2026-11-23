@@ -104,6 +104,11 @@ pub use distance::{
 };
 pub use index_trait::{NodeOffset, VectorIndex};
 pub use mmr::mmr_select;
+// (2026-11-23, #342) Utilitaires de quantification HORS du chemin du moteur :
+// le rappel de production passe par la cascade `tiers.rs` / `tiered_scan.rs`,
+// pas par ces types. Ils sont réexportés parce qu'ils sont PUBLICS (et exposés
+// aux bindings Python), pas parce que le moteur s'en sert. Ne pas en conclure
+// qu'ils sont morts : les retirer serait un changement d'API.
 pub use quantization::{BinaryQuantizer, ProductQuantizer, QuantizationType, ScalarQuantizer};
 #[cfg(feature = "mmap")]
 pub use storage::MmapStorage;
@@ -115,6 +120,9 @@ pub use config::HnswConfig;
 #[cfg(feature = "vector-index")]
 pub use hnsw::{HnswFlatHeader, HnswFlatTopology, HnswIndex};
 #[cfg(feature = "vector-index")]
+/// Index HNSW quantifié : public et réexporté, mais **hors du chemin du
+/// moteur** comme les quantificateurs ci-dessus (#342) — la cascade de rappel
+/// n'en dépend pas.
 pub use quantized_hnsw::QuantizedHnswIndex;
 
 use obrain_common::types::NodeId;

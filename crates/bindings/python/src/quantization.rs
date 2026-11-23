@@ -2,6 +2,12 @@
 //!
 //! Provides Python access to scalar and product quantization for
 //! memory-efficient vector storage.
+//!
+//! Ces classes sont des UTILITAIRES exposés à Python, **hors du chemin du
+//! moteur** : le rappel de production passe par la cascade `tiers.rs` /
+//! `tiered_scan.rs`, pas par ces quantificateurs. Elles restent exposées
+//! parce qu'elles sont publiques et utiles isolément (distance de Hamming,
+//! quantification d'un lot hors ligne, mesure de compression). Voir #342.
 
 use obrain_core::index::vector::{
     BinaryQuantizer, ProductQuantizer, QuantizationType, ScalarQuantizer,
@@ -377,6 +383,11 @@ impl PyProductQuantizer {
 ///
 /// Achieves 32x compression with ~80% accuracy. Extremely fast hamming distance.
 /// Best used with rescoring.
+///
+/// **Hors du chemin du moteur** (#342) : le rappel de production ne passe pas
+/// par ce quantificateur, mais par la cascade `tiers.rs` / `tiered_scan.rs`.
+/// Utile pour quantifier un lot hors ligne ou mesurer une distance de Hamming,
+/// pas pour espérer un effet sur le rappel.
 ///
 /// Example:
 ///     # Quantize vectors to binary
