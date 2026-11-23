@@ -1,0 +1,88 @@
+# Publie le badge et la page de couverture sur GitHub Pages
+# (https://obrain-db.github.io/obrain/), à partir de l'artefact `couverture-pages`
+# déposé par le job « Couverture » de la CI de `main`.
+#
+# Pourquoi un workflow à part : ci.yml reste en `contents: read` sans aucun droit
+# d'écriture, y compris quand release.yml l'appelle (workflow_call). Les droits de
+# déploiement Pages (`pages: write`, `id-token: write`) ne vivent qu'ici, sur un
+# job qui ne compile ni n'exécute rien du dépôt : il télécharge un artefact
+# produit par un run de `main` et le publie. Rien n'est écrit dans le dépôt.
+#
+# Un run de CI de main sans artefact (job de couverture sauté, annulé ou tombé
+# avant la mesure) ne publie rien et le dit : le badge garde la dernière mesure
+# publiée, jamais un chiffre inventé.
+#
+# Actions épinglées par SHA (résolus le 2026-11-23 via l'API GitHub) :
+#   actions/download-artifact@v8.0.2      -> 9000827ccba6bdab643e8b6fd33ac0654aef8333
+#   actions/configure-pages@v6.0.0        -> 45bfe0192ca1faeb007ade9deae92b16b8254a0d
+#   actions/upload-pages-artifact@v5.0.0  -> fc324d3547104276b827a68afc52ff2a11cc49c9
+#   actions/deploy-pages@v5.0.1           -> 368f82528645a54fb793d4d04e342629a3f51346
+# Une mise à jour change le SHA ET le commentaire, jamais l'un sans l'autre.
+name: Badge de couverture
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Un seul déploiement Pages à la fois ; un déploiement en cours n'est pas annulé.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publier:
+    name: Publier le badge de couverture
+    # Seulement pour un run déclenché par un push sur main (pas une PR, pas un tag).
+    if: github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploiement.outputs.page_url }}
+    steps:
+      - name: L'artefact de couverture existe-t-il pour ce run ?
+        id: artefact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          n=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
+                --jq '[.artifacts[] | select(.name == "couverture-pages" and .expired == false)] | length')
+          if [ "${n:-0}" -eq 0 ]; then
+            echo "::notice::run $RUN_ID sans artefact couverture-pages : rien n'est publié, le badge garde la dernière mesure."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Télécharger l'artefact
+        if: steps.artefact.outputs.present == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: couverture-pages
+          path: site
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Contrôle du contenu (badge lisible, page présente)
+        if: steps.artefact.outputs.present == 'true'
+        run: |
+          test -s site/index.html
+          python3 -c 'import json,sys; b=json.load(open("site/couverture.json")); assert b["schemaVersion"]==1 and b["message"].endswith("%"), b; print(b)'
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        if: steps.artefact.outputs.present == 'true'
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: steps.artefact.outputs.present == 'true'
+        with:
+          path: site
+      - name: Déployer
+        id: deploiement
+        if: steps.artefact.outputs.present == 'true'
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
