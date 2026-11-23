@@ -1323,13 +1323,16 @@ mod tests {
     #[test]
     fn somme_des_degres_vaut_deux_fois_les_aretes() {
         for store in [create_two_cliques_graph(), create_simple_graph()] {
-            let somme: usize = store
+            // `out_degree`/`in_degree` du substrat rendent `u32` (atomes) ;
+            // `edge_count()` rend `usize`. La somme tient sans débordement :
+            // elle vaut au plus 2 x le nombre d'arêtes d'un graphe de test.
+            let somme: u32 = store
                 .node_ids()
                 .into_iter()
                 .map(|n| store.out_degree(n) + store.in_degree(n))
                 .sum();
             assert_eq!(
-                somme,
+                somme as usize,
                 2 * store.edge_count(),
                 "somme des degrés ≠ 2 × arêtes : le raccourci de vol(V) ne tient plus"
             );
