@@ -221,7 +221,7 @@ pub(crate) fn verrou_rejeu_bloquant(repertoire: &Path) -> std::io::Result<Verrou
         // Déjà tenu par CE processus : le rejeu est de toute façon le sien.
         return Ok(VerrouRejeu { fichier: None, cle });
     }
-    let chemin = repertoire.join(".replay.lock");
+    let chemin = repertoire.join(zone::REJEU_LOCK);
     let fichier = std::fs::OpenOptions::new()
         .create(true)
         .read(true)
@@ -764,6 +764,9 @@ pub mod zone {
     /// prenait un `flock` frais sur le nouvel inode → deux écrivains coexistants
     /// → WAL corrompu → messages perdus au replay (invariant mono-écrivain violé).
     pub const DIR_LOCK: &str = "substrate.dirlock";
+    /// Verrou de REJEU (voir `verrou_rejeu_bloquant`). Nommé dans la
+    /// famille des verrous pour être exclu des énumérations de zones.
+    pub const REJEU_LOCK: &str = "substrate.rejeulock";
 
     /// (obrain#171) Verrou de RESTAURATION des déclarations orphelines par un
     /// écrivain PARTAGÉ (`open_shared_write`), tenu entre le relevé du WAL et
@@ -2453,7 +2456,9 @@ impl SubstrateFile {
                 v
             }
         };
-        noms.retain(|n| n != zone::META && n != zone::WAL && n != zone::DIR_LOCK);
+        noms.retain(|n| {
+            n != zone::META && n != zone::WAL && n != zone::DIR_LOCK && n != zone::REJEU_LOCK
+        });
         // ── LE SIDE-CAR D'ANCRE N'EST PAS UNE ZONE (axe APPEND, 2026-10-06) ──
         // `substrate.wal.lsn` décrit le WAL — et `instantane.rs` inclut TOUT ce
         // que cette fonction rend, alors qu'il EXCLUT explicitement le WAL. Une
