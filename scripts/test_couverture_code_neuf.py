@@ -263,5 +263,78 @@ class ControleCodeNeuf(unittest.TestCase):
         self.assertIn("non vérifiées", r.stdout)
 
 
+    # ── 8. le code de TEST n'est pas du code livré ───────────────────────────
+    def test_module_cfg_test_ne_compte_pas_dans_le_denominateur(self):
+        """Un `mod tests` ajouté ne peut pas faire échouer le seuil : ses lignes
+        ne s'exécutent que dans un binaire de test, et les compter pousse à
+        supprimer les aides de test (constat #282, 23/11/2026)."""
+        apres = BASE + textwrap.dedent(
+            """\
+
+            #[cfg(test)]
+            mod tests {
+                fn aide() -> u32 {
+                    let a = 1;
+                    let b = 2;
+                    a + b
+                }
+            }
+            """
+        )
+        d = self.depot(apres=apres)
+        # L'aide de test n'est pas instrumentée : ses lignes n'ont aucune donnée.
+        r = d.controle(d.lcov({1: 4}, fn=[1]))
+        self.assertEqual(r.returncode, 0, self.sortie(r))
+        self.assertNotIn("aide", r.stdout)
+
+    def test_fonction_cfg_test_ne_compte_pas(self):
+        apres = BASE + textwrap.dedent(
+            """\
+
+            #[cfg(test)]
+            pub fn constructeur_de_test() -> u32 {
+                42
+            }
+            """
+        )
+        d = self.depot(apres=apres)
+        r = d.controle(d.lcov({1: 4}, fn=[1]))
+        self.assertEqual(r.returncode, 0, self.sortie(r))
+
+    def test_cfg_de_feature_reste_compte(self):
+        """Le pendant : `#[cfg(feature = …)]` est du code LIVRÉ. Le sortir du
+        calcul ouvrirait un vrai trou, celui que la porte existe pour fermer."""
+        apres = BASE + textwrap.dedent(
+            """\
+
+            #[cfg(feature = "cypher")]
+            pub fn sous_feature(n: u32) -> u32 {
+                let a = n + 1;
+                let b = a * 2;
+                b
+            }
+            """
+        )
+        d = self.depot(apres=apres)
+        # Le fichier est mesuré mais la fonction n'a aucune donnée.
+        r = d.controle(d.lcov({1: 4}, fn=[1]))
+        self.assertNotEqual(r.returncode, 0, self.sortie(r))
+        self.assertIn("sous_feature", r.stdout)
+
+    def test_declaration_cfg_test_terminee_par_point_virgule(self):
+        apres = BASE + textwrap.dedent(
+            """\
+
+            trait Bac {
+                #[cfg(test)]
+                fn pour_les_tests(&self) -> u32;
+            }
+            """
+        )
+        d = self.depot(apres=apres)
+        r = d.controle(d.lcov({1: 4}, fn=[1]))
+        self.assertEqual(r.returncode, 0, self.sortie(r))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
