@@ -652,8 +652,7 @@ empreinte modifiée** sur les autres) ; les 6 requêtes vectorielles échouent
 parce que la base rejouée n'a pas d'index vectoriel, non parce qu'une écriture
 est refusée. #354 est donc à fermer ; la reproduction en mémoire
 (`examples/repro_po_20261123.rs`) montre `db.labels()` et `db.relationshipTypes()`
-corrects en lecture seule. Reste à élucider : `db.index.vector.queryNodes` rend 0
-ligne sur une petite base avec index nommé, y compris en session d'écriture.
+corrects en lecture seule. Élucidé : le 0 ligne vu sur `db.index.vector.queryNodes` venait de la reproduction, qui créait les embeddings comme listes Cypher ; un index vectoriel n'indexe que des `Value::Vector`. Avec des `Value::Vector`, la procédure rend les 2 lignes, en lecture seule comme en écriture.
 
 Chaque famille restante a son issue, avec une reproduction **en mémoire** quand
 elle existe (`code_44` ne se reproduit pas sur un petit graphe, la garde étant
