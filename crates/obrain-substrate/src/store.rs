@@ -28069,6 +28069,57 @@ mod tests {
         );
     }
 
+    /// CARACTÉRISE UNE LIMITE (23/11/2026) : `feature_epoch` est un atome PAR
+    /// PROCESSUS, recréé à chaque ouverture. Il capte les mutations LOCALES ;
+    /// un pair qui écrit dans une base ouverte en partage ne le fait pas bouger.
+    ///
+    /// Conséquence : un cache (CSR, spectre, géodésiques) clé sur cette époque
+    /// est faux en écriture partagée — il servirait un graphe périmé sans rien
+    /// signaler. Voir la décision PO `9d70f90d` et #327.
+    ///
+    /// Ce test PASSE aujourd'hui : il fige la limite. Le jour où l'époque
+    /// deviendra partagée (page mmap), il tombera — et c'est voulu : il forcera
+    /// à relire la sûreté des caches qui s'appuient dessus. `create_edge` sur
+    /// une seule poignée fait bien avancer l'époque (mesuré : 2 → 3) ; c'est
+    /// le PAIR qui n'est pas vu.
+    #[test]
+    fn feature_epoch_ne_voit_pas_les_ecritures_d_un_pair() {
+        use std::sync::atomic::Ordering;
+
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        {
+            let s = SubstrateStore::create(&chemin).unwrap();
+            s.create_node(&["N"]);
+            s.flush().unwrap();
+        }
+        let a = SubstrateStore::open_shared_write(&chemin).unwrap();
+        let b = SubstrateStore::open_shared_write(&chemin).unwrap();
+
+        let avant_a = a.substrate.lock().feature_epoch.load(Ordering::Acquire);
+        let avant_b = b.substrate.lock().feature_epoch.load(Ordering::Acquire);
+        let n1 = b.create_node(&["N"]);
+        let n2 = b.create_node(&["N"]);
+        b.create_edge(n1, n2, "LIEN");
+        let apres_a = a.substrate.lock().feature_epoch.load(Ordering::Acquire);
+        let apres_b = b.substrate.lock().feature_epoch.load(Ordering::Acquire);
+
+        // Sans ce contrôle, le test passerait aussi si RIEN n'incrémentait
+        // l'époque : il ne prouverait alors rien du tout.
+        assert!(
+            apres_b > avant_b,
+            "B ne voit pas ses propres mutations ({avant_b} -> {apres_b}) : le \
+             test serait vacuous, pas concluant"
+        );
+
+        assert_eq!(
+            avant_a, apres_a,
+            "l'époque de A a bougé sur une écriture de B : elle serait devenue \
+             partagée, donc un cache clé dessus redeviendrait sûr en écriture \
+             partagée — relire #327 avant de conclure"
+        );
+    }
+
     fn store() -> (tempfile::TempDir, SubstrateStore) {
         let td = tempfile::tempdir().unwrap();
         let s = SubstrateStore::create(td.path().join("kb")).unwrap();
