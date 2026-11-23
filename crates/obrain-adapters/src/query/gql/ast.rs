@@ -1013,6 +1013,12 @@ pub enum IndexKind {
     Vector,
     /// B-tree range index.
     BTree,
+    /// Index spatial : points `[lon, lat]`, requêtes par rayon et kNN sur la
+    /// distance géographique (haversine, en mètres).
+    ///
+    /// Le balayage existe toujours (`WHERE distance(a, b) < r` sans index) ;
+    /// cette sorte dit seulement « tiens un index pour ce prédicat ».
+    Spatial,
 }
 
 /// Additional options for index creation.

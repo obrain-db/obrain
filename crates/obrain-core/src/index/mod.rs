@@ -17,9 +17,11 @@
 //! For AI/ML workloads, the `vector` module provides similarity search capabilities.
 
 pub mod adjacency;
+pub mod geo;
 pub mod hash;
 #[cfg(feature = "ring-index")]
 pub mod ring;
+pub mod spatial;
 #[cfg(feature = "text-index")]
 pub mod text;
 pub mod trie;

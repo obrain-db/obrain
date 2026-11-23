@@ -932,6 +932,21 @@ impl super::Planner {
             );
         }
 
+        // Procédures SPATIALES (`CALL obrain.spatial.nearest|within`). La
+        // colonne `node` porte un NŒUD, comme `queryNodes` : `YIELD node AS n
+        // WHERE n.status = …` y lit des propriétés.
+        if let Some(result) = crate::database::spatial_procedure::try_execute_spatial_procedure(
+            &resolved_name,
+            &call.arguments,
+            self.index_spatiaux.as_ref(),
+        )? {
+            return self.plan_static_result_avec_noeuds(
+                result,
+                &call.yield_items,
+                &crate::database::spatial_procedure::COLONNES_NOEUD,
+            );
+        }
+
         // Cognitive procedures (CALL obrain.cognitive.*)
         #[cfg(feature = "cognitive")]
         if let Some(engine) = &self.cognitive_engine
