@@ -90,6 +90,7 @@ mod wal_presence;
 pub mod wal_registre;
 pub mod warden;
 pub mod writer;
+pub mod writer_id;
 
 pub use blob_column::{
     BLOB_COLUMN_MAGIC, BLOB_COLUMN_VERSION, BLOB_HEADER_SIZE, BLOB_SLOT_STRIDE, BlobColSpec,
