@@ -99,7 +99,10 @@ pub use clustering::{
 };
 
 // Community detection algorithms
-pub use community::{LouvainResult, community_count, label_propagation, leiden, louvain};
+pub use community::{
+    CertificatConductance, LouvainResult, community_count, conductances, label_propagation, leiden,
+    louvain,
+};
 
 // Minimum Spanning Tree algorithms
 pub use mst::{MstResult, kruskal, prim};

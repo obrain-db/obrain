@@ -143,6 +143,103 @@ pub struct LouvainResult {
     pub num_communities: usize,
 }
 
+/// Un certificat de qualité pour une partition de communautés (#294).
+///
+/// ── POURQUOI ─────────────────────────────────────────────────────────
+/// Louvain renvoie une partition et un modularity. Le modularity ne dit PAS si
+/// une communauté est bien séparée : il récompense la densité interne à
+/// l'échelle du graphe entier, ce qui peut masquer un découpage médiocre. La
+/// **conductance** répond localement : quelle part des arêtes d'un groupe fuit
+/// vers l'extérieur, rapportée à son volume ?
+///
+/// ```text
+///     conductance(S) = cut(S) / min(vol(S), vol(V \ S))
+/// ```
+///
+/// 0 = groupe parfaitement isolé, 1 = groupe sans cohésion.
+///
+/// ── COÛT ─────────────────────────────────────────────────────────────
+/// Un parcours O(E) pour TOUTE la partition (chaque arête classée une fois),
+/// soit ~64 ms pour 3,2 M d'arêtes. Aucun état persisté, aucun format touché :
+/// c'est du diagnostic, jamais un chemin de requête.
+// API publique destinée aux appelants (outils de diagnostic, procédures) :
+// elle n'est pas encore branchée dans le crate, donc `dead_code` la signale.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct CertificatConductance {
+    /// Identifiant de la communauté.
+    pub communaute: u64,
+    /// Nombre de nœuds du groupe.
+    pub taille: usize,
+    /// Arêtes sortant du groupe (cut).
+    pub coupe: u64,
+    /// Somme des degrés des nœuds du groupe.
+    pub volume: u64,
+    /// `coupe / min(volume, volume_total - volume)`, dans `[0, 1]`.
+    /// `None` quand le dénominateur est nul (groupe = graphe entier) : rendre 0
+    /// ferait croire à un groupe parfaitement isolé.
+    pub conductance: Option<f64>,
+}
+
+/// Calcule la conductance de chaque communauté d'une partition.
+///
+/// Le graphe est lu NON ORIENTÉ (chaque arête comptée des deux côtés), comme le
+/// fait Louvain : une arête frontière compte une fois dans la coupe, une arête
+/// interne contribue au volume de son groupe et jamais à sa coupe.
+#[allow(dead_code)]
+pub fn conductances(
+    store: &dyn GraphStore,
+    partition: &FxHashMap<NodeId, u64>,
+) -> Vec<CertificatConductance> {
+    use std::collections::HashMap;
+
+    let mut volume_total: u64 = 0;
+    let mut tailles: HashMap<u64, usize> = HashMap::new();
+    let mut volumes: HashMap<u64, u64> = HashMap::new();
+    let mut coupes: HashMap<u64, u64> = HashMap::new();
+
+    for (node, comm) in partition {
+        *tailles.entry(*comm).or_insert(0) += 1;
+        let mut degre = 0u64;
+        for (voisin, _) in store.edges_from(*node, Direction::Outgoing) {
+            degre += 1;
+            if partition.get(&voisin).copied() != Some(*comm) {
+                *coupes.entry(*comm).or_insert(0) += 1;
+            }
+        }
+        for (voisin, _) in store.edges_from(*node, Direction::Incoming) {
+            degre += 1;
+            if partition.get(&voisin).copied() != Some(*comm) {
+                *coupes.entry(*comm).or_insert(0) += 1;
+            }
+        }
+        *volumes.entry(*comm).or_insert(0) += degre;
+        volume_total += degre;
+    }
+
+    let mut out: Vec<CertificatConductance> = tailles
+        .into_iter()
+        .map(|(comm, taille)| {
+            let volume = volumes.get(&comm).copied().unwrap_or(0);
+            let coupe = coupes.get(&comm).copied().unwrap_or(0);
+            let denom = volume.min(volume_total.saturating_sub(volume));
+            CertificatConductance {
+                communaute: comm,
+                taille,
+                coupe,
+                volume,
+                conductance: if denom == 0 {
+                    None
+                } else {
+                    Some(coupe as f64 / denom as f64)
+                },
+            }
+        })
+        .collect();
+    out.sort_by_key(|c| c.communaute);
+    out
+}
+
 /// Detects communities using the Louvain algorithm.
 ///
 /// The Louvain algorithm optimizes modularity through a greedy approach,
@@ -1106,6 +1203,108 @@ mod tests {
 
         let communities = label_propagation(&store, 100);
         assert_eq!(communities.len(), 1);
+    }
+
+    /// Deux cliques reliées par UNE arête : la conductance de chaque groupe
+    /// vaut 1/(degré total du groupe), et les deux sont bien séparées.
+    #[test]
+    #[allow(clippy::many_single_char_names)] // i, j, c, n : notation de graphe
+    fn conductance_deux_cliques_reliees_par_une_arete() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let s = SubstrateStore::create(td.path()).expect("create");
+        let mut cliques: Vec<Vec<NodeId>> = Vec::new();
+        for _ in 0..2 {
+            let mut c = Vec::new();
+            for _ in 0..4 {
+                c.push(s.create_node(&["N"]));
+            }
+            for i in 0..c.len() {
+                for j in (i + 1)..c.len() {
+                    s.create_edge(c[i], c[j], "R");
+                }
+            }
+            cliques.push(c);
+        }
+        // Le pont.
+        s.create_edge(cliques[0][0], cliques[1][0], "R");
+
+        let mut partition: FxHashMap<NodeId, u64> = FxHashMap::default();
+        for (i, c) in cliques.iter().enumerate() {
+            for n in c {
+                partition.insert(*n, i as u64);
+            }
+        }
+        let certs = conductances(&s, &partition);
+        assert_eq!(certs.len(), 2, "deux communautés");
+        for c in &certs {
+            assert_eq!(c.taille, 4);
+            // Degré total d'une clique de 4 : 4 arêtes internes comptées des
+            // deux côtés = 12, plus l'arête du pont = 13.
+            assert_eq!(c.volume, 13, "volume de la communauté {}", c.communaute);
+            assert_eq!(c.coupe, 1, "une seule arête traverse");
+            let cond = c.conductance.expect("conductance définie");
+            assert!(
+                (cond - 1.0 / 13.0).abs() < 1e-9,
+                "conductance {} ≠ 1/13",
+                cond
+            );
+        }
+    }
+
+    /// Un groupe qui contient TOUT le graphe n'a pas de conductance : le
+    /// dénominateur est nul. Rendre 0 laisserait croire à un groupe
+    /// parfaitement isolé, ce qui est le contraire.
+    #[test]
+    fn conductance_indefinie_sur_le_graphe_entier() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let s = SubstrateStore::create(td.path()).expect("create");
+        let a = s.create_node(&["N"]);
+        let b = s.create_node(&["N"]);
+        s.create_edge(a, b, "R");
+        let mut partition: FxHashMap<NodeId, u64> = FxHashMap::default();
+        partition.insert(a, 0);
+        partition.insert(b, 0);
+        let certs = conductances(&s, &partition);
+        assert_eq!(certs.len(), 1);
+        assert_eq!(certs[0].coupe, 0);
+        assert_eq!(certs[0].conductance, None, "dénominateur nul ⇒ None");
+    }
+
+    /// Deux nœuds sans aucune arête entre eux : coupe nulle, conductances
+    /// nulles — et aucune division par zéro malgré des volumes non nuls.
+    #[test]
+    #[allow(clippy::many_single_char_names)] // i, j, c, n : notation de graphe
+    fn conductance_nulle_sur_groupes_isoles() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let s = SubstrateStore::create(td.path()).expect("create");
+        let a = s.create_node(&["N"]);
+        let b = s.create_node(&["N"]);
+        let c = s.create_node(&["N"]);
+        // Un SECOND groupe avec des arêtes : sans lui, la communauté 0
+        // détiendrait TOUT le volume du graphe et son dénominateur serait nul —
+        // la conductance serait indéfinie, pas nulle. C'est le piège que ce
+        // test a rencontré à sa première écriture.
+        let d = s.create_node(&["N"]);
+        let e = s.create_node(&["N"]);
+        s.create_edge(a, b, "R");
+        s.create_edge(d, e, "R");
+        let mut partition: FxHashMap<NodeId, u64> = FxHashMap::default();
+        partition.insert(a, 0);
+        partition.insert(b, 0);
+        partition.insert(c, 1);
+        partition.insert(d, 2);
+        partition.insert(e, 2);
+        let certs = conductances(&s, &partition);
+        let c0 = certs.iter().find(|x| x.communaute == 0).expect("comm 0");
+        assert_eq!(c0.coupe, 0);
+        assert_eq!(
+            c0.conductance,
+            Some(0.0),
+            "groupe sans arête sortante, et le graphe a d'autres arêtes"
+        );
+        let c1 = certs.iter().find(|x| x.communaute == 1).expect("comm 1");
+        assert_eq!(c1.volume, 0, "nœud isolé : volume nul");
+        assert_eq!(c1.conductance, None, "volume nul ⇒ None, pas 0");
     }
 
     /// Louvain symétrise-t-il réellement ? Sur un graphe en étoile, inverser
