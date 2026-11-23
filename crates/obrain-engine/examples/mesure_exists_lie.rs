@@ -13,12 +13,16 @@
 //! Elle n'affirme rien : elle imprime. Le même graphe, la même requête, trois
 //! tailles : si la durée suit le nombre de fichiers, c'est le coût du graphe.
 
+#[cfg(feature = "cypher")]
 use obrain_common::types::Value;
+#[cfg(feature = "cypher")]
 use obrain_engine::ObrainDB;
+#[cfg(feature = "cypher")]
 use std::time::Instant;
 
 /// Requête de la forme de `code_45` : voisins `IMPORTS` de `s`, gardés s'ils sont
 /// contenus (profondeur 1..2) dans le projet `p`, déjà lié.
+#[cfg(feature = "cypher")]
 const REQUETE: &str = "MATCH (s:File {path: 'f0'})<-[:CONTAINS]-(p:Project {id: 'p1'}) \
     CALL { WITH s, p MATCH (s)-[:IMPORTS*1..1]-(n) \
            WHERE (n:File OR n:Function) AND EXISTS { MATCH (n)<-[:CONTAINS*1..2]-(p) } \
@@ -26,12 +30,14 @@ const REQUETE: &str = "MATCH (s:File {path: 'f0'})<-[:CONTAINS]-(p:Project {id: 
     RETURN size(voisins) AS c";
 
 /// Même requête SANS l'EXISTS : isole le coût de la traversée `IMPORTS` seule.
+#[cfg(feature = "cypher")]
 const REQUETE_SANS_EXISTS: &str = "MATCH (s:File {path: 'f0'})<-[:CONTAINS]-(p:Project {id: 'p1'}) \
     CALL { WITH s, p MATCH (s)-[:IMPORTS*1..1]-(n) \
            WHERE (n:File OR n:Function) \
            RETURN collect(DISTINCT n) AS voisins } \
     RETURN size(voisins) AS c";
 
+#[cfg(feature = "cypher")]
 fn construire(fichiers: u64) -> ObrainDB {
     let db = ObrainDB::new_in_memory();
     let session = db.session();
@@ -65,6 +71,7 @@ fn construire(fichiers: u64) -> ObrainDB {
     db
 }
 
+#[cfg(feature = "cypher")]
 fn main() {
     let tailles: Vec<u64> = std::env::args()
         .skip(1)
@@ -191,4 +198,11 @@ fn main() {
             println!("---");
         }
     }
+}
+
+/// Sans la feature `cypher`, l'exemple n'a rien à mesurer : il compile quand même
+/// (la CI construit tous les exemples avec les features par défaut).
+#[cfg(not(feature = "cypher"))]
+fn main() {
+    eprintln!("mesure_exists_lie : requiert --features cypher");
 }
