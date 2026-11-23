@@ -1,20 +1,29 @@
 //! Identité d'écrivain stable (`writer_id`), pour #334.
 //!
-//! Le `writer_id` identifie UN store écrivain, pas un processus : il est tiré
-//! une fois, persisté dans `writer.id` à côté de `substrate.meta`, et relu aux
-//! ouvertures suivantes. Il ne remplace pas l'identité de transaction MP-8
+//! Le `writer_id` identifie UN ÉCRIVAIN — un démon, un import, un banc —
+//! pas un store ni un processus : il est tiré une fois, persisté dans
+//! `writer.id` dans le répertoire d'état de cet écrivain, et relu à ses
+//! démarrages suivants. Il ne remplace pas l'identité de transaction MP-8
 //! (`identite_de_processus`, 31 bits, par ouverture) : il sert à attribuer
 //! une écriture à son auteur de façon stable, condition d'une règle de
 //! convergence (HLC + tie-break).
 //!
-//! Le fichier est séparé du `substrate.meta` exprès : ce dernier est un
-//! en-tête de taille figée (96 octets) ; y ajouter un champ imposerait une
-//! migration de format.
+//! PIÈGE : le répertoire est celui de l'ÉCRIVAIN, jamais celui du store. En
+//! écriture partagée, deux processus ouvrent le MÊME répertoire de store ;
+//! s'ils y lisaient `writer.id`, ils auraient le même identifiant et l'auteur
+//! d'une écriture serait indécidable. C'est pourquoi `SubstrateStore` ne
+//! déduit pas de `writer_id` de son chemin : l'appelant le fournit.
+//!
+//! Le fichier n'est pas un champ de `substrate.meta` : cet en-tête est de
+//! taille figée (96 octets), y ajouter un champ imposerait une migration de
+//! format — et l'identité d'un écrivain n'appartient de toute façon pas au
+//! store.
 
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-/// Nom du fichier qui porte le `writer_id` dans le répertoire du store.
+/// Nom du fichier qui porte le `writer_id` dans le répertoire d'état de
+/// l'écrivain.
 pub const FICHIER_WRITER_ID: &str = "writer.id";
 
 /// Valeurs qu'un `writer_id` ne doit jamais prendre : elles sont réservées par
@@ -41,11 +50,12 @@ fn tirer() -> u64 {
     }
 }
 
-/// Renvoie le `writer_id` du store situé dans `dir`, en le créant au premier
-/// appel. Les appels suivants sur le même répertoire rendent la même valeur.
+/// Renvoie le `writer_id` de l'écrivain dont le répertoire d'état est `dir`,
+/// en le créant au premier appel. Les appels suivants sur le même répertoire
+/// rendent la même valeur : même répertoire = même écrivain, par définition.
 ///
-/// À n'appeler que sur un store ouvert en écriture : la création écrit
-/// `writer.id`.
+/// `dir` est le répertoire de l'ÉCRIVAIN, pas celui du store (voir le piège
+/// en tête de module). La création écrit `writer.id` dans `dir`.
 ///
 /// # Errors
 ///
@@ -98,10 +108,10 @@ pub fn writer_id(dir: &Path) -> io::Result<u64> {
 mod tests {
     use super::*;
 
-    /// Critère d'acceptation de l'étape 1 de #334 : deux ouvertures du MÊME
-    /// store rendent le même `writer_id`.
+    /// Critère d'acceptation de l'étape 1 de #334 : deux démarrages du MÊME
+    /// écrivain (même répertoire d'état) rendent le même `writer_id`.
     #[test]
-    fn meme_store_meme_writer_id() {
+    fn meme_repertoire_meme_writer_id() {
         let dir = tempfile::tempdir().unwrap();
         let premier = writer_id(dir.path()).unwrap();
         let second = writer_id(dir.path()).unwrap();
@@ -109,12 +119,32 @@ mod tests {
         assert!(!valeur_reservee(premier));
     }
 
-    /// Deux stores distincts reçoivent deux identités distinctes.
+    /// Deux écrivains distincts (deux répertoires d'état) reçoivent deux
+    /// identités distinctes.
     #[test]
-    fn stores_distincts_writer_ids_distincts() {
+    fn repertoires_distincts_writer_ids_distincts() {
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
         assert_ne!(writer_id(a.path()).unwrap(), writer_id(b.path()).unwrap());
+    }
+
+    /// Le scénario de #334 : deux écrivains sur le MÊME store, chacun avec
+    /// son répertoire d'état. Ils restent distinguables. Le même test écrit
+    /// avec le répertoire du store à la place rendrait un seul identifiant
+    /// pour les deux — c'est le piège nommé en tête de module.
+    #[test]
+    fn deux_ecrivains_sur_le_meme_store_restent_distincts() {
+        let store = tempfile::tempdir().unwrap();
+        let etat_a = tempfile::tempdir().unwrap();
+        let etat_b = tempfile::tempdir().unwrap();
+        let a = writer_id(etat_a.path()).unwrap();
+        let b = writer_id(etat_b.path()).unwrap();
+        assert_ne!(
+            a, b,
+            "deux écrivains du même store doivent rester distincts"
+        );
+        // Le répertoire du store ne porte aucun writer.id : il n'en a pas.
+        assert!(!store.path().join(FICHIER_WRITER_ID).exists());
     }
 
     /// Un fichier corrompu (mauvaise taille) est refusé, pas réinterprété.
