@@ -185,6 +185,57 @@ pub(crate) fn verrouiller_fichier(_fichier: &File, _exclusif: bool) -> std::io::
     Ok(())
 }
 
+/// Verrou de REJEU, tenu pendant le rejeu du WAL et la vérification des
+/// compteurs d'ouverture (2026-11-23).
+///
+/// Pourquoi un verrou À PART, et pas le verrou du répertoire : celui-ci est
+/// tenu à vie par le store, et le monter en exclusif en cours de route
+/// contredirait les règles de non-cohabitation de `acquerir_verrou_repertoire`.
+/// Ce verrou-ci est une feuille : il ne protège que la fenêtre « rejouer puis
+/// recompter », il est pris en bloquant, et il est relâché au `drop`.
+///
+/// Défaut qu'il ferme : deux écrivains qui rouvrent la même base rejouent
+/// chacun leurs tombstones dans les zones PARTAGÉES ; un troisième qui compte
+/// pendant ce temps voit un état transitoire. Mesuré sur
+/// `ecriture_multi_processus` : deux scans du même `hw` rendant 456 et 451,
+/// puis `count(RoleD) = 95` au lieu de 90.
+///
+/// Coût : nul quand le WAL n'a rien à rejouer (l'appelant ne le prend pas).
+pub(crate) fn verrou_rejeu_bloquant(repertoire: &Path) -> std::io::Result<File> {
+    let chemin = repertoire.join(".replay.lock");
+    let fichier = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&chemin)?;
+    verrouiller_bloquant_exclusif(&fichier)?;
+    Ok(fichier)
+}
+
+#[cfg(unix)]
+fn verrouiller_bloquant_exclusif(fichier: &File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: `flock` est un appel système sans effet sur la mémoire du
+    // processus ; le descripteur est valide tant que `fichier` vit.
+    let rc = unsafe { libc::flock(fichier.as_raw_fd(), libc::LOCK_EX) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
+fn verrouiller_bloquant_exclusif(fichier: &File) -> std::io::Result<()> {
+    use fs2::FileExt;
+    fichier.lock_exclusive()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn verrouiller_bloquant_exclusif(_fichier: &File) -> std::io::Result<()> {
+    Ok(())
+}
+
 #[cfg(unix)]
 pub(crate) fn deverrouiller_fichier(fichier: &File) -> std::io::Result<()> {
     use std::os::unix::io::AsRawFd;
