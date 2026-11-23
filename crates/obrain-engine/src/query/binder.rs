@@ -2419,3 +2419,802 @@ mod tests {
         );
     }
 }
+
+/// Tests de couverture du lieur : `BindingContext`, les bras de
+/// `bind_operator` que les tests existants ne construisent pas (scan d'arêtes,
+/// jointures, agrégat, ensemblistes, `Apply` et ses colonnes de sous-plan,
+/// `Union` et l'arité de ses branches, `Bind`, `MapCollect`, `MergeRelationship`,
+/// `CreateExternalEdge`, `ParameterScan`, `CallProcedure`, `LoadData`,
+/// opérateurs de graphe), les variables de chemin de `bind_expand`, les formes
+/// d'expression de `validate_expression` et les types inférés d'un alias de
+/// `RETURN`. Plans construits à la main, aucune requête analysée.
+#[cfg(test)]
+mod tests_couverture_binder {
+    #[allow(clippy::wildcard_imports)]
+    use crate::query::plan::*;
+    use obrain_common::types::Value;
+
+    use super::*;
+
+    fn var(name: &str) -> LogicalExpression {
+        LogicalExpression::Variable(name.into())
+    }
+
+    fn int(n: i64) -> LogicalExpression {
+        LogicalExpression::Literal(Value::Int64(n))
+    }
+
+    fn prop(variable: &str, property: &str) -> LogicalExpression {
+        LogicalExpression::Property {
+            variable: variable.into(),
+            property: property.into(),
+        }
+    }
+
+    fn scan(variable: &str) -> LogicalOperator {
+        LogicalOperator::NodeScan(NodeScanOp {
+            variable: variable.into(),
+            label: None,
+            input: None,
+            pushdown_hint: None,
+        })
+    }
+
+    fn boxed_scan(variable: &str) -> Box<LogicalOperator> {
+        Box::new(scan(variable))
+    }
+
+    fn retour(
+        items: Vec<(LogicalExpression, Option<&str>)>,
+        input: Box<LogicalOperator>,
+    ) -> LogicalOperator {
+        LogicalOperator::Return(ReturnOp {
+            items: items
+                .into_iter()
+                .map(|(expression, alias)| ReturnItem {
+                    expression,
+                    alias: alias.map(str::to_string),
+                })
+                .collect(),
+            distinct: false,
+            input,
+        })
+    }
+
+    fn lie(op: LogicalOperator) -> Result<BindingContext> {
+        Binder::new().bind(&LogicalPlan::new(op))
+    }
+
+    fn contexte(op: LogicalOperator) -> BindingContext {
+        lie(op).expect("liaison sans erreur")
+    }
+
+    fn erreur(op: LogicalOperator, attendu: &str) {
+        let err = lie(op).expect_err(attendu);
+        let texte = format!("{err:?}");
+        assert!(texte.contains(attendu), "{texte}");
+    }
+
+    fn filtre(predicate: LogicalExpression) -> LogicalOperator {
+        LogicalOperator::Filter(FilterOp {
+            predicate,
+            input: boxed_scan("n"),
+            pushdown_hint: None,
+        })
+    }
+
+    // --- BindingContext ---
+
+    #[test]
+    fn binding_context_ordre_remplacement_et_retrait() {
+        let mut ctx = BindingContext::new();
+        assert!(ctx.is_empty());
+        assert_eq!(ctx.len(), 0);
+        let info = |name: &str, is_node: bool| VariableInfo {
+            name: name.into(),
+            data_type: if is_node {
+                LogicalType::Node
+            } else {
+                LogicalType::Any
+            },
+            is_node,
+            is_edge: false,
+        };
+        ctx.add_variable("b".into(), info("b", true));
+        ctx.add_variable("a".into(), info("a", false));
+        ctx.add_variable("b".into(), info("b", false));
+        assert_eq!(ctx.len(), 2, "réinsérer remplace sans dupliquer");
+        assert_eq!(
+            ctx.variable_names(),
+            ["b".to_string(), "a".to_string()],
+            "ordre d'insertion conservé"
+        );
+        assert!(
+            !ctx.get("b").unwrap().is_node,
+            "la seconde définition remplace la première"
+        );
+        assert!(ctx.contains("a"));
+        assert!(!ctx.contains("z"));
+        assert!(ctx.get("z").is_none());
+        ctx.remove_variable("b");
+        assert_eq!(ctx.variable_names(), ["a".to_string()]);
+        assert!(!ctx.contains("b"));
+        ctx.remove_variable("inconnue");
+        assert_eq!(ctx.len(), 1);
+
+        let defaut = Binder::default()
+            .bind(&LogicalPlan::new(scan("n")))
+            .unwrap();
+        assert!(defaut.get("n").unwrap().is_node);
+    }
+
+    // --- bind_operator : opérateurs non construits par les tests existants ---
+
+    #[test]
+    fn scan_d_aretes_lie_une_variable_d_arete() {
+        let ctx = contexte(LogicalOperator::EdgeScan(EdgeScanOp {
+            variable: "r".into(),
+            edge_types: vec![],
+            input: Some(boxed_scan("n")),
+        }));
+        let r = ctx.get("r").expect("r liée");
+        assert!(r.is_edge && !r.is_node);
+        assert_eq!(r.data_type, LogicalType::Edge);
+        assert!(ctx.contains("n"), "l'entrée a été liée d'abord");
+    }
+
+    #[test]
+    fn pagination_distinct_et_vide() {
+        let ctx = contexte(LogicalOperator::Limit(LimitOp {
+            count: 1usize.into(),
+            input: Box::new(LogicalOperator::Skip(SkipOp {
+                count: 2usize.into(),
+                input: Box::new(LogicalOperator::Distinct(DistinctOp {
+                    input: boxed_scan("n"),
+                    columns: None,
+                })),
+            })),
+        }));
+        assert!(ctx.contains("n"));
+        assert!(contexte(LogicalOperator::Empty).is_empty());
+    }
+
+    #[test]
+    fn jointure_valide_ses_conditions() {
+        let jointure = |condition: LogicalExpression| {
+            LogicalOperator::Join(JoinOp {
+                left: boxed_scan("a"),
+                right: boxed_scan("b"),
+                join_type: JoinType::Inner,
+                conditions: vec![JoinCondition {
+                    left: prop("a", "id"),
+                    right: condition,
+                }],
+            })
+        };
+        let ctx = contexte(jointure(prop("b", "id")));
+        assert!(ctx.contains("a") && ctx.contains("b"));
+        erreur(
+            jointure(prop("z", "id")),
+            "Undefined variable 'z' in property access",
+        );
+    }
+
+    #[test]
+    fn jointure_gauche_anti_et_ensemblistes() {
+        let ctx = contexte(LogicalOperator::LeftJoin(LeftJoinOp {
+            left: boxed_scan("a"),
+            right: boxed_scan("b"),
+            condition: Some(prop("a", "x")),
+        }));
+        assert!(ctx.contains("a") && ctx.contains("b"));
+        erreur(
+            LogicalOperator::LeftJoin(LeftJoinOp {
+                left: boxed_scan("a"),
+                right: boxed_scan("b"),
+                condition: Some(var("z")),
+            }),
+            "Undefined variable 'z'",
+        );
+        assert!(
+            contexte(LogicalOperator::LeftJoin(LeftJoinOp {
+                left: boxed_scan("a"),
+                right: boxed_scan("b"),
+                condition: None,
+            }))
+            .contains("b")
+        );
+
+        let deux_cotes: Vec<LogicalOperator> = vec![
+            LogicalOperator::AntiJoin(AntiJoinOp {
+                left: boxed_scan("a"),
+                right: boxed_scan("b"),
+            }),
+            LogicalOperator::Except(ExceptOp {
+                left: boxed_scan("a"),
+                right: boxed_scan("b"),
+                all: false,
+            }),
+            LogicalOperator::Intersect(IntersectOp {
+                left: boxed_scan("a"),
+                right: boxed_scan("b"),
+                all: true,
+            }),
+            LogicalOperator::Otherwise(OtherwiseOp {
+                left: boxed_scan("a"),
+                right: boxed_scan("b"),
+            }),
+        ];
+        for op in deux_cotes {
+            let nom = op.display_label();
+            let ctx = contexte(op);
+            assert!(ctx.contains("a") && ctx.contains("b"), "{nom}");
+        }
+    }
+
+    #[test]
+    fn agregat_lie_les_alias_et_les_cles_calculees() {
+        let agregat = |expression: Option<LogicalExpression>| {
+            LogicalOperator::Aggregate(AggregateOp {
+                group_by: vec![prop("n", "city"), var("n")],
+                aggregates: vec![
+                    AggregateExpr {
+                        function: AggregateFunction::Count,
+                        expression,
+                        expression2: None,
+                        distinct: false,
+                        alias: Some("nb".into()),
+                        percentile: None,
+                        separator: None,
+                    },
+                    AggregateExpr {
+                        function: AggregateFunction::Sum,
+                        expression: Some(prop("n", "age")),
+                        expression2: None,
+                        distinct: false,
+                        alias: None,
+                        percentile: None,
+                        separator: None,
+                    },
+                ],
+                input: boxed_scan("n"),
+                having: None,
+                semantics: obrain_core::execution::operators::AggregateSemantics::default(),
+            })
+        };
+        let ctx = contexte(agregat(None));
+        assert!(ctx.contains("nb"), "alias d'agrégat lié");
+        assert!(ctx.contains("n"), "clé nominale déjà liée, pas dupliquée");
+        let cles =
+            crate::query::planner::common::group_key_column_names(&[prop("n", "city"), var("n")]);
+        for cle in &cles {
+            assert!(ctx.contains(cle), "clé calculée {cle} liée");
+        }
+        erreur(agregat(Some(var("z"))), "Undefined variable 'z'");
+    }
+
+    #[test]
+    fn union_exige_la_meme_arite_entre_branches() {
+        let branche = |n: usize| {
+            let items = (0..n).map(|i| (int(i as i64), None)).collect();
+            retour(items, boxed_scan("n"))
+        };
+        assert!(
+            contexte(LogicalOperator::Union(UnionOp {
+                inputs: vec![branche(2), branche(2)],
+            }))
+            .contains("n")
+        );
+        erreur(
+            LogicalOperator::Union(UnionOp {
+                inputs: vec![branche(2), branche(3)],
+            }),
+            "UNION branches must return the same number of columns (left: 2, right: 3)",
+        );
+        // L'arité se lit à travers Distinct / Sort / Limit / Skip ; une branche
+        // sans RETURN n'a pas d'arité connue et n'est pas comparée.
+        let enveloppee = LogicalOperator::Distinct(DistinctOp {
+            input: Box::new(LogicalOperator::Sort(SortOp {
+                keys: vec![],
+                input: Box::new(LogicalOperator::Limit(LimitOp {
+                    count: 1usize.into(),
+                    input: Box::new(LogicalOperator::Skip(SkipOp {
+                        count: 0usize.into(),
+                        input: Box::new(branche(1)),
+                    })),
+                })),
+            })),
+            columns: None,
+        });
+        erreur(
+            LogicalOperator::Union(UnionOp {
+                inputs: vec![branche(2), enveloppee],
+            }),
+            "(left: 2, right: 1)",
+        );
+        assert!(
+            contexte(LogicalOperator::Union(UnionOp {
+                inputs: vec![branche(2), scan("m"), branche(2)],
+            }))
+            .contains("m")
+        );
+    }
+
+    #[test]
+    fn bind_et_map_collect_lient_leur_variable() {
+        let ctx = contexte(LogicalOperator::Bind(BindOp {
+            expression: prop("n", "age"),
+            variable: "age".into(),
+            input: boxed_scan("n"),
+        }));
+        assert_eq!(ctx.get("age").unwrap().data_type, LogicalType::Any);
+        erreur(
+            LogicalOperator::Bind(BindOp {
+                expression: var("z"),
+                variable: "x".into(),
+                input: boxed_scan("n"),
+            }),
+            "Undefined variable 'z'",
+        );
+        let ctx = contexte(LogicalOperator::MapCollect(MapCollectOp {
+            key_var: "k".into(),
+            value_var: "v".into(),
+            alias: "m".into(),
+            input: boxed_scan("n"),
+        }));
+        assert!(ctx.contains("m") && ctx.contains("n"));
+    }
+
+    #[test]
+    fn merge_relationship_exige_source_et_cible_liees() {
+        let merge = |source: &str, target: &str, on_match: LogicalExpression| {
+            LogicalOperator::MergeRelationship(MergeRelationshipOp {
+                variable: "r".into(),
+                source_variable: source.into(),
+                target_variable: target.into(),
+                edge_type: "KNOWS".into(),
+                match_properties: vec![("a".into(), int(1))],
+                on_create: vec![("b".into(), int(2))],
+                on_match: vec![("c".into(), on_match)],
+                input: Box::new(LogicalOperator::Join(JoinOp {
+                    left: boxed_scan("a"),
+                    right: boxed_scan("b"),
+                    join_type: JoinType::Cross,
+                    conditions: vec![],
+                })),
+            })
+        };
+        let ctx = contexte(merge("a", "b", int(3)));
+        let r = ctx.get("r").expect("relation liée");
+        assert!(r.is_edge);
+        assert_eq!(r.data_type, LogicalType::Edge);
+        erreur(
+            merge("z", "b", int(3)),
+            "Undefined variable 'z' in MERGE relationship source",
+        );
+        erreur(
+            merge("a", "z", int(3)),
+            "Undefined variable 'z' in MERGE relationship target",
+        );
+        erreur(merge("a", "b", var("z")), "Undefined variable 'z'");
+    }
+
+    #[test]
+    fn arete_inter_bases_exige_une_source_liee() {
+        let externe = |from: &str| {
+            LogicalOperator::CreateExternalEdge(CreateExternalEdgeOp {
+                from_variable: from.into(),
+                edge_type: "REF".into(),
+                to_host: None,
+                to_store: "s".into(),
+                to_key: "k".into(),
+                merge: false,
+                input: boxed_scan("a"),
+            })
+        };
+        assert!(contexte(externe("a")).contains("a"));
+        erreur(
+            externe("z"),
+            "Undefined variable 'z' (source d'une arete inter-bases)",
+        );
+    }
+
+    #[test]
+    fn apply_rend_visibles_les_colonnes_du_sous_plan() {
+        let sous_plan = LogicalOperator::Distinct(DistinctOp {
+            input: Box::new(LogicalOperator::Sort(SortOp {
+                keys: vec![],
+                input: Box::new(LogicalOperator::Limit(LimitOp {
+                    count: 5usize.into(),
+                    input: Box::new(retour(
+                        vec![
+                            (var("m"), Some("alias_m")),
+                            (var("m"), None),
+                            (prop("m", "name"), None),
+                            (int(1), None),
+                        ],
+                        boxed_scan("m"),
+                    )),
+                })),
+            })),
+            columns: None,
+        });
+        let ctx = contexte(LogicalOperator::Apply(ApplyOp {
+            input: boxed_scan("n"),
+            subplan: Box::new(sous_plan),
+            shared_variables: vec![],
+            optional: false,
+        }));
+        for colonne in ["alias_m", "m", "m.name"] {
+            assert!(ctx.contains(colonne), "{colonne} visible après Apply");
+        }
+        assert_eq!(ctx.get("alias_m").unwrap().data_type, LogicalType::Any);
+
+        let agregat = LogicalOperator::Aggregate(AggregateOp {
+            group_by: vec![],
+            aggregates: vec![AggregateExpr {
+                function: AggregateFunction::Count,
+                expression: None,
+                expression2: None,
+                distinct: false,
+                alias: Some("total".into()),
+                percentile: None,
+                separator: None,
+            }],
+            input: boxed_scan("m"),
+            having: None,
+            semantics: obrain_core::execution::operators::AggregateSemantics::default(),
+        });
+        let ctx = contexte(LogicalOperator::Apply(ApplyOp {
+            input: boxed_scan("n"),
+            subplan: Box::new(agregat),
+            shared_variables: vec![],
+            optional: true,
+        }));
+        assert!(ctx.contains("total"));
+
+        // Sous-plan sans projection : rien d'autre que ses propres variables.
+        let ctx = contexte(LogicalOperator::Apply(ApplyOp {
+            input: boxed_scan("n"),
+            subplan: boxed_scan("m"),
+            shared_variables: vec![],
+            optional: false,
+        }));
+        assert_eq!(ctx.len(), 2);
+    }
+
+    #[test]
+    fn multi_way_join_valide_ses_conditions() {
+        let multi = |condition: LogicalExpression| {
+            LogicalOperator::MultiWayJoin(MultiWayJoinOp {
+                inputs: vec![scan("a"), scan("b"), scan("c")],
+                conditions: vec![JoinCondition {
+                    left: prop("a", "id"),
+                    right: condition,
+                }],
+                shared_variables: vec![],
+            })
+        };
+        let ctx = contexte(multi(prop("c", "id")));
+        assert_eq!(ctx.len(), 3);
+        erreur(multi(var("z")), "Undefined variable 'z'");
+    }
+
+    #[test]
+    fn parameter_scan_call_procedure_et_load_data_lient_leurs_colonnes() {
+        let ctx = contexte(LogicalOperator::ParameterScan(ParameterScanOp {
+            columns: vec!["p1".into(), "p2".into()],
+        }));
+        assert!(ctx.get("p1").unwrap().is_node && ctx.contains("p2"));
+
+        let ctx = contexte(LogicalOperator::CallProcedure(CallProcedureOp {
+            name: vec!["obrain".into(), "proc".into()],
+            arguments: vec![],
+            yield_items: Some(vec![
+                ProcedureYield {
+                    field_name: "score".into(),
+                    alias: None,
+                },
+                ProcedureYield {
+                    field_name: "node".into(),
+                    alias: Some("n".into()),
+                },
+            ]),
+        }));
+        assert!(ctx.contains("score") && ctx.contains("n") && !ctx.contains("node"));
+        assert!(
+            contexte(LogicalOperator::CallProcedure(CallProcedureOp {
+                name: vec!["p".into()],
+                arguments: vec![],
+                yield_items: None,
+            }))
+            .is_empty()
+        );
+
+        let ctx = contexte(LogicalOperator::LoadData(LoadDataOp {
+            format: LoadDataFormat::Csv,
+            with_headers: true,
+            path: "/tmp/x.csv".into(),
+            variable: "ligne".into(),
+            field_terminator: None,
+        }));
+        assert_eq!(ctx.get("ligne").unwrap().data_type, LogicalType::Any);
+    }
+
+    #[test]
+    fn operateurs_de_graphe_et_agregat_horizontal_ne_lient_rien() {
+        let vide = contexte(LogicalOperator::ClearGraph(ClearGraphOp {
+            graph: None,
+            silent: true,
+        }));
+        assert!(vide.is_empty());
+        let vide = contexte(LogicalOperator::CreatePropertyGraph(
+            CreatePropertyGraphOp {
+                name: "g".into(),
+                node_tables: vec![],
+                edge_tables: vec![],
+            },
+        ));
+        assert!(vide.is_empty());
+        let vide = contexte(LogicalOperator::HorizontalAggregate(
+            HorizontalAggregateOp {
+                list_column: "l".into(),
+                entity_kind: EntityKind::Node,
+                function: AggregateFunction::Count,
+                property: "p".into(),
+                alias: "a".into(),
+                semantics: obrain_core::execution::operators::AggregateSemantics::default(),
+                input: boxed_scan("n"),
+            },
+        ));
+        assert!(
+            vide.is_empty(),
+            "l'agrégat horizontal ne lie même pas son entrée"
+        );
+    }
+
+    // --- bind_expand : variables d'arête et de chemin ---
+
+    #[test]
+    fn expand_lie_arete_et_variables_de_chemin() {
+        let ctx = contexte(LogicalOperator::Expand(ExpandOp {
+            from_variable: "n".into(),
+            to_variable: "m".into(),
+            edge_variable: Some("r".into()),
+            direction: ExpandDirection::Outgoing,
+            edge_types: vec![],
+            min_hops: 1,
+            max_hops: Some(3),
+            input: boxed_scan("n"),
+            path_alias: Some("p".into()),
+            path_mode: PathMode::Trail,
+        }));
+        assert_eq!(ctx.get("r").unwrap().data_type, LogicalType::Edge);
+        assert!(ctx.get("m").unwrap().is_node);
+        assert_eq!(ctx.get("p").unwrap().data_type, LogicalType::Any);
+        assert_eq!(
+            ctx.get("_path_length_p").unwrap().data_type,
+            LogicalType::Int64
+        );
+        assert_eq!(
+            ctx.get("_path_nodes_p").unwrap().data_type,
+            LogicalType::Any
+        );
+        assert_eq!(
+            ctx.get("_path_edges_p").unwrap().data_type,
+            LogicalType::Any
+        );
+        assert_eq!(ctx.len(), 7);
+    }
+
+    // --- validate_expression ---
+
+    #[test]
+    fn validation_etoile_parametre_litteral_et_formes_composees() {
+        assert!(contexte(filtre(var("*"))).contains("n"));
+        assert!(contexte(filtre(LogicalExpression::Parameter("p".into()))).contains("n"));
+        assert!(contexte(filtre(int(1))).contains("n"));
+        assert!(
+            contexte(filtre(LogicalExpression::Unary {
+                op: UnaryOp::Not,
+                operand: Box::new(var("n")),
+            }))
+            .contains("n")
+        );
+        erreur(
+            filtre(LogicalExpression::Unary {
+                op: UnaryOp::Not,
+                operand: Box::new(var("z")),
+            }),
+            "Undefined variable 'z'",
+        );
+        erreur(
+            filtre(LogicalExpression::FunctionCall {
+                name: "size".into(),
+                args: vec![var("n"), var("z")],
+                distinct: false,
+            }),
+            "Undefined variable 'z'",
+        );
+        erreur(
+            filtre(LogicalExpression::List(vec![var("n"), var("z")])),
+            "Undefined variable 'z'",
+        );
+        erreur(
+            filtre(LogicalExpression::IndexAccess {
+                base: Box::new(var("n")),
+                index: Box::new(var("z")),
+            }),
+            "Undefined variable 'z'",
+        );
+    }
+
+    #[test]
+    fn validation_des_comprehensions_predicats_et_sous_requetes() {
+        let comprehension = |liste: LogicalExpression| LogicalExpression::ListComprehension {
+            variable: "x".into(),
+            list_expr: Box::new(liste),
+            filter_expr: Some(Box::new(var("inconnue_ignoree"))),
+            map_expr: Box::new(var("x")),
+        };
+        assert!(contexte(filtre(comprehension(var("n")))).contains("n"));
+        erreur(filtre(comprehension(var("z"))), "Undefined variable 'z'");
+
+        let predicat = |liste: LogicalExpression| LogicalExpression::ListPredicate {
+            kind: ListPredicateKind::All,
+            variable: "x".into(),
+            list_expr: Box::new(liste),
+            predicate: Box::new(var("x")),
+        };
+        assert!(contexte(filtre(predicat(var("n")))).contains("n"));
+        erreur(filtre(predicat(var("z"))), "Undefined variable 'z'");
+
+        // Les sous-requêtes ne sont pas liées récursivement : une variable
+        // indéfinie à l'intérieur ne fait pas échouer la liaison.
+        let sous_plan = || Box::new(filtre(var("z")));
+        for sous_requete in [
+            LogicalExpression::ExistsSubquery(sous_plan()),
+            LogicalExpression::CountSubquery(sous_plan()),
+            LogicalExpression::ValueSubquery(sous_plan()),
+        ] {
+            assert!(contexte(filtre(sous_requete)).contains("n"));
+        }
+
+        // La compréhension de motif, elle, lie son sous-plan.
+        let motif = |projection: LogicalExpression| LogicalExpression::PatternComprehension {
+            subplan: boxed_scan("m"),
+            projection: Box::new(projection),
+        };
+        let ctx = contexte(filtre(motif(var("m"))));
+        assert!(
+            ctx.contains("m"),
+            "le sous-plan du motif est lié dans le contexte"
+        );
+        erreur(filtre(motif(var("z"))), "Undefined variable 'z'");
+    }
+
+    #[test]
+    fn validation_de_la_projection_de_map_et_du_reduce() {
+        let projection = |base: &str, entree: LogicalExpression| LogicalExpression::MapProjection {
+            base: base.into(),
+            entries: vec![
+                MapProjectionEntry::PropertySelector("name".into()),
+                MapProjectionEntry::LiteralEntry("k".into(), entree),
+                MapProjectionEntry::AllProperties,
+            ],
+        };
+        assert!(contexte(filtre(projection("n", int(1)))).contains("n"));
+        erreur(
+            filtre(projection("z", int(1))),
+            "Undefined variable 'z' in map projection",
+        );
+        erreur(filtre(projection("n", var("z"))), "Undefined variable 'z'");
+
+        let reduce = |initial: LogicalExpression,
+                      liste: LogicalExpression,
+                      expression: LogicalExpression| {
+            LogicalExpression::Reduce {
+                accumulator: "acc".into(),
+                initial: Box::new(initial),
+                variable: "x".into(),
+                list: Box::new(liste),
+                expression: Box::new(expression),
+            }
+        };
+        let somme = LogicalExpression::Binary {
+            left: Box::new(var("acc")),
+            op: BinaryOp::Add,
+            right: Box::new(var("x")),
+        };
+        let ctx = contexte(filtre(reduce(int(0), var("n"), somme.clone())));
+        assert!(
+            !ctx.contains("acc") && !ctx.contains("x"),
+            "acc et x retirés après le reduce"
+        );
+        erreur(
+            filtre(reduce(var("z"), var("n"), somme.clone())),
+            "Undefined variable 'z'",
+        );
+        erreur(
+            filtre(reduce(int(0), var("z"), somme.clone())),
+            "Undefined variable 'z'",
+        );
+        erreur(
+            filtre(reduce(int(0), var("n"), var("z"))),
+            "Undefined variable 'z'",
+        );
+
+        // acc déjà lié avant le reduce : il reste lié après.
+        let avec_acc = LogicalOperator::Filter(FilterOp {
+            predicate: reduce(int(0), var("n"), somme),
+            input: Box::new(LogicalOperator::Bind(BindOp {
+                expression: int(0),
+                variable: "acc".into(),
+                input: boxed_scan("n"),
+            })),
+            pushdown_hint: None,
+        });
+        assert!(contexte(avec_acc).contains("acc"));
+    }
+
+    // --- infer_expression_type via l'alias d'un RETURN ---
+
+    #[test]
+    fn type_infere_d_un_alias_de_return() {
+        let appel = |nom: &str| LogicalExpression::FunctionCall {
+            name: nom.into(),
+            args: vec![var("n")],
+            distinct: false,
+        };
+        let cas: Vec<(LogicalExpression, LogicalType)> = vec![
+            (var("n"), LogicalType::Node),
+            (var("_anon_x"), LogicalType::Any),
+            (prop("n", "age"), LogicalType::Any),
+            (
+                LogicalExpression::Literal(Value::Bool(true)),
+                LogicalType::Bool,
+            ),
+            (int(1), LogicalType::Int64),
+            (
+                LogicalExpression::Literal(Value::Float64(1.5)),
+                LogicalType::Float64,
+            ),
+            (
+                LogicalExpression::Literal(Value::String("s".into())),
+                LogicalType::String,
+            ),
+            (LogicalExpression::Literal(Value::Null), LogicalType::Any),
+            (
+                LogicalExpression::Binary {
+                    left: Box::new(int(1)),
+                    op: BinaryOp::Add,
+                    right: Box::new(int(2)),
+                },
+                LogicalType::Any,
+            ),
+            (
+                LogicalExpression::Unary {
+                    op: UnaryOp::Neg,
+                    operand: Box::new(int(1)),
+                },
+                LogicalType::Any,
+            ),
+            (appel("COUNT"), LogicalType::Int64),
+            (appel("sum"), LogicalType::Int64),
+            (appel("id"), LogicalType::Int64),
+            (appel("avg"), LogicalType::Float64),
+            (appel("type"), LogicalType::String),
+            (appel("labels"), LogicalType::Any),
+            (appel("collect"), LogicalType::Any),
+            (appel("size"), LogicalType::Any),
+            (LogicalExpression::List(vec![int(1)]), LogicalType::Any),
+            (LogicalExpression::Map(vec![]), LogicalType::Any),
+            (LogicalExpression::Parameter("p".into()), LogicalType::Any),
+        ];
+        for (expression, attendu) in cas {
+            let description = format!("{expression:?}");
+            let ctx = contexte(retour(vec![(expression, Some("x"))], boxed_scan("n")));
+            assert_eq!(ctx.get("x").unwrap().data_type, attendu, "{description}");
+        }
+    }
+}
