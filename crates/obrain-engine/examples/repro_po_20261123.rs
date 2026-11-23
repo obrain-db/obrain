@@ -22,11 +22,17 @@ fn joue(
     Ok((r.columns.clone(), r.rows.clone()))
 }
 
+/// Compare sans le bruit de formatage `Debug` (guillemets, enveloppe `String(..)`).
+#[cfg(feature = "cypher")]
+fn norm(s: &str) -> String {
+    s.replace("String(", "").replace(['"', '\\', ')'], "")
+}
+
 #[cfg(feature = "cypher")]
 fn cas(titre: &str, q: &str, attendu: &str, obtenu: Result<String, String>) {
     println!("\n### {titre}\n    {q}\n    attendu (Neo4j) : {attendu}");
     match obtenu {
-        Ok(s) if s == attendu => println!("    OK"),
+        Ok(s) if norm(&s) == norm(attendu) => println!("    OK"),
         Ok(s) => println!("    ÉCART : {s}"),
         Err(e) => println!("    ÉCART (erreur) : {}", e.lines().next().unwrap_or("")),
     }
@@ -68,7 +74,7 @@ fn main() {
         cas(
             "2. size([motif | x]) dans WHERE",
             q,
-            "1 ligne : [\"x\"]",
+            "1 ligne(s) : [\"x\"]",
             joue(&db, q).map(|(_, r)| {
                 format!(
                     "{} ligne(s) : {:?}",
@@ -184,9 +190,18 @@ fn main() {
             s.execute_cypher("CREATE (:N {name: 'a', emb: [0.1, 0.2, 0.3, 0.4]})-[:R]->(:N {name: 'b', emb: [0.4, 0.3, 0.2, 0.1]})")
                 .unwrap();
             let idx = db.create_vector_index("N", "emb", Some(4), Some("cosine"), None, None);
+            #[cfg(feature = "vector-index")]
+            let nom = idx.and_then(|()| db.name_vector_index("N_emb", "N", "emb"));
+            #[cfg(not(feature = "vector-index"))]
+            let nom = idx;
             println!(
-                "\n    (préparation) create_vector_index N.emb : {:?}",
-                idx.map(|()| "ok")
+                "\n    (préparation) create_vector_index + nom N_emb : {:?}",
+                nom.map(|()| "ok")
+            );
+            let q = "CALL db.index.vector.queryNodes('N_emb', 2, [0.1, 0.2, 0.3, 0.4]) YIELD node AS n, score RETURN n.name AS name, score";
+            println!(
+                "    (témoin, session ÉCRITURE, même base) queryNodes : {:?}",
+                joue(&db, q).map(|(_, r)| r.len())
             );
         }
         let db = ObrainDB::open_read_only(&dir).expect("ouverture lecture seule");
@@ -204,7 +219,7 @@ fn main() {
             (
                 "7c. CALL db.index.vector.queryNodes(...) en lecture seule",
                 "CALL db.index.vector.queryNodes('N_emb', 2, [0.1, 0.2, 0.3, 0.4]) YIELD node AS n, score RETURN n.name AS name, score ORDER BY score DESC",
-                "2 lignes, sans erreur",
+                "2 lignes, sans erreur (0 ligne aussi en session écriture : cause non élucidée)",
             ),
         ] {
             cas(
@@ -216,9 +231,8 @@ fn main() {
                     1 => format!(
                         "1 ligne : {}",
                         r[0].first().map_or("?".into(), |v| format!("{v:?}")
-                            .trim_matches('"')
                             .replace("String(", "")
-                            .replace(')', ""))
+                            .replace(['"', ')'], ""))
                     ),
                     n => format!("{n} lignes, sans erreur"),
                 }),
