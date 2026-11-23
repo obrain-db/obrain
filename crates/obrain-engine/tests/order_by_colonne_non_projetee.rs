@@ -15,6 +15,8 @@
 //! cargo test -p obrain-engine --features cypher --test order_by_colonne_non_projetee
 //! ```
 
+#![cfg(feature = "cypher")]
+
 use obrain_common::types::Value;
 use obrain_engine::ObrainDB;
 
