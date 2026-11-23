@@ -201,7 +201,26 @@ pub(crate) fn verrouiller_fichier(_fichier: &File, _exclusif: bool) -> std::io::
 /// puis `count(RoleD) = 95` au lieu de 90.
 ///
 /// Coût : nul quand le WAL n'a rien à rejouer (l'appelant ne le prend pas).
-pub(crate) fn verrou_rejeu_bloquant(repertoire: &Path) -> std::io::Result<File> {
+/// Répertoires dont CE processus tient déjà le verrou de rejeu.
+fn rejeu_tenus() -> &'static std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>> {
+    static TENUS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
+    > = std::sync::OnceLock::new();
+    TENUS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+pub(crate) fn verrou_rejeu_bloquant(repertoire: &Path) -> std::io::Result<VerrouRejeu> {
+    let tenus = rejeu_tenus();
+
+    let cle = std::fs::canonicalize(repertoire).unwrap_or_else(|_| repertoire.to_path_buf());
+    // Le registre est tenu PENDANT la prise du verrou : `flock` n'est pas
+    // réentrant entre descripteurs d'un même processus, donc deux threads qui
+    // passeraient ensemble le test d'appartenance se bloqueraient l'un l'autre.
+    let mut pris = tenus.lock().unwrap_or_else(|e| e.into_inner());
+    if pris.contains(&cle) {
+        // Déjà tenu par CE processus : le rejeu est de toute façon le sien.
+        return Ok(VerrouRejeu { fichier: None, cle });
+    }
     let chemin = repertoire.join(".replay.lock");
     let fichier = std::fs::OpenOptions::new()
         .create(true)
@@ -210,7 +229,29 @@ pub(crate) fn verrou_rejeu_bloquant(repertoire: &Path) -> std::io::Result<File> 
         .truncate(false)
         .open(&chemin)?;
     verrouiller_bloquant_exclusif(&fichier)?;
-    Ok(fichier)
+    pris.insert(cle.clone());
+    Ok(VerrouRejeu {
+        fichier: Some(fichier),
+        cle,
+    })
+}
+
+/// Garde du verrou de rejeu : relâche le `flock` au `drop`, et oublie la clé
+/// pour qu'une ouverture ultérieure du MÊME processus puisse le reprendre.
+pub(crate) struct VerrouRejeu {
+    fichier: Option<File>,
+    cle: std::path::PathBuf,
+}
+
+impl Drop for VerrouRejeu {
+    fn drop(&mut self) {
+        if let Some(fichier) = self.fichier.take() {
+            drop(fichier); // relâche le flock
+            if let Ok(mut pris) = rejeu_tenus().lock() {
+                pris.remove(&self.cle);
+            }
+        }
+    }
 }
 
 #[cfg(unix)]

@@ -8556,7 +8556,7 @@ impl SubstrateStore {
         let mut remaps_au_rejeu: u32 = 0;
         // (2026-11-23) Verrou de rejeu : tenu du rejeu jusqu'à la vérification
         // des compteurs. Voir `file::verrou_rejeu_bloquant`.
-        let mut verrou_rejeu: Option<std::fs::File> = None;
+        let mut verrou_rejeu: Option<crate::file::VerrouRejeu> = None;
         {
             let substrate_arc = store.writer.substrate();
             let guard = substrate_arc.lock();
