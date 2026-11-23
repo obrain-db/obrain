@@ -41,10 +41,10 @@ fn main() -> Result<(), BoxErr> {
     // 1. Combien de nœuds portent chaque nom court ?
     let mut par_nom: HashMap<&str, usize> = HashMap::new();
     for n in g.nodes() {
-        if matches!(n.kind, NodeKind::Function | NodeKind::Method) {
-            if let Some(nom) = n.props.name.as_deref() {
-                *par_nom.entry(nom).or_insert(0) += 1;
-            }
+        if matches!(n.kind, NodeKind::Function | NodeKind::Method)
+            && let Some(nom) = n.props.name.as_deref()
+        {
+            *par_nom.entry(nom).or_insert(0) += 1;
         }
     }
     let noms_ambigus = par_nom.values().filter(|c| **c > 1).count();
@@ -200,7 +200,7 @@ fn main() -> Result<(), BoxErr> {
             continue;
         }
         verif += 1;
-        let Ok(texte) = std::fs::read_to_string(&root.join(chemin)) else {
+        let Ok(texte) = std::fs::read_to_string(root.join(chemin)) else {
             continue;
         };
         let present = texte.contains(nom_dst);
