@@ -351,3 +351,7 @@ required-features = ["cypher"]
 [[test]]
 name = "sous_requete_exists_count"
 required-features = ["cypher"]
+
+[[example]]
+name = "mesure_conductance"
+required-features = ["algos"]
