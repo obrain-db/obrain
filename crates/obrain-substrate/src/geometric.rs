@@ -875,7 +875,7 @@ pub fn heat_step_weighted(
     state: &mut [f32],
     dt: f32,
 ) -> SubstrateResult<()> {
-    let csr = CsrAdjacency::build(store);
+    let csr = store.csr_cached();
     heat_step_weighted_csr(&csr, state, dt)
 }
 
@@ -974,7 +974,7 @@ pub fn heat_step_unweighted(
     state: &mut [f32],
     dt: f32,
 ) -> SubstrateResult<()> {
-    let csr = CsrAdjacency::build(store);
+    let csr = store.csr_cached();
     heat_step_unweighted_csr(&csr, state, dt)
 }
 
@@ -990,7 +990,7 @@ pub fn heat_diffuse_unweighted(
     dt: f32,
     n_steps: usize,
 ) -> SubstrateResult<()> {
-    let csr = CsrAdjacency::build(store);
+    let csr = store.csr_cached();
     for _ in 0..n_steps {
         heat_step_unweighted_csr(&csr, state, dt)?;
     }
@@ -1168,7 +1168,7 @@ pub const HKS_DT: f32 = 0.125;
 /// Single CSR snapshot is taken at the top; caller reuses it across
 /// multiple `t` values by calling [`heat_kernel_signature_with_csr`].
 pub fn heat_kernel_signature(store: &SubstrateStore, t: f32) -> SubstrateResult<Vec<f32>> {
-    let csr = CsrAdjacency::build(store);
+    let csr = store.csr_cached();
     heat_kernel_signature_with_csr(&csr, t)
 }
 
@@ -1393,7 +1393,7 @@ pub fn heat_kernel_signature_with_csr(csr: &CsrAdjacency, t: f32) -> SubstrateRe
 /// One CSR build, one shared Chebyshev sequence per probe evaluated at the
 /// three timescales (the largest, `t_global = 10`, sets the degree ≈ 45).
 pub fn compute_hks_descriptors(store: &SubstrateStore) -> SubstrateResult<Vec<[f32; 3]>> {
-    let csr = CsrAdjacency::build(store);
+    let csr = store.csr_cached();
     let hs = heat_kernel_signatures_multi(&csr, &[HKS_T_LOCAL, HKS_T_MESO, HKS_T_GLOBAL]);
     let hw = csr.slot_high_water as usize;
     let mut out = vec![[0.0_f32; 3]; hw];
@@ -1507,7 +1507,7 @@ pub fn geodesic_distance_csr(csr: &CsrAdjacency, src: u32, dst: u32) -> Option<f
 /// the CSR internally — callers doing many queries should prefer
 /// [`geodesic_distance_csr`] with a reusable snapshot.
 pub fn geodesic_distance(store: &SubstrateStore, src: NodeId, dst: NodeId) -> Option<f32> {
-    let csr = CsrAdjacency::build(store);
+    let csr = store.csr_cached();
     geodesic_distance_csr(&csr, src.0 as u32, dst.0 as u32)
 }
 
@@ -1635,7 +1635,7 @@ pub fn effective_resistance_csr(
 /// resistance queries should reuse [`effective_resistance_csr`] against
 /// a single snapshot.
 pub fn effective_resistance(store: &SubstrateStore, u: NodeId, v: NodeId) -> Option<f32> {
-    let csr = CsrAdjacency::build(store);
+    let csr = store.csr_cached();
     effective_resistance_csr(&csr, u.0 as u32, v.0 as u32, 200, 1e-5)
 }
 

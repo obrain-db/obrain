@@ -2058,6 +2058,11 @@ pub struct SubstrateStore {
     next_engram_id: AtomicU16,
     /// Reverse-adjacence PART_OF (session -> messages) — voir `ReversePartOf`.
     reverse_part_of: parking_lot::RwLock<Option<ReversePartOf>>,
+    /// Cache du CSR figé par `feature_epoch` (#292).
+    ///
+    /// `CsrAdjacency::build` coûte **238 ms** mesurés sur 5,11 M d'arêtes
+    /// (`examples/mesure_csr.rs`), et `geometric.rs` l'appelle 7 fois.
+    csr_cache: parking_lot::RwLock<Option<(u64, std::sync::Arc<crate::geometric::CsrAdjacency>)>>,
     /// Dedicated property map for nodes (T17e Phase 2). Entries are only
     /// materialised when a property is actually set — nodes without
     /// properties pay zero anon-RSS here. Pruned on `delete_node` to
@@ -8275,6 +8280,7 @@ impl SubstrateStore {
             fin_arete: AtomicU64::new(0),
             verrou_rechargement_noeud: Mutex::new(()),
             verrou_rechargement_arete: Mutex::new(()),
+            csr_cache: parking_lot::RwLock::new(None),
             registres_partages,
             reverse_part_of: parking_lot::RwLock::new(None),
             node_properties: DashMap::new(),
@@ -25350,6 +25356,40 @@ impl SubstrateStore {
         }
     }
 
+    /// CSR partagé, reconstruit SEULEMENT si `feature_epoch` a bougé (#292).
+    ///
+    /// Mesuré : `CsrAdjacency::build` = **238 ms** sur 5,11 M d'arêtes
+    /// (`examples/mesure_csr.rs`), appelé 7 fois par `geometric.rs`.
+    ///
+    /// `feature_epoch` est incrémenté par `note_feature_mutation()`, appelé
+    /// par `ecrire_node` et `ecrire_edge` : toute création, suppression ou
+    /// réécriture de nœud/arête le fait avancer. C'est ce qui rend le cache
+    /// sûr — un CSR périmé fausserait SILENCIEUSEMENT HKS, Ricci, le pas de
+    /// chaleur, la résistance effective et les géodésiques.
+    ///
+    /// Un appelant qui aurait besoin d'un instantané strictement cohérent avec
+    /// un état donné doit continuer d'appeler `CsrAdjacency::build` : le cache
+    /// ne promet pas l'atomicité entre l'epoch lu et le build.
+    pub fn csr_cached(&self) -> std::sync::Arc<crate::geometric::CsrAdjacency> {
+        let epoch = {
+            let sub = self.substrate.lock();
+            sub.feature_epoch.load(std::sync::atomic::Ordering::Acquire)
+        };
+        {
+            let cache = self.csr_cache.read();
+            if let Some((e, csr)) = cache.as_ref()
+                && *e == epoch
+            {
+                return std::sync::Arc::clone(csr);
+            }
+        }
+        // Construit HORS du verrou du cache : `build` lit les zones et prend
+        // ses propres verrous, et `parking_lot::RwLock` n'est pas réentrant.
+        let csr = std::sync::Arc::new(crate::geometric::CsrAdjacency::build(self));
+        *self.csr_cache.write() = Some((epoch, std::sync::Arc::clone(&csr)));
+        csr
+    }
+
     /// T17h T1 — snapshot current in-memory counter atomics into a
     /// `PersistedCounters` block suitable for v5 dict serialization.
     /// Called by `build_dict_snapshot` at flush time.
@@ -27657,6 +27697,43 @@ impl Drop for SubstrateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #292 — LE test qui protège le cache. Un CSR périmé fausserait
+    /// SILENCIEUSEMENT HKS, Ricci, le pas de chaleur, la résistance effective
+    /// et les géodésiques : l'invalidation est la condition de sûreté.
+    #[test]
+    fn csr_cache_est_invalide_par_une_mutation() {
+        use obrain_core::graph::traits::GraphStoreMut;
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+        let a = s.create_node(&["N"]);
+        let b = s.create_node(&["N"]);
+        s.create_edge(a, b, "R");
+
+        let epoch_avant = { s.substrate.lock().feature_epoch.load(Ordering::Acquire) };
+        let csr1 = s.csr_cached();
+        let csr2 = s.csr_cached();
+        assert!(
+            std::sync::Arc::ptr_eq(&csr1, &csr2),
+            "sans mutation, le cache doit rendre la MÊME instance"
+        );
+
+        let c = s.create_node(&["N"]);
+        s.create_edge(b, c, "R");
+        let epoch_apres = { s.substrate.lock().feature_epoch.load(Ordering::Acquire) };
+        assert!(
+            epoch_apres > epoch_avant,
+            "create_edge doit faire avancer feature_epoch ({epoch_avant} -> {epoch_apres}) : \
+             c'est le signal d'invalidation du cache CSR"
+        );
+
+        let csr3 = s.csr_cached();
+        assert!(
+            !std::sync::Arc::ptr_eq(&csr1, &csr3),
+            "après une mutation, le CSR doit être RECONSTRUIT — un CSR périmé \
+             fausse silencieusement tous les descripteurs calculés depuis lui"
+        );
+    }
 
     /// T17k-opt — la sémantique LWW du repli `property_map_depuis_ops` : la
     /// DERNIÈRE opération d'une clef gagne (`None` = tombstone), quel que soit
