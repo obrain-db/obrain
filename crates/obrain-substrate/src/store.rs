@@ -1957,6 +1957,18 @@ struct ReversePartOf {
     par_session: std::collections::HashMap<u32, Vec<u64>>,
 }
 
+/// Clé du cache CSR : (époque des features, TAILLE DU WAL).
+///
+/// L'époque capte NOS mutations ; la taille du WAL capte celles d'un PAIR —
+/// elle est un atome par processus et ne les voit pas (mesuré :
+/// `feature_epoch_ne_voit_pas_les_ecritures_d_un_pair`). Sans la seconde
+/// moitié, une base ouverte en écriture partagée sert un CSR périmé sans rien
+/// signaler. Voir `csr_cached` et `tests/csr_cache_partage.rs`.
+type CleCsr = (u64, u64);
+
+/// Une entrée du cache CSR : sa clé et l'adjacence construite.
+pub type EntreeCsr = (CleCsr, std::sync::Arc<crate::geometric::CsrAdjacency>);
+
 pub struct SubstrateStore {
     /// The underlying substrate file. Held through `Writer::substrate()`
     /// as well; this handle lets read-only methods skip the writer entirely.
@@ -2062,7 +2074,10 @@ pub struct SubstrateStore {
     ///
     /// `CsrAdjacency::build` coûte **238 ms** mesurés sur 5,11 M d'arêtes
     /// (`examples/mesure_csr.rs`), et `geometric.rs` l'appelle 7 fois.
-    csr_cache: parking_lot::RwLock<Option<(u64, std::sync::Arc<crate::geometric::CsrAdjacency>)>>,
+    /// Clé = (époque des features, TAILLE DU WAL). L'époque capte nos
+    /// mutations ; la taille du WAL capte celles d'un PAIR, que l'époque
+    /// (atome par processus) ne voit pas — voir `csr_cached`.
+    csr_cache: parking_lot::RwLock<Option<EntreeCsr>>,
     /// Dedicated property map for nodes (T17e Phase 2). Entries are only
     /// materialised when a property is actually set — nodes without
     /// properties pay zero anon-RSS here. Pruned on `delete_node` to
@@ -25371,14 +25386,25 @@ impl SubstrateStore {
     /// un état donné doit continuer d'appeler `CsrAdjacency::build` : le cache
     /// ne promet pas l'atomicité entre l'epoch lu et le build.
     pub fn csr_cached(&self) -> std::sync::Arc<crate::geometric::CsrAdjacency> {
-        let epoch = {
+        // L'époque seule ne suffit PAS : c'est un atome PAR PROCESSUS, donc un
+        // pair qui crée une arête ne la fait pas bouger (mesuré : test
+        // `feature_epoch_ne_voit_pas_les_ecritures_d_un_pair`). La TAILLE DU
+        // WAL, elle, est partagée : toute mutation d'un pair y ajoute une trame.
+        // Sans elle, une base ouverte en écriture partagée servirait un CSR
+        // périmé en silence — HKS, Ricci, géodésiques sur une topologie morte.
+        let (epoch, wal_len) = {
             let sub = self.substrate.lock();
-            sub.feature_epoch.load(std::sync::atomic::Ordering::Acquire)
+            let len = sub.wal_path().metadata().map(|m| m.len()).unwrap_or(0);
+            (
+                sub.feature_epoch.load(std::sync::atomic::Ordering::Acquire),
+                len,
+            )
         };
+        let cle = (epoch, wal_len);
         {
             let cache = self.csr_cache.read();
-            if let Some((e, csr)) = cache.as_ref()
-                && *e == epoch
+            if let Some((c, csr)) = cache.as_ref()
+                && *c == cle
             {
                 return std::sync::Arc::clone(csr);
             }
@@ -25386,7 +25412,7 @@ impl SubstrateStore {
         // Construit HORS du verrou du cache : `build` lit les zones et prend
         // ses propres verrous, et `parking_lot::RwLock` n'est pas réentrant.
         let csr = std::sync::Arc::new(crate::geometric::CsrAdjacency::build(self));
-        *self.csr_cache.write() = Some((epoch, std::sync::Arc::clone(&csr)));
+        *self.csr_cache.write() = Some((cle, std::sync::Arc::clone(&csr)));
         csr
     }
 
