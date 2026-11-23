@@ -183,9 +183,15 @@ pub struct CertificatConductance {
 
 /// Calcule la conductance de chaque communauté d'une partition.
 ///
-/// Le graphe est lu NON ORIENTÉ (chaque arête comptée des deux côtés), comme le
-/// fait Louvain : une arête frontière compte une fois dans la coupe, une arête
-/// interne contribue au volume de son groupe et jamais à sa coupe.
+/// Le graphe est lu NON ORIENTÉ (chaque arête comptée des deux côtés) et NON
+/// PONDÉRÉ (chaque arête vaut 1), comme le fait Louvain — `louvain` et `leiden`
+/// forcent `w = 1.0` : si les poids arrivent, les deux doivent évoluer ensemble.
+/// Une arête frontière compte une fois dans la coupe, une arête interne
+/// contribue au volume de son groupe et jamais à sa coupe.
+///
+/// La partition peut être PARTIELLE (une seule communauté à juger, ou des nœuds
+/// créés depuis Louvain) : un voisin absent compte dans la coupe, et vol(V) est
+/// pris sur TOUT le store, pas sur les seuls nœuds de `partition`.
 #[allow(dead_code)]
 pub fn conductances(
     store: &dyn GraphStore,
@@ -193,7 +199,21 @@ pub fn conductances(
 ) -> Vec<CertificatConductance> {
     use std::collections::HashMap;
 
-    let mut volume_total: u64 = 0;
+    // vol(V) sur TOUT le store, pas seulement sur les nœuds de `partition`.
+    // Un voisin absent de la partition compte dans la coupe ; il doit compter
+    // dans le volume total, sinon juger une seule communauté rend `None`
+    // (deux K4 reliées, première clique seule : coupe = 1, volume = 13,
+    // volume_total = 13 → dénominateur nul) au lieu de 1/13 (vol(V) = 26).
+    //
+    // COÛT : `2 × edge_count()` est un chargement atomique. Sommer les degrés
+    // nœud par nœud exigeait `node_ids()` (un Vec de tous les nœuds) puis deux
+    // listes d'arêtes allouées PAR NŒUD : sur le graphe PO (1,2 M de nœuds,
+    // 6 M d'arêtes), c'est un balayage complet pour un diagnostic qui devrait
+    // être gratuit. L'égalité « somme des degrés = 2 × arêtes » est exacte par
+    // construction (chaque arête dirigée contribue 1 au degré sortant de sa
+    // source et 1 au degré entrant de sa cible) ; le test
+    // `somme_des_degres_vaut_deux_fois_les_aretes` la verrouille.
+    let volume_total: u64 = 2 * (store.edge_count() as u64);
     let mut tailles: HashMap<u64, usize> = HashMap::new();
     let mut volumes: HashMap<u64, u64> = HashMap::new();
     let mut coupes: HashMap<u64, u64> = HashMap::new();
@@ -214,7 +234,6 @@ pub fn conductances(
             }
         }
         *volumes.entry(*comm).or_insert(0) += degre;
-        volume_total += degre;
     }
 
     let mut out: Vec<CertificatConductance> = tailles
@@ -1238,7 +1257,7 @@ mod tests {
         assert_eq!(certs.len(), 2, "deux communautés");
         for c in &certs {
             assert_eq!(c.taille, 4);
-            // Degré total d'une clique de 4 : 4 arêtes internes comptées des
+            // Degré total d'une clique de 4 : 6 arêtes internes comptées des
             // deux côtés = 12, plus l'arête du pont = 13.
             assert_eq!(c.volume, 13, "volume de la communauté {}", c.communaute);
             assert_eq!(c.coupe, 1, "une seule arête traverse");
@@ -1247,6 +1266,75 @@ mod tests {
                 (cond - 1.0 / 13.0).abs() < 1e-9,
                 "conductance {} ≠ 1/13",
                 cond
+            );
+        }
+    }
+
+    /// Partition PARTIELLE : on ne juge que la première clique. Le voisin de
+    /// l'autre côté du pont compte dans la coupe, donc il doit compter dans
+    /// vol(V) : 1/13, pas `None`. Avant le correctif, `volume_total` ne sommait
+    /// que les nœuds passés (13) et le dénominateur `min(13, 13 − 13)` était nul.
+    #[test]
+    #[allow(clippy::many_single_char_names)] // i, j, c, n : notation de graphe
+    fn conductance_partition_partielle_prend_le_volume_du_graphe_entier() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let s = SubstrateStore::create(td.path()).expect("create");
+        let mut cliques: Vec<Vec<NodeId>> = Vec::new();
+        for _ in 0..2 {
+            let mut c = Vec::new();
+            for _ in 0..4 {
+                c.push(s.create_node(&["N"]));
+            }
+            for i in 0..c.len() {
+                for j in (i + 1)..c.len() {
+                    s.create_edge(c[i], c[j], "R");
+                }
+            }
+            cliques.push(c);
+        }
+        s.create_edge(cliques[0][0], cliques[1][0], "R");
+
+        // Seule la première clique est passée.
+        let mut partition: FxHashMap<NodeId, u64> = FxHashMap::default();
+        for n in &cliques[0] {
+            partition.insert(*n, 0);
+        }
+        let certs = conductances(&s, &partition);
+        assert_eq!(certs.len(), 1, "une seule communauté jugée");
+        let c = &certs[0];
+        assert_eq!(c.volume, 13);
+        assert_eq!(c.coupe, 1);
+        let cond = c
+            .conductance
+            .expect("conductance DÉFINIE : vol(V) = 26, pas 13");
+        assert!(
+            (cond - 1.0 / 13.0).abs() < 1e-9,
+            "conductance {} ≠ 1/13",
+            cond
+        );
+    }
+
+    /// L'invariant qui autorise `vol(V) = 2 × edge_count()` sans balayage : chaque
+    /// arête dirigée ajoute 1 au degré sortant de sa source et 1 au degré entrant
+    /// de sa cible, donc la somme des degrés vaut exactement deux fois le nombre
+    /// d'arêtes. Si une arête venait à être comptée dans `edge_count()` sans
+    /// apparaître dans une liste d'adjacence (ou l'inverse), ce test tombe AVANT
+    /// que `conductances` ne rende un dénominateur faux.
+    #[test]
+    fn somme_des_degres_vaut_deux_fois_les_aretes() {
+        for store in [create_two_cliques_graph(), create_simple_graph()] {
+            // `out_degree`/`in_degree` du substrat rendent `u32` (atomes) ;
+            // `edge_count()` rend `usize`. La somme tient sans débordement :
+            // elle vaut au plus 2 x le nombre d'arêtes d'un graphe de test.
+            let somme: u32 = store
+                .node_ids()
+                .into_iter()
+                .map(|n| store.out_degree(n) + store.in_degree(n))
+                .sum();
+            assert_eq!(
+                somme as usize,
+                2 * store.edge_count(),
+                "somme des degrés ≠ 2 × arêtes : le raccourci de vol(V) ne tient plus"
             );
         }
     }
