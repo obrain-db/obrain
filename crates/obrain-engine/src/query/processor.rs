@@ -1648,3 +1648,1080 @@ mod tests {
         assert_eq!(result.rows[0][0], Value::String("beta".into()));
     }
 }
+
+/// Tests de couverture des fonctions pures du processeur : substitution des
+/// paramètres (`substitute_params`) sur chaque forme d'opérateur et
+/// d'expression, résolution des paramètres de SKIP/LIMIT et ses refus,
+/// indices de pushdown (`annotate_pushdown_hints`) et `explain_result`.
+/// Aucune requête n'est analysée : les plans sont construits à la main.
+#[cfg(test)]
+mod tests_couverture_processor {
+    #[allow(clippy::wildcard_imports)]
+    use crate::query::plan::*;
+    use obrain_core::execution::operators::AggregateSemantics;
+    use obrain_substrate::SubstrateStore;
+
+    use super::*;
+
+    fn param(name: &str) -> LogicalExpression {
+        LogicalExpression::Parameter(name.into())
+    }
+
+    fn var(name: &str) -> LogicalExpression {
+        LogicalExpression::Variable(name.into())
+    }
+
+    fn int(n: i64) -> LogicalExpression {
+        LogicalExpression::Literal(Value::Int64(n))
+    }
+
+    fn prop(variable: &str, property: &str) -> LogicalExpression {
+        LogicalExpression::Property {
+            variable: variable.into(),
+            property: property.into(),
+        }
+    }
+
+    fn params(pairs: &[(&str, Value)]) -> QueryParams {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect()
+    }
+
+    fn p_vaut_7() -> QueryParams {
+        params(&[("p", Value::Int64(7))])
+    }
+
+    fn scan(variable: &str, label: Option<&str>) -> LogicalOperator {
+        LogicalOperator::NodeScan(NodeScanOp {
+            variable: variable.into(),
+            label: label.map(str::to_string),
+            input: None,
+            pushdown_hint: None,
+        })
+    }
+
+    fn boxed_scan(variable: &str) -> Box<LogicalOperator> {
+        Box::new(scan(variable, None))
+    }
+
+    /// Un `Filter` dont le prédicat est le paramètre `$p` : l'opérateur témoin
+    /// glissé sous chaque opérateur à tester, pour prouver la récursion.
+    fn filtre_sur_p() -> Box<LogicalOperator> {
+        Box::new(LogicalOperator::Filter(FilterOp {
+            predicate: param("p"),
+            input: boxed_scan("n"),
+            pushdown_hint: None,
+        }))
+    }
+
+    fn est_litteral_7(expr: &LogicalExpression) -> bool {
+        matches!(expr, LogicalExpression::Literal(Value::Int64(7)))
+    }
+
+    /// Vrai si le témoin `filtre_sur_p` sous `op` a été substitué.
+    fn temoin_substitue(op: &LogicalOperator) -> bool {
+        matches!(op, LogicalOperator::Filter(f) if est_litteral_7(&f.predicate))
+    }
+
+    fn substitue(op: LogicalOperator) -> LogicalOperator {
+        let mut plan = LogicalPlan::new(op);
+        substitute_params(&mut plan, &p_vaut_7()).expect("substitution sans erreur");
+        plan.root
+    }
+
+    fn substitue_expression(expr: LogicalExpression) -> LogicalExpression {
+        let racine = substitue(LogicalOperator::Filter(FilterOp {
+            predicate: expr,
+            input: boxed_scan("n"),
+            pushdown_hint: None,
+        }));
+        match racine {
+            LogicalOperator::Filter(f) => f.predicate,
+            autre => panic!("Filter attendu, obtenu {autre:?}"),
+        }
+    }
+
+    // --- QueryLanguage ---
+
+    #[test]
+    fn query_language_is_lpg_par_variante() {
+        assert!(QueryLanguage::Gql.is_lpg());
+        #[cfg(feature = "cypher")]
+        assert!(QueryLanguage::Cypher.is_lpg());
+        #[cfg(feature = "gremlin")]
+        assert!(QueryLanguage::Gremlin.is_lpg());
+        #[cfg(feature = "graphql")]
+        assert!(QueryLanguage::GraphQL.is_lpg());
+        #[cfg(feature = "sql-pgq")]
+        assert!(QueryLanguage::SqlPgq.is_lpg());
+        #[cfg(feature = "sparql")]
+        assert!(!QueryLanguage::Sparql.is_lpg());
+        #[cfg(all(feature = "graphql", feature = "rdf"))]
+        assert!(!QueryLanguage::GraphQLRdf.is_lpg());
+    }
+
+    // --- substitute_in_expression ---
+
+    #[test]
+    fn parametre_remplace_par_sa_valeur_et_manquant_refuse() {
+        assert!(est_litteral_7(&substitue_expression(param("p"))));
+
+        let mut plan = LogicalPlan::new(LogicalOperator::Filter(FilterOp {
+            predicate: param("absent"),
+            input: boxed_scan("n"),
+            pushdown_hint: None,
+        }));
+        let err = substitute_params(&mut plan, &p_vaut_7()).expect_err("paramètre manquant");
+        assert!(
+            format!("{err:?}").contains("Missing parameter: $absent"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn expressions_feuilles_restent_intactes() {
+        for feuille in [
+            prop("n", "age"),
+            var("n"),
+            int(1),
+            LogicalExpression::Labels("n".into()),
+            LogicalExpression::Type("r".into()),
+            LogicalExpression::Id("n".into()),
+        ] {
+            let avant = format!("{feuille:?}");
+            let apres = substitue_expression(feuille);
+            assert_eq!(format!("{apres:?}"), avant);
+        }
+    }
+
+    #[test]
+    fn substitution_dans_binaire_unaire_appel_liste_et_map() {
+        let binaire = substitue_expression(LogicalExpression::Binary {
+            left: Box::new(param("p")),
+            op: BinaryOp::Add,
+            right: Box::new(param("p")),
+        });
+        assert!(matches!(
+            binaire,
+            LogicalExpression::Binary { left, right, .. }
+                if est_litteral_7(&left) && est_litteral_7(&right)
+        ));
+
+        let unaire = substitue_expression(LogicalExpression::Unary {
+            op: UnaryOp::Neg,
+            operand: Box::new(param("p")),
+        });
+        assert!(
+            matches!(unaire, LogicalExpression::Unary { operand, .. } if est_litteral_7(&operand))
+        );
+
+        let appel = substitue_expression(LogicalExpression::FunctionCall {
+            name: "abs".into(),
+            args: vec![param("p"), int(1)],
+            distinct: false,
+        });
+        assert!(
+            matches!(appel, LogicalExpression::FunctionCall { args, .. } if est_litteral_7(&args[0]))
+        );
+
+        let liste = substitue_expression(LogicalExpression::List(vec![int(1), param("p")]));
+        assert!(matches!(liste, LogicalExpression::List(items) if est_litteral_7(&items[1])));
+
+        let map = substitue_expression(LogicalExpression::Map(vec![("k".into(), param("p"))]));
+        assert!(matches!(map, LogicalExpression::Map(paires) if est_litteral_7(&paires[0].1)));
+    }
+
+    #[test]
+    fn substitution_dans_index_tranche_et_case() {
+        let index = substitue_expression(LogicalExpression::IndexAccess {
+            base: Box::new(param("p")),
+            index: Box::new(param("p")),
+        });
+        assert!(matches!(
+            index,
+            LogicalExpression::IndexAccess { base, index } if est_litteral_7(&base) && est_litteral_7(&index)
+        ));
+
+        let tranche = substitue_expression(LogicalExpression::SliceAccess {
+            base: Box::new(var("l")),
+            start: Some(Box::new(param("p"))),
+            end: Some(Box::new(param("p"))),
+        });
+        assert!(matches!(
+            tranche,
+            LogicalExpression::SliceAccess { start: Some(s), end: Some(e), .. }
+                if est_litteral_7(&s) && est_litteral_7(&e)
+        ));
+        let tranche_ouverte = substitue_expression(LogicalExpression::SliceAccess {
+            base: Box::new(param("p")),
+            start: None,
+            end: None,
+        });
+        assert!(matches!(
+            tranche_ouverte,
+            LogicalExpression::SliceAccess { base, start: None, end: None } if est_litteral_7(&base)
+        ));
+
+        let case = substitue_expression(LogicalExpression::Case {
+            operand: Some(Box::new(param("p"))),
+            when_clauses: vec![(param("p"), param("p"))],
+            else_clause: Some(Box::new(param("p"))),
+        });
+        assert!(matches!(
+            case,
+            LogicalExpression::Case { operand: Some(o), when_clauses, else_clause: Some(e) }
+                if est_litteral_7(&o)
+                    && est_litteral_7(&when_clauses[0].0)
+                    && est_litteral_7(&when_clauses[0].1)
+                    && est_litteral_7(&e)
+        ));
+        let case_nu = substitue_expression(LogicalExpression::Case {
+            operand: None,
+            when_clauses: vec![],
+            else_clause: None,
+        });
+        assert!(matches!(
+            case_nu,
+            LogicalExpression::Case {
+                operand: None,
+                else_clause: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn substitution_dans_comprehensions_predicats_et_reduce() {
+        let comprehension = substitue_expression(LogicalExpression::ListComprehension {
+            variable: "x".into(),
+            list_expr: Box::new(param("p")),
+            filter_expr: Some(Box::new(param("p"))),
+            map_expr: Box::new(param("p")),
+        });
+        assert!(matches!(
+            comprehension,
+            LogicalExpression::ListComprehension { list_expr, filter_expr: Some(f), map_expr, .. }
+                if est_litteral_7(&list_expr) && est_litteral_7(&f) && est_litteral_7(&map_expr)
+        ));
+        let sans_filtre = substitue_expression(LogicalExpression::ListComprehension {
+            variable: "x".into(),
+            list_expr: Box::new(var("l")),
+            filter_expr: None,
+            map_expr: Box::new(param("p")),
+        });
+        assert!(matches!(
+            sans_filtre,
+            LogicalExpression::ListComprehension { filter_expr: None, map_expr, .. } if est_litteral_7(&map_expr)
+        ));
+
+        let predicat = substitue_expression(LogicalExpression::ListPredicate {
+            kind: ListPredicateKind::Any,
+            variable: "x".into(),
+            list_expr: Box::new(param("p")),
+            predicate: Box::new(param("p")),
+        });
+        assert!(matches!(
+            predicat,
+            LogicalExpression::ListPredicate { list_expr, predicate, .. }
+                if est_litteral_7(&list_expr) && est_litteral_7(&predicate)
+        ));
+
+        let reduce = substitue_expression(LogicalExpression::Reduce {
+            accumulator: "acc".into(),
+            initial: Box::new(param("p")),
+            variable: "x".into(),
+            list: Box::new(param("p")),
+            expression: Box::new(param("p")),
+        });
+        assert!(matches!(
+            reduce,
+            LogicalExpression::Reduce { initial, list, expression, .. }
+                if est_litteral_7(&initial) && est_litteral_7(&list) && est_litteral_7(&expression)
+        ));
+    }
+
+    #[test]
+    fn substitution_dans_sous_requetes_motif_et_map_projection() {
+        for sous_requete in [
+            LogicalExpression::ExistsSubquery(filtre_sur_p()),
+            LogicalExpression::CountSubquery(filtre_sur_p()),
+            LogicalExpression::ValueSubquery(filtre_sur_p()),
+        ] {
+            let apres = substitue_expression(sous_requete);
+            let sous_plan = match &apres {
+                LogicalExpression::ExistsSubquery(s)
+                | LogicalExpression::CountSubquery(s)
+                | LogicalExpression::ValueSubquery(s) => s,
+                autre => panic!("sous-requête attendue, obtenu {autre:?}"),
+            };
+            assert!(temoin_substitue(sous_plan), "{apres:?}");
+        }
+
+        let motif = substitue_expression(LogicalExpression::PatternComprehension {
+            subplan: filtre_sur_p(),
+            projection: Box::new(param("p")),
+        });
+        assert!(matches!(
+            motif,
+            LogicalExpression::PatternComprehension { subplan, projection }
+                if temoin_substitue(&subplan) && est_litteral_7(&projection)
+        ));
+
+        let projection = substitue_expression(LogicalExpression::MapProjection {
+            base: "n".into(),
+            entries: vec![
+                MapProjectionEntry::PropertySelector("name".into()),
+                MapProjectionEntry::LiteralEntry("k".into(), param("p")),
+                MapProjectionEntry::AllProperties,
+            ],
+        });
+        assert!(matches!(
+            projection,
+            LogicalExpression::MapProjection { entries, .. }
+                if matches!(&entries[1], MapProjectionEntry::LiteralEntry(_, e) if est_litteral_7(e))
+        ));
+    }
+
+    // --- substitute_in_operator : récursion par forme d'opérateur ---
+
+    #[test]
+    fn operateurs_a_entree_unique_propagent_la_substitution() {
+        let cas: Vec<LogicalOperator> = vec![
+            LogicalOperator::Expand(ExpandOp {
+                from_variable: "a".into(),
+                to_variable: "b".into(),
+                edge_variable: None,
+                direction: ExpandDirection::Outgoing,
+                edge_types: vec![],
+                min_hops: 1,
+                max_hops: Some(1),
+                input: filtre_sur_p(),
+                path_alias: None,
+                path_mode: PathMode::Walk,
+            }),
+            LogicalOperator::Distinct(DistinctOp {
+                input: filtre_sur_p(),
+                columns: None,
+            }),
+            LogicalOperator::DeleteNode(DeleteNodeOp {
+                variable: "n".into(),
+                detach: false,
+                input: filtre_sur_p(),
+            }),
+            LogicalOperator::DeleteEdge(DeleteEdgeOp {
+                variable: "r".into(),
+                input: filtre_sur_p(),
+            }),
+            LogicalOperator::MapCollect(MapCollectOp {
+                key_var: "k".into(),
+                value_var: "v".into(),
+                alias: "m".into(),
+                input: filtre_sur_p(),
+            }),
+            LogicalOperator::AddLabel(AddLabelOp {
+                variable: "n".into(),
+                labels: vec!["A".into()],
+                input: filtre_sur_p(),
+            }),
+            LogicalOperator::RemoveLabel(RemoveLabelOp {
+                variable: "n".into(),
+                labels: vec!["A".into()],
+                input: filtre_sur_p(),
+            }),
+            LogicalOperator::ShortestPath(ShortestPathOp {
+                input: filtre_sur_p(),
+                source_var: "a".into(),
+                target_var: "b".into(),
+                edge_types: vec![],
+                direction: ExpandDirection::Both,
+                path_alias: "p".into(),
+                all_paths: false,
+            }),
+            LogicalOperator::CreateExternalEdge(CreateExternalEdgeOp {
+                from_variable: "a".into(),
+                edge_type: "T".into(),
+                to_host: None,
+                to_store: "s".into(),
+                to_key: "k".into(),
+                merge: false,
+                input: filtre_sur_p(),
+            }),
+        ];
+        for op in cas {
+            let nom = op.display_label();
+            let apres = substitue(op);
+            let enfants = apres.children();
+            assert_eq!(enfants.len(), 1, "{nom}");
+            assert!(temoin_substitue(enfants[0]), "{nom}: {apres:?}");
+        }
+    }
+
+    #[test]
+    fn scans_avec_entree_optionnelle() {
+        let noeud = substitue(LogicalOperator::NodeScan(NodeScanOp {
+            variable: "m".into(),
+            label: None,
+            input: Some(filtre_sur_p()),
+            pushdown_hint: None,
+        }));
+        assert!(temoin_substitue(noeud.children()[0]));
+
+        let arete = substitue(LogicalOperator::EdgeScan(EdgeScanOp {
+            variable: "r".into(),
+            edge_types: vec![],
+            input: Some(filtre_sur_p()),
+        }));
+        assert!(temoin_substitue(arete.children()[0]));
+
+        let sans_entree = substitue(scan("n", None));
+        assert_eq!(sans_entree.children().len(), 0);
+    }
+
+    #[test]
+    fn return_project_sort_bind_unwind_substituent_leurs_expressions() {
+        let retour = substitue(LogicalOperator::Return(ReturnOp {
+            items: vec![ReturnItem {
+                expression: param("p"),
+                alias: None,
+            }],
+            distinct: false,
+            input: filtre_sur_p(),
+        }));
+        assert!(matches!(
+            &retour,
+            LogicalOperator::Return(r) if est_litteral_7(&r.items[0].expression) && temoin_substitue(&r.input)
+        ));
+
+        let projection = substitue(LogicalOperator::Project(ProjectOp {
+            projections: vec![Projection {
+                expression: param("p"),
+                alias: Some("x".into()),
+            }],
+            input: filtre_sur_p(),
+            pass_through_input: false,
+        }));
+        assert!(matches!(
+            &projection,
+            LogicalOperator::Project(p) if est_litteral_7(&p.projections[0].expression) && temoin_substitue(&p.input)
+        ));
+
+        let tri = substitue(LogicalOperator::Sort(SortOp {
+            keys: vec![SortKey {
+                expression: param("p"),
+                order: SortOrder::Ascending,
+                nulls: None,
+            }],
+            input: filtre_sur_p(),
+        }));
+        assert!(matches!(
+            &tri,
+            LogicalOperator::Sort(s) if est_litteral_7(&s.keys[0].expression) && temoin_substitue(&s.input)
+        ));
+
+        let bind = substitue(LogicalOperator::Bind(BindOp {
+            expression: param("p"),
+            variable: "x".into(),
+            input: filtre_sur_p(),
+        }));
+        assert!(matches!(
+            &bind,
+            LogicalOperator::Bind(b) if est_litteral_7(&b.expression) && temoin_substitue(&b.input)
+        ));
+
+        let unwind = substitue(LogicalOperator::Unwind(UnwindOp {
+            expression: param("p"),
+            variable: "x".into(),
+            ordinality_var: None,
+            offset_var: None,
+            input: filtre_sur_p(),
+        }));
+        assert!(matches!(
+            &unwind,
+            LogicalOperator::Unwind(u) if est_litteral_7(&u.expression) && temoin_substitue(&u.input)
+        ));
+    }
+
+    #[test]
+    fn jointures_et_operateurs_ensemblistes() {
+        let jointure = substitue(LogicalOperator::Join(JoinOp {
+            left: filtre_sur_p(),
+            right: filtre_sur_p(),
+            join_type: JoinType::Inner,
+            conditions: vec![JoinCondition {
+                left: param("p"),
+                right: param("p"),
+            }],
+        }));
+        assert!(matches!(
+            &jointure,
+            LogicalOperator::Join(j)
+                if temoin_substitue(&j.left)
+                    && temoin_substitue(&j.right)
+                    && est_litteral_7(&j.conditions[0].left)
+                    && est_litteral_7(&j.conditions[0].right)
+        ));
+
+        let gauche = substitue(LogicalOperator::LeftJoin(LeftJoinOp {
+            left: filtre_sur_p(),
+            right: filtre_sur_p(),
+            condition: Some(param("p")),
+        }));
+        assert!(matches!(
+            &gauche,
+            LogicalOperator::LeftJoin(j)
+                if temoin_substitue(&j.left) && temoin_substitue(&j.right)
+                    && matches!(&j.condition, Some(c) if est_litteral_7(c))
+        ));
+        let gauche_sans = substitue(LogicalOperator::LeftJoin(LeftJoinOp {
+            left: filtre_sur_p(),
+            right: boxed_scan("b"),
+            condition: None,
+        }));
+        assert!(matches!(&gauche_sans, LogicalOperator::LeftJoin(j) if j.condition.is_none()));
+
+        let deux_enfants: Vec<LogicalOperator> = vec![
+            LogicalOperator::AntiJoin(AntiJoinOp {
+                left: filtre_sur_p(),
+                right: filtre_sur_p(),
+            }),
+            LogicalOperator::Except(ExceptOp {
+                left: filtre_sur_p(),
+                right: filtre_sur_p(),
+                all: false,
+            }),
+            LogicalOperator::Intersect(IntersectOp {
+                left: filtre_sur_p(),
+                right: filtre_sur_p(),
+                all: true,
+            }),
+            LogicalOperator::Otherwise(OtherwiseOp {
+                left: filtre_sur_p(),
+                right: filtre_sur_p(),
+            }),
+            LogicalOperator::Apply(ApplyOp {
+                input: filtre_sur_p(),
+                subplan: filtre_sur_p(),
+                shared_variables: vec![],
+                optional: false,
+            }),
+        ];
+        for op in deux_enfants {
+            let apres = substitue(op);
+            let enfants = apres.children();
+            assert_eq!(enfants.len(), 2, "{apres:?}");
+            assert!(enfants.iter().all(|e| temoin_substitue(e)), "{apres:?}");
+        }
+
+        let union = substitue(LogicalOperator::Union(UnionOp {
+            inputs: vec![*filtre_sur_p(), *filtre_sur_p(), *filtre_sur_p()],
+        }));
+        assert_eq!(union.children().len(), 3);
+        assert!(union.children().iter().all(|e| temoin_substitue(e)));
+
+        let multi = substitue(LogicalOperator::MultiWayJoin(MultiWayJoinOp {
+            inputs: vec![*filtre_sur_p(), *filtre_sur_p()],
+            conditions: vec![JoinCondition {
+                left: param("p"),
+                right: param("p"),
+            }],
+            shared_variables: vec![],
+        }));
+        assert!(matches!(
+            &multi,
+            LogicalOperator::MultiWayJoin(m)
+                if m.inputs.iter().all(temoin_substitue)
+                    && est_litteral_7(&m.conditions[0].left)
+                    && est_litteral_7(&m.conditions[0].right)
+        ));
+    }
+
+    #[test]
+    fn agregat_et_appel_de_procedure() {
+        let agregat = substitue(LogicalOperator::Aggregate(AggregateOp {
+            group_by: vec![param("p")],
+            aggregates: vec![
+                AggregateExpr {
+                    function: AggregateFunction::Sum,
+                    expression: Some(param("p")),
+                    expression2: None,
+                    distinct: false,
+                    alias: None,
+                    percentile: None,
+                    separator: None,
+                },
+                AggregateExpr {
+                    function: AggregateFunction::Count,
+                    expression: None,
+                    expression2: None,
+                    distinct: false,
+                    alias: None,
+                    percentile: None,
+                    separator: None,
+                },
+            ],
+            input: filtre_sur_p(),
+            having: None,
+            semantics: AggregateSemantics::default(),
+        }));
+        assert!(matches!(
+            &agregat,
+            LogicalOperator::Aggregate(a)
+                if est_litteral_7(&a.group_by[0])
+                    && matches!(&a.aggregates[0].expression, Some(e) if est_litteral_7(e))
+                    && a.aggregates[1].expression.is_none()
+                    && temoin_substitue(&a.input)
+        ));
+
+        let appel = substitue(LogicalOperator::CallProcedure(CallProcedureOp {
+            name: vec!["obrain".into(), "proc".into()],
+            arguments: vec![param("p"), int(1)],
+            yield_items: None,
+        }));
+        assert!(matches!(
+            &appel,
+            LogicalOperator::CallProcedure(c) if est_litteral_7(&c.arguments[0])
+        ));
+    }
+
+    #[test]
+    fn mutations_substituent_leurs_proprietes() {
+        let creation = substitue(LogicalOperator::CreateNode(CreateNodeOp {
+            variable: "n".into(),
+            labels: vec![],
+            properties: vec![("age".into(), param("p"))],
+            input: Some(filtre_sur_p()),
+        }));
+        assert!(matches!(
+            &creation,
+            LogicalOperator::CreateNode(c)
+                if est_litteral_7(&c.properties[0].1) && matches!(&c.input, Some(i) if temoin_substitue(i))
+        ));
+        let creation_sans_entree = substitue(LogicalOperator::CreateNode(CreateNodeOp {
+            variable: "n".into(),
+            labels: vec![],
+            properties: vec![],
+            input: None,
+        }));
+        assert!(
+            matches!(&creation_sans_entree, LogicalOperator::CreateNode(c) if c.input.is_none())
+        );
+
+        let arete = substitue(LogicalOperator::CreateEdge(CreateEdgeOp {
+            variable: None,
+            from_variable: "a".into(),
+            to_variable: "b".into(),
+            edge_type: "T".into(),
+            properties: vec![("w".into(), param("p"))],
+            input: filtre_sur_p(),
+        }));
+        assert!(matches!(
+            &arete,
+            LogicalOperator::CreateEdge(c) if est_litteral_7(&c.properties[0].1) && temoin_substitue(&c.input)
+        ));
+
+        let set = substitue(LogicalOperator::SetProperty(SetPropertyOp {
+            variable: "n".into(),
+            properties: vec![("age".into(), param("p"))],
+            replace: false,
+            is_edge: false,
+            remove: false,
+            input: filtre_sur_p(),
+        }));
+        assert!(matches!(
+            &set,
+            LogicalOperator::SetProperty(s) if est_litteral_7(&s.properties[0].1) && temoin_substitue(&s.input)
+        ));
+
+        let fusion = substitue(LogicalOperator::Merge(MergeOp {
+            variable: "n".into(),
+            labels: vec![],
+            match_properties: vec![("a".into(), param("p"))],
+            on_create: vec![("b".into(), param("p"))],
+            on_match: vec![("c".into(), param("p"))],
+            input: filtre_sur_p(),
+        }));
+        assert!(matches!(
+            &fusion,
+            LogicalOperator::Merge(m)
+                if est_litteral_7(&m.match_properties[0].1)
+                    && est_litteral_7(&m.on_create[0].1)
+                    && est_litteral_7(&m.on_match[0].1)
+                    && temoin_substitue(&m.input)
+        ));
+
+        let fusion_relation = substitue(LogicalOperator::MergeRelationship(MergeRelationshipOp {
+            variable: "r".into(),
+            source_variable: "a".into(),
+            target_variable: "b".into(),
+            edge_type: "T".into(),
+            match_properties: vec![("a".into(), param("p"))],
+            on_create: vec![("b".into(), param("p"))],
+            on_match: vec![("c".into(), param("p"))],
+            input: filtre_sur_p(),
+        }));
+        assert!(matches!(
+            &fusion_relation,
+            LogicalOperator::MergeRelationship(m)
+                if est_litteral_7(&m.match_properties[0].1)
+                    && est_litteral_7(&m.on_create[0].1)
+                    && est_litteral_7(&m.on_match[0].1)
+                    && temoin_substitue(&m.input)
+        ));
+    }
+
+    #[test]
+    fn feuilles_sans_expression_sont_acceptees() {
+        let vide = substitue(LogicalOperator::Empty);
+        assert!(matches!(vide, LogicalOperator::Empty));
+        let parametres = substitue(LogicalOperator::ParameterScan(ParameterScanOp {
+            columns: vec!["a".into()],
+        }));
+        assert!(matches!(parametres, LogicalOperator::ParameterScan(_)));
+    }
+
+    // --- resolve_count_param (SKIP / LIMIT) ---
+
+    #[test]
+    fn skip_limit_resolvent_un_parametre_entier() {
+        let limite = substitue(LogicalOperator::Limit(LimitOp {
+            count: CountExpr::Parameter("p".into()),
+            input: filtre_sur_p(),
+        }));
+        assert!(matches!(
+            &limite,
+            LogicalOperator::Limit(l) if l.count == CountExpr::Literal(7) && temoin_substitue(&l.input)
+        ));
+        let saut = substitue(LogicalOperator::Skip(SkipOp {
+            count: CountExpr::Parameter("p".into()),
+            input: filtre_sur_p(),
+        }));
+        assert!(matches!(
+            &saut,
+            LogicalOperator::Skip(s) if s.count == CountExpr::Literal(7) && temoin_substitue(&s.input)
+        ));
+        let litteral = substitue(LogicalOperator::Limit(LimitOp {
+            count: 3usize.into(),
+            input: boxed_scan("n"),
+        }));
+        assert!(matches!(&litteral, LogicalOperator::Limit(l) if l.count == CountExpr::Literal(3)));
+    }
+
+    #[test]
+    fn skip_limit_refusent_manquant_negatif_et_non_entier() {
+        let cas: [(&str, QueryParams, &str); 3] = [
+            (
+                "absent",
+                p_vaut_7(),
+                "Missing parameter for SKIP/LIMIT: $absent",
+            ),
+            (
+                "p",
+                params(&[("p", Value::Int64(-1))]),
+                "must be non-negative",
+            ),
+            (
+                "p",
+                params(&[("p", Value::Float64(1.5))]),
+                "must be an integer",
+            ),
+        ];
+        for (nom, parametres, message) in cas {
+            let mut plan = LogicalPlan::new(LogicalOperator::Limit(LimitOp {
+                count: CountExpr::Parameter(nom.into()),
+                input: boxed_scan("n"),
+            }));
+            let err = substitute_params(&mut plan, &parametres).expect_err(message);
+            assert!(format!("{err:?}").contains(message), "{err:?}");
+        }
+    }
+
+    // --- annotate_pushdown_hints ---
+
+    fn store_temporaire(index: &[&str]) -> SubstrateStore {
+        let store = SubstrateStore::open_tempfile().expect("store temporaire");
+        for propriete in index {
+            store.create_property_index(propriete);
+        }
+        store
+    }
+
+    fn filtre_sur_scan(predicate: LogicalExpression, label: Option<&str>) -> LogicalOperator {
+        LogicalOperator::Filter(FilterOp {
+            predicate,
+            input: Box::new(scan("n", label)),
+            pushdown_hint: None,
+        })
+    }
+
+    fn indice_du_filtre(op: &LogicalOperator) -> Option<&PushdownHint> {
+        match op {
+            LogicalOperator::Filter(f) => f.pushdown_hint.as_ref(),
+            autre => panic!("Filter attendu, obtenu {autre:?}"),
+        }
+    }
+
+    fn comparaison(op: BinaryOp, variable: &str) -> LogicalExpression {
+        LogicalExpression::Binary {
+            left: Box::new(prop(variable, "age")),
+            op,
+            right: Box::new(int(30)),
+        }
+    }
+
+    #[test]
+    fn pushdown_egalite_index_label_ou_rien() {
+        let avec_index = store_temporaire(&["age"]);
+        let mut op = filtre_sur_scan(comparaison(BinaryOp::Eq, "n"), Some("Person"));
+        annotate_pushdown_hints(&mut op, &avec_index);
+        assert!(
+            matches!(indice_du_filtre(&op), Some(PushdownHint::IndexLookup { property }) if property == "age")
+        );
+
+        let sans_index = store_temporaire(&[]);
+        let mut op = filtre_sur_scan(comparaison(BinaryOp::Eq, "n"), Some("Person"));
+        annotate_pushdown_hints(&mut op, &sans_index);
+        assert!(matches!(
+            indice_du_filtre(&op),
+            Some(PushdownHint::LabelFirst)
+        ));
+
+        let mut op = filtre_sur_scan(comparaison(BinaryOp::Eq, "n"), None);
+        annotate_pushdown_hints(&mut op, &sans_index);
+        assert!(indice_du_filtre(&op).is_none());
+
+        // La propriété comparée porte sur une AUTRE variable : pas de pushdown
+        // par la propriété, seulement le label.
+        let mut op = filtre_sur_scan(comparaison(BinaryOp::Eq, "m"), Some("Person"));
+        annotate_pushdown_hints(&mut op, &avec_index);
+        assert!(indice_du_filtre(&op).is_none());
+    }
+
+    #[test]
+    fn pushdown_intervalle_conjonction_et_autre_predicat() {
+        let avec_index = store_temporaire(&["age"]);
+        for op_cmp in [BinaryOp::Gt, BinaryOp::Ge, BinaryOp::Lt, BinaryOp::Le] {
+            let mut op = filtre_sur_scan(comparaison(op_cmp, "n"), None);
+            annotate_pushdown_hints(&mut op, &avec_index);
+            assert!(
+                matches!(indice_du_filtre(&op), Some(PushdownHint::RangeScan { property }) if property == "age"),
+                "{op_cmp:?}"
+            );
+        }
+        let sans_index = store_temporaire(&[]);
+        let mut op = filtre_sur_scan(comparaison(BinaryOp::Gt, "n"), Some("Person"));
+        annotate_pushdown_hints(&mut op, &sans_index);
+        assert!(matches!(
+            indice_du_filtre(&op),
+            Some(PushdownHint::LabelFirst)
+        ));
+        let mut op = filtre_sur_scan(comparaison(BinaryOp::Gt, "n"), None);
+        annotate_pushdown_hints(&mut op, &sans_index);
+        assert!(indice_du_filtre(&op).is_none());
+
+        // AND : seul le membre gauche est regardé.
+        let conjonction = LogicalExpression::Binary {
+            left: Box::new(comparaison(BinaryOp::Eq, "n")),
+            op: BinaryOp::And,
+            right: Box::new(var("x")),
+        };
+        let mut op = filtre_sur_scan(conjonction, None);
+        annotate_pushdown_hints(&mut op, &avec_index);
+        assert!(matches!(
+            indice_du_filtre(&op),
+            Some(PushdownHint::IndexLookup { .. })
+        ));
+
+        // Autre prédicat : le label seul décide.
+        let mut op = filtre_sur_scan(var("x"), Some("Person"));
+        annotate_pushdown_hints(&mut op, &sans_index);
+        assert!(matches!(
+            indice_du_filtre(&op),
+            Some(PushdownHint::LabelFirst)
+        ));
+        let mut op = filtre_sur_scan(var("x"), None);
+        annotate_pushdown_hints(&mut op, &sans_index);
+        assert!(indice_du_filtre(&op).is_none());
+    }
+
+    #[test]
+    fn pushdown_limit_pose_un_plafond_sur_le_scan_etiquete() {
+        let store = store_temporaire(&[]);
+        let mut op = LogicalOperator::Limit(LimitOp {
+            count: 10usize.into(),
+            input: Box::new(scan("n", Some("Person"))),
+        });
+        annotate_pushdown_hints(&mut op, &store);
+        let LogicalOperator::Limit(l) = &op else {
+            panic!("Limit")
+        };
+        assert!(matches!(
+            l.input.as_ref(),
+            LogicalOperator::NodeScan(s) if matches!(s.pushdown_hint, Some(PushdownHint::SourceCap { count: 160 }))
+        ));
+
+        // LIMIT 0 : plafond d'au moins 1.
+        let mut op = LogicalOperator::Limit(LimitOp {
+            count: 0usize.into(),
+            input: Box::new(scan("n", Some("Person"))),
+        });
+        annotate_pushdown_hints(&mut op, &store);
+        let LogicalOperator::Limit(l) = &op else {
+            panic!("Limit")
+        };
+        assert!(matches!(
+            l.input.as_ref(),
+            LogicalOperator::NodeScan(s) if matches!(s.pushdown_hint, Some(PushdownHint::SourceCap { count: 1 }))
+        ));
+
+        // Sans label, ou sans LIMIT au-dessus : pas de plafond.
+        let mut op = LogicalOperator::Limit(LimitOp {
+            count: 10usize.into(),
+            input: Box::new(scan("n", None)),
+        });
+        annotate_pushdown_hints(&mut op, &store);
+        let LogicalOperator::Limit(l) = &op else {
+            panic!("Limit")
+        };
+        assert!(
+            matches!(l.input.as_ref(), LogicalOperator::NodeScan(s) if s.pushdown_hint.is_none())
+        );
+        let mut op = scan("n", Some("Person"));
+        annotate_pushdown_hints(&mut op, &store);
+        assert!(matches!(&op, LogicalOperator::NodeScan(s) if s.pushdown_hint.is_none()));
+    }
+
+    #[test]
+    fn pushdown_traverse_les_operateurs_intermediaires() {
+        let store = store_temporaire(&["age"]);
+        let filtre_indexe = || Box::new(filtre_sur_scan(comparaison(BinaryOp::Eq, "n"), None));
+        let a_indice = |op: &LogicalOperator| {
+            matches!(indice_du_filtre(op), Some(PushdownHint::IndexLookup { .. }))
+        };
+
+        let a_un_enfant: Vec<LogicalOperator> = vec![
+            LogicalOperator::Project(ProjectOp {
+                projections: vec![],
+                input: filtre_indexe(),
+                pass_through_input: false,
+            }),
+            LogicalOperator::Aggregate(AggregateOp {
+                group_by: vec![],
+                aggregates: vec![],
+                input: filtre_indexe(),
+                having: None,
+                semantics: AggregateSemantics::default(),
+            }),
+            LogicalOperator::Skip(SkipOp {
+                count: 1usize.into(),
+                input: filtre_indexe(),
+            }),
+            LogicalOperator::Sort(SortOp {
+                keys: vec![],
+                input: filtre_indexe(),
+            }),
+            LogicalOperator::Distinct(DistinctOp {
+                input: filtre_indexe(),
+                columns: None,
+            }),
+            LogicalOperator::Return(ReturnOp {
+                items: vec![],
+                distinct: false,
+                input: filtre_indexe(),
+            }),
+            LogicalOperator::Expand(ExpandOp {
+                from_variable: "n".into(),
+                to_variable: "m".into(),
+                edge_variable: None,
+                direction: ExpandDirection::Outgoing,
+                edge_types: vec![],
+                min_hops: 1,
+                max_hops: Some(1),
+                input: filtre_indexe(),
+                path_alias: None,
+                path_mode: PathMode::Walk,
+            }),
+            LogicalOperator::NodeScan(NodeScanOp {
+                variable: "m".into(),
+                label: None,
+                input: Some(filtre_indexe()),
+                pushdown_hint: None,
+            }),
+            LogicalOperator::EdgeScan(EdgeScanOp {
+                variable: "r".into(),
+                edge_types: vec![],
+                input: Some(filtre_indexe()),
+            }),
+        ];
+        for mut op in a_un_enfant {
+            annotate_pushdown_hints(&mut op, &store);
+            let enfants = op.children();
+            assert_eq!(enfants.len(), 1);
+            assert!(a_indice(enfants[0]), "{op:?}");
+        }
+
+        let a_deux_enfants: Vec<LogicalOperator> = vec![
+            LogicalOperator::Join(JoinOp {
+                left: filtre_indexe(),
+                right: filtre_indexe(),
+                join_type: JoinType::Inner,
+                conditions: vec![],
+            }),
+            LogicalOperator::Apply(ApplyOp {
+                input: filtre_indexe(),
+                subplan: filtre_indexe(),
+                shared_variables: vec![],
+                optional: false,
+            }),
+            LogicalOperator::Otherwise(OtherwiseOp {
+                left: filtre_indexe(),
+                right: filtre_indexe(),
+            }),
+        ];
+        for mut op in a_deux_enfants {
+            annotate_pushdown_hints(&mut op, &store);
+            assert!(op.children().iter().all(|e| a_indice(e)), "{op:?}");
+        }
+
+        let mut union = LogicalOperator::Union(UnionOp {
+            inputs: vec![*filtre_indexe(), *filtre_indexe()],
+        });
+        annotate_pushdown_hints(&mut union, &store);
+        assert!(union.children().iter().all(|e| a_indice(e)));
+
+        // Opérateur sans règle : rien ne change, rien ne casse.
+        let mut creation = LogicalOperator::CreateNode(CreateNodeOp {
+            variable: "n".into(),
+            labels: vec![],
+            properties: vec![],
+            input: Some(filtre_indexe()),
+        });
+        annotate_pushdown_hints(&mut creation, &store);
+        assert!(indice_du_filtre(creation.children()[0]).is_none());
+    }
+
+    // --- explain_result ---
+
+    #[test]
+    fn explain_result_rend_l_arbre_dans_une_colonne_plan() {
+        let plan = LogicalPlan::explain(scan("n", Some("Person")));
+        let resultat = explain_result(&plan);
+        assert_eq!(resultat.columns, vec!["plan".to_string()]);
+        assert_eq!(
+            resultat.column_types,
+            vec![obrain_common::types::LogicalType::String]
+        );
+        assert_eq!(resultat.rows.len(), 1);
+        assert!(
+            matches!(&resultat.rows[0][0], Value::String(s) if s.as_str() == "NodeScan (n:Person)\n")
+        );
+        assert!(resultat.execution_time_ms.is_none());
+        assert!(resultat.rows_scanned.is_none());
+        assert!(resultat.status_message.is_none());
+        assert_eq!(
+            resultat.gql_status,
+            obrain_common::utils::GqlStatus::SUCCESS
+        );
+    }
+}
