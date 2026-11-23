@@ -160,6 +160,9 @@ pub struct LouvainResult {
 /// Un parcours O(E) pour TOUTE la partition (chaque arête classée une fois),
 /// soit ~64 ms pour 3,2 M d'arêtes. Aucun état persisté, aucun format touché :
 /// c'est du diagnostic, jamais un chemin de requête.
+// API publique destinée aux appelants (outils de diagnostic, procédures) :
+// elle n'est pas encore branchée dans le crate, donc `dead_code` la signale.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CertificatConductance {
     /// Identifiant de la communauté.
@@ -181,6 +184,7 @@ pub struct CertificatConductance {
 /// Le graphe est lu NON ORIENTÉ (chaque arête comptée des deux côtés), comme le
 /// fait Louvain : une arête frontière compte une fois dans la coupe, une arête
 /// interne contribue au volume de son groupe et jamais à sa coupe.
+#[allow(dead_code)]
 pub fn conductances(
     store: &dyn GraphStore,
     partition: &FxHashMap<NodeId, u64>,
@@ -192,7 +196,7 @@ pub fn conductances(
     let mut volumes: HashMap<u64, u64> = HashMap::new();
     let mut coupes: HashMap<u64, u64> = HashMap::new();
 
-    for (node, comm) in partition.iter() {
+    for (node, comm) in partition {
         *tailles.entry(*comm).or_insert(0) += 1;
         let mut degre = 0u64;
         for (voisin, _) in store.edges_from(*node, Direction::Outgoing) {
@@ -230,7 +234,7 @@ pub fn conductances(
             }
         })
         .collect();
-    out.sort_by(|a, b| a.communaute.cmp(&b.communaute));
+    out.sort_by_key(|c| c.communaute);
     out
 }
 
@@ -1202,6 +1206,7 @@ mod tests {
     /// Deux cliques reliées par UNE arête : la conductance de chaque groupe
     /// vaut 1/(degré total du groupe), et les deux sont bien séparées.
     #[test]
+    #[allow(clippy::many_single_char_names)] // i, j, c, n : notation de graphe
     fn conductance_deux_cliques_reliees_par_une_arete() {
         let td = tempfile::tempdir().expect("tempdir");
         let s = SubstrateStore::create(td.path()).expect("create");
@@ -1266,6 +1271,7 @@ mod tests {
     /// Deux nœuds sans aucune arête entre eux : coupe nulle, conductances
     /// nulles — et aucune division par zéro malgré des volumes non nuls.
     #[test]
+    #[allow(clippy::many_single_char_names)] // i, j, c, n : notation de graphe
     fn conductance_nulle_sur_groupes_isoles() {
         let td = tempfile::tempdir().expect("tempdir");
         let s = SubstrateStore::create(td.path()).expect("create");
