@@ -186,6 +186,15 @@ pub struct CertificatConductance {
 /// Le graphe est lu NON ORIENTÉ (chaque arête comptée des deux côtés), comme le
 /// fait Louvain : une arête frontière compte une fois dans la coupe, une arête
 /// interne contribue au volume de son groupe et jamais à sa coupe.
+///
+/// **NON PONDÉRÉE**, comme `louvain` et `leiden`, qui forcent tous deux
+/// `w = 1.0`. Ce n'est pas une approximation : c'est le même modèle. Si des
+/// poids apparaissent un jour dans l'une des deux fonctions, celle-ci doit
+/// suivre — sans quoi les deux mesureraient des graphes différents.
+///
+/// `vol(V)` est calculé sur **tout le store** (`2 × edge_count`), pas sur les
+/// seuls nœuds de `partition` : juger une seule communauté, ou une partition
+/// postérieure à la création de nœuds, doit rester défini.
 #[allow(dead_code)]
 pub fn conductances(
     store: &dyn GraphStore,
@@ -193,7 +202,16 @@ pub fn conductances(
 ) -> Vec<CertificatConductance> {
     use std::collections::HashMap;
 
-    let mut volume_total: u64 = 0;
+    // ── vol(V) PORTE SUR TOUT LE GRAPHE, PAS SUR LA PARTITION ───────────
+    // Sommer les degrés des seuls nœuds présents dans `partition` sous-estime
+    // vol(V), donc écrase le dénominateur vers zéro et rend `None` là où la
+    // conductance est définie. Cas concret : juger UNE communauté donne
+    // volume_total = son propre volume, donc `min(vol, 0) = 0`.
+    //
+    // Chaque arête est comptée deux fois dans les volumes (une fois en
+    // Outgoing depuis sa source, une fois en Incoming depuis sa cible), donc
+    // vol(V) = 2 × le nombre d'arêtes du store.
+    let volume_total: u64 = 2 * (store.edge_count() as u64);
     let mut tailles: HashMap<u64, usize> = HashMap::new();
     let mut volumes: HashMap<u64, u64> = HashMap::new();
     let mut coupes: HashMap<u64, u64> = HashMap::new();
@@ -214,7 +232,6 @@ pub fn conductances(
             }
         }
         *volumes.entry(*comm).or_insert(0) += degre;
-        volume_total += degre;
     }
 
     let mut out: Vec<CertificatConductance> = tailles
@@ -1238,8 +1255,8 @@ mod tests {
         assert_eq!(certs.len(), 2, "deux communautés");
         for c in &certs {
             assert_eq!(c.taille, 4);
-            // Degré total d'une clique de 4 : 4 arêtes internes comptées des
-            // deux côtés = 12, plus l'arête du pont = 13.
+            // Degré total d'une clique de 4 : **6** arêtes internes (K4 complet),
+            // comptées des deux côtés = 12, plus l'arête du pont = 13.
             assert_eq!(c.volume, 13, "volume de la communauté {}", c.communaute);
             assert_eq!(c.coupe, 1, "une seule arête traverse");
             let cond = c.conductance.expect("conductance définie");
@@ -1249,6 +1266,51 @@ mod tests {
                 cond
             );
         }
+    }
+
+    /// LE cas que le dénominateur faux ratait : juger UNE SEULE communauté.
+    ///
+    /// Avant le correctif, `volume_total` ne sommait que les nœuds de
+    /// `partition`, donc une seule clique donnait `volume_total = son volume`,
+    /// `min(vol, 0) = 0`, et `conductance = None` — alors que la valeur est
+    /// définie (1/13 : l'autre clique pèse dans vol(V)).
+    #[test]
+    #[allow(clippy::many_single_char_names)] // i, j, c : notation de graphe
+    fn conductance_definie_sur_une_partition_partielle() {
+        let td = tempfile::tempdir().expect("tempdir");
+        let s = SubstrateStore::create(td.path()).expect("create");
+        let mut cliques: Vec<Vec<NodeId>> = Vec::new();
+        for _ in 0..2 {
+            let mut c = Vec::new();
+            for _ in 0..4 {
+                c.push(s.create_node(&["N"]));
+            }
+            for i in 0..c.len() {
+                for j in (i + 1)..c.len() {
+                    s.create_edge(c[i], c[j], "R");
+                }
+            }
+            cliques.push(c);
+        }
+        s.create_edge(cliques[0][0], cliques[1][0], "R");
+
+        // On ne juge QUE la première clique.
+        let mut partielle: FxHashMap<NodeId, u64> = FxHashMap::default();
+        for n in &cliques[0] {
+            partielle.insert(*n, 0);
+        }
+        let certs = conductances(&s, &partielle);
+        assert_eq!(certs.len(), 1);
+        let c = &certs[0];
+        assert_eq!(c.coupe, 1, "une arête traverse");
+        assert_eq!(c.volume, 13, "12 internes + le pont");
+        let cond = c
+            .conductance
+            .expect("définie : vol(V) couvre tout le graphe, pas la seule partition");
+        assert!(
+            (cond - 1.0 / 13.0).abs() < 1e-9,
+            "conductance {cond} ≠ 1/13 (vol(V) = 26, min(13, 13) = 13)"
+        );
     }
 
     /// Un groupe qui contient TOUT le graphe n'a pas de conductance : le
