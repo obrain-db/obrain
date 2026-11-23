@@ -57,7 +57,9 @@ impl super::Planner {
         {
             expanded_items = input_columns
                 .iter()
-                .filter(|col| !col.starts_with('_')) // Skip internal columns
+                // Skip internal columns, and the partial-path segment columns of a
+                // composed named path (obrain#189): marked by the query's marker.
+                .filter(|col| !col.starts_with('_') && !self.est_colonne_interne(col))
                 .map(|col| crate::query::plan::ReturnItem {
                     expression: LogicalExpression::Variable(col.clone()),
                     alias: None,

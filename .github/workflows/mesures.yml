@@ -25,6 +25,13 @@ name: Mesures (hors portillon)
 
 on:
   workflow_dispatch:
+  # Tendance hebdomadaire (dimanche 04:00 UTC). Un run planifié ne fait
+  # tourner que le job Criterion : les chronos exigent une machine calme,
+  # et ce workflow tourne sur un runner partagé. Sans ce déclencheur, la
+  # dérive de performance ne se voyait que les jours où quelqu'un y pensait
+  # (aucune mesure entre le 13/11 et le 22/11/2026).
+  schedule:
+    - cron: '0 4 * * 0'
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,7 +43,11 @@ env:
 jobs:
   mesures:
     name: Tests de temps, débit et performance (--ignored, informatif)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    # À la demande seulement : un runner partagé ne mesure pas (règle du
+    # dépôt, six runs rouges sur six avant #16). Un run planifié qui les
+    # exécuterait rendrait du bruit, pas un signal.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,7 +89,7 @@ jobs:
 
   bench-v001:
     name: Benchs de référence v0.0.1 (Criterion, informatif — un runner partagé ne mesure pas)
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -109,6 +120,12 @@ jobs:
           name: criterion-${{ github.sha }}
           path: target/criterion
           if-no-files-found: warn
+      # Le tableau est écrit dans le RÉSUMÉ du run : la page du run devient
+      # lisible sans télécharger l'artefact, et deux runs se comparent à l'œil.
+      # Les chiffres restent ceux d'un runner partagé : tendance, pas référence.
+      - name: Résumé des temps par itération
+        if: ${{ !cancelled() }}
+        run: python3 scripts/criterion_resume.py target/criterion >> "$GITHUB_STEP_SUMMARY"
       - name: Nettoyage du répertoire temporaire du job
         if: always()
         run: rm -rf "$RUNNER_TEMP/tests"

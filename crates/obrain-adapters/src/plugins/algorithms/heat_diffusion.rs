@@ -148,56 +148,52 @@ const CACHE_PLACES: usize = 4;
 static CACHE_EN_CONSTRUCTION: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Empreinte de CONTENU, pas d'adresse.
+/// Empreinte des entrées qui déterminent la table des voisins.
 ///
-/// Deux allocations successives peuvent tomber sur la meme adresse memoire ;
-/// se fier a un pointeur ferait servir la table d'anciennes features — une
-/// faute silencieuse qu'on passe des jours a chercher. On melange donc les
-/// tailles, les poids, et les vecteurs des NodeId extremes (deterministes et
-/// trouves en une passe).
+/// Les poids gaussiens dépendent de toutes les features, de la topologie,
+/// des poids, du nombre de niveaux et de sigma. Une clé partielle peut
+/// servir une table d'un autre graphe ou d'une autre configuration.
+/// Le parcours coûte O(V + E + taille des features) à chaque appel : il
+/// préserve le cache des calculs de distance/exp, mais son coût sur les
+/// grands graphes doit être mesuré. Comme auparavant, le magasin ne fournit
+/// pas ici de snapshot atomique : une mutation entre calcul de l’empreinte
+/// et construction de la table peut encore la rendre incohérente.
 fn empreinte_features(
+    store: &dyn GraphStore,
+    node_ids: &[NodeId],
     features: &HilbertFeaturesResult,
     weights: &FacetteWeights,
-    n_noeuds: usize,
+    levels: usize,
+    sigma_sq: f32,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    // (2026-08-15) LE NOMBRE DE NOEUDS EST VOLONTAIREMENT EXCLU.
-    //
-    // Premiere version : il en faisait partie. Mesure : « cache FROID » sur
-    // 100 % des appels — la base agent grandit en continu (371 995
-    // Perception, une de plus a chaque pas), donc l'empreinte changeait a
-    // chaque requete. Un cache dont la clef ne peut jamais se repeter.
-    //
-    // Et il n'a rien a faire ici : la table n'indexe que les noeuds PRESENTS
-    // DANS LES FEATURES (`features.features.get(&nid)` ecarte les autres).
-    // Un noeud arrive depuis le calcul des features n'y contribuerait pas,
-    // qu'on invalide ou non. La clef suit donc les FEATURES, dont le TTL de
-    // 120 s est exactement la duree de vie voulue pour ce cache.
-    let _ = n_noeuds;
-    features.dimensions.hash(&mut h);
-    features.features.len().hash(&mut h);
-    features.raw_facettes.len().hash(&mut h);
+    levels.hash(&mut h);
+    sigma_sq.to_bits().hash(&mut h);
+    weights.is_uniform.hash(&mut h);
+    weights.weights.len().hash(&mut h);
     for w in &weights.weights {
         w.to_bits().hash(&mut h);
     }
-    // Les deux extremes : deterministes quel que soit l'ordre de la table.
-    let mut mini: Option<(&NodeId, &Vec<f32>)> = None;
-    let mut maxi: Option<(&NodeId, &Vec<f32>)> = None;
-    for (id, v) in &features.features {
-        match mini {
-            Some((m, _)) if m <= id => {}
-            _ => mini = Some((id, v)),
-        }
-        match maxi {
-            Some((m, _)) if m >= id => {}
-            _ => maxi = Some((id, v)),
+
+    // Un ordre différent peut causer un raté du cache, jamais un faux hit.
+    node_ids.len().hash(&mut h);
+    for &id in node_ids {
+        id.hash(&mut h);
+        // L'ordre est conservé : il influe sur les additions flottantes.
+        let edges = store.edges_from(id, Direction::Both);
+        edges.len().hash(&mut h);
+        for (neighbor, _) in edges {
+            neighbor.hash(&mut h);
         }
     }
-    for extreme in [mini, maxi].into_iter().flatten() {
-        extreme.0.hash(&mut h);
-        for x in extreme.1.iter().take(16) {
-            x.to_bits().hash(&mut h);
+
+    features.features.len().hash(&mut h);
+    for (id, values) in &features.features {
+        id.hash(&mut h);
+        values.len().hash(&mut h);
+        for value in values {
+            value.to_bits().hash(&mut h);
         }
     }
     h.finish()
@@ -216,6 +212,27 @@ pub fn heat_kernel_diffusion(
     seeds: &[NodeId],
     weights: &FacetteWeights,
     config: &HeatKernelConfig,
+) -> Vec<(NodeId, f32)> {
+    let cache = CACHE_VOISINS.get_or_init(|| std::sync::RwLock::new(Vec::new()));
+    heat_kernel_diffusion_avec_cache(
+        store,
+        features,
+        seeds,
+        weights,
+        config,
+        cache,
+        &CACHE_EN_CONSTRUCTION,
+    )
+}
+
+fn heat_kernel_diffusion_avec_cache(
+    store: &dyn GraphStore,
+    features: &HilbertFeaturesResult,
+    seeds: &[NodeId],
+    weights: &FacetteWeights,
+    config: &HeatKernelConfig,
+    cache: &std::sync::RwLock<Vec<CacheVoisins>>,
+    cache_en_construction: &std::sync::atomic::AtomicBool,
 ) -> Vec<(NodeId, f32)> {
     if seeds.is_empty() {
         return Vec::new();
@@ -261,8 +278,7 @@ pub fn heat_kernel_diffusion(
     // Elle ne depend pas des graines : meme features + memes poids + meme
     // graphe => meme table. Lecture BREVE sous verrou partage, puis on rend
     // la main. Si la clef correspond, on saute les 480 000 reconstructions.
-    let empreinte = empreinte_features(features, weights, node_ids.len());
-    let cache = CACHE_VOISINS.get_or_init(|| std::sync::RwLock::new(Vec::new()));
+    let empreinte = empreinte_features(store, &node_ids, features, weights, levels, sigma_sq);
     {
         let lu = match cache.read() {
             Ok(g) => g,
@@ -326,14 +342,44 @@ pub fn heat_kernel_diffusion(
     // UN SEUL DEPOSANT : les autres viennent de recalculer la meme chose,
     // les faire attendre n'apporterait rien. Ils repartent avec leur propre
     // table — correct, simplement pas mis en cache.
-    if CACHE_EN_CONSTRUCTION
-        .compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-        )
-        .is_ok()
+    mettre_en_cache(cache, cache_en_construction, empreinte, &neighbor_weights);
+    let _ = sigma_sq;
+
+    let t_diff = web_time::Instant::now();
+    let r = diffuser(&node_ids, seeds, &neighbor_weights, config);
+    if chrono {
+        tracing::info!(
+            target: "obrain_tmn::exochrono",
+            "CHRONO CHALEUR (cache FROID) ids={}ms sigma={}ms table={}ms diffusion={}ms total={}ms",
+            ms_ids, ms_sigma,
+            t_ids.elapsed().as_millis() as u64 - ms_ids - ms_sigma
+                - t_diff.elapsed().as_millis() as u64,
+            t_diff.elapsed().as_millis() as u64,
+            t_ids.elapsed().as_millis() as u64
+        );
+    }
+    r
+}
+
+/// Ne publie pas une table construite sous une annulation : le substrat peut
+/// alors renvoyer des listes d'arêtes partielles.
+fn mettre_en_cache(
+    cache: &std::sync::RwLock<Vec<CacheVoisins>>,
+    cache_en_construction: &std::sync::atomic::AtomicBool,
+    empreinte: u64,
+    neighbor_weights: &HashMap<NodeId, Vec<(NodeId, f32)>>,
+) {
+    // Une annulation peut faire rendre des listes d'arêtes partielles par le
+    // magasin ; elles ne doivent jamais survivre dans le cache global.
+    if !obrain_common::utils::cancel::is_cancelled()
+        && cache_en_construction
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
     {
         {
             let mut w = match cache.write() {
@@ -356,24 +402,8 @@ pub fn heat_kernel_diffusion(
                 });
             }
         }
-        CACHE_EN_CONSTRUCTION.store(false, std::sync::atomic::Ordering::SeqCst);
+        cache_en_construction.store(false, std::sync::atomic::Ordering::SeqCst);
     }
-    let _ = sigma_sq;
-
-    let t_diff = web_time::Instant::now();
-    let r = diffuser(&node_ids, seeds, &neighbor_weights, config);
-    if chrono {
-        tracing::info!(
-            target: "obrain_tmn::exochrono",
-            "CHRONO CHALEUR (cache FROID) ids={}ms sigma={}ms table={}ms diffusion={}ms total={}ms",
-            ms_ids, ms_sigma,
-            t_ids.elapsed().as_millis() as u64 - ms_ids - ms_sigma
-                - t_diff.elapsed().as_millis() as u64,
-            t_diff.elapsed().as_millis() as u64,
-            t_ids.elapsed().as_millis() as u64
-        );
-    }
-    r
 }
 
 /// La diffusion proprement dite — extraite pour etre partagee entre le
@@ -561,6 +591,7 @@ mod tests {
     use super::*;
     use obrain_core::graph::GraphStoreMut;
     use obrain_substrate::SubstrateStore;
+    use std::sync::{RwLock, atomic::AtomicBool};
 
     /// Build a 5-node line graph: A - B - C - D - E (bidirectional edges).
     fn make_line_graph() -> (SubstrateStore, Vec<NodeId>) {
@@ -588,6 +619,245 @@ mod tests {
             .map_or(8, |v| v.len() / config.levels);
         let weights = FacetteWeights::uniform(n_facettes);
         (features, weights)
+    }
+
+    #[test]
+    fn empreinte_suit_topologie_features_intermediaires_et_sigma() {
+        let (store, nodes) = make_line_graph();
+        let (mut features, weights) = compute_features(&store);
+        let ids = store.node_ids();
+        let levels = features.features[&nodes[0]].len() / weights.len();
+        let avant = empreinte_features(&store, &ids, &features, &weights, levels, 1.0);
+        let autre_sigma = empreinte_features(&store, &ids, &features, &weights, levels, 2.0);
+        assert_ne!(avant, autre_sigma, "sigma doit invalider le cache");
+
+        // L'ancien calcul ne regardait que les IDs extrêmes.
+        let feature = &mut features.features.get_mut(&nodes[2]).unwrap()[0];
+        let originale = *feature;
+        *feature += 0.125;
+        let autre_feature = empreinte_features(&store, &ids, &features, &weights, levels, 1.0);
+        assert_ne!(
+            avant, autre_feature,
+            "une feature interne doit invalider le cache"
+        );
+        features.features.get_mut(&nodes[2]).unwrap()[0] = originale;
+
+        store.create_edge(nodes[0], nodes[4], "LINK");
+        let autre_graphe = empreinte_features(&store, &ids, &features, &weights, levels, 1.0);
+        assert_ne!(
+            avant, autre_graphe,
+            "une nouvelle arête doit invalider le cache"
+        );
+    }
+
+    #[test]
+    fn cache_ne_reutilise_pas_les_poids_dun_autre_sigma() {
+        let (store, nodes) = make_line_graph();
+        let (features, weights) = compute_features(&store);
+        let cache = RwLock::new(Vec::new());
+        let en_construction = AtomicBool::new(false);
+        let config = HeatKernelConfig {
+            iterations: 3,
+            alpha: 0.5,
+            sigma_sq: Some(0.01),
+        };
+        let avant = heat_kernel_diffusion_avec_cache(
+            &store,
+            &features,
+            &[nodes[0]],
+            &weights,
+            &config,
+            &cache,
+            &en_construction,
+        );
+        assert_eq!(cache.read().unwrap().len(), 1);
+        let autre = HeatKernelConfig {
+            sigma_sq: Some(1.0),
+            ..config
+        };
+        let obtenu = heat_kernel_diffusion_avec_cache(
+            &store,
+            &features,
+            &[nodes[0]],
+            &weights,
+            &autre,
+            &cache,
+            &en_construction,
+        );
+        assert_eq!(cache.read().unwrap().len(), 2);
+
+        let attendu = diffuser_sans_cache(&store, &features, &weights, &nodes, &autre);
+        assert_ne!(
+            trier_ids(avant),
+            trier_ids(attendu.clone()),
+            "le scénario doit distinguer les deux sigma"
+        );
+        assert_eq!(
+            trier_ids(obtenu),
+            trier_ids(attendu),
+            "le cache a réutilisé un autre sigma"
+        );
+    }
+
+    fn trier_ids(mut r: Vec<(NodeId, f32)>) -> Vec<(NodeId, f32)> {
+        r.sort_unstable_by_key(|(id, _)| *id);
+        r
+    }
+
+    /// Oracle sans cache pour comparer les résultats observables.
+    fn diffuser_sans_cache(
+        store: &SubstrateStore,
+        features: &HilbertFeaturesResult,
+        weights: &FacetteWeights,
+        nodes: &[NodeId],
+        config: &HeatKernelConfig,
+    ) -> Vec<(NodeId, f32)> {
+        let ids = store.node_ids();
+        let levels = features.features[&nodes[0]].len() / weights.len();
+        let mut voisins = HashMap::new();
+        for &id in &ids {
+            let mut nw = Vec::new();
+            if let Some(a) = features.features.get(&id) {
+                for (neighbor, _) in store.edges_from(id, Direction::Both) {
+                    if let Some(b) = features.features.get(&neighbor) {
+                        let d = weighted_hilbert_distance(a, b, weights, levels);
+                        nw.push((neighbor, (-(d * d) / config.sigma_sq.unwrap()).exp()));
+                    }
+                }
+            }
+            voisins.insert(id, nw);
+        }
+        diffuser(&ids, &[nodes[0]], &voisins, config)
+    }
+
+    #[test]
+    fn cache_suit_une_arete_ajoutee_et_une_feature_intermediaire_modifiee() {
+        let (store, nodes) = make_line_graph();
+        let (mut features, weights) = compute_features(&store);
+        let cache = RwLock::new(Vec::new());
+        let en_construction = AtomicBool::new(false);
+        let config = HeatKernelConfig {
+            iterations: 3,
+            alpha: 0.5,
+            sigma_sq: Some(1.0),
+        };
+        let avant = trier_ids(heat_kernel_diffusion_avec_cache(
+            &store,
+            &features,
+            &[nodes[0]],
+            &weights,
+            &config,
+            &cache,
+            &en_construction,
+        ));
+        assert_eq!(cache.read().unwrap().len(), 1);
+        store.create_edge(nodes[0], nodes[4], "LINK");
+        let apres_arete = trier_ids(heat_kernel_diffusion_avec_cache(
+            &store,
+            &features,
+            &[nodes[0]],
+            &weights,
+            &config,
+            &cache,
+            &en_construction,
+        ));
+        assert_eq!(cache.read().unwrap().len(), 2);
+        let reference_arete = trier_ids(diffuser_sans_cache(
+            &store, &features, &weights, &nodes, &config,
+        ));
+        assert_ne!(
+            avant, reference_arete,
+            "le graphe modifié doit changer le résultat"
+        );
+        assert_eq!(
+            apres_arete, reference_arete,
+            "table périmée après ajout d'arête"
+        );
+
+        features.features.get_mut(&nodes[2]).unwrap()[0] += 0.5;
+        let apres_feature = trier_ids(heat_kernel_diffusion_avec_cache(
+            &store,
+            &features,
+            &[nodes[0]],
+            &weights,
+            &config,
+            &cache,
+            &en_construction,
+        ));
+        assert_eq!(cache.read().unwrap().len(), 3);
+        let reference_feature = trier_ids(diffuser_sans_cache(
+            &store, &features, &weights, &nodes, &config,
+        ));
+        assert_ne!(
+            reference_arete, reference_feature,
+            "la feature modifiée doit changer le résultat"
+        );
+        assert_eq!(
+            apres_feature, reference_feature,
+            "table périmée après changement de feature"
+        );
+    }
+
+    #[test]
+    fn un_second_appel_de_meme_empreinte_sert_bien_le_cache() {
+        let (store, nodes) = make_line_graph();
+        let (features, weights) = compute_features(&store);
+        let config = HeatKernelConfig {
+            iterations: 3,
+            alpha: 0.5,
+            sigma_sq: Some(1.0),
+        };
+        let cache = RwLock::new(Vec::new());
+        let en_construction = AtomicBool::new(false);
+        let froid = heat_kernel_diffusion_avec_cache(
+            &store,
+            &features,
+            &[nodes[0]],
+            &weights,
+            &config,
+            &cache,
+            &en_construction,
+        );
+        // Un marqueur volontairement faux permet de prouver que le second
+        // appel lit l'entrée, et pas simplement qu'il recalcule le même résultat.
+        let vide = HashMap::new();
+        {
+            let mut garde = cache.write().unwrap();
+            assert_eq!(garde.len(), 1);
+            garde[0].voisins = vide;
+        }
+        let chaud = heat_kernel_diffusion_avec_cache(
+            &store,
+            &features,
+            &[nodes[0]],
+            &weights,
+            &config,
+            &cache,
+            &en_construction,
+        );
+        let attendu = diffuser(&store.node_ids(), &[nodes[0]], &HashMap::new(), &config);
+        assert_ne!(trier_ids(froid), trier_ids(attendu.clone()));
+        assert_eq!(
+            trier_ids(chaud),
+            trier_ids(attendu),
+            "le cache n'a pas été utilisé"
+        );
+    }
+
+    #[test]
+    fn une_table_partielle_annulee_n_est_pas_mise_en_cache() {
+        use obrain_common::utils::cancel::{self, CancelToken};
+        let cache = RwLock::new(Vec::new());
+        let en_construction = AtomicBool::new(false);
+        let jeton = CancelToken::new();
+        let table = HashMap::new();
+        cancel::scope_en_vigueur(&jeton, || {
+            jeton.cancel();
+            mettre_en_cache(&cache, &en_construction, 42, &table);
+        });
+        assert!(cache.read().unwrap().is_empty());
+        mettre_en_cache(&cache, &en_construction, 42, &table);
+        assert_eq!(cache.read().unwrap().len(), 1);
     }
 
     /// LE CHEMIN CHAUD REND LE MEME RESULTAT QUE LE CHEMIN FROID.

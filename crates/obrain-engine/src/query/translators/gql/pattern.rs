@@ -767,6 +767,24 @@ impl GqlTranslator {
         let mut seen: HashSet<String> = bound.keys().cloned().collect();
         seen.insert(anchor_variable.clone());
 
+        // (obrain#189) Alias PAR SEGMENT d'un chemin nomme compose : `p` + marqueur + `i`
+        // pour chaque arete sauf la derniere, qui porte `p`. Le planificateur
+        // enchaine le chemin de chaque segment sur le precedent (voir
+        // marqueur de la requete). Avant, seule la derniere arete avait l'alias :
+        // le chemin `p` ne couvrait que cette arete.
+        let derniere_arete = path.edges.len().saturating_sub(1);
+        let alias_segments: Vec<Option<String>> = (0..path.edges.len())
+            .map(|idx| {
+                path_alias.map(|alias| {
+                    if idx == derniere_arete {
+                        alias.to_string()
+                    } else {
+                        crate::query::plan::alias_segment(alias, idx, &self.marqueur_segment)
+                    }
+                })
+            })
+            .collect();
+
         // En avant depuis l'ancre.
         let mut current = anchor_variable.clone();
         for (idx, edge) in path.edges.iter().enumerate().skip(anchor) {
@@ -775,9 +793,7 @@ impl GqlTranslator {
                 &edge.target,
                 EdgeWalk {
                     reversed: false,
-                    path_alias: (idx + 1 == path.edges.len())
-                        .then_some(path_alias)
-                        .flatten(),
+                    path_alias: alias_segments[idx].as_deref(),
                     path_mode,
                 },
                 current,

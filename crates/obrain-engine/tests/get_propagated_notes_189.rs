@@ -78,12 +78,12 @@ fn notes_liees_au_meme_noeud_meme_resultat() {
     // Une ligne par (note, chemin hub -> mid_i -> t.rs).
     let lignes = (NOTES * INTERMEDIAIRES) as i64;
     assert_eq!(entier(&ligne[0]), lignes, "lignes");
-    // Chaque chemin : hub, mid, cible = 3 noms (`nodes(path)` ne reprend que
-    // les noeuds de l'expansion de longueur variable : comportement de main,
-    // inchange ici).
-    assert_eq!(entier(&ligne[1]), 3 * lignes, "noms de chemin");
-    // `length(path) - 1` : 2 sauts de l'expansion, moins 1.
-    assert_eq!(entier(&ligne[2]), lignes, "distances");
+    // Chaque chemin : note, hub, mid, cible = 4 noms. (obrain#189 : `nodes(path)`
+    // couvrait avant la seule expansion de longueur variable, le saut LINKED_TO
+    // de la note etait absent du chemin nomme. Corrige : chemin compose complet.)
+    assert_eq!(entier(&ligne[1]), 4 * lignes, "noms de chemin");
+    // `length(path)` = 3 (LINKED_TO + 2 sauts) : `length(path) - 1` = 2.
+    assert_eq!(entier(&ligne[2]), 2 * lignes, "distances");
 }
 
 #[test]

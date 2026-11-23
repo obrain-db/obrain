@@ -112,6 +112,46 @@ impl super::Planner {
                 expand_op = expand_op
                     .with_path_length_output()
                     .with_path_detail_output();
+
+                // (obrain#189) Un segment de motif nomme compose (`p` + marqueur + `i`)
+                // reprend le chemin deja parcouru par le segment precedent,
+                // c'est-a-dire la colonne `p` + marqueur + `k` la plus haute presente
+                // dans l'entree : sans cela chaque segment repartait de sa
+                // source et la colonne `p` ne gardait que le dernier.
+                let marqueur = self.marqueur_segment.borrow().clone();
+                let prefixe = match (expand.path_alias.as_deref(), marqueur.as_deref()) {
+                    (Some(alias), Some(marqueur)) => {
+                        let base = alias.split(marqueur).next().unwrap_or(alias);
+                        columns_before
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(idx, nom)| {
+                                let k = nom
+                                    .strip_prefix(base)?
+                                    .strip_prefix(marqueur)?
+                                    .parse::<usize>()
+                                    .ok()?;
+                                Some((k, idx))
+                            })
+                            .max()
+                            .map(|(_, idx)| idx)
+                    }
+                    // Sans marqueur, un alias portant la forme réservée (U+0001) ne peut
+                    // venir que d'un point d'appel sans texte : refus explicite, jamais une
+                    // composition silencieuse.
+                    (Some(alias), None) if alias.contains('\u{1}') => {
+                        use obrain_common::utils::error::{QueryError, QueryErrorKind};
+                        return Err(QueryError::new(
+                            QueryErrorKind::Semantic,
+                            "chemin nommé composé sans marqueur de requête : planification refusée",
+                        )
+                        .into());
+                    }
+                    _ => None,
+                };
+                if let Some(colonne) = prefixe {
+                    expand_op = expand_op.with_path_prefix(colonne);
+                }
             }
 
             Box::new(expand_op)

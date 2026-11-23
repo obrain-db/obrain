@@ -56,7 +56,7 @@ jobs:
   lint:
     name: Format, clippy, doc (zéro avertissement)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -67,12 +67,18 @@ jobs:
       # (purgé par le runner entre deux jobs) et le supprime en fin de job.
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -122,7 +128,7 @@ jobs:
   test:
     name: Tests (features par défaut)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -133,12 +139,18 @@ jobs:
       # (purgé par le runner entre deux jobs) et le supprime en fin de job.
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -208,6 +220,11 @@ jobs:
   couverture:
     name: Couverture (code neuf ≥ 95 %, plancher global)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    # SEUL job laissé sur le pool auto-hébergé. Mesuré le 22/11/2026 (PR #303) :
+    # sur ubuntu-latest (4 vCPU), la 1re des deux mesures (profil par défaut) dépassait
+    # 109 min, contre 26 min sur le pool (8 jobs) ; la 2e mesure ne tient pas dans les
+    # 180 min. Les 20 autres jobs tournent sur des runners hébergés, donc ne
+    # monopolisent plus le pool.
     runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
     timeout-minutes: 180
     env:
@@ -226,12 +243,18 @@ jobs:
         run: python3 scripts/test_couverture_code_neuf.py
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/couverture"
           echo "TMPDIR=$RUNNER_TEMP/couverture" >> "$GITHUB_ENV"
           # Pas de sccache ici : le rustflags d'instrumentation change à chaque
@@ -244,8 +267,11 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: runner.environment == 'github-hosted'
+      # ≥ 0.8.6 obligatoire : cargo 1.100 range les binaires de test sous
+      # debug/build/<pkg>/<hash>/out (nouveau build-dir) ; 0.8.5 ne cherchait que
+      # debug/deps et échouait sur « not found object files » (runner n1, 22/11/2026).
       - name: Outil (cargo-llvm-cov, version épinglée)
-        run: cargo install cargo-llvm-cov --locked --version 0.8.5
+        run: cargo install cargo-llvm-cov --locked --version 0.9.1
       - name: Mesure, profil 1/2 — features par défaut
         run: |
           ulimit -n 8192
@@ -305,7 +331,7 @@ jobs:
   wal-partage:
     name: WAL partagé (inter-processus)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
       group: wal-partage-${{ github.workflow }}-${{ github.ref }}
@@ -335,18 +361,24 @@ jobs:
   bancs-fabriques:
     name: Bancs sur bases fabriquées (cibles désignées, défauts connus)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -422,19 +454,25 @@ jobs:
   bindings-c:
     name: Bindings C
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: [self-hosted, linux, x64, obrain-ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -656,7 +694,7 @@ jobs:
   tests-all-features:
     name: Tests (toutes features)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -668,12 +706,18 @@ jobs:
       # (purgé par le runner entre deux jobs) et le supprime en fin de job.
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -714,7 +758,7 @@ jobs:
   features:
     name: Toutes les features compilent
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -725,12 +769,18 @@ jobs:
       # (purgé par le runner entre deux jobs) et le supprime en fin de job.
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -770,7 +820,7 @@ jobs:
   wasm:
     name: Navigateur (wasm32)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ubuntu-latest
     # La cible wasm32 n'est installée que sur `stable`. Le rustup des runners est
     # en 1.26 : il refuse `rustup default stable --force-non-host` de l'action, et
     # le défaut de la machine reste celui qu'elle avait (1.91.1 sur n2, sans cible
@@ -788,12 +838,18 @@ jobs:
       # (purgé par le runner entre deux jobs) et le supprime en fin de job.
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -850,7 +906,7 @@ jobs:
   web-paquet:
     name: Paquet navigateur (obrain-web)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ubuntu-latest
     # Cible wasm32 installée sur stable seulement ; défaut des runners non fiable
     # (rustup 1.26 refuse `rustup default --force-non-host`). Voir #54.
     env:
@@ -865,12 +921,18 @@ jobs:
       # (purgé par le runner entre deux jobs) et le supprime en fin de job.
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -943,7 +1005,7 @@ jobs:
   persistance-navigateur:
     name: Persistance navigateur (OPFS, Chrome headless)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ubuntu-latest
     continue-on-error: true
     env:
       RUSTUP_TOOLCHAIN: stable
@@ -958,12 +1020,18 @@ jobs:
       # (purgé par le runner entre deux jobs) et le supprime en fin de job.
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -1033,7 +1101,7 @@ jobs:
   msrv:
     name: MSRV (rust-version du manifeste)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -1044,12 +1112,18 @@ jobs:
       # (purgé par le runner entre deux jobs) et le supprime en fin de job.
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -1086,7 +1160,7 @@ jobs:
   deny:
     name: cargo deny (licences, advisories, sources)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -1097,12 +1171,18 @@ jobs:
       # (purgé par le runner entre deux jobs) et le supprime en fin de job.
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -1132,7 +1212,7 @@ jobs:
   package:
     name: Métadonnées de publication
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","obrain-ci"]') }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # ── TMPDIR par job (panne disque n3 du 07/11) ───────────────────────────
@@ -1143,12 +1223,18 @@ jobs:
       # (purgé par le runner entre deux jobs) et le supprime en fin de job.
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────
@@ -1198,12 +1284,18 @@ jobs:
       # (purgé par le runner entre deux jobs) et le supprime en fin de job.
       - name: Répertoire temporaire du job (balayage, espace, TMPDIR)
         run: |
+          # Runner hébergé (ubuntu-latest) : ~14 Go libres d'origine. On rend les
+          # outils préinstallés (~10 Go) avant le garde d'espace ci-dessous.
+          if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost 2>/dev/null || true
+          fi
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
           libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
-          if [ "${libre:-0}" -lt 20 ]; then echo "::error::moins de 20 Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
+          seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
+          if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
           mkdir -p "$RUNNER_TEMP/tests"
           echo "TMPDIR=$RUNNER_TEMP/tests" >> "$GITHUB_ENV"
           # ── Compilation sur les runners auto-hébergés (13/11/2026) ──────────

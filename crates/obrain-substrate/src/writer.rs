@@ -1107,6 +1107,15 @@ impl Writer {
             }
         }
 
+        // Test de l'ordre de publication : la sonde est liée à l'écriture
+        // EFFECTIVE, même si l'appelant déplace la publication de la tête.
+        #[cfg(test)]
+        AVANT_ECRITURE_SLOT_ARETE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f();
+            }
+        });
+
         self.with_edge_zone(|zf| {
             let offset = idx as usize * EdgeRecord::SIZE;
             ensure_room(zf, offset + EdgeRecord::SIZE, self.min_headroom)?;
@@ -1188,10 +1197,13 @@ impl Writer {
     pub fn read_edge(&self, idx: u64) -> SubstrateResult<Option<EdgeRecord>> {
         // (2026-08-07) Lecture PARTAGÉE — voir `with_node_zone_read`.
         self.with_edge_zone_read(|zf| {
-            let offset = idx as usize * EdgeRecord::SIZE;
-            if offset + EdgeRecord::SIZE > zf.as_slice().len() {
+            // Borne vérifiée (voir `offset_arete_dans_zone`) : un identifiant hors
+            // zone, un débordement ou une conversion non représentable (wasm32) sont
+            // « absents », jamais une lecture d'un autre emplacement.
+            let Some(offset) = offset_arete_dans_zone(idx, EdgeRecord::SIZE, zf.as_slice().len())
+            else {
                 return Ok(None);
-            }
+            };
             let bytes = &zf.as_slice()[offset..offset + EdgeRecord::SIZE];
             Ok(Some(*bytemuck::from_bytes::<EdgeRecord>(bytes)))
         })
@@ -3765,6 +3777,13 @@ impl CompactionResult {
 // reprises OPPOSEES.
 #[cfg(test)]
 thread_local! {
+    #[allow(clippy::type_complexity)]
+    pub(crate) static AVANT_ECRITURE_SLOT_ARETE: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
     pub(crate) static ECHEC_ENSURE_ROOM: std::cell::RefCell<Option<(String, u32)>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -5105,5 +5124,67 @@ mod tests {
             );
             assert_eq!(key_at_old, 0, "ancien slot {old} doit être zéro");
         }
+    }
+}
+
+/// Décalage de l'arête `idx` dans une zone de `longueur` octets, pour des
+/// enregistrements de `taille` octets. `None` si l'identifiant n'est pas
+/// représentable (`usize`, wasm32), si le produit ou la fin débordent, ou si
+/// l'enregistrement sort de la zone. Calculs toujours vérifiés.
+#[must_use]
+pub(crate) fn offset_arete_dans_zone(idx: u64, taille: usize, longueur: usize) -> Option<usize> {
+    let offset = usize::try_from(idx).ok()?.checked_mul(taille)?;
+    let fin = offset.checked_add(taille)?;
+    (fin <= longueur).then_some(offset)
+}
+
+#[cfg(test)]
+mod offset_arete_tests {
+    use super::offset_arete_dans_zone;
+
+    const T: usize = 36;
+
+    #[test]
+    fn bornes_de_la_zone() {
+        assert_eq!(offset_arete_dans_zone(0, T, 0), None, "zone vide");
+        assert_eq!(offset_arete_dans_zone(0, T, T), Some(0));
+        assert_eq!(
+            offset_arete_dans_zone(9, T, 10 * T),
+            Some(9 * T),
+            "dernier enregistrement"
+        );
+        assert_eq!(
+            offset_arete_dans_zone(10, T, 10 * T),
+            None,
+            "juste hors zone"
+        );
+        assert_eq!(
+            offset_arete_dans_zone(10, T, 11 * T),
+            Some(10 * T),
+            "11e enregistrement"
+        );
+    }
+
+    #[test]
+    fn contre_exemple_addition_qui_deborde() {
+        // 512409557603043100 * 36 = 18446744073709551600 < 2^64 : le produit tient,
+        // mais la fin (produit + 36) déborde. Doit être « absent », sans panique.
+        assert_eq!(
+            offset_arete_dans_zone(512_409_557_603_043_100, T, usize::MAX),
+            None
+        );
+    }
+
+    #[test]
+    fn valeurs_extremes_sans_panique() {
+        assert_eq!(offset_arete_dans_zone(u64::MAX, T, usize::MAX), None);
+        assert_eq!(
+            offset_arete_dans_zone(1 << 63, T, usize::MAX),
+            None,
+            "bit haut externe"
+        );
+        // Produit exactement représentable, fin qui dépasse la zone.
+        let idx = (usize::MAX / T) as u64;
+        assert_eq!(offset_arete_dans_zone(idx, T, usize::MAX), None);
     }
 }
