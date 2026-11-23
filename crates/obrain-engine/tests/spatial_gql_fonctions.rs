@@ -25,6 +25,66 @@ fn evaluer(expr: &str) -> Value {
     r.rows[0][0].clone()
 }
 
+/// Exécute `RETURN <expr> AS d` et rend le message du REFUS attendu.
+///
+/// Ces refus sont le contrat public des deux fonctions : une requête mal
+/// formée doit dire ce qu'elle attend, pas rendre un point faux. Aucun
+/// n'était exercé (constat de couverture du 23/11/2026).
+fn refus(expr: &str) -> String {
+    let db = ObrainDB::new_in_memory();
+    let requete = format!("RETURN {expr} AS d");
+    let e = db
+        .execute(&requete)
+        .err()
+        .unwrap_or_else(|| panic!("`{requete}` devait être refusée"));
+    e.to_string()
+}
+
+#[test]
+fn point_refuse_un_mauvais_nombre_d_arguments() {
+    let m = refus("point(1.0)");
+    assert!(m.contains("point() attend 2 arguments"), "message : {m}");
+}
+
+#[test]
+fn point_refuse_des_arguments_qui_ne_sont_pas_des_nombres() {
+    let m = refus("point('est', 48.0)");
+    assert!(m.contains("deux nombres"), "message : {m}");
+}
+
+#[test]
+fn point_refuse_une_latitude_hors_bornes() {
+    let m = refus("point(2.0, 100.0)");
+    assert!(m.contains("hors de [-90, 90]"), "message : {m}");
+}
+
+#[test]
+fn point_d_une_coordonnee_nulle_rend_null() {
+    // Une ligne sans coordonnées ne doit pas faire échouer toute la requête.
+    assert!(matches!(evaluer("point(null, 48.0)"), Value::Null));
+    assert!(matches!(evaluer("point(2.0, null)"), Value::Null));
+}
+
+#[test]
+fn distance_refuse_un_mauvais_nombre_d_arguments() {
+    let m = refus("distance(point(0.0, 0.0))");
+    assert!(m.contains("distance() attend 2 points"), "message : {m}");
+}
+
+#[test]
+fn distance_refuse_un_argument_qui_n_est_pas_un_point() {
+    let m = refus("distance(point(0.0, 0.0), 1.0)");
+    assert!(m.contains("deux points"), "message : {m}");
+}
+
+#[test]
+fn distance_avec_un_point_nul_rend_null() {
+    assert!(matches!(
+        evaluer("distance(null, point(0.0, 0.0))"),
+        Value::Null
+    ));
+}
+
 fn metres(expr: &str) -> f64 {
     evaluer(expr)
         .as_float64()
