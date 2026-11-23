@@ -204,14 +204,16 @@ pub fn conductances(
     // dans le volume total, sinon juger une seule communauté rend `None`
     // (deux K4 reliées, première clique seule : coupe = 1, volume = 13,
     // volume_total = 13 → dénominateur nul) au lieu de 1/13 (vol(V) = 26).
-    let volume_total: u64 = store
-        .node_ids()
-        .into_iter()
-        .map(|n| {
-            (store.edges_from(n, Direction::Outgoing).len()
-                + store.edges_from(n, Direction::Incoming).len()) as u64
-        })
-        .sum();
+    //
+    // COÛT : `2 × edge_count()` est un chargement atomique. Sommer les degrés
+    // nœud par nœud exigeait `node_ids()` (un Vec de tous les nœuds) puis deux
+    // listes d'arêtes allouées PAR NŒUD : sur le graphe PO (1,2 M de nœuds,
+    // 6 M d'arêtes), c'est un balayage complet pour un diagnostic qui devrait
+    // être gratuit. L'égalité « somme des degrés = 2 × arêtes » est exacte par
+    // construction (chaque arête dirigée contribue 1 au degré sortant de sa
+    // source et 1 au degré entrant de sa cible) ; le test
+    // `somme_des_degres_vaut_deux_fois_les_aretes` la verrouille.
+    let volume_total: u64 = 2 * (store.edge_count() as u64);
     let mut tailles: HashMap<u64, usize> = HashMap::new();
     let mut volumes: HashMap<u64, u64> = HashMap::new();
     let mut coupes: HashMap<u64, u64> = HashMap::new();
@@ -1310,6 +1312,28 @@ mod tests {
             "conductance {} ≠ 1/13",
             cond
         );
+    }
+
+    /// L'invariant qui autorise `vol(V) = 2 × edge_count()` sans balayage : chaque
+    /// arête dirigée ajoute 1 au degré sortant de sa source et 1 au degré entrant
+    /// de sa cible, donc la somme des degrés vaut exactement deux fois le nombre
+    /// d'arêtes. Si une arête venait à être comptée dans `edge_count()` sans
+    /// apparaître dans une liste d'adjacence (ou l'inverse), ce test tombe AVANT
+    /// que `conductances` ne rende un dénominateur faux.
+    #[test]
+    fn somme_des_degres_vaut_deux_fois_les_aretes() {
+        for store in [create_two_cliques_graph(), create_simple_graph()] {
+            let somme: usize = store
+                .node_ids()
+                .into_iter()
+                .map(|n| store.out_degree(n) + store.in_degree(n))
+                .sum();
+            assert_eq!(
+                somme,
+                2 * store.edge_count(),
+                "somme des degrés ≠ 2 × arêtes : le raccourci de vol(V) ne tient plus"
+            );
+        }
     }
 
     /// Un groupe qui contient TOUT le graphe n'a pas de conductance : le
