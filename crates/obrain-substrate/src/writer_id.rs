@@ -164,4 +164,31 @@ mod tests {
         let err = writer_id(dir.path()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
+
+    /// Le répertoire d'état n'existe pas : la lecture rend `NotFound`, puis
+    /// `create_new` échoue aussi parce que le parent manque. L'erreur remonte
+    /// au lieu qu'un identifiant soit inventé.
+    #[test]
+    fn repertoire_inexistant_rend_une_erreur() {
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("pas_la");
+        let e = writer_id(&absent).expect_err("un répertoire absent ne porte pas d'identité");
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+    }
+
+    /// `writer.id` est un RÉPERTOIRE : la lecture échoue autrement qu'en
+    /// `NotFound` (EISDIR), et l'erreur remonte telle quelle. Un identifiant
+    /// régénéré en silence masquerait un état corrompu — c'est précisément ce
+    /// qu'un auteur d'écriture ne doit pas faire.
+    #[test]
+    fn un_repertoire_a_la_place_du_fichier_rend_une_erreur() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(FICHIER_WRITER_ID)).unwrap();
+        let e = writer_id(dir.path()).expect_err("writer.id en répertoire doit être refusé");
+        assert_ne!(
+            e.kind(),
+            io::ErrorKind::NotFound,
+            "ce n'est pas l'absence du fichier qui doit remonter"
+        );
+    }
 }
