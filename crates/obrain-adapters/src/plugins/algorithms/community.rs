@@ -1155,6 +1155,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn test_louvain_basic() {
         let store = create_simple_graph();
         let result = louvain(&store, 1.0);
