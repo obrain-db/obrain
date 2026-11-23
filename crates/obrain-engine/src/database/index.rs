@@ -1,9 +1,9 @@
 //! Index management for ObrainDB (property, vector, and text indexes).
 
-#[cfg(any(feature = "vector-index", feature = "text-index"))]
+// Inconditionnels : l'index SPATIAL (toujours compilé) en a besoin, même sans
+// `vector-index` ni `text-index`.
 use std::sync::Arc;
 
-#[cfg(feature = "text-index")]
 use parking_lot::RwLock;
 
 use obrain_common::utils::error::Result;
@@ -542,6 +542,8 @@ impl super::ObrainDB {
         }
     }
 
+    // Plus d'appelant spatial (DROP spatial : `supprimer_index`, qui PROPAGE
+    // l'échec) ; restent le vectoriel et le textuel, sous leurs features.
     #[cfg(any(feature = "vector-index", feature = "text-index"))]
     pub(super) fn retirer_declaration_substrat(&self, genre: &str, label: &str, propriete: &str) {
         let Some(ref sub) = self.substrate_store else {
@@ -589,6 +591,259 @@ impl super::ObrainDB {
                     _ => false,
                 }
             },
+        ))
+    }
+
+    // ── INDEX SPATIAL ───────────────────────────────────────────────────────
+
+    /// Construit (ou reconstruit) l'index spatial d'un label sur une propriété
+    /// qui porte un point `[lon, lat]` — la forme que `point(lon, lat)` produit.
+    ///
+    /// Rend le nombre de points indexés. Les nœuds dont la propriété n'est pas
+    /// un point (absente, liste d'une autre longueur, valeurs non numériques,
+    /// latitude hors `[-90, 90]`) sont IGNORÉS, pas fatals : une base peut
+    /// porter des coordonnées manquantes, et les compter serait mentir sur ce
+    /// que l'index contient.
+    ///
+    /// # Errors
+    ///
+    /// Base sans substrat — seule une base substrat porte un catalogue d'index.
+    pub fn create_spatial_index(&self, label: &str, property: &str) -> Result<usize> {
+        if self.substrate_store.is_none() {
+            return Err(obrain_common::utils::error::Error::Internal(format!(
+                "create_spatial_index(:{label}({property})) : index spatial indisponible \
+                 sur un store externe — seule une base substrat en porte."
+            )));
+        }
+        let store = self.data_store();
+        let index = self
+            .substrate_spatial_indexes
+            .rebatir_sous_verrou(&format!("{label}:{property}"), || {
+                super::spatial_procedure::construire_index(&*store, label, property)
+            });
+        let n = index.read().len();
+        // DÉCLARATION DURABLE : l'arbre se rebâtit depuis les propriétés, mais
+        // le FAIT qu'il doive exister ne se rebâtit pas. Sans cette ligne,
+        // l'index disparaîtrait à la fermeture (même leçon que le vectoriel).
+        self.declarer_index_substrat(obrain_substrate::DeclarationIndex {
+            genre: "spatial".to_string(),
+            label: label.to_string(),
+            propriete: property.to_string(),
+            dimension: Some(2),
+            metrique: Some("haversine".to_string()),
+        });
+        Ok(n)
+    }
+
+    /// Crée l'index ET lui donne un nom durable, d'un seul geste.
+    ///
+    /// # Errors
+    ///
+    /// Nom déjà porté par un autre index spatial, ou création impossible.
+    pub fn create_named_spatial_index(
+        &self,
+        name: &str,
+        label: &str,
+        property: &str,
+    ) -> Result<usize> {
+        if let Some((l, p)) = self.resoudre_index_spatial_catalogue(name)
+            && !(l == label && p == property)
+        {
+            return Err(obrain_common::utils::error::Error::Internal(format!(
+                "create_named_spatial_index('{name}') : ce nom désigne déjà l'index spatial \
+                 :{l}({p})"
+            )));
+        }
+        let n = self.create_spatial_index(label, property)?;
+        self.name_spatial_index(name, label, property)?;
+        Ok(n)
+    }
+
+    /// Donne un nom durable à l'index spatial existant sur `:label(propriété)`.
+    /// Idempotent ; un index porte au plus un nom.
+    ///
+    /// # Errors
+    ///
+    /// Aucun index déclaré sur ce couple, nom invalide ou déjà pris.
+    pub fn name_spatial_index(&self, name: &str, label: &str, property: &str) -> Result<()> {
+        let Some(ref sub) = self.substrate_store else {
+            return Err(obrain_common::utils::error::Error::Internal(format!(
+                "name_spatial_index('{name}') : index spatial indisponible sur un store externe."
+            )));
+        };
+        let resultat = sub
+            .nommer_index("spatial", label, property, name)
+            .map_err(|e| {
+                obrain_common::utils::error::Error::Internal(format!(
+                    "name_spatial_index('{name}', :{label}({property})) : {e}"
+                ))
+            });
+        // Le nom est écrit au catalogue : le cache de noms le sait périmé.
+        self.substrate_spatial_indexes.invalider_noms();
+        resultat
+    }
+
+    /// Retire l'index spatial et sa déclaration DURABLE. Rend `true` s'il
+    /// était déclaré ou chargé.
+    ///
+    /// # Errors
+    ///
+    /// Le retrait durable de la déclaration a échoué : RIEN n'a été modifié,
+    /// l'index reste en mémoire et au catalogue (avant : l'échec était
+    /// seulement journalisé et l'index revenait à la réouverture).
+    pub fn drop_spatial_index(&self, label: &str, property: &str) -> Result<bool> {
+        super::spatial_procedure::supprimer_index(
+            &self.substrate_spatial_indexes,
+            self.substrate_store.as_deref(),
+            label,
+            property,
+        )
+    }
+
+    /// Reconstruit l'index par un rescan complet.
+    ///
+    /// Inutile après une écriture (la surcouche la porte déjà) : c'est le geste
+    /// d'après un chargement massif, ou quand `doit_etre_rebati` le demande.
+    ///
+    /// # Errors
+    ///
+    /// Création impossible (base sans substrat).
+    pub fn rebuild_spatial_index(&self, label: &str, property: &str) -> Result<usize> {
+        // Pas de retrait préalable : la construction REMPLACE l'index sous le
+        // verrou du registre (`rebatir_sous_verrou`), sans fenêtre où le
+        // couple ne serait plus suivi.
+        self.create_spatial_index(label, property)
+    }
+
+    /// Les index spatiaux NOMMÉS, `(nom, label, propriété)`, triés par nom.
+    #[must_use]
+    pub fn spatial_index_names(&self) -> Vec<(String, String, String)> {
+        self.substrate_spatial_indexes
+            .noms(self.substrate_store.as_deref())
+    }
+
+    /// `(label, propriété)` d'un nom d'index spatial, lu au catalogue durable.
+    fn resoudre_index_spatial_catalogue(&self, name: &str) -> Option<(String, String)> {
+        self.spatial_index_names()
+            .into_iter()
+            .find(|(n, _, _)| n == name)
+            .map(|(_, l, p)| (l, p))
+    }
+
+    /// `(label, propriété)` d'un index désigné par son NOM ou par
+    /// `label:propriété`, ou une ERREUR qui nomme ce qui existe.
+    ///
+    /// Une erreur plutôt qu'un résultat vide : une faute de frappe dans le nom
+    /// d'un index doit se voir, pas se confondre avec « aucun point ici ».
+    ///
+    /// # Errors
+    ///
+    /// Nom inconnu et identifiant qui ne se lit pas comme `label:propriété`.
+    pub(super) fn resoudre_index_spatial(&self, nom_ou_ident: &str) -> Result<(String, String)> {
+        if let Some(paire) = self.resoudre_index_spatial_catalogue(nom_ou_ident) {
+            return Ok(paire);
+        }
+        // Un identifiant `label:propriété` n'est accepté que s'il est DÉCLARÉ
+        // (même règle que `PoigneeIndexSpatiaux::resoudre`, revue de #282) :
+        // sinon l'API Rust bâtissait un index implicite, non durable,
+        // invisible de SHOW INDEXES.
+        if let Some((l, p)) = nom_ou_ident.split_once(':')
+            && super::spatial_procedure::declaration_spatiale(self.substrate_store.as_deref(), l, p)
+        {
+            return Ok((l.to_string(), p.to_string()));
+        }
+        Err(obrain_common::utils::error::Error::Internal(format!(
+            "index spatial inconnu : '{nom_ou_ident}' — index déclarés : [{}]",
+            self.spatial_index_names()
+                .into_iter()
+                .map(|(n, l, p)| format!("{n} = :{l}({p})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
+    }
+
+    /// L'index spatial d'un nom, chargé ou REBÂTI À LA DEMANDE.
+    ///
+    /// Paresseux comme le vectoriel : une base rouverte ne porte pas ses index
+    /// en mémoire, et rebâtir 10⁶ points au démarrage (648 ms mesurés)
+    /// ajouterait un coût de démarrage non borné.
+    ///
+    /// # Errors
+    ///
+    /// Nom inconnu.
+    pub(super) fn index_spatial(
+        &self,
+        nom_ou_ident: &str,
+    ) -> Result<Arc<RwLock<obrain_core::index::spatial::SpatialIndex>>> {
+        let (label, property) = self.resoudre_index_spatial(nom_ou_ident)?;
+        let cle = format!("{label}:{property}");
+        if let Some(idx) = self.substrate_spatial_indexes.get(&cle) {
+            return Ok(idx);
+        }
+        // Reconstruction DIRECTE, sans passer par `rebatir_index_declare` :
+        // ce dernier est gaté sur les features `vector-index`/`text-index`,
+        // alors qu'un index spatial n'a aucune feature à demander.
+        let store = self.data_store();
+        Ok(self
+            .substrate_spatial_indexes
+            .construire_sous_verrou(&cle, || {
+                super::spatial_procedure::construire_index(&*store, &label, &property)
+            }))
+    }
+
+    /// Les nœuds à moins de `rayon_m` mètres de `(lon, lat)`, triés par
+    /// distance croissante, avec leur distance EXACTE en mètres.
+    ///
+    /// # Errors
+    ///
+    /// Index inconnu (voir `resoudre_index_spatial`).
+    pub fn spatial_search(
+        &self,
+        nom_ou_ident: &str,
+        lon: f64,
+        lat: f64,
+        rayon_m: f64,
+    ) -> Result<Vec<(obrain_common::types::NodeId, f64)>> {
+        let idx = self.index_spatial(nom_ou_ident)?;
+        let garde = idx.read();
+        Ok(garde
+            .dans_rayon(lon, lat, rayon_m)
+            .into_iter()
+            .map(|(id, d)| (obrain_common::types::NodeId(u64::from(id)), d))
+            .collect())
+    }
+
+    /// Les `k` nœuds les plus proches de `(lon, lat)`, par distance croissante.
+    ///
+    /// # Errors
+    ///
+    /// Index inconnu (voir `resoudre_index_spatial`).
+    pub fn spatial_knn(
+        &self,
+        nom_ou_ident: &str,
+        lon: f64,
+        lat: f64,
+        k: usize,
+    ) -> Result<Vec<(obrain_common::types::NodeId, f64)>> {
+        let idx = self.index_spatial(nom_ou_ident)?;
+        let garde = idx.read();
+        Ok(garde
+            .plus_proches(lon, lat, k)
+            .into_iter()
+            .map(|(id, d)| (obrain_common::types::NodeId(u64::from(id)), d))
+            .collect())
+    }
+
+    /// La poignée que la SESSION porte : DDL, `CALL` et planificateur passent
+    /// par elle, jamais par `ObrainDB` (qui n'est pas atteignable depuis une
+    /// session, et ne doit pas l'être — le cycle empêcherait la libération).
+    pub(crate) fn poignee_index_spatiaux(
+        &self,
+    ) -> std::sync::Arc<dyn super::spatial_procedure::IndexSpatiaux> {
+        std::sync::Arc::new(super::spatial_procedure::PoigneeIndexSpatiaux::nouvelle(
+            self.substrate_store.clone(),
+            self.data_store(),
+            std::sync::Arc::clone(&self.substrate_spatial_indexes),
         ))
     }
 
@@ -661,6 +916,9 @@ impl super::ObrainDB {
             // survit, et le journal juste en dessous l'explique.
             #[cfg(not(feature = "text-index"))]
             "text" => false,
+            // L'index spatial se rebâtit depuis les propriétés, comme le
+            // vectoriel : rien de persistant à recharger, la déclaration suffit.
+            "spatial" => self.create_spatial_index(label, property).is_ok(),
             _ => false,
         };
         if !ok {

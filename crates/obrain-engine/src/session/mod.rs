@@ -162,6 +162,10 @@ pub struct Session {
     #[cfg(feature = "vector-index")]
     index_vectoriels_nommes:
         Option<Arc<dyn crate::database::vector_query_nodes::IndexVectorielsNommes>>,
+    /// Poignée des index SPATIAUX : le DDL `USING SPATIAL`, les procédures
+    /// `CALL` et le planificateur passent par elle. Même câblage que
+    /// `recherche_hybride` — posée par `ObrainDB::session()`.
+    index_spatiaux: Option<Arc<dyn crate::database::spatial_procedure::IndexSpatiaux>>,
     /// WAL for logging schema changes.
     #[cfg(feature = "wal")]
     wal: Option<Arc<obrain_adapters::storage::wal::LpgWal>>,
@@ -348,6 +352,7 @@ impl Session {
             substrate_store: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            index_spatiaux: None,
             #[cfg(feature = "vector-index")]
             index_vectoriels_nommes: None,
             #[cfg(feature = "wal")]
@@ -467,6 +472,23 @@ impl Session {
     /// Pose la poignée des index vectoriels nommés (`CALL
     /// db.index.vector.queryNodes`, #209). `ObrainDB` l'appelle juste après
     /// avoir construit la session.
+    ///
+    /// Pose la poignée des index spatiaux (DDL, planificateur, `CALL`).
+    /// `ObrainDB` l'appelle juste après avoir construit la session.
+    pub(crate) fn set_index_spatiaux(
+        &mut self,
+        poignee: Arc<dyn crate::database::spatial_procedure::IndexSpatiaux>,
+    ) {
+        self.index_spatiaux = Some(poignee);
+    }
+
+    /// La poignée des index spatiaux de cette session, s'il y en a une.
+    pub(crate) fn index_spatiaux(
+        &self,
+    ) -> Option<&Arc<dyn crate::database::spatial_procedure::IndexSpatiaux>> {
+        self.index_spatiaux.as_ref()
+    }
+
     #[cfg(feature = "vector-index")]
     pub(crate) fn set_index_vectoriels_nommes(
         &mut self,
@@ -737,6 +759,7 @@ impl Session {
             substrate_store: None,
             #[cfg(feature = "hybrid-search")]
             recherche_hybride: None,
+            index_spatiaux: None,
             #[cfg(feature = "vector-index")]
             index_vectoriels_nommes: None,
             #[cfg(feature = "wal")]
@@ -1655,7 +1678,15 @@ impl Session {
                     ))),
                 }
             }
-            SchemaStatement::CreateIndex(_stmt) => {
+            SchemaStatement::CreateIndex(stmt) => {
+                // (2026-11-21) `USING SPATIAL` RESSUSCITE le DDL, pour le seul
+                // genre qui a une STRUCTURE à tenir : un index de points. Les
+                // autres sortes gardent l'erreur T17 ci-dessous — le substrat
+                // les subsume réellement (zones L0/L1/L2, index inversé), et
+                // prétendre le contraire mentirait au lieu de rendre service.
+                if stmt.index_kind == obrain_adapters::query::gql::ast::IndexKind::Spatial {
+                    return self.creer_index_spatial(&stmt);
+                }
                 // T17 Step 24 (2026-04-23): `CREATE INDEX` / `CREATE TEXT
                 // INDEX` / `CREATE VECTOR INDEX` were LpgStore-era APIs
                 // that materialised per-label/per-property HNSW or BM25
@@ -1674,6 +1705,19 @@ impl Session {
                 ))
             }
             SchemaStatement::DropIndex { name, if_exists } => {
+                // (2026-11-21) Les index SPATIAUX ont un nom durable et se
+                // suppriment : `CREATE INDEX ... USING SPATIAL` sans son `DROP`
+                // serait une porte sans sortie (revue de #282 : `DROP INDEX geo`
+                // refusait, et `IF EXISTS` disait « No change » en laissant
+                // l'index en place).
+                if let Some(poignee) = self.index_spatiaux.as_ref()
+                    && poignee.noms().iter().any(|(n, _, _)| n == &name)
+                {
+                    poignee.supprimer(&name)?;
+                    return Ok(QueryResult::status(format!(
+                        "Dropped spatial index '{name}'"
+                    )));
+                }
                 // T17 Step 24 (2026-04-23): `DROP INDEX` was an
                 // LpgStore-era API. Substrate's tiered storage does
                 // not expose named per-property indexes. Returns Ok
@@ -2498,6 +2542,49 @@ impl Session {
     // driven by the CommunityWarden thinker).
 
     /// Returns a table of all indexes from the catalog.
+    /// `CREATE INDEX <nom> FOR (n:Label) ON (n.prop) USING SPATIAL`.
+    ///
+    /// Le seul DDL d'index qui ÉVALUE encore quelque chose, et pour une raison
+    /// précise : un index spatial est une structure que la base doit tenir et
+    /// que le planificateur consulte. Les sortes TEXT/VECTOR/BTREE gardent
+    /// l'erreur T17 — leur structure est déjà tenue par le substrat.
+    fn creer_index_spatial(
+        &self,
+        stmt: &obrain_adapters::query::gql::ast::CreateIndexStatement,
+    ) -> Result<QueryResult> {
+        use obrain_common::utils::error::{Error, QueryError, QueryErrorKind};
+
+        if stmt.properties.len() != 1 {
+            return Err(Error::Query(QueryError::new(
+                QueryErrorKind::Semantic,
+                format!(
+                    "CREATE INDEX '{}' ... SPATIAL : exactement UNE propriété est attendue \
+                     (le point `[lon, lat]`), {} ont été données.",
+                    stmt.name,
+                    stmt.properties.len()
+                ),
+            )));
+        }
+        let Some(poignee) = self.index_spatiaux.as_ref() else {
+            return Err(Error::Internal(
+                "CREATE INDEX ... SPATIAL : aucune poignée d'index spatiaux sur cette \
+                 session (seule une base substrat en porte)."
+                    .to_string(),
+            ));
+        };
+        let propriete = &stmt.properties[0];
+        if stmt.if_not_exists && poignee.noms().iter().any(|(n, _, _)| n == &stmt.name) {
+            // Idempotence demandée EXPLICITEMENT par l'utilisateur : on ne
+            // reconstruit pas (le reconstruire serait un travail non demandé).
+            return Ok(QueryResult::status("No change"));
+        }
+        let n = poignee.creer(&stmt.name, &stmt.label, propriete)?;
+        Ok(QueryResult::status(format!(
+            "Created spatial index '{}' on :{}({}) — {n} points indexés",
+            stmt.name, stmt.label, propriete
+        )))
+    }
+
     fn execute_show_indexes(&self) -> Result<QueryResult> {
         let indexes = self.catalog.all_indexes();
         let columns = vec![
@@ -2506,7 +2593,7 @@ impl Session {
             "label".to_string(),
             "property".to_string(),
         ];
-        let rows: Vec<Vec<Value>> = indexes
+        let mut rows: Vec<Vec<Value>> = indexes
             .into_iter()
             .map(|def| {
                 let label_name = self
@@ -2525,6 +2612,20 @@ impl Session {
                 ]
             })
             .collect();
+        // Les index SPATIAUX ont leur propre déclaration durable (genre
+        // "spatial"), hors du catalogue de types : sans cette boucle, un index
+        // créé par DDL serait invisible de `SHOW INDEXES` — donc introuvable
+        // pour qui doit le supprimer ou l'expliquer.
+        if let Some(poignee) = self.index_spatiaux.as_ref() {
+            for (nom, label, propriete) in poignee.noms() {
+                rows.push(vec![
+                    Value::from(nom.as_str()),
+                    Value::from("Spatial"),
+                    Value::from(label.as_str()),
+                    Value::from(propriete.as_str()),
+                ]);
+            }
+        }
         Ok(QueryResult {
             columns,
             column_types: Vec::new(),
@@ -3254,6 +3355,11 @@ impl Session {
             } else {
                 processor
             };
+            let processor = if let Some(poignee) = self.index_spatiaux() {
+                processor.with_index_spatiaux(Arc::clone(poignee))
+            } else {
+                processor
+            };
             #[cfg(feature = "cdc")]
             let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
 
@@ -3536,6 +3642,11 @@ impl Session {
             } else {
                 processor
             };
+            let processor = if let Some(poignee) = self.index_spatiaux() {
+                processor.with_index_spatiaux(Arc::clone(poignee))
+            } else {
+                processor
+            };
             #[cfg(feature = "cdc")]
             let processor = processor.with_cdc_log(Arc::clone(self.cdc_log()));
             processor.process(query, QueryLanguage::Gremlin, Some(&params))
@@ -3666,6 +3777,11 @@ impl Session {
             #[cfg(feature = "vector-index")]
             let processor = if let Some(poignee) = self.index_vectoriels_nommes() {
                 processor.with_index_vectoriels_nommes(Arc::clone(poignee))
+            } else {
+                processor
+            };
+            let processor = if let Some(poignee) = self.index_spatiaux() {
+                processor.with_index_spatiaux(Arc::clone(poignee))
             } else {
                 processor
             };
@@ -3832,6 +3948,11 @@ impl Session {
             #[cfg(feature = "vector-index")]
             let processor = if let Some(poignee) = self.index_vectoriels_nommes() {
                 processor.with_index_vectoriels_nommes(Arc::clone(poignee))
+            } else {
+                processor
+            };
+            let processor = if let Some(poignee) = self.index_spatiaux() {
+                processor.with_index_spatiaux(Arc::clone(poignee))
             } else {
                 processor
             };
@@ -5087,6 +5208,13 @@ impl Session {
         #[cfg(feature = "vector-index")]
         if let Some(ref poignee) = self.index_vectoriels_nommes {
             planner = planner.with_index_vectoriels_nommes(Arc::clone(poignee));
+        }
+        // Index SPATIAUX : c'est CE planificateur que prend `execute()` (chemin
+        // ordinaire, cache-hit comme cache-miss). Sans cette ligne, le prédicat
+        // de distance retombe sur un balayage — mesuré de bout en bout en GQL à
+        // 100 000 points, rayon 300 m : 28,56 ms contre 31,9 µs (benches/spatial_bench.rs).
+        if let Some(ref poignee) = self.index_spatiaux {
+            planner = planner.with_index_spatiaux(Arc::clone(poignee));
         }
         #[cfg(feature = "cdc")]
         {

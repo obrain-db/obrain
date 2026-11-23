@@ -6,6 +6,7 @@ use crate::graph::Direction;
 use crate::graph::GraphStore;
 use crate::graph::lpg::{Edge, Node};
 use crate::graph::traits::PredicatTexte;
+use crate::index::geo::{nombre_f64, point_lon_lat};
 use obrain_common::types::{
     EpochId, HashableValue, NodeId, PropertyKey, TransactionId, Value, value_cmp,
 };
@@ -3982,6 +3983,64 @@ impl ExpressionPredicate {
                 Some(Value::Float64(
                     crate::index::vector::euclidean_distance(a, b) as f64,
                 ))
+            }
+            // ── SPATIAL : point(lon, lat) et distance(a, b) ─────────────────
+            // `point` rend une liste de deux Float64 (décision c6a44d3e : aucune
+            // variante de Value, donc aucun format disque touché). `distance`
+            // rend des MÈTRES (haversine, `index::geo` — la même formule que
+            // l'index spatial utilisera pour revérifier ses candidats).
+            // Null en entrée → Null : une ligne sans coordonnées ne doit pas
+            // faire échouer toute la requête.
+            "point" => {
+                if args.len() != 2 {
+                    return self.signale_erreur(format!(
+                        "point() attend 2 arguments (lon, lat), {} reçu(s)",
+                        args.len()
+                    ));
+                }
+                let lon = self.eval_expr(&args[0], chunk, row)?;
+                let lat = self.eval_expr(&args[1], chunk, row)?;
+                if matches!(lon, Value::Null) || matches!(lat, Value::Null) {
+                    return Some(Value::Null);
+                }
+                let (Some(lon), Some(lat)) = (nombre_f64(&lon), nombre_f64(&lat)) else {
+                    return self
+                        .signale_erreur("point() attend deux nombres (lon, lat)".to_string());
+                };
+                if !lon.is_finite() {
+                    return self.signale_erreur(format!("point() : longitude {lon} invalide"));
+                }
+                if !crate::index::geo::latitude_valide(lat) {
+                    return self
+                        .signale_erreur(format!("point() : latitude {lat} hors de [-90, 90]"));
+                }
+                Some(Value::List(
+                    vec![Value::Float64(lon), Value::Float64(lat)].into(),
+                ))
+            }
+            "distance" => {
+                if args.len() != 2 {
+                    return self.signale_erreur(format!(
+                        "distance() attend 2 points, {} argument(s) reçu(s)",
+                        args.len()
+                    ));
+                }
+                let a = self.eval_expr(&args[0], chunk, row)?;
+                let b = self.eval_expr(&args[1], chunk, row)?;
+                if matches!(a, Value::Null) || matches!(b, Value::Null) {
+                    return Some(Value::Null);
+                }
+                let (Some((lon1, lat1)), Some((lon2, lat2))) =
+                    (point_lon_lat(&a), point_lon_lat(&b))
+                else {
+                    return self.signale_erreur(
+                        "distance() attend deux points : distance(point(lon, lat), point(lon, lat))"
+                            .to_string(),
+                    );
+                };
+                Some(Value::Float64(crate::index::geo::haversine_m(
+                    lon1, lat1, lon2, lat2,
+                )))
             }
             "dot_product" => {
                 if args.len() != 2 {

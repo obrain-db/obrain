@@ -232,6 +232,18 @@ impl super::Planner {
             return Ok(result);
         }
 
+        // ── INDEX SPATIAL : `distance(n.pos, point(lon, lat)) < r` ─────────
+        //
+        // AVANT les chemins d'intervalle et de texte : un rayon est le prédicat
+        // le plus sélectif que ce planificateur sait servir, et il ne coûte
+        // qu'un parcours d'arbre (2,9 µs mesurés à 100 000 points contre
+        // 29,0 ms au balayage). Le plan rendu est EXACT — voir l'en-tête de
+        // `spatial_filter.rs` pour les trois raisons, et pourquoi le filtre
+        // n'est pas réappliqué par-dessus.
+        if let Some(result) = self.try_plan_filter_spatial(filter)? {
+            return Ok(result);
+        }
+
         // Try the label-first path for `n.prop IN [literals]` (T17i).
         if let Some(result) = self.try_plan_filter_with_in_list(filter)? {
             return Ok(result);

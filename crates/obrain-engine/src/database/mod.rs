@@ -73,6 +73,7 @@ pub mod search_delta;
 pub mod search_relief;
 #[cfg(feature = "cdc")]
 pub mod search_surprise;
+pub mod spatial_procedure;
 pub mod topological;
 #[cfg(feature = "vector-index")]
 pub mod vector_query_nodes;
@@ -349,6 +350,13 @@ pub struct ObrainDB {
             >,
         >,
     >,
+    /// Index SPATIAUX déclarés : `label:propriété` → index en mémoire.
+    ///
+    /// Un verrou par index (et non un registre verrouillé en bloc) : une
+    /// requête tient la lecture d'UN index pendant qu'une écriture sur un autre
+    /// label continue. Le VP-Tree ne s'insère pas — la surcouche de
+    /// `SpatialIndex` porte les écritures, sous un verrou d'écriture bref.
+    pub(super) substrate_spatial_indexes: Arc<crate::database::spatial_procedure::RegistreSpatial>,
     /// Metrics registry shared across all sessions.
     #[cfg(feature = "metrics")]
     pub(crate) metrics: Option<Arc<crate::metrics::MetricsRegistry>>,
@@ -1135,6 +1143,16 @@ impl ObrainDB {
             },
         ));
 
+        // Index SPATIAUX : même contrat, même point unique (toute écriture de
+        // propriété, GQL comprise). Inconditionnel — le spatial n'a aucune
+        // feature à demander.
+        typed.add_mutation_observer(Arc::new(
+            crate::database::spatial_procedure::ObservateurIndexSpatial::nouveau(
+                Arc::clone(&db.substrate_spatial_indexes),
+                &typed,
+            ),
+        ));
+
         // (2026-08-31) PERSISTANCE CDC — le journal survit au redémarrage.
         // `with_store` construit un `CdcLog` vide ; on y attache le persistor
         // substrate (zone `cdc_journal`) : recharge au boot + append à chaque
@@ -1676,6 +1694,9 @@ impl ObrainDB {
             substrate_text_indexes: Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            substrate_spatial_indexes: Arc::new(
+                crate::database::spatial_procedure::RegistreSpatial::nouveau(),
+            ),
             #[cfg(feature = "metrics")]
             metrics: Some(Arc::new(crate::metrics::MetricsRegistry::new())),
             current_graph: RwLock::new(None),
@@ -1703,6 +1724,18 @@ impl ObrainDB {
                     compteur: Arc::clone(&db.ecritures_vectorielles_vues),
                     store: Arc::downgrade(typed),
                 },
+            ));
+        }
+        // Index SPATIAUX : même raison, et INCONDITIONNEL — le spatial n'a
+        // aucune feature à demander. Sans cette ligne, une base en mémoire (le
+        // cas de tous les tests et de l'atelier) n'entretiendrait pas ses
+        // index : mesuré, une écriture après `CREATE INDEX` restait invisible.
+        if let Some(ref typed) = db.substrate_store {
+            typed.add_mutation_observer(Arc::new(
+                crate::database::spatial_procedure::ObservateurIndexSpatial::nouveau(
+                    Arc::clone(&db.substrate_spatial_indexes),
+                    typed,
+                ),
             ));
         }
         Ok(db)
@@ -1814,6 +1847,9 @@ impl ObrainDB {
             substrate_text_indexes: Arc::new(parking_lot::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            substrate_spatial_indexes: Arc::new(
+                crate::database::spatial_procedure::RegistreSpatial::nouveau(),
+            ),
             #[cfg(feature = "metrics")]
             metrics: Some(Arc::new(crate::metrics::MetricsRegistry::new())),
             current_graph: RwLock::new(None),
@@ -1993,6 +2029,7 @@ impl ObrainDB {
             // Index vectoriels nommés (`CALL db.index.vector.queryNodes`, #209).
             #[cfg(feature = "vector-index")]
             ext_session.set_index_vectoriels_nommes(self.poignee_index_vectoriels());
+            ext_session.set_index_spatiaux(self.poignee_index_spatiaux());
             return ext_session;
         }
 
@@ -2023,6 +2060,7 @@ impl ObrainDB {
         session.set_recherche_hybride(self.poignee_recherche_hybride());
         #[cfg(feature = "vector-index")]
         session.set_index_vectoriels_nommes(self.poignee_index_vectoriels());
+        session.set_index_spatiaux(self.poignee_index_spatiaux());
 
         // Wire the cognitive engine (3 piliers), if this DB has one, so
         // `CALL obrain.cognitive.*` resolves in every session's planner
