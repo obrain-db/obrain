@@ -295,14 +295,12 @@ fn relever(db: &ObrainDB) -> String {
 /// L'invariant réel est double et ne demande aucun compte exact :
 ///   - aucune PERTE d'acquitté → borne inférieure `K` ;
 ///   - aucune écriture INVENTÉE → borne supérieure `K + marge`.
-const MARGE_MORT: u64 = 32;
 
 /// Compare un relevé observé au relevé attendu, en tolérant la marge sur le
 /// seul rôle mort. Les survivants restent à l'égalité stricte : ils ont fini
 /// leur travail, leur compte n'est pas une course.
 fn assert_releve(vu: &str, quoi: &str) {
     let (mort_min_n, mort_min_a) = attendu(K);
-    let (mort_max_n, mort_max_a) = attendu(K + MARGE_MORT);
     let (survivant_n, survivant_a) = attendu(N + M);
     let lien_mort = lien(ROLE_MORT);
 
@@ -313,10 +311,14 @@ fn assert_releve(vu: &str, quoi: &str) {
         let Ok(valeur) = valeur.parse::<i64>() else {
             continue;
         };
+        // #322 a corrigé le COMPTEUR : il ne se fige plus sur un état
+        // transitoire, donc le mort aussi doit tomber exactement sur
+        // `attendu(K)`. La marge de #320 est retirée — elle acceptait le
+        // symptôme que #322 a supprimé, et aurait masqué sa réapparition.
         let (lo, hi) = if cle == ROLE_MORT {
-            (mort_min_n, mort_max_n)
+            (mort_min_n, mort_min_n)
         } else if cle == lien_mort {
-            (mort_min_a, mort_max_a)
+            (mort_min_a, mort_min_a)
         } else if ROLES.contains(&cle) {
             (survivant_n, survivant_n)
         } else if ROLES.iter().any(|r| lien(r) == cle) {
@@ -404,25 +406,26 @@ fn assert_compteurs(vu: &str, quoi: &str) {
 /// le 23/11/2026 : `RoleD=94` là où `K` en attendait 90. C'est la preuve que
 /// la correction couvre le cas observé, et pas seulement qu'elle compile.
 #[test]
-fn le_comparateur_tolere_le_mort_au_dela_de_k() {
-    let (n_k, a_k) = attendu(K);
+fn le_comparateur_refuse_un_compteur_qui_derive() {
+    let (n_k, _) = attendu(K);
     assert_eq!(n_k, 90, "l'attendu de référence du test est 90 (K={K})");
-    let _ = a_k;
-    // Le relevé réellement observé en CI.
-    let observe = "RoleA=120 RoleB=120 RoleC=120 RoleD=94 \
-                   LIEN_A=30 LIEN_B=30 LIEN_C=30 LIEN_D=15 Amorce=1";
-    assert_releve(observe, "cas CI du 23/11 (RoleD=94)");
 
-    // Et la borne est bien fermée. Attention : au-delà de N, une instruction
-    // crée 2 nœuds et 1 arête, donc la borne haute n'est pas `n_k + MARGE_MORT`
-    // mais `attendu(K + MARGE_MORT).0` — mesuré 154, pas 122.
-    let (n_max, _) = attendu(K + MARGE_MORT);
-    let trop = format!("RoleD={}", n_max + 1);
-    let refus = std::panic::catch_unwind(|| assert_releve(&trop, "au-delà de la marge"));
+    // Le relevé réellement observé en CI le 23/11 : le COMPTEUR donnait 94 ou
+    // 95 là où l'énumération disait 90. #322 a corrigé le compteur, donc ce
+    // relevé doit désormais être REFUSÉ — si un jour il repasse, c'est que la
+    // dérive est revenue.
+    let derive = "RoleA=120 RoleB=120 RoleC=120 RoleD=94 \
+                  LIEN_A=30 LIEN_B=30 LIEN_C=30 LIEN_D=15 Amorce=1";
+    let refus = std::panic::catch_unwind(|| assert_releve(derive, "dérive du compteur"));
     assert!(
         refus.is_err(),
-        "un compte au-delà de la marge doit être refusé"
+        "un compteur qui dérive doit être refusé : #322 a rendu le compte exact"
     );
+
+    // Et le relevé correct passe.
+    let juste = "RoleA=120 RoleB=120 RoleC=120 RoleD=90 \
+                 LIEN_A=30 LIEN_B=30 LIEN_C=30 LIEN_D=15 Amorce=1";
+    assert_releve(juste, "relevé exact");
 }
 
 /// Le relevé ATTENDU après la mort de `ROLE_MORT` à `K` et la fin des autres.
@@ -675,8 +678,8 @@ fn scenario(test: &str, sortie_brutale: bool) {
             e.role
         );
         let vu = e.attendre_ligne("VU ");
-        // Le rôle mort est toléré dans [attendu(K), attendu(K + MARGE_MORT)] :
-        // son compte dépend du moment du SIGKILL, pas d'un invariant.
+        // Égalité stricte pour TOUS les rôles, y compris le mort : #322 a
+        // corrigé le compteur, qui ne se fige plus sur un état transitoire.
         assert_releve(
             &vu,
             &format!("{} ne voit pas les écritures acquittées des autres", e.role),
