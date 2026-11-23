@@ -103,6 +103,29 @@ fn bench_two_hop_pattern(c: &mut Criterion) {
     });
 }
 
+/// Trois sauts — le cas de #189.
+///
+/// Deux sauts existent déjà ; le troisième est celui où les plans naïfs
+/// explosent (produit cartésien des chemins intermédiaires). Il est ici pour
+/// qu'une correction de #189 ait un AVANT mesurable, et pour que la régression
+/// soit visible si quelqu'un touche à la jointure.
+fn bench_three_hop_pattern(c: &mut Criterion) {
+    let db = setup_social_graph(1_000, 5);
+    let session = db.session();
+
+    c.bench_function("query_3hop_pattern", |b| {
+        b.iter(|| {
+            let result = session
+                .execute(
+                    "MATCH (a:Person {id: 0})-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) \
+                     RETURN DISTINCT d.id",
+                )
+                .unwrap();
+            black_box(result)
+        });
+    });
+}
+
 fn bench_aggregation_count(c: &mut Criterion) {
     let db = setup_social_graph(1_000, 5);
     let session = db.session();
@@ -164,6 +187,7 @@ criterion_group!(
     bench_node_lookup,
     bench_pattern_match,
     bench_two_hop_pattern,
+    bench_three_hop_pattern,
     bench_fan_out_expand_1k,
     bench_aggregation_count,
     bench_filter_range,
