@@ -134,6 +134,99 @@ fn main() -> Result<(), BoxErr> {
         }
     }
 
+    // ── ÉCHANTILLON VÉRIFIÉ PAR LE SOURCE ────────────────────────────────
+    // Les taux « violations » ci-dessus mesurent la cohérence entre la
+    // stratégie annoncée et une propriété du graphe, pas la vérité du source.
+    // Ici on va VÉRIFIER DANS LE FICHIER : pour une arête `same_module` en C,
+    // le nom de la cible doit apparaître dans le fichier de l'appelant.
+    //
+    // Mesure CONSERVATRICE : si le nom est absent, l'arête est certainement
+    // fausse. S'il est présent, l'arête est plausible — pas prouvée (un appel
+    // peut viser un homonyme). Le taux d'absence est donc un MINORANT du taux
+    // d'erreur réel.
+    let n_ech: usize = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
+    // ÉCHANTILLON RÉPARTI, PAS LES N PREMIERS : prendre les n premières
+    // concentre la mesure sur le premier sous-système du parcours et rend le
+    // taux non extrapolable. On collecte toutes les candidates, on en prend
+    // une sur `pas` pour couvrir le corpus, et on compte les DOUBLONS
+    // (même source et même cible), qui sont un défaut distinct.
+    let toutes: Vec<&obrain_indexer::Edge> = g
+        .edges()
+        .iter()
+        .filter(|e| matches!(e.kind, EdgeKind::Calls))
+        .filter(|e| {
+            e.props
+                .extra
+                .get("strategy")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "same_module")
+                .unwrap_or(false)
+        })
+        .collect();
+    let mut vues: HashMap<(usize, usize), usize> = HashMap::new();
+    for e in &toutes {
+        *vues
+            .entry((e.source.0 as usize, e.target.0 as usize))
+            .or_insert(0) += 1;
+    }
+    let doublons = vues.values().filter(|c| **c > 1).count();
+    println!(
+        "\nsame_module : {} arêtes, {} couples (source,cible) distincts, {} DUPLIQUÉS",
+        toutes.len(),
+        vues.len(),
+        doublons
+    );
+    let pas = (toutes.len() / n_ech.max(1)).max(1);
+    let mut verif = 0usize;
+    let mut absents = 0usize;
+    let mut exemples_absents: Vec<String> = Vec::new();
+    for (rang, e) in toutes.iter().enumerate() {
+        if verif >= n_ech || rang % pas != 0 {
+            continue;
+        }
+        let (Some(&si), Some(&ti)) = (position.get(&e.source), position.get(&e.target)) else {
+            continue;
+        };
+        let (src, dst) = (&g.nodes()[si], &g.nodes()[ti]);
+        let (Some(nom_dst), Some(chemin)) =
+            (dst.props.name.as_deref(), src.props.file_path.as_deref())
+        else {
+            continue;
+        };
+        if !chemin.ends_with(".c") && !chemin.ends_with(".h") {
+            continue;
+        }
+        verif += 1;
+        let Ok(texte) = std::fs::read_to_string(&root.join(chemin)) else {
+            continue;
+        };
+        let present = texte.contains(nom_dst);
+        if !present {
+            absents += 1;
+            if exemples_absents.len() < 10 {
+                exemples_absents.push(format!(
+                    "  {nom_dst} absent de {chemin} (appelant {}:{}, cible {}:{})",
+                    src.props.name.as_deref().unwrap_or("?"),
+                    src.props.start_line.unwrap_or(0),
+                    dst.props.file_path.as_deref().unwrap_or("?"),
+                    dst.props.start_line.unwrap_or(0),
+                ));
+            }
+        }
+    }
+    if verif > 0 {
+        println!(
+            "\néchantillon vérifié par le source : {verif} arêtes, {absents} cibles ABSENTES du fichier appelant ({:.1} %)",
+            100.0 * absents as f64 / verif as f64
+        );
+        for e in &exemples_absents {
+            println!("{e}");
+        }
+    }
+
     println!("\narêtes : {total}");
     let mut cles: Vec<_> = par_strategie.iter().collect();
     cles.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
