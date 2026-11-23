@@ -1665,6 +1665,39 @@ mod tests_rng {
 
 #[cfg(test)]
 mod tests {
+
+    /// Couvre les DEUX points d'entrée qui passent par `store.csr_cached()`
+    /// (`heat_kernel_signature` et `geodesic_distance`) : ce sont les seules
+    /// lignes que la couverture laissait rouges, et ce sont exactement celles
+    /// par lesquelles le cache est atteint. Un test qui les appelle vaut mieux
+    /// qu'un `#[allow]` sur la couverture.
+    ///
+    /// Il vérifie aussi la propriété qui justifie le cache : deux appels
+    /// successifs, sans mutation, partagent le MÊME `Arc`.
+    #[test]
+    fn entrees_du_cache_sont_exercees_et_partagent_le_csr() {
+        use obrain_core::graph::traits::GraphStoreMut;
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+        let a = s.create_node(&["N"]);
+        let b = s.create_node(&["N"]);
+        s.create_edge(a, b, "R");
+
+        // Les deux points d'entrée publics.
+        let hks = heat_kernel_signature(&s, 1.0).expect("hks");
+        assert!(!hks.is_empty(), "HKS rend un descripteur par nœud");
+        let d = geodesic_distance(&s, a, b);
+        assert!(d.is_some(), "chemin direct a->b : distance définie");
+
+        // Même instance servie deux fois : c'est le gain, et il est prouvé ici.
+        let c1 = s.csr_cached();
+        let c2 = s.csr_cached();
+        assert!(
+            std::sync::Arc::ptr_eq(&c1, &c2),
+            "sans mutation, le CSR doit être partagé"
+        );
+    }
+
     use super::*;
     use obrain_core::graph::traits::GraphStoreMut;
     use tempfile::TempDir;
