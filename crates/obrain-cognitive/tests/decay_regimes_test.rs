@@ -291,7 +291,10 @@ fn une_lecture_d_energie_ne_coute_pas_plus_qu_un_acces_memoire() {
     let t0 = std::time::Instant::now();
     let mut somme = 0.0f64;
     for i in 0..N {
-        somme += sub.get_node_energy_f32(ids[i % ids.len()]).unwrap().unwrap() as f64;
+        somme += sub
+            .get_node_energy_f32(ids[i % ids.len()])
+            .unwrap()
+            .unwrap() as f64;
     }
     let colonne = t0.elapsed();
 
@@ -307,5 +310,8 @@ fn une_lecture_d_energie_ne_coute_pas_plus_qu_un_acces_memoire() {
         "COÛT sur {N} lectures (256 nœuds, ancre à 0.5 demi-vie) : colonne seule {par_colonne:.0} ns/lecture, get_energy (colonne + ancre) {par_lecture:.0} ns/lecture, facteur {:.1}×  (somme={somme:.1})",
         par_lecture / par_colonne
     );
-    assert!(par_lecture < 20_000.0, "lecture pathologique : {par_lecture:.0} ns");
+    assert!(
+        par_lecture < 20_000.0,
+        "lecture pathologique : {par_lecture:.0} ns"
+    );
 }

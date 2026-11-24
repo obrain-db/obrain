@@ -61,8 +61,14 @@ fn trois_colonnes(chemin: &Path, hub: NodeId) {
         let col = substrate.scan_typed_edge_weights("SYNAPSE");
         let inc = substrate.synapse_edges_of(hub);
         (
-            col.map(|v| v.len()).unwrap_or_else(|e| { println!("  (a) ERREUR colonne: {e}"); 999_999 }),
-            inc.map(|v| v.len()).unwrap_or_else(|e| { println!("  (b) ERREUR incidence: {e}"); 999_999 }),
+            col.map(|v| v.len()).unwrap_or_else(|e| {
+                println!("  (a) ERREUR colonne: {e}");
+                999_999
+            }),
+            inc.map(|v| v.len()).unwrap_or_else(|e| {
+                println!("  (b) ERREUR incidence: {e}");
+                999_999
+            }),
         )
     };
     let gs: Arc<dyn obrain_core::graph::GraphStoreMut> = substrate.clone();
@@ -100,10 +106,7 @@ fn wal_tronque_vs_colonne_vs_incidence() {
     trois_colonnes(&chemin, hub);
 
     // ── Scénario INCIDENCE TRONQUÉE : on vide les deux zones nommées ──
-    for f in [
-        "substrate.synapse_incidence",
-        "substrate.synapse_postings",
-    ] {
+    for f in ["substrate.synapse_incidence", "substrate.synapse_postings"] {
         let p: PathBuf = chemin.join(f);
         let av = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
         std::fs::write(&p, b"").expect("tronquer incidence");

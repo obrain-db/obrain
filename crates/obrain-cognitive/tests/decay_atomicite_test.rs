@@ -50,15 +50,26 @@ fn les_quatre_combinaisons_n_exposent_que_des_etats_valides() {
     let nouvelle_ancienne = combinaison(0.75, 1.0, t0); // déchiré (exposait 0,375)
     let ancienne_nouvelle = combinaison(1.0, 0.75, t_h); // déchiré (exposait 1,0)
 
-    vus.extend([ancienne_ancienne, nouvelle_nouvelle, nouvelle_ancienne, ancienne_nouvelle]);
+    vus.extend([
+        ancienne_ancienne,
+        nouvelle_nouvelle,
+        nouvelle_ancienne,
+        ancienne_nouvelle,
+    ]);
 
     println!(
         "COMBINAISONS : avant={ancienne_ancienne} après={nouvelle_nouvelle} \
          déchiré(nouvelle/ancienne)={nouvelle_ancienne} déchiré(ancienne/nouvelle)={ancienne_nouvelle}"
     );
 
-    assert!((ancienne_ancienne - 0.5).abs() < 1e-9, "avant : {ancienne_ancienne}");
-    assert!((nouvelle_nouvelle - 0.75).abs() < 1e-9, "après : {nouvelle_nouvelle}");
+    assert!(
+        (ancienne_ancienne - 0.5).abs() < 1e-9,
+        "avant : {ancienne_ancienne}"
+    );
+    assert!(
+        (nouvelle_nouvelle - 0.75).abs() < 1e-9,
+        "après : {nouvelle_nouvelle}"
+    );
     // Les deux combinaisons déchirées ne sont plus 0,375 ni 1,0 :
     assert!(
         (nouvelle_ancienne - 0.5).abs() < 1e-9,
@@ -107,7 +118,10 @@ fn un_kill_entre_ancre_et_miroir_laisse_une_valeur_valide() {
     let colonne = sub.get_node_energy_f32(id).unwrap().unwrap() as f64;
     let lue = decay_clock::energy_at(&sub, id, &law(), t_h).unwrap();
     println!("KILL : colonne(miroir périmé)={colonne} lue(ancre)={lue}");
-    assert!((colonne - 1.0).abs() < 1e-6, "le miroir n'a pas été écrit : {colonne}");
+    assert!(
+        (colonne - 1.0).abs() < 1e-6,
+        "le miroir n'a pas été écrit : {colonne}"
+    );
     assert!(
         (lue - 0.75).abs() < 1e-9,
         "la lecture expose l'ancre (0,75), pas le miroir : {lue}"

@@ -436,7 +436,10 @@ impl ThinkerFleetConfig<ConsolidatorTomlCfg> {
                             );
                             half_life = h;
                         } else {
-                            tracing::error!(decay_factor = f, "decay_factor non convertible : ignoré");
+                            tracing::error!(
+                                decay_factor = f,
+                                "decay_factor non convertible : ignoré"
+                            );
                         }
                     }
                     _ => {

@@ -101,17 +101,29 @@ fn une_base_sans_ancre_est_ancree_par_la_tique() {
     let law = DecayLaw::new(H1);
     // À la lecture, l'âge est inconnu : on rend E_ref sans l'inventer.
     let avant = decay_clock::current_energy(&sub, id, &law).unwrap();
-    assert!((avant - 1.0).abs() < 1e-6, "lecture d'une base sans ancre : {avant}");
-    assert!(decay_clock::read_anchor(&sub, id).is_none(), "pas encore ancré");
+    assert!(
+        (avant - 1.0).abs() < 1e-6,
+        "lecture d'une base sans ancre : {avant}"
+    );
+    assert!(
+        decay_clock::read_anchor(&sub, id).is_none(),
+        "pas encore ancré"
+    );
 
     // La tique ANCRE le nœud (migration explicite) et le compte.
     let stats = decay_clock::advance_all(&sub, &law, 0, unix_micros()).unwrap();
     println!("MIGRATION : unanchored={} (attendu 1)", stats.unanchored);
     assert_eq!(stats.unanchored, 1, "le nœud sans ancre doit être ancré");
-    assert!(decay_clock::read_anchor(&sub, id).is_some(), "ancré par la tique");
+    assert!(
+        decay_clock::read_anchor(&sub, id).is_some(),
+        "ancré par la tique"
+    );
 
     // Désormais ancré à maintenant : il décroît normalement à partir d'ici.
     let t = unix_micros();
     let lue = decay_clock::energy_at(&sub, id, &law, t + H1.as_micros() as i64).unwrap();
-    assert!((lue - 0.5).abs() < 1e-6, "après ancrage, une demi-vie divise par 2 : {lue}");
+    assert!(
+        (lue - 0.5).abs() < 1e-6,
+        "après ancrage, une demi-vie divise par 2 : {lue}"
+    );
 }

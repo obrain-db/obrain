@@ -44,8 +44,7 @@ fn etoile_rouverte(deg: usize) -> (tempfile::TempDir, NodeId, Vec<NodeId>) {
         let hub = gs.create_node(&["n"]);
         let leaves: Vec<NodeId> = (0..deg).map(|_| gs.create_node(&["n"])).collect();
         let store = SynapseStore::with_substrate(SynapseConfig::default(), gs, substrate);
-        let entrees: Vec<(NodeId, NodeId, f64)> =
-            leaves.iter().map(|&l| (hub, l, 1.0)).collect();
+        let entrees: Vec<(NodeId, NodeId, f64)> = leaves.iter().map(|&l| (hub, l, 1.0)).collect();
         let created = store.bootstrap_batch(&entrees);
         assert_eq!(created, deg, "bootstrap_batch doit créer {deg} synapses");
         (hub, leaves)
@@ -57,9 +56,7 @@ fn etoile_rouverte(deg: usize) -> (tempfile::TempDir, NodeId, Vec<NodeId>) {
 fn echelle_dedup_500_2000_5000() {
     for deg in [500usize, 2000usize, 5000usize] {
         let (td, hub, _leaves) = etoile_rouverte(deg);
-        let substrate = Arc::new(
-            SubstrateStore::open(&td.path().join("kb")).expect("open"),
-        );
+        let substrate = Arc::new(SubstrateStore::open(&td.path().join("kb")).expect("open"));
         let gs: Arc<dyn obrain_core::graph::GraphStoreMut> = substrate.clone();
         let store = SynapseStore::with_substrate(SynapseConfig::default(), gs, substrate);
 
@@ -72,7 +69,12 @@ fn echelle_dedup_500_2000_5000() {
         });
 
         // INVARIANT fonctionnel : d voisins distincts, chacun une fois.
-        assert_eq!(ordre.len(), deg, "degré attendu {deg}, émis {}", ordre.len());
+        assert_eq!(
+            ordre.len(),
+            deg,
+            "degré attendu {deg}, émis {}",
+            ordre.len()
+        );
         let mut vus = std::collections::HashSet::new();
         for n in &ordre {
             assert!(vus.insert(*n), "voisin {n} émis PLUS d'une fois");
