@@ -1003,3 +1003,222 @@ impl super::ObrainDB {
         Ok(self.cdc_log.changes_between(start_epoch, end_epoch))
     }
 }
+
+/// Tests de couverture des méthodes d'administration sur une base
+/// `new_in_memory()` — qui ouvre un substrat temporaire : les branches
+/// exercées sont celles du substrat (imports en masse, `validate` qui délègue
+/// l'intégrité au rejeu du WAL, `wal_status` lu dans l'écrivain du substrat),
+/// sans WAL moteur ni chemin sur disque.
+#[cfg(test)]
+mod tests_couverture_admin {
+    use super::super::ObrainDB;
+    use crate::admin::{DatabaseMode, SchemaInfo};
+    use crate::catalog::IndexType;
+    use obrain_common::types::Value;
+
+    /// Deux personnes (dont une administratrice), une arête KNOWS, deux clés.
+    fn base_peuplee() -> ObrainDB {
+        let db = ObrainDB::new_in_memory();
+        let alix = db.create_node_with_props(&["Person"], [("name", Value::from("Alix"))]);
+        let bo = db.create_node_with_props(&["Person", "Admin"], [("name", Value::from("Bo"))]);
+        db.set_node_property(alix, "age", Value::Int64(30));
+        db.create_edge(alix, bo, "KNOWS");
+        db
+    }
+
+    #[test]
+    fn comptes_de_base() {
+        let db = base_peuplee();
+        assert_eq!(db.node_count(), 2);
+        assert_eq!(db.edge_count(), 1);
+        assert_eq!(db.node_count_by_label("Person"), 2);
+        assert_eq!(db.node_count_by_label("Admin"), 1);
+        assert_eq!(db.node_count_by_label("Absent"), 0);
+        assert_eq!(db.label_count(), 2);
+        assert_eq!(db.edge_type_count(), 1);
+        assert_eq!(
+            db.edge_count_by_type("KNOWS"),
+            Some(1),
+            "substrat : compte vivant par type"
+        );
+        assert_eq!(db.edge_count_by_type("INCONNU"), Some(0));
+        let vide = ObrainDB::new_in_memory();
+        assert_eq!(vide.node_count(), 0);
+        assert_eq!(vide.label_count(), 0);
+        assert_eq!(vide.property_key_count(), 0);
+    }
+
+    #[test]
+    fn label_counts_trie_par_compte_puis_par_nom() {
+        let db = base_peuplee();
+        db.create_node(&["Zeta"]);
+        db.create_node(&["Alpha"]);
+        let comptes = db.label_counts();
+        assert_eq!(comptes[0], ("Person".to_string(), 2));
+        let suite: Vec<&str> = comptes[1..].iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            suite,
+            vec!["Admin", "Alpha", "Zeta"],
+            "à compte égal, ordre alphabétique"
+        );
+        assert!(comptes[1..].iter().all(|(_, c)| *c == 1));
+    }
+
+    #[test]
+    fn info_d_une_base_en_memoire() {
+        let db = base_peuplee();
+        assert!(!db.is_persistent());
+        assert!(db.path().is_none());
+        let info = db.info();
+        assert!(matches!(info.mode, DatabaseMode::Lpg));
+        assert_eq!(info.node_count, 2);
+        assert_eq!(info.edge_count, 1);
+        assert!(!info.is_persistent);
+        assert!(info.path.is_none());
+        assert!(
+            !info.wal_enabled,
+            "Config::in_memory() n'active pas le WAL moteur"
+        );
+        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn schema_liste_labels_types_et_cles() {
+        let db = base_peuplee();
+        let SchemaInfo::Lpg(schema) = db.schema() else {
+            panic!("une base LPG rend un schéma LPG");
+        };
+        let personne = schema
+            .labels
+            .iter()
+            .find(|l| l.name == "Person")
+            .expect("label Person");
+        assert_eq!(personne.count, 2);
+        let admin = schema
+            .labels
+            .iter()
+            .find(|l| l.name == "Admin")
+            .expect("label Admin");
+        assert_eq!(admin.count, 1);
+        let knows = schema
+            .edge_types
+            .iter()
+            .find(|t| t.name == "KNOWS")
+            .expect("type KNOWS");
+        assert!(knows.count.is_none_or(|c| c == 1), "{:?}", knows.count);
+        assert!(schema.property_keys.iter().any(|k| k == "name"));
+        assert!(schema.property_keys.iter().any(|k| k == "age"));
+        assert_eq!(db.property_key_count(), schema.property_keys.len());
+    }
+
+    #[test]
+    fn detailed_stats_memory_usage_et_sante_inter_bases() {
+        let db = base_peuplee();
+        let stats = db.detailed_stats();
+        assert_eq!(stats.node_count, 2);
+        assert_eq!(stats.edge_count, 1);
+        assert_eq!(stats.label_count, 2);
+        assert_eq!(stats.edge_type_count, 1);
+        assert_eq!(stats.property_key_count, db.property_key_count());
+        assert_eq!(stats.index_count, db.catalog.index_count());
+        assert!(
+            stats.disk_bytes.is_none(),
+            "pas de chemin, pas d'usage disque"
+        );
+
+        let usage = db.memory_usage();
+        assert_eq!(usage.caches.cached_plan_count, 0, "aucune requête exécutée");
+        assert_eq!(
+            usage.buffer_manager.budget_bytes,
+            db.buffer_manager.stats().budget
+        );
+
+        let sante = db.inter_base_health();
+        assert_eq!(sante.external_edge_count, 0);
+        assert_eq!(sante.dangling_refs, 0);
+        assert_eq!(sante.remote_refs_unresolved, 0);
+        assert_eq!(sante.access_denied_refs, 0);
+    }
+
+    #[test]
+    fn index_du_catalogue_et_du_substrat_dans_list_indexes() {
+        let db = base_peuplee();
+        assert!(db.list_indexes().is_empty());
+
+        let person = db.catalog.get_or_create_label("Person");
+        let name = db.catalog.get_or_create_property_key("name");
+        db.catalog.create_index(person, name, IndexType::Hash);
+        let index = db.list_indexes();
+        let catalogue = index
+            .iter()
+            .find(|i| i.name == "idx_Person_name")
+            .expect("index du catalogue listé");
+        assert_eq!(catalogue.index_type, "Hash");
+        assert_eq!(catalogue.target, "Person:name");
+        assert!(!catalogue.unique);
+        assert!(catalogue.cardinality.is_none() && catalogue.size_bytes.is_none());
+
+        db.create_property_indexes(&["age"]);
+        let index = db.list_indexes();
+        assert!(
+            index
+                .iter()
+                .any(|i| i.target == "age" || i.target.ends_with(":age")),
+            "déclaration d'index du substrat listée : {index:?}"
+        );
+    }
+
+    #[test]
+    fn validate_sur_substrat_delegue_au_wal() {
+        let db = base_peuplee();
+        let resultat = db.validate();
+        assert!(resultat.is_valid());
+        assert!(resultat.errors.is_empty());
+        assert_eq!(resultat.warnings.len(), 1);
+        assert_eq!(resultat.warnings[0].code, "VALIDATE_SUBSTRATE_SKIPPED");
+        assert!(resultat.warnings[0].context.is_none());
+    }
+
+    #[test]
+    fn wal_status_checkpoint_et_prune_sans_wal_moteur() {
+        let db = base_peuplee();
+        let statut = db.wal_status();
+        assert!(statut.enabled, "le substrat porte son propre WAL");
+        assert!(statut.path.is_none(), "pas de chemin en mémoire");
+        assert!(statut.last_checkpoint.is_none());
+        assert_eq!(statut.current_epoch, db.current_epoch().as_u64());
+        assert!(db.wal_checkpoint().is_ok());
+        assert_eq!(db.prune_wal().ok(), Some(0), "aucun WAL moteur à élaguer");
+    }
+
+    #[test]
+    fn imports_en_masse_sur_le_substrat() {
+        let db = ObrainDB::new_in_memory();
+        let (noeuds, aretes) = db
+            .bulk_import_refs(&["A", "B"], &[0], &[1], &["T"])
+            .expect("import de deux nœuds et une arête");
+        assert_eq!(db.node_count(), 2, "retour ({noeuds}, {aretes})");
+        assert_eq!(db.edge_count(), 1);
+        assert_eq!(aretes, 1);
+
+        // L'import en masse exige un store NEUF : un second import est refusé.
+        let err = db
+            .bulk_import(&["C".to_string()], &[], &[], &[])
+            .expect_err("store déjà alloué");
+        assert!(format!("{err:?}").contains("store non neuf"), "{err:?}");
+        assert_eq!(db.node_count(), 2, "rien n'a été importé");
+
+        let neuve = ObrainDB::new_in_memory();
+        let (_, aretes) = neuve
+            .bulk_import(&["C".to_string()], &[], &[], &[])
+            .expect("import d'un nœud sans arête sur un store neuf");
+        assert_eq!(aretes, 0);
+        assert_eq!(neuve.node_count(), 1);
+
+        assert!(
+            db.bulk_import_props(0, &[]).is_ok(),
+            "aucune propriété à poser"
+        );
+        assert!(db.bulk_import_edge_props(0, &[]).is_ok());
+    }
+}
