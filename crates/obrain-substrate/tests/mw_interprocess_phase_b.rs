@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use obrain_common::types::{NodeId, PropertyKey, Value};
 use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
 use obrain_substrate::SubstrateStore;
 use obrain_substrate::wal::{WalPayload, WalRecord};
@@ -786,5 +787,399 @@ fn t7_checkpoint_concurrent_ne_laisse_ni_trou_ni_frame_illisible() {
         presents[presents.len() - 1],
         n_ok,
         presents.len()
+    );
+}
+
+// ===========================================================================
+// T8 — DEUX PROCESSUS POSENT DES PROPRIÉTÉS SANS ÉCRASER DE PAGE (MP-3)
+// ===========================================================================
+//
+// ── LE DÉFAUT ───────────────────────────────────────────────────────────────
+// `PropsZone::next_page_idx` / `next_heap_page_idx` sont des curseurs PAR
+// PROCESSUS : calculés à l'ouverture par recherche binaire sur la frontière des
+// magics, puis avancés localement (`+= 1`). Deux écrivains `open_shared_write`
+// qui posent des propriétés allouent la MÊME page de `substrate.props.v2` ; le
+// second écrase la page du premier — CRC valide, aucune trace — et la chaîne du
+// nœud du premier pointe désormais sur une page qui appartient à un autre.
+//
+// C'est le défaut que `borne_allocation.rs` a fermé pour les SLOTS (t1, t3) et
+// laissé ouvert pour les PAGES. Aucun test inter-processus n'écrivait de
+// propriété avant celui-ci (phase B et bench_contention ne font que
+// `create_node` / `create_edge`).
+//
+// ── CE QUE LE TEST PROUVE ───────────────────────────────────────────────────
+// Chaque enfant crée `MWB_N` nœuds et pose sur chacun TROIS propriétés texte
+// (< 256 o : chemin des pages v2, jamais la colonne blob) dont la valeur encode
+// (rôle, indice, clé). Les deux enfants écrivent EN MÊME TEMPS. Le parent rouvre
+// en exclusif et relit chaque (nœud, clé) : la valeur doit être EXACTEMENT celle
+// que son écrivain a posée. Une page écrasée se lit comme une valeur manquante
+// (chaîne détachée) ou comme la valeur d'un autre nœud ; les deux sont comptées
+// et les premières nommées dans le message d'échec.
+
+const CLES_T8: [&str; 3] = ["alpha", "beta", "gamma"];
+
+/// ~120 octets : sous le seuil blob (256 o), assez pour que 200 nœuds × 3
+/// propriétés occupent des centaines de pages par écrivain.
+fn valeur_t8(role: &str, i: u64, cle: &str) -> String {
+    format!("{role}-{i}-{cle}-{}", "x".repeat(100))
+}
+
+/// Enfant « props » : crée `n` nœuds, pose les trois propriétés sur chacun, et
+/// annonce ses ids. Comme `enfant_ecrivain`, il sort sans `Drop` : ce que le
+/// parent relit est ce que les pages mmap partagées et le WAL portent.
+fn enfant_ecrivain_proprietes(dir: &Path, role: &str, n: u64) -> ! {
+    let s = SubstrateStore::open_shared_write(dir).expect("open_shared_write écrivain props");
+    let mut ids = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let id = s.create_node(&["MW"]);
+        for cle in CLES_T8 {
+            s.set_node_property(id, cle, Value::String(valeur_t8(role, i, cle).into()));
+        }
+        ids.push(id.0);
+    }
+    let liste = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    annoncer(&format!("IDS {liste}"));
+    std::process::exit(0);
+}
+
+#[test]
+fn t8_deux_processus_posent_des_proprietes_sans_ecraser_de_page() {
+    if let Some(r) = role() {
+        let dir = PathBuf::from(env_obligatoire("MWB_DIR"));
+        let n: u64 = env_obligatoire("MWB_N").parse().unwrap();
+        match r.as_str() {
+            "props" => enfant_ecrivain_proprietes(&dir, &env_obligatoire("MWB_TAG"), n),
+            autre => panic!("rôle inconnu {autre}"),
+        }
+    }
+    const N: u64 = 200;
+    let td = tempfile::tempdir().unwrap();
+    let dir = td.path().join("store-t8");
+    creer_store(&dir);
+
+    let lancer = |tag: &str| {
+        Enfant::lancer(
+            "t8_deux_processus_posent_des_proprietes_sans_ecraser_de_page",
+            &[
+                ("MWB_ROLE", "props".into()),
+                ("MWB_TAG", tag.into()),
+                ("MWB_DIR", dir.display().to_string()),
+                ("MWB_N", N.to_string()),
+            ],
+        )
+    };
+    let mut a = lancer("A");
+    let mut b = lancer("B");
+    let ids_a = ids_depuis(&a.attendre_ligne("IDS "));
+    let ids_b = ids_depuis(&b.attendre_ligne("IDS "));
+    a.terminer();
+    b.terminer();
+    assert_eq!(ids_a.len(), N as usize);
+    assert_eq!(ids_b.len(), N as usize);
+
+    let s = SubstrateStore::open(&dir).expect("réouverture exclusive");
+    let mut ecarts: Vec<String> = Vec::new();
+    for (tag, ids) in [("A", &ids_a), ("B", &ids_b)] {
+        for (i, id) in ids.iter().enumerate() {
+            for cle in CLES_T8 {
+                let attendu = Value::String(valeur_t8(tag, i as u64, cle).into());
+                let lu = s.get_node_property(NodeId(*id), &PropertyKey::new(cle));
+                if lu.as_ref() != Some(&attendu) {
+                    ecarts.push(format!(
+                        "{tag} nœud {id} clé {cle} : {}",
+                        match &lu {
+                            None => "ABSENTE".to_string(),
+                            Some(Value::String(v)) =>
+                                format!("valeur d'un autre : {:?}", &v[..v.len().min(24)]),
+                            Some(autre) => format!("{autre:?}"),
+                        }
+                    ));
+                }
+            }
+        }
+    }
+    let n_ecarts = ecarts.len();
+    assert_eq!(
+        n_ecarts,
+        0,
+        "{n_ecarts} valeur(s) sur {} perdues ou remplacées après deux écrivains \
+         concurrents : les pages de propriétés ne sont pas allouées par une borne \
+         partagée (premiers écarts : {:#?})",
+        2 * N as usize * CLES_T8.len(),
+        &ecarts[..ecarts.len().min(6)]
+    );
+}
+
+// ===========================================================================
+// T8b — UN ÉCRIVAIN TUÉ -9 EN PLEINE POSE DE PAGES, PUIS UN TROISIÈME (MP-3)
+// ===========================================================================
+//
+// La borne partagée vit dans `substrate.alloc`, mmap MAP_SHARED : les pages
+// réservées par un processus tué -9 (écrites ou non) restent réservées pour
+// tous — exactement comme ses slots (t3). Ce test le prouve pour les pages :
+//
+// 1. A écrit 200 nœuds ; D écrit `K` nœuds, les annonce, puis CONTINUE sans
+//    annoncer — le parent le tue -9 pendant qu'il pose des pages et que A écrit.
+// 2. Réouverture exclusive : les 200 × 3 valeurs de A et les K × 3 valeurs
+//    annoncées par D sont exactes (aucune page du mort n'a été réattribuée).
+// 3. Un troisième processus C ouvre en écriture partagée après la mort de D et
+//    pose 50 nœuds : ses valeurs sont exactes, et celles de A et de D aussi —
+//    C a alloué AU-DELÀ des pages du mort, sans relecture du disque ni WAL.
+
+fn enfant_ecrivain_proprietes_puis_meurt(dir: &Path, role: &str, k: u64) -> ! {
+    let s = SubstrateStore::open_shared_write(dir).expect("open_shared_write (mort)");
+    let mut ids = Vec::with_capacity(k as usize);
+    for i in 0..k {
+        let id = s.create_node(&["MW"]);
+        for cle in CLES_T8 {
+            s.set_node_property(id, cle, Value::String(valeur_t8(role, i, cle).into()));
+        }
+        ids.push(id.0);
+    }
+    let liste = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    annoncer(&format!("IDS {liste}"));
+    // Continue de poser des pages jusqu'au SIGKILL : c'est en plein milieu de
+    // cette boucle que le parent nous tue.
+    let mut i = k;
+    loop {
+        let id = s.create_node(&["MW"]);
+        for cle in CLES_T8 {
+            s.set_node_property(id, cle, Value::String(valeur_t8(role, i, cle).into()));
+        }
+        i += 1;
+    }
+}
+
+/// Relit chaque (nœud, clé) attendu et rend les écarts, nommés.
+fn ecarts_t8(s: &SubstrateStore, tag: &str, ids: &[u64]) -> Vec<String> {
+    let mut ecarts = Vec::new();
+    for (i, id) in ids.iter().enumerate() {
+        for cle in CLES_T8 {
+            let attendu = Value::String(valeur_t8(tag, i as u64, cle).into());
+            let lu = s.get_node_property(NodeId(*id), &PropertyKey::new(cle));
+            if lu.as_ref() != Some(&attendu) {
+                ecarts.push(format!("{tag} nœud {id} clé {cle} : {lu:?}"));
+            }
+        }
+    }
+    ecarts
+}
+
+#[test]
+fn t8b_les_pages_d_un_ecrivain_tue_restent_reservees_et_un_troisieme_alloue_au_dela() {
+    if let Some(r) = role() {
+        let dir = PathBuf::from(env_obligatoire("MWB_DIR"));
+        let n: u64 = env_obligatoire("MWB_N").parse().unwrap();
+        let tag = env_obligatoire("MWB_TAG");
+        match r.as_str() {
+            "props" => enfant_ecrivain_proprietes(&dir, &tag, n),
+            "props_meurt" => enfant_ecrivain_proprietes_puis_meurt(&dir, &tag, n),
+            autre => panic!("rôle inconnu {autre}"),
+        }
+    }
+    const TEST: &str =
+        "t8b_les_pages_d_un_ecrivain_tue_restent_reservees_et_un_troisieme_alloue_au_dela";
+    let td = tempfile::tempdir().unwrap();
+    let dir = td.path().join("store-t8b");
+    creer_store(&dir);
+    let lancer = |role: &str, tag: &str, n: u64| {
+        Enfant::lancer(
+            TEST,
+            &[
+                ("MWB_ROLE", role.into()),
+                ("MWB_TAG", tag.into()),
+                ("MWB_DIR", dir.display().to_string()),
+                ("MWB_N", n.to_string()),
+            ],
+        )
+    };
+
+    let mut a = lancer("props", "A", 200);
+    let mut d = lancer("props_meurt", "D", 100);
+    let ids_d = ids_depuis(&d.attendre_ligne("IDS "));
+    d.tuer();
+    let ids_a = ids_depuis(&a.attendre_ligne("IDS "));
+    a.terminer();
+    assert_eq!(ids_a.len(), 200);
+    assert_eq!(ids_d.len(), 100);
+
+    {
+        let s = SubstrateStore::open(&dir).expect("réouverture exclusive après le mort");
+        let mut ecarts = ecarts_t8(&s, "A", &ids_a);
+        ecarts.extend(ecarts_t8(&s, "D", &ids_d));
+        let n_ecarts = ecarts.len();
+        assert_eq!(
+            n_ecarts,
+            0,
+            "après un kill -9 de D : {n_ecarts} valeur(s) de A ou des {} nœuds annoncés \
+             par D perdues ou remplacées (premiers écarts : {:#?})",
+            ids_d.len(),
+            &ecarts[..ecarts.len().min(6)]
+        );
+    }
+
+    // Troisième écrivain, après la mort de D : il doit allouer AU-DELÀ des pages
+    // du mort (réservées dans la borne partagée), jamais par-dessus.
+    let mut c = lancer("props", "C", 50);
+    let ids_c = ids_depuis(&c.attendre_ligne("IDS "));
+    c.terminer();
+    let s = SubstrateStore::open(&dir).expect("réouverture exclusive après C");
+    let mut ecarts = ecarts_t8(&s, "A", &ids_a);
+    ecarts.extend(ecarts_t8(&s, "D", &ids_d));
+    ecarts.extend(ecarts_t8(&s, "C", &ids_c));
+    let n_ecarts = ecarts.len();
+    assert_eq!(
+        n_ecarts,
+        0,
+        "après le troisième écrivain : {n_ecarts} valeur(s) perdues ou remplacées \
+         (premiers écarts : {:#?})",
+        &ecarts[..ecarts.len().min(6)]
+    );
+}
+
+// ===========================================================================
+// T8c — UN IMPORT EN LOT ET UN ÉCRIVAIN UNITAIRE EN MÊME TEMPS (MP-3, revue)
+// ===========================================================================
+//
+// t8 et t8b n'exercent que le chemin UNITAIRE (`set_node_property`). L'import
+// en lot (`bulk_import_node_props`) accumule ses pages neuves de tas dans un
+// tampon et les écrit d'UN bloc depuis `debut` : il suppose les index CONTIGUS.
+// Avec une borne partagée, un pair peut recevoir une page entre deux des
+// nôtres ; le bloc écrirait alors par-dessus la page du pair, et notre propre
+// page suivante resterait à zéro (défaut relevé par la revue indépendante du
+// 24/11, jamais couvert par un test jusqu'ici).
+//
+// Valeurs de 200 octets (sous le seuil blob, donc dans le TAS) : un paquet de
+// nœuds remplit plusieurs pages de tas, ce qui donne au pair le temps d'en
+// réserver entre elles.
+
+/// Barrière de départ : sans elle, le premier enfant peut finir avant que le
+/// second n'ouvre la base, et le test ne prouve plus rien (constaté : vert en
+/// 0,07 s sans recouvrement). Chaque enfant ouvre, annonce « PRET », puis attend
+/// le drapeau que le parent pose quand les DEUX sont prêts.
+fn barriere_t8c() {
+    annoncer("PRET");
+    attendre_fichier(Path::new(&env_obligatoire("MWB_GO")), "le départ de t8c");
+}
+
+fn valeur_t8c(role: &str, i: u64, cle: &str) -> String {
+    format!("{role}-{i}-{cle}-{}", "y".repeat(180))
+}
+
+/// Enfant « lot » : crée `n` nœuds, puis importe leurs propriétés en LOT, une
+/// séquence d'identifiants consécutifs par appel (l'import exige des slots
+/// contigus). Annonce les ids dans l'ordre de création.
+fn enfant_import_en_lot(dir: &Path, role: &str, n: u64) -> ! {
+    let s = SubstrateStore::open_shared_write(dir).expect("open_shared_write (lot)");
+    barriere_t8c();
+    let ids: Vec<u64> = (0..n).map(|_| s.create_node(&["MW"]).0).collect();
+    let mut debut = 0usize;
+    while debut < ids.len() {
+        let mut fin = debut + 1;
+        while fin < ids.len() && ids[fin] == ids[fin - 1] + 1 {
+            fin += 1;
+        }
+        let paquet: Vec<Vec<(&str, Value)>> = (debut..fin)
+            .map(|i| {
+                CLES_T8
+                    .iter()
+                    .map(|cle| (*cle, Value::String(valeur_t8c(role, i as u64, cle).into())))
+                    .collect()
+            })
+            .collect();
+        s.bulk_import_node_props(ids[debut] as u32, &paquet)
+            .expect("bulk_import_node_props");
+        debut = fin;
+    }
+    let liste = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    annoncer(&format!("IDS {liste}"));
+    std::process::exit(0);
+}
+
+/// Enfant « unitaire » du même format de valeurs (200 o, dans le tas).
+fn enfant_unitaire_t8c(dir: &Path, role: &str, n: u64) -> ! {
+    let s = SubstrateStore::open_shared_write(dir).expect("open_shared_write (unitaire)");
+    barriere_t8c();
+    let mut ids = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let id = s.create_node(&["MW"]);
+        for cle in CLES_T8 {
+            s.set_node_property(id, cle, Value::String(valeur_t8c(role, i, cle).into()));
+        }
+        ids.push(id.0);
+    }
+    let liste = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    annoncer(&format!("IDS {liste}"));
+    std::process::exit(0);
+}
+
+#[test]
+fn t8c_un_import_en_lot_et_un_ecrivain_unitaire_ne_s_ecrasent_pas() {
+    if let Some(r) = role() {
+        let dir = PathBuf::from(env_obligatoire("MWB_DIR"));
+        let n: u64 = env_obligatoire("MWB_N").parse().unwrap();
+        let tag = env_obligatoire("MWB_TAG");
+        match r.as_str() {
+            "lot" => enfant_import_en_lot(&dir, &tag, n),
+            "unitaire" => enfant_unitaire_t8c(&dir, &tag, n),
+            autre => panic!("rôle inconnu {autre}"),
+        }
+    }
+    const TEST: &str = "t8c_un_import_en_lot_et_un_ecrivain_unitaire_ne_s_ecrasent_pas";
+    let td = tempfile::tempdir().unwrap();
+    let dir = td.path().join("store-t8c");
+    creer_store(&dir);
+    let go = td.path().join("go-t8c");
+    let lancer = |role: &str, tag: &str, n: u64| {
+        Enfant::lancer(
+            TEST,
+            &[
+                ("MWB_ROLE", role.into()),
+                ("MWB_TAG", tag.into()),
+                ("MWB_DIR", dir.display().to_string()),
+                ("MWB_N", n.to_string()),
+                ("MWB_GO", go.display().to_string()),
+            ],
+        )
+    };
+    let mut l = lancer("lot", "L", 400);
+    let mut u = lancer("unitaire", "U", 400);
+    l.attendre_ligne("PRET");
+    u.attendre_ligne("PRET");
+    std::fs::write(&go, b"go").expect("poser le drapeau de départ");
+    let ids_l = ids_depuis(&l.attendre_ligne("IDS "));
+    let ids_u = ids_depuis(&u.attendre_ligne("IDS "));
+    l.terminer();
+    u.terminer();
+
+    let s = SubstrateStore::open(&dir).expect("réouverture exclusive");
+    let mut ecarts = Vec::new();
+    for (tag, ids) in [("L", &ids_l), ("U", &ids_u)] {
+        for (i, id) in ids.iter().enumerate() {
+            for cle in CLES_T8 {
+                let attendu = Value::String(valeur_t8c(tag, i as u64, cle).into());
+                let lu = s.get_node_property(NodeId(*id), &PropertyKey::new(cle));
+                if lu.as_ref() != Some(&attendu) {
+                    ecarts.push(format!(
+                        "{tag} nœud {id} clé {cle} : {}",
+                        match &lu {
+                            None => "ABSENTE".into(),
+                            Some(Value::String(v)) => format!("{:?}", &v[..v.len().min(20)]),
+                            Some(autre) => format!("{autre:?}"),
+                        }
+                    ));
+                }
+            }
+        }
+    }
+    let n_ecarts = ecarts.len();
+    assert_eq!(
+        n_ecarts,
+        0,
+        "{n_ecarts} valeur(s) sur {} perdues ou remplacées : un lot de pages de tas \
+         a été écrit d'un bloc sur des index qu'un pair avait reçus (premiers \
+         écarts : {:#?})",
+        2 * 400 * CLES_T8.len(),
+        &ecarts[..ecarts.len().min(6)]
     );
 }

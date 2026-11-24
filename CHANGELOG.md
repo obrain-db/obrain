@@ -6,6 +6,28 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 
 ## [0.0.1] — en préparation (branche de release, 2026-11)
 
+### Écriture partagée : les pages de propriétés sont allouées sur une borne partagée (MP-3)
+
+- **Corrigé, substrat** : deux processus ouverts en `open_shared_write` qui
+  posaient des propriétés allouaient la MÊME page de `substrate.props.v2` (et de
+  tas) : les curseurs `next_page_idx` / `next_heap_page_idx` étaient par
+  processus, calculés à l'ouverture. Le second écrasait la page du premier, CRC
+  valide, chaîne détachée. Mesuré le 24/11/2026 : 616 valeurs sur 1 200 relues
+  comme celles d'un autre nœud. Les deux curseurs sont désormais des mots
+  partagés de `substrate.alloc` (offsets 40 et 48 — nuls dans tout fichier
+  existant, donc aucune migration : le curseur local est publié par `fetch_max`
+  et la zone repart de là), réservés par `fetch_add` comme les slots. Toute
+  allocation d'index passe par un point unique (pages legacy, carriers packés,
+  écriture en lot, tas) ; en écriture partagée, la page de queue du tas n'est
+  reprise que par le processus qui l'a allouée, et un lot devenu non contigu est
+  vidé avant d'être écrit. Les pages réservées par un écrivain tué -9 restent
+  réservées pour tous.
+- **Garantie** : propriétés posées par N processus sur des entités DISTINCTES,
+  sans perte ni écrasement (`mw_interprocess_phase_b::t8`, `t8b`, `t8c` : deux
+  écrivains, un écrivain tué -9 en pleine pose, et un import en lot concurrent
+  d'un écrivain unitaire). Reste hors garantie : la même entité écrite par deux
+  processus (voir `docs/LIMITES-v0.0.1.md`).
+
 ### Index spatial en GQL (PR #282)
 
 - **Nouveau, GQL** : `point(lon, lat)` et `distance(a, b)` (mètres, haversine) ;

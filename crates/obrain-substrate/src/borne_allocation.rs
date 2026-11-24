@@ -81,6 +81,17 @@ const OFF_ARETE: usize = 16;
 const OFF_ENGRAM: usize = 24;
 /// Compteur d'écritures de la borne — diagnostic : « la borne a-t-elle servi ? »
 const OFF_PUBLICATIONS: usize = 32;
+/// (MP-3) Curseurs d'allocation de `PropsZone`, PARTAGÉS entre processus : la
+/// prochaine page de propriétés v2 (`substrate.props.v2`) et la prochaine page
+/// de tas (`substrate.props.heap.v2`). Même défaut, même remède que les slots :
+/// deux écrivains `open_shared_write` partaient chacun d'un curseur LOCAL
+/// (recherche binaire sur les magics à l'ouverture, `+= 1` ensuite) et posaient
+/// la MÊME page — mesuré le 24/11/2026 : 616 valeurs sur 1 200 relues comme
+/// celles d'un autre nœud (`mw_interprocess_phase_b::t8`). Mots jusque-là nuls
+/// dans tout `substrate.alloc` existant : un fichier antérieur publie donc son
+/// curseur local par `fetch_max` et repart de là, sans migration.
+const OFF_PAGES_PROPS: usize = 40;
+const OFF_PAGES_TAS: usize = 48;
 
 /// ── LA BORNE, VUE PAR UN PROCESSUS ─────────────────────────────────────────
 ///
@@ -277,13 +288,70 @@ impl BorneAllocation {
         mot(&self.map, OFF_PUBLICATIONS).fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Force les pages sales de la borne vers le disque.
+    /// (MP-3) Prochaine page de propriétés v2 (curseur partagé).
+    #[must_use]
+    pub fn pages_props(&self) -> u64 {
+        mot(&self.map, OFF_PAGES_PROPS).load(Ordering::Acquire)
+    }
+
+    /// (MP-3) Prochaine page de tas (curseur partagé).
+    #[must_use]
+    pub fn pages_tas(&self) -> u64 {
+        mot(&self.map, OFF_PAGES_TAS).load(Ordering::Acquire)
+    }
+
+    /// ── RÉSERVE `k` PAGES DE PROPRIÉTÉS v2 ──────────────────────────────────
     ///
-    /// Appelé aux points où le substrat est déjà en train de rendre tout le reste
-    /// durable (le flush). Ce n'est PAS une exigence de correction : la borne est
-    /// reconstruite depuis les zones à chaque ouverture. C'est une politesse —
-    /// sans elle, un redémarrage propre après un flush rejouerait le relevé des
-    /// zones pour rien.
+    /// Rend le DÉBUT `d` de la plage `[d, d+k)` : `fetch_add`, donc deux
+    /// processus reçoivent des plages DISJOINTES. `k == 0` ne réserve rien et
+    /// rend le curseur courant.
+    pub fn reserver_pages_props(&self, k: u64) -> u64 {
+        mot(&self.map, OFF_PAGES_PROPS).fetch_add(k, Ordering::AcqRel)
+    }
+
+    /// Pendant de [`Self::reserver_pages_props`] pour les pages de tas.
+    pub fn reserver_pages_tas(&self, k: u64) -> u64 {
+        mot(&self.map, OFF_PAGES_TAS).fetch_add(k, Ordering::AcqRel)
+    }
+
+    /// (MP-3) Publie le curseur de pages de propriétés calculé depuis la zone,
+    /// sans jamais le reculer (`fetch_max`, même raison que pour les slots).
+    pub fn publier_filigrane_pages_props(&self, v: u64) {
+        mot(&self.map, OFF_PAGES_PROPS).fetch_max(v, Ordering::AcqRel);
+        mot(&self.map, OFF_PUBLICATIONS).fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Pendant de [`Self::publier_filigrane_pages_props`] pour le tas.
+    pub fn publier_filigrane_pages_tas(&self, v: u64) {
+        mot(&self.map, OFF_PAGES_TAS).fetch_max(v, Ordering::AcqRel);
+        mot(&self.map, OFF_PUBLICATIONS).fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// (MP-3) Comme [`Self::synchroniser`], mais l'erreur REMONTE : depuis que la
+    /// borne porte les curseurs de pages, sa durabilité avant celle des zones
+    /// est une exigence de correction en écriture partagée (voir `flush`).
+    pub fn synchroniser_durable(&self) -> SubstrateResult<()> {
+        self.map.flush()?;
+        Ok(())
+    }
+
+    /// Force les pages sales de la borne vers le disque, en IGNORANT l'échec.
+    ///
+    /// Ce n'est PAS une exigence de correction pour les bornes d'IDENTIFIANTS
+    /// (`noeud`, `arete`, `engram`) : elles se reconstituent depuis les zones à
+    /// chaque ouverture, donc les perdre ne coûte qu'un relevé.
+    ///
+    /// Ce n'est plus vrai depuis MP-3 des curseurs de PAGES (`pages_props`,
+    /// `pages_tas`) : une page réservée mais pas encore écrite laisse un TROU,
+    /// et la frontière recalculée à l'ouverture (préfixe contigu supposé) passe
+    /// SOUS ce trou. Sans la borne pour la relever (`fetch_max`), l'ouverture
+    /// réallouerait des pages vivantes. Ces deux mots-là exigent
+    /// [`Self::synchroniser_durable`], appelée AVANT les zones.
+    ///
+    /// Les appelants qui ne peuvent pas échouer (chemin « store propre » du
+    /// dictionnaire, où le WAL est immobile donc aucune réservation n'a eu lieu
+    /// depuis le dernier `flush`) peuvent garder cette variante : la borne y est
+    /// déjà durable.
     pub fn synchroniser(&self) {
         let _ = self.map.flush();
     }
@@ -304,5 +372,59 @@ impl BorneAllocation {
              (aucun second processus ne peut exister — le compteur par processus suffit)"
                 .to_string(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests_pages_mp3 {
+    use super::*;
+
+    /// Deux vues du même fichier (deux processus, en pratique) : les plages de
+    /// pages réservées sont disjointes, le filigrane ne recule jamais, et le
+    /// fichier garde sa taille — aucune migration de `substrate.alloc`.
+    #[test]
+    fn les_pages_sont_reservees_de_facon_disjointe_et_le_filigrane_ne_recule_pas() {
+        let td = tempfile::tempdir().unwrap();
+        let a = BorneAllocation::ouvrir(td.path()).unwrap();
+        let b = BorneAllocation::ouvrir(td.path()).unwrap();
+        assert_eq!(
+            (a.pages_props(), a.pages_tas()),
+            (0, 0),
+            "mots neufs : nuls"
+        );
+
+        a.publier_filigrane_pages_props(7);
+        b.publier_filigrane_pages_props(3);
+        assert_eq!(
+            b.pages_props(),
+            7,
+            "un écrivain en retard ne recule pas la borne"
+        );
+
+        let p1 = a.reserver_pages_props(2);
+        let p2 = b.reserver_pages_props(1);
+        let p3 = a.reserver_pages_props(1);
+        assert_eq!(
+            (p1, p2, p3),
+            (7, 9, 10),
+            "plages [7,9) [9,10) [10,11) disjointes"
+        );
+        assert_eq!(a.pages_props(), 11);
+        assert_eq!(a.reserver_pages_props(0), 11, "k = 0 ne réserve rien");
+
+        assert_eq!(b.reserver_pages_tas(4), 0);
+        assert_eq!(a.pages_tas(), 4);
+        b.publier_filigrane_pages_tas(2);
+        assert_eq!(a.pages_tas(), 4, "le tas non plus ne recule pas");
+
+        let taille = std::fs::metadata(BorneAllocation::chemin_pour(td.path()))
+            .unwrap()
+            .len();
+        assert_eq!(
+            taille, TAILLE,
+            "les mots 40 et 48 tiennent dans la page existante"
+        );
+        // Les bornes d'avant restent lisibles et intactes.
+        assert_eq!(a.noeud(), b.noeud());
     }
 }

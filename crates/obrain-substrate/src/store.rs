@@ -2010,7 +2010,7 @@ pub struct SubstrateStore {
     /// `self.next_node_id` (bornes de balayage, `slot_high_water`) continuent de
     /// voir un filigrane cohérent pour CE processus, sans changer de nature ni de
     /// coût. Le miroir suit la borne par `fetch_max` — jamais en arrière.
-    borne_allocation: Option<crate::borne_allocation::BorneAllocation>,
+    borne_allocation: Option<Arc<crate::borne_allocation::BorneAllocation>>,
     /// ── CACHE DE BLOCS D'ALLOCATION (optimisation « bulk bump ») ─────────────
     ///
     /// Chaque espace (nœuds, arêtes) tient la borne SUPÉRIEURE `fin` du bloc
@@ -8226,7 +8226,9 @@ impl SubstrateStore {
             if g.is_memory() || lecture_seule {
                 None
             } else {
-                Some(crate::borne_allocation::BorneAllocation::ouvrir(g.path())?)
+                Some(Arc::new(crate::borne_allocation::BorneAllocation::ouvrir(
+                    g.path(),
+                )?))
             }
         };
         let borne_lue = if lecture_seule {
@@ -8547,6 +8549,18 @@ impl SubstrateStore {
             store.relever_filigranes_par_sonde();
         } else {
             store.relever_filigranes_des_zones();
+        }
+        // (MP-3) La zone de propriétés v2 alloue ses pages (et celles du tas)
+        // sur la borne PARTAGÉE : deux écrivains ne posent plus jamais la même
+        // page. Le curseur local calculé à l'ouverture est publié d'abord
+        // (`fetch_max`), puis la zone adopte la borne, qui peut être en avance.
+        // Le second argument est `ecriture_partagee`, PAS `partage` : ce dernier
+        // vaut aussi `true` pour les ouvertures exclusives (`open`, `create`),
+        // qui doivent continuer de reprendre la page de queue du tas (revue du
+        // 24/11, S1 : sans quoi une page à moitié pleine est perdue à chaque
+        // ouverture).
+        if let (Some(b), Some(pz)) = (&store.borne_allocation, &store.props_zone) {
+            pz.write().brancher_borne(Arc::clone(b), ecriture_partagee);
         }
 
         // ── (2026-08-15) LA RECONSTRUCTION DES INDEX A DEMENAGE ──
@@ -10573,9 +10587,12 @@ impl SubstrateStore {
         // ce fsync seul le rend durable, et il ne coûte plus rien à la contention.
         crate::dict::DictSnapshot::synchroniser_repertoire(&path);
 
-        // La borne partagée est rendue durable EN MÊME TEMPS que le dictionnaire :
-        // elle n'en est pas la source de vérité (les zones le sont), mais un
-        // redémarrage propre qui la retrouve juste évite de rebalsayer les zones.
+        // La borne partagée est rendue durable EN MÊME TEMPS que le dictionnaire.
+        // Pour les identifiants ce n'est qu'une politesse (ils se relisent dans
+        // les zones) ; pour les curseurs de PAGES de MP-3 c'est une exigence, et
+        // elle est déjà satisfaite : `flush` a appelé `synchroniser_durable`
+        // AVANT de msyncer les zones. Ici l'échec est donc sans conséquence — la
+        // borne est en avance ou à jour, jamais en retard d'une réservation.
         if let Some(b) = &self.borne_allocation {
             b.synchroniser();
         }
@@ -10641,6 +10658,16 @@ impl SubstrateStore {
         // zones msyncées ci-dessous, seraient publiées à la réouverture.
         let borne = self.borne_de_fenetre(offset_du_flush)?;
         self.borne_fenetre_rejeu.store(borne, Ordering::Release);
+        // (MP-3, revue du 24/11 — S2) La borne partagée porte désormais les
+        // curseurs de PAGES de propriétés et de tas. En écriture partagée, une
+        // page réservée par un pair mais pas encore écrite laisse un TROU, et
+        // la recherche binaire de l'ouverture (`compute_next_page_idx`) suppose
+        // un préfixe contigu. La borne doit donc être durable AVANT les zones :
+        // sinon une coupure qui garderait des pages au-delà du trou mais pas la
+        // borne ferait réallouer une page vivante. Erreur vérifiée.
+        if let Some(b) = &self.borne_allocation {
+            b.synchroniser_durable()?;
+        }
         self.writer.msync_zones()?;
         self.vec_columns.sync_all()?;
         self.blob_columns.sync_all()?;
@@ -10949,6 +10976,14 @@ impl SubstrateStore {
     /// base fully readable (it only wastes disk).
     pub fn shrink_props_zone(&self) -> SubstrateResult<()> {
         self.exiger_ecriture("le rétrécissement de la zone de propriétés")?;
+        // (MP-3, revue du 24/11 — S3) En écriture partagée, un pair peut avoir
+        // reçu une page au-delà de notre frontière et l'écrire dans son mmap :
+        // tronquer le fichier lui retirerait cette page (SIGBUS ou écriture
+        // perdue). Le rétrécissement n'est qu'un gain de disque : on le saute.
+        if self.ecriture_partagee {
+            tracing::debug!("shrink_props_zone : sauté en écriture partagée (pages des pairs)");
+            return Ok(());
+        }
         let Some(pz_lock) = self.props_zone.as_ref() else {
             return Ok(());
         };
