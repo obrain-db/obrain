@@ -3611,6 +3611,35 @@ impl SubstrateStore {
         &self.verrous_ecriture_noeud[(id.0 % 256) as usize]
     }
 
+    /// (MP-3b) Verrou d'entité INTER-PROCESSUS, ou `None` quand il n'y a pas de
+    /// borne partagée (base en mémoire, ou ouverture exclusive sans
+    /// `substrate.alloc`) : dans ce cas aucun pair ne peut écrire, et le coût
+    /// reste nul.
+    ///
+    /// ORDRE DES VERROUS : celui-ci est le plus EXTÉRIEUR. Il enveloppe
+    /// `verrou_ecriture_noeud` et n'est jamais pris sous un garde de
+    /// zone. Il n'est pas réentrant : deux entités de la même tranche ne
+    /// doivent pas s'imbriquer (en debug, `tranches::prendre` le dit au lieu de
+    /// figer).
+    fn verrou_entite(&self, cle: u64) -> Option<crate::borne_allocation::VerrouEntite<'_>> {
+        // RIEN À PAYER QUAND PERSONNE NE PEUT ÉCRIRE. Une ouverture EXCLUSIVE
+        // tient le flock du répertoire : aucun pair ne peut ouvrir le store en
+        // écriture en même temps. Le drapeau est `ecriture_partagee`, PAS la
+        // seule présence d'une borne — `open` et `create` en ont une aussi, et
+        // prendre le verrou y coûtait deux atomiques sur une page partagée pour
+        // protéger une section où il n'y a jamais de concurrent.
+        //
+        // Mesuré le 24/11/2026 (mp3_debit_props, 40 tours, alternance, machine
+        // à charge 37-60) : minimum 1 842 ns/écriture sans verrou, 2 061 avec
+        // le verrou pris inutilement, soit +12 %. Ici le coût redevient nul.
+        if !self.ecriture_partagee {
+            return None;
+        }
+        self.borne_allocation
+            .as_ref()
+            .map(|b| b.verrouiller_entite(cle))
+    }
+
     /// Le geste « compléter l'index AVANT de le croire », pour UNE recherche
     /// de clé d'index `ik` sur la propriété `key` : bâtit l'index s'il ne
     /// porte pas la marque de complétude (sous v2), puis s'assure que la zone
@@ -14576,6 +14605,7 @@ impl SubstrateStore {
                     }
                     // Même verrou par nœud que `set_node_property` : l'écriture
                     // d'un blob ne croise pas un écrivain concurrent du nœud.
+                    let _verrou_entite = self.verrou_entite(id.0);
                     let _un_ecrivain = self.verrou_ecriture_noeud(id).lock();
                     point_de_crash("noeud:blob:avant_route");
                     if marqueur_pose {
@@ -26534,6 +26564,13 @@ impl GraphStoreMut for SubstrateStore {
         // embeddings off the anon heap. Scalar values still take the
         // in-memory path.
         if let Value::Vector(ref v) = value {
+            // (MP-3b, revue du 24/11) Le chemin VECTEUR de NŒUD sortait AVANT le
+            // verrou d'entité, alors que son pendant ARÊTE le prend : deux
+            // processus qui écrivaient un vecteur sur le même nœud pouvaient
+            // s'entrelacer dans la colonne dense, protégée seulement par un
+            // verrou intra-processus. Même asymétrie que celle corrigée sur les
+            // scalaires d'arête — on ferme.
+            let _verrou_entite = self.verrou_entite(id.0);
             self.route_vector_write(EntityKind::Node, id.0 as u32, key, v);
             self.notify_vector_written(id, key, v);
             self.notify_node_property_set(id, key);
@@ -26564,6 +26601,7 @@ impl GraphStoreMut for SubstrateStore {
         // dont l'observateur d'index vectoriel fait une suppression (E/S) :
         // pas de cycle (l'observateur ne revient pas vers ce verrou), mais
         // cette E/S allonge la détention pour CE nœud.
+        let _verrou_entite = self.verrou_entite(id.0);
         let _un_ecrivain = self.verrou_ecriture_noeud(id).lock();
         let pkey = PropertyKey::new(key);
         if let Some(tagged) = encode_blob_payload(&value) {
@@ -26966,6 +27004,9 @@ impl GraphStoreMut for SubstrateStore {
             // LpgStore silently no-ops on missing edges; match that contract.
             return;
         }
+        // (MP-3b) Les arêtes n'avaient AUCUN verrou d'écriture, même local :
+        // t9 perdait 47 propriétés sur 240, presque toutes des arêtes.
+        let _verrou_entite = self.verrou_entite(id.0);
         // T5 : ancienne clé de groupe DISPATCH capturée AVANT l'écriture
         // (None quand la clé/le type/la maintenance ne matchent pas —
         // coût : un mutex feuille).
@@ -27086,6 +27127,7 @@ impl GraphStoreMut for SubstrateStore {
         }
         // Même verrou que `set_node_property` : le retrait de la valeur et
         // celui de son entrée d'index ne se croisent pas avec une écriture.
+        let _verrou_entite = self.verrou_entite(id.0);
         let _un_ecrivain = self.verrou_ecriture_noeud(id).lock();
         // (T5) Notifie AVANT l'effacement : l'index vectoriel doit perdre le noeud
         // meme si la colonne de vecteurs n'est pas effacee (limite documentee).
@@ -27449,6 +27491,8 @@ impl GraphStoreMut for SubstrateStore {
         if !self.is_live_edge_on_disk(id) {
             return None;
         }
+        // (MP-3b) Même verrou d'entité que `set_edge_property`.
+        let _verrou_entite = self.verrou_entite(id.0);
         // T5 : ancienne clé de groupe DISPATCH capturée avant le retrait.
         let ctx_dispatch = self.dispatch_contexte_avant(id, key);
         // (2026-08-19) LA VALEUR RENDUE ÉTAIT AVEUGLE À PropsZone v2.

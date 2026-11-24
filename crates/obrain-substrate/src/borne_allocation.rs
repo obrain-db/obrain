@@ -93,6 +93,17 @@ const OFF_PUBLICATIONS: usize = 32;
 const OFF_PAGES_PROPS: usize = 40;
 const OFF_PAGES_TAS: usize = 48;
 
+/// ── VERROUS D'ENTITÉ INTER-PROCESSUS (MP-3b) ─────────────────────────────────
+///
+/// Un mot par tranche, à partir de `OFF_VERROUS_ENTITE`. Valeur `0` = libre ;
+/// sinon `pid` (32 bits bas) `|` empreinte du démarrage (32 bits hauts) — voir
+/// `wal_presence::empreinte_demarrage` pour la raison d'un mot UNIQUE.
+///
+/// 240 tranches × 8 o = 1920 o, à partir de 64 : fin à 1984 o, bien dans les
+/// 4096 de la page. Aucune migration : ces octets étaient nuls.
+const OFF_VERROUS_ENTITE: usize = 64;
+const NB_VERROUS_ENTITE: usize = 240;
+
 /// ── LA BORNE, VUE PAR UN PROCESSUS ─────────────────────────────────────────
 ///
 /// Un `BorneAllocation` par store ouvert. Il tient le `File` (pour qu'il ne soit
@@ -327,6 +338,111 @@ impl BorneAllocation {
         mot(&self.map, OFF_PUBLICATIONS).fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Tranche de verrou d'une entité : `clé % 240`. Nœuds et arêtes partagent
+    /// le tableau (une collision entre un nœud et une arête ne coûte qu'une
+    /// attente, jamais une erreur).
+    fn rang_verrou(cle: u64) -> usize {
+        (cle % NB_VERROUS_ENTITE as u64) as usize
+    }
+
+    fn mot_verrou(&self, rang: usize) -> &AtomicU64 {
+        mot(&self.map, OFF_VERROUS_ENTITE + rang * 8)
+    }
+
+    /// Ce qu'on écrit dans le mot : `pid | empreinte << 32`. Jamais `0` (un pid
+    /// nul désignerait le groupe de processus, et `0` signifie « libre »).
+    ///
+    /// CALCULÉ UNE SEULE FOIS. `identite_du_processus_courant()` lit l'heure de
+    /// démarrage par un appel système (`proc_pidinfo` sur macOS, `/proc` sur
+    /// Linux) : le refaire à chaque écriture de propriété coûtait un aller-retour
+    /// noyau par écriture. Mesuré le 24/11/2026 en alternance avant/après, à
+    /// charge 51-63 : 2 232 → 4 724 ns/écriture (+112 %) au premier tour. Le pid
+    /// et le démarrage d'un processus ne changent pas de sa vie : un `OnceLock`
+    /// suffit, et il n'y a plus qu'un CAS et un `store` par écriture.
+    fn mon_jeton() -> u64 {
+        static JETON: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        *JETON.get_or_init(|| {
+            let (pid, demarrage) = crate::wal_presence::identite_du_processus_courant();
+            (pid & 0xFFFF_FFFF)
+                | (u64::from(crate::wal_presence::empreinte_demarrage(demarrage)) << 32)
+        })
+    }
+
+    /// Un SEUL essai, sans attente : `None` si la tranche est tenue par un autre.
+    #[must_use]
+    pub fn essayer_entite(&self, cle: u64) -> Option<VerrouEntite<'_>> {
+        let rang = Self::rang_verrou(cle);
+        let mot = self.mot_verrou(rang);
+        match mot.compare_exchange(0, Self::mon_jeton(), Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => Some(VerrouEntite::neuf(mot, rang)),
+            Err(_) => None,
+        }
+    }
+
+    /// Prend le verrou d'une entité, en attendant qu'il se libère.
+    ///
+    /// ## Pas de vol sur délai — uniquement sur PREUVE DE MORT
+    ///
+    /// Un écrivain vivant mais préempté garde son verrou : on attend. Un
+    /// délai ne distingue pas « mort » de « lent », et voler un vivant
+    /// corromprait la page qu'il est en train d'écrire. Le seul cas de vol est
+    /// `wal_presence::etat_processus_empreinte` qui répond `Mort` (pid
+    /// disparu, zombie, ou pid réattribué à un processus démarré après lui).
+    ///
+    /// La preuve de vie est un aller-retour noyau : elle n'est tentée qu'après
+    /// 64 tours d'attente, et au plus tous les 64 tours ensuite.
+    pub fn verrouiller_entite(&self, cle: u64) -> VerrouEntite<'_> {
+        let rang = Self::rang_verrou(cle);
+        let mot = self.mot_verrou(rang);
+        let jeton = Self::mon_jeton();
+        let mut tours: u32 = 0;
+        loop {
+            match mot.compare_exchange(0, jeton, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return VerrouEntite::neuf(mot, rang),
+                Err(courant) => {
+                    // `wrapping_add` et non `saturating_add` : à saturation
+                    // (u32::MAX, reste 63 modulo 64), la condition
+                    // `is_multiple_of(64)` ne serait plus jamais vraie et la
+                    // preuve de vie cesserait définitivement de tourner.
+                    tours = tours.wrapping_add(1);
+                    if tours > 64 && tours.is_multiple_of(64) {
+                        let pid = courant & 0xFFFF_FFFF;
+                        let empreinte = (courant >> 32) as u32;
+                        if crate::wal_presence::etat_processus_empreinte(pid, empreinte)
+                            == crate::wal_presence::EtatProcessus::Mort
+                        {
+                            // Le vol DOIT rendre le garde quand il réussit. Sans
+                            // ce `return`, la boucle réexamine le mot, y trouve
+                            // NOTRE jeton (que le CAS vient d'écrire), demande la
+                            // preuve de vie sur notre propre pid — vivant, à coup
+                            // sûr — et attend un verrou que nous tenons.
+                            // Mesuré le 24/11 (`t9c`) : attente infinie, mot à
+                            // `pid=nous`, verdict `Vivant`.
+                            if mot
+                                .compare_exchange(
+                                    courant,
+                                    jeton,
+                                    Ordering::AcqRel,
+                                    Ordering::Acquire,
+                                )
+                                .is_ok()
+                            {
+                                return VerrouEntite::neuf(mot, rang);
+                            }
+                        }
+                    }
+                    if tours < 64 {
+                        std::hint::spin_loop();
+                    } else if tours < 256 {
+                        std::thread::yield_now();
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_micros(100));
+                    }
+                }
+            }
+        }
+    }
+
     /// (MP-3) Comme [`Self::synchroniser`], mais l'erreur REMONTE : depuis que la
     /// borne porte les curseurs de pages, sa durabilité avant celle des zones
     /// est une exigence de correction en écriture partagée (voir `flush`).
@@ -354,6 +470,72 @@ impl BorneAllocation {
     /// déjà durable.
     pub fn synchroniser(&self) {
         let _ = self.map.flush();
+    }
+}
+
+/// Garde du verrou d'entité : rend la tranche libre en tombant, y compris sur
+/// panique (déroulement), jamais sur `SIGKILL` — c'est la preuve de vie qui
+/// récupère ce cas.
+pub struct VerrouEntite<'a> {
+    mot: &'a AtomicU64,
+    rang: usize,
+}
+
+impl<'a> VerrouEntite<'a> {
+    fn neuf(mot: &'a AtomicU64, rang: usize) -> Self {
+        #[cfg(test)]
+        tranches::prendre(rang);
+        Self { mot, rang }
+    }
+
+    /// Rang de la tranche tenue (diagnostic, tests).
+    #[must_use]
+    pub fn rang(&self) -> usize {
+        self.rang
+    }
+}
+
+impl Drop for VerrouEntite<'_> {
+    fn drop(&mut self) {
+        // `0` = libre. Le jeton du suivant sera publié par SON CAS : rien à
+        // effacer d'autre, donc aucun risque d'écraser son empreinte.
+        self.mot.store(0, Ordering::Release);
+        #[cfg(test)]
+        tranches::rendre(self.rang);
+    }
+}
+
+/// Filet de développement : deux prises de la MÊME tranche par le même thread
+/// seraient un interblocage (le verrou n'est pas réentrant). En debug on le dit
+/// au lieu de figer le test.
+#[cfg(test)]
+mod tranches {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static TENUES: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn prendre(rang: usize) {
+        TENUES.with(|t| {
+            let mut t = t.borrow_mut();
+            assert!(
+                !t.contains(&rang),
+                "verrou d'entité déjà tenu par ce thread (tranche {rang}) : le verrou \
+                 n'est pas réentrant — deux entités de la même tranche ne doivent pas \
+                 s'imbriquer"
+            );
+            t.push(rang);
+        });
+    }
+
+    pub(super) fn rendre(rang: usize) {
+        TENUES.with(|t| {
+            let mut t = t.borrow_mut();
+            if let Some(i) = t.iter().rposition(|r| *r == rang) {
+                t.remove(i);
+            }
+        });
     }
 }
 
@@ -426,5 +608,144 @@ mod tests_pages_mp3 {
         );
         // Les bornes d'avant restent lisibles et intactes.
         assert_eq!(a.noeud(), b.noeud());
+    }
+}
+
+/// ── VERROU D'ENTITÉ (MP-3b) — tests unitaires ────────────────────────────────
+#[cfg(test)]
+mod tests_verrou_entite {
+    use super::*;
+
+    fn borne(td: &tempfile::TempDir) -> BorneAllocation {
+        BorneAllocation::ouvrir(td.path()).expect("borne")
+    }
+
+    /// Deux clés de tranches DIFFÉRENTES ne s'attendent pas.
+    #[test]
+    fn deux_tranches_distinctes_se_prennent_toutes_les_deux() {
+        let td = tempfile::tempdir().unwrap();
+        let b = borne(&td);
+        let a1 = b.essayer_entite(1).expect("tranche de 1");
+        let a2 = b.essayer_entite(2).expect("tranche de 2");
+        assert_ne!(a1.rang(), a2.rang());
+    }
+
+    /// La même tranche, deux fois : la seconde est refusée — c'est le verrou,
+    /// et c'est aussi ce qui interdit une réentrance silencieuse.
+    #[test]
+    fn une_tranche_deja_tenue_est_refusee_au_second_essai() {
+        let td = tempfile::tempdir().unwrap();
+        let b = borne(&td);
+        let _g = b.essayer_entite(7).expect("première prise");
+        // 7 et 7 + 240 tombent VOLONTAIREMENT sur la même tranche : c'est ce
+        // qu'on veut éprouver ici.
+        assert!(
+            b.essayer_entite(7 + NB_VERROUS_ENTITE as u64).is_none(),
+            "la tranche est tenue : le second essai doit échouer"
+        );
+    }
+
+    /// Un détenteur PROUVÉ MORT est volé — sans délai, par preuve.
+    #[test]
+    fn un_detenteur_mort_est_vole() {
+        let td = tempfile::tempdir().unwrap();
+        let b = borne(&td);
+        let rang = BorneAllocation::rang_verrou(11);
+        // Un pid très au-delà du maximum de la plateforme : `kill` rend ESRCH.
+        let pid_mort: u64 = 999_999_999;
+        b.mot_verrou(rang)
+            .store(pid_mort | (0x1234_5678u64 << 32), Ordering::Release);
+        let g = b.verrouiller_entite(11);
+        assert_eq!(g.rang(), rang, "le verrou a été volé au mort");
+        assert_ne!(
+            b.mot_verrou(rang).load(Ordering::Acquire),
+            pid_mort | (0x1234_5678u64 << 32),
+            "le mot porte maintenant notre jeton"
+        );
+    }
+
+    /// Un détenteur VIVANT n'est pas volé : l'essai unique échoue.
+    #[test]
+    fn un_detenteur_vivant_n_est_pas_vole() {
+        let td = tempfile::tempdir().unwrap();
+        let b = borne(&td);
+        let rang = BorneAllocation::rang_verrou(13);
+        // Notre propre pid, avec notre propre empreinte : vivant, à coup sûr.
+        let (pid, demarrage) = crate::wal_presence::identite_du_processus_courant();
+        let jeton = (pid & 0xFFFF_FFFF)
+            | (u64::from(crate::wal_presence::empreinte_demarrage(demarrage)) << 32);
+        b.mot_verrou(rang).store(jeton, Ordering::Release);
+        assert!(
+            b.essayer_entite(13).is_none(),
+            "un détenteur vivant garde son verrou"
+        );
+        assert_eq!(b.mot_verrou(rang).load(Ordering::Acquire), jeton);
+    }
+
+    /// La chute du garde libère la tranche.
+    #[test]
+    fn la_liberation_rend_la_tranche_prenable() {
+        let td = tempfile::tempdir().unwrap();
+        let b = borne(&td);
+        {
+            let _g = b.essayer_entite(21).expect("prise");
+        }
+        let _g = b.essayer_entite(21).expect("reprise après libération");
+    }
+
+    /// L'empreinte dépend des 64 bits du démarrage : un repli `haut ^ bas`
+    /// laisserait deux démarrages structurés identiques se confondre.
+    #[test]
+    fn l_empreinte_depend_des_64_bits_du_demarrage() {
+        let base: u64 = 1_700_000_000_000_000;
+        assert_ne!(
+            crate::wal_presence::empreinte_demarrage(base),
+            crate::wal_presence::empreinte_demarrage(base ^ (1u64 << 32)),
+            "changer les 32 bits hauts doit changer l'empreinte"
+        );
+        assert_eq!(
+            crate::wal_presence::empreinte_demarrage(0),
+            0,
+            "démarrage inconnu = empreinte 0 (comparaison sautée)"
+        );
+    }
+
+    /// Le verrou tient dans la page : 240 tranches à partir de 64.
+    #[test]
+    fn les_verrous_tiennent_dans_la_page() {
+        assert_eq!(OFF_VERROUS_ENTITE % 8, 0);
+        assert!(
+            OFF_VERROUS_ENTITE + NB_VERROUS_ENTITE * 8 <= TAILLE as usize,
+            "240 verrous de 8 o doivent tenir dans {TAILLE} o"
+        );
+    }
+}
+
+/// ── PALIERS D'ATTENTE DU VERROU D'ENTITÉ ────────────────────────────────────
+#[cfg(test)]
+mod tests_paliers_attente {
+    use super::*;
+
+    /// Un verrou tenu quelques dizaines de millisecondes par un AUTRE thread fait
+    /// traverser les trois paliers d'attente (spin, yield, sommeil). Sans ce
+    /// test, deux des trois branches ne sont jamais exercées — et le portillon de
+    /// couverture les compte comme non couvertes.
+    ///
+    /// DISPERSION : la durée est volontairement large ; le test n'affirme rien
+    /// sur le temps, seulement sur le fait que les deux prises réussissent.
+    #[test]
+    fn l_attente_traverse_les_trois_paliers() {
+        let td = tempfile::tempdir().unwrap();
+        let borne = BorneAllocation::ouvrir(td.path()).expect("borne");
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let _g = borne.verrouiller_entite(42);
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            });
+            // Laisse le premier thread prendre le verrou avant de concourir.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let _g = borne.verrouiller_entite(42);
+        });
     }
 }

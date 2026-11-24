@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use obrain_common::types::{NodeId, PropertyKey, Value};
+use obrain_common::types::{EdgeId, NodeId, PropertyKey, Value};
 use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
 use obrain_substrate::SubstrateStore;
 use obrain_substrate::wal::{WalPayload, WalRecord};
@@ -45,8 +45,33 @@ use obrain_substrate::wal_io::{
 // Harnais inter-processus
 // ---------------------------------------------------------------------------
 
+/// Rôle d'enfant, ou `None` pour le parent.
+///
+/// `MWB_ROLE` SEUL fait foi. Ne JAMAIS y ajouter une autre variable : un test
+/// existant (`t7`) ne passe que `MWB_ROLE` + ses propres chemins, sans
+/// `MWB_DIR` ; exiger `MWB_DIR` l'a fait basculer dans la branche PARENT, et ce
+/// parent a relancé un enfant, et ainsi de suite — **bombe à processus** du
+/// 24/11/2026, 1 800 processus en 40 s, charge machine à 260. C'est la garde de
+/// profondeur ci-dessous qui protège de cette classe d'accident, pas le rôle.
 fn role() -> Option<String> {
     std::env::var("MWB_ROLE").ok()
+}
+
+/// Garde anti-récursion du harnais. Chaque `Enfant::lancer` incrémente
+/// `MWB_PROFONDEUR` ; au-delà de 2, l'enfant refuse de démarrer. Un harnais qui
+/// se réengendre devient donc une erreur nommée en trois processus, au lieu
+/// d'une bombe à processus qui sature la machine avant qu'on la voie.
+fn refuser_si_trop_profond() {
+    let profondeur: u32 = std::env::var("MWB_PROFONDEUR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        profondeur <= 2,
+        "profondeur d'enfant {profondeur} > 2 : le harnais de test se réengendre \
+         (un enfant exécute la branche PARENT). Vérifier que la branche enfant \
+         est bien prise, et arrêter la machine avant qu'elle sature."
+    );
 }
 
 fn env_obligatoire(cle: &str) -> String {
@@ -72,9 +97,15 @@ fn attendre_fichier(p: &Path, quoi: &str) {
     }
 }
 
+/// Délai maximal d'attente d'une ligne d'enfant. Sans borne, un enfant bloqué
+/// — exactement le mode de défaillance qu'un verrou peut introduire — fige la
+/// CI au lieu de la faire échouer.
+const DELAI_LIGNE: Duration = Duration::from_secs(60);
+
 struct Enfant {
     process: Child,
-    lignes: std::io::Lines<std::io::BufReader<std::process::ChildStdout>>,
+    lignes: std::sync::mpsc::Receiver<String>,
+    _lecteur: std::thread::JoinHandle<()>,
 }
 
 impl Enfant {
@@ -87,11 +118,30 @@ impl Enfant {
         for (k, v) in vars {
             cmd.env(k, v);
         }
+        // Profondeur de génération : la garde `refuser_si_trop_profond` s'en sert
+        // pour arrêter net un harnais qui se réengendre.
+        let profondeur: u32 = std::env::var("MWB_PROFONDEUR")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        cmd.env("MWB_PROFONDEUR", (profondeur + 1).to_string());
         let mut process = cmd.spawn().expect("lancer l'enfant");
         let sortie = process.stdout.take().expect("stdout de l'enfant");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let lecteur = std::thread::spawn(move || {
+            for ligne in std::io::BufReader::new(sortie)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if tx.send(ligne).is_err() {
+                    break;
+                }
+            }
+        });
         Self {
             process,
-            lignes: std::io::BufReader::new(sortie).lines(),
+            lignes: rx,
+            _lecteur: lecteur,
         }
     }
 
@@ -99,13 +149,18 @@ impl Enfant {
     /// de cette ligne.
     fn attendre_ligne(&mut self, prefixe: &str) -> String {
         loop {
-            match self.lignes.next() {
-                Some(Ok(l)) => {
+            match self.lignes.recv_timeout(DELAI_LIGNE) {
+                Ok(l) => {
                     if let Some(reste) = l.strip_prefix(prefixe) {
                         return reste.trim().to_string();
                     }
                 }
-                autre => panic!("enfant terminé sans « {prefixe} » ({autre:?})"),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+                    "enfant muet depuis {DELAI_LIGNE:?} en attendant « {prefixe} » — un                      appairage ou un verrou bloqué doit échouer, pas figer la CI"
+                ),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("enfant terminé sans « {prefixe} »")
+                }
             }
         }
     }
@@ -1181,5 +1236,322 @@ fn t8c_un_import_en_lot_et_un_ecrivain_unitaire_ne_s_ecrasent_pas() {
          écarts : {:#?})",
         2 * 400 * CLES_T8.len(),
         &ecarts[..ecarts.len().min(6)]
+    );
+}
+
+// ===========================================================================
+// T9 — DEUX PROCESSUS SUR LA **MÊME** ENTITÉ (MP-3b)
+// ===========================================================================
+//
+// MP-3 a rendu sûres les propriétés d'entités DISTINCTES. La même entité reste
+// non garantie : `append_entry_inner` lit la page de tête, y ajoute l'entrée en
+// place (lecture-modification-écriture d'une page de 4 Kio), ou alloue une page
+// neuve chaînée sur l'ancienne tête, puis le store écrit `first_prop_off`.
+// Le seul verrou est `verrou_ecriture_noeud`, un `Mutex` PAR PROCESSUS : deux
+// processus se croisent et l'un des deux perd son entrée, ou la tête de chaîne
+// oublie un maillon. Silence total : CRC valides, aucune erreur.
+//
+// Ce test ne prouve pas la convergence (c'est CONV-334) : il prouve qu'aucune
+// écriture n'est PERDUE quand deux processus écrivent le même nœud et la même
+// arête avec des clés distinctes.
+
+const CLES_T9: u64 = 60;
+
+/// Enfant « même entité » : pose `MWB_K` clés distinctes sur le nœud et autant
+/// sur l'arête, en alternant nœud/arête pour que les deux processus se croisent
+/// sur les deux chaînes.
+fn enfant_meme_entite(dir: &Path, role: &str, noeud: u64, arete: u64, k: u64) -> ! {
+    let s = SubstrateStore::open_shared_write(dir).expect("open_shared_write (même entité)");
+    for i in 0..k {
+        let valeur = Value::String(format!("{role}-{i}").into());
+        s.set_node_property(NodeId(noeud), &format!("{role}n{i}"), valeur.clone());
+        s.set_edge_property(EdgeId(arete), &format!("{role}e{i}"), valeur);
+    }
+    // DIAGNOSTIC : l'enfant relit SES propres clés avant de sortir. S'il en
+    // manque une, la perte a eu lieu PENDANT sa session (le pair a écrasé la
+    // tête de chaîne), et ce n'est pas la réouverture qui l'a causée.
+    let mut manquants = Vec::new();
+    for i in 0..k {
+        let attendu = Value::String(format!("{role}-{i}").into());
+        if s.get_node_property(NodeId(noeud), &PropertyKey::new(format!("{role}n{i}")))
+            .as_ref()
+            != Some(&attendu)
+        {
+            manquants.push(format!("n{i}"));
+        }
+        if s.get_edge_property(EdgeId(arete), &PropertyKey::new(format!("{role}e{i}")))
+            .as_ref()
+            != Some(&attendu)
+        {
+            manquants.push(format!("e{i}"));
+        }
+    }
+    annoncer(&format!("PERTES {}", manquants.join(",")));
+    annoncer("FINI");
+    std::process::exit(0);
+}
+
+#[test]
+fn t9_deux_processus_ecrivent_des_cles_distinctes_sur_la_meme_entite() {
+    refuser_si_trop_profond();
+    if let Some(r) = role() {
+        let dir = PathBuf::from(env_obligatoire("MWB_DIR"));
+        let k: u64 = env_obligatoire("MWB_K").parse().unwrap();
+        let noeud: u64 = env_obligatoire("MWB_NOEUD").parse().unwrap();
+        let arete: u64 = env_obligatoire("MWB_ARETE").parse().unwrap();
+        match r.as_str() {
+            "A" | "B" => enfant_meme_entite(&dir, &r, noeud, arete, k),
+            autre => panic!("rôle inconnu {autre}"),
+        }
+    }
+
+    let td = tempfile::tempdir().unwrap();
+    let dir = td.path().join("store-t9");
+    let (noeud, arete) = {
+        let s = SubstrateStore::create(&dir).expect("créer le store");
+        let a = s.create_node(&["MW"]);
+        let b = s.create_node(&["MW"]);
+        let e = s.create_edge(a, b, "MWEDGE");
+        s.flush().expect("flush initial");
+        (a.0, e.0)
+    };
+
+    let lancer = |r: &str| {
+        Enfant::lancer(
+            "t9_deux_processus_ecrivent_des_cles_distinctes_sur_la_meme_entite",
+            &[
+                ("MWB_ROLE", r.into()),
+                ("MWB_DIR", dir.display().to_string()),
+                ("MWB_K", CLES_T9.to_string()),
+                ("MWB_NOEUD", noeud.to_string()),
+                ("MWB_ARETE", arete.to_string()),
+            ],
+        )
+    };
+    let mut a = lancer("A");
+    let mut b = lancer("B");
+    let pertes_a = a.attendre_ligne("PERTES ");
+    let pertes_b = b.attendre_ligne("PERTES ");
+    a.attendre_ligne("FINI");
+    b.attendre_ligne("FINI");
+    a.terminer();
+    b.terminer();
+    println!("(diagnostic) A ne relit pas ses clés : [{pertes_a}]");
+    println!("(diagnostic) B ne relit pas ses clés : [{pertes_b}]");
+
+    let s = SubstrateStore::open(&dir).expect("réouverture exclusive");
+    let mut ecarts: Vec<String> = Vec::new();
+    for role in ["A", "B"] {
+        for i in 0..CLES_T9 {
+            let attendu = Value::String(format!("{role}-{i}").into());
+            let cle_n = format!("{role}n{i}");
+            let lu = s.get_node_property(NodeId(noeud), &PropertyKey::new(&cle_n));
+            if lu.as_ref() != Some(&attendu) {
+                ecarts.push(format!("nœud clé {cle_n} : {lu:?}"));
+            }
+            let cle_e = format!("{role}e{i}");
+            let lu = s.get_edge_property(EdgeId(arete), &PropertyKey::new(&cle_e));
+            if lu.as_ref() != Some(&attendu) {
+                ecarts.push(format!("arête clé {cle_e} : {lu:?}"));
+            }
+        }
+    }
+    let n_ecarts = ecarts.len();
+    assert_eq!(
+        n_ecarts,
+        0,
+        "{n_ecarts} propriété(s) sur {} perdues quand deux processus écrivent la \
+         MÊME entité : le verrou d'écriture est par processus, pas \
+         inter-processus (premiers écarts : {:#?})",
+        4 * CLES_T9 as usize,
+        &ecarts[..ecarts.len().min(8)]
+    );
+}
+
+// ===========================================================================
+// T9b — DEUX PROCESSUS SUR LA **MÊME CLÉ** DU MÊME NŒUD
+// ===========================================================================
+//
+// Contrat, choisi pour être vérifiable sans décoder le WAL : sous `v2`, la
+// trame `PropSetInline` n'est PAS émise (double journalisation supprimée), donc
+// « dernière trame du WAL » n'est pas un oracle disponible. Ce qui reste
+// observable : après martèlement concurrent de la même clé, l'écriture du
+// DERNIER écrivain (le parent, en exclusif) est celle qu'on relit — aucune
+// résurrection, aucune page déchirée.
+
+fn enfant_martele(dir: &Path, role: &str, noeud: u64, n: u64) -> ! {
+    let s = SubstrateStore::open_shared_write(dir).expect("open_shared_write (martèle)");
+    for i in 0..n {
+        s.set_node_property(
+            NodeId(noeud),
+            "martelee",
+            Value::String(format!("{role}-{i}").into()),
+        );
+    }
+    annoncer("FINI");
+    std::process::exit(0);
+}
+
+#[test]
+fn t9b_deux_processus_martelent_la_meme_cle_puis_le_dernier_ecrivain_gagne() {
+    refuser_si_trop_profond();
+    if let Some(r) = role() {
+        let dir = PathBuf::from(env_obligatoire("MWB_DIR"));
+        let noeud: u64 = env_obligatoire("MWB_NOEUD").parse().unwrap();
+        let n: u64 = env_obligatoire("MWB_N").parse().unwrap();
+        match r.as_str() {
+            "A" | "B" => enfant_martele(&dir, &r, noeud, n),
+            autre => panic!("rôle inconnu {autre}"),
+        }
+    }
+
+    const N: u64 = 300;
+    let td = tempfile::tempdir().unwrap();
+    let dir = td.path().join("store-t9b");
+    let noeud = {
+        let s = SubstrateStore::create(&dir).expect("créer le store");
+        let a = s.create_node(&["MW"]);
+        s.flush().expect("flush initial");
+        a.0
+    };
+
+    let lancer = |r: &str| {
+        Enfant::lancer(
+            "t9b_deux_processus_martelent_la_meme_cle_puis_le_dernier_ecrivain_gagne",
+            &[
+                ("MWB_ROLE", r.into()),
+                ("MWB_DIR", dir.display().to_string()),
+                ("MWB_NOEUD", noeud.to_string()),
+                ("MWB_N", N.to_string()),
+            ],
+        )
+    };
+    let mut a = lancer("A");
+    let mut b = lancer("B");
+    a.attendre_ligne("FINI");
+    b.attendre_ligne("FINI");
+    a.terminer();
+    b.terminer();
+
+    // AVANT l'écriture finale du parent : la valeur laissée par le martèlement
+    // doit être EXACTEMENT la dernière d'un des deux écrivains. Une page
+    // déchirée, une valeur d'un rang antérieur ou un mélange laisserait autre
+    // chose. (Sans ce contrôle, `t9b` ne prouvait rien : l'écriture finale du
+    // parent écrase tout, pertes comprises — constat de relecture du 24/11.)
+    {
+        let s = SubstrateStore::open_read_only(&dir).expect("relecture après martèlement");
+        let lu = s.get_node_property(NodeId(noeud), &PropertyKey::new("martelee"));
+        let attendu = [
+            Value::String(format!("A-{}", N - 1).into()),
+            Value::String(format!("B-{}", N - 1).into()),
+        ];
+        assert!(
+            lu.as_ref().is_some_and(|v| attendu.contains(v)),
+            "après martèlement de la même clé, la valeur relue devrait être la dernière \
+             d'un des deux écrivains (A-{} ou B-{}), obtenu : {lu:?}",
+            N - 1,
+            N - 1
+        );
+    }
+
+    // Le DERNIER écrivain est le parent, en exclusif : sa valeur doit être celle
+    // qu'on relit, quoi qu'aient fait les deux autres (pas de résurrection,
+    // pas de page déchirée).
+    {
+        let s = SubstrateStore::open(&dir).expect("réouverture exclusive");
+        s.set_node_property(NodeId(noeud), "martelee", Value::String("dernier".into()));
+        s.flush().expect("flush");
+    }
+    let s = SubstrateStore::open_read_only(&dir).expect("relecture");
+    let lu = s.get_node_property(NodeId(noeud), &PropertyKey::new("martelee"));
+    assert_eq!(
+        lu.as_ref(),
+        Some(&Value::String("dernier".into())),
+        "la valeur relue n'est pas celle du dernier écrivain : {lu:?} \
+         (une écriture concurrente a ressuscité ou laissé une page déchirée)"
+    );
+}
+
+// ===========================================================================
+// T9c — LE DÉTENTEUR DU VERROU EST TUÉ -9 ; LE PAIR REPREND
+// ===========================================================================
+//
+// Le verrou vit dans `substrate.alloc` : un `SIGKILL` ne le libère pas. Le pair
+// doit donc le VOLER, et il ne peut le faire que sur PREUVE de mort (pid
+// disparu ou réattribué) — jamais sur un délai. Sans cette preuve, le store
+// resterait bloqué pour toujours après la mort d'un écrivain.
+//
+// Le parent écrit dans un thread avec un délai borné : si le vol ne marchait
+// pas, le test ÉCHOUE avec un message clair au lieu de figer la CI.
+
+fn enfant_ecrit_sans_fin(dir: &Path, noeud: u64) -> ! {
+    let s = SubstrateStore::open_shared_write(dir).expect("open_shared_write (martèle)");
+    let mut i: u64 = 0;
+    loop {
+        s.set_node_property(NodeId(noeud), "en_cours", Value::Int64(i as i64));
+        i += 1;
+    }
+}
+
+#[test]
+fn t9c_un_detenteur_tue_est_vole_par_son_pair() {
+    refuser_si_trop_profond();
+    if let Some(_r) = role() {
+        let dir = PathBuf::from(env_obligatoire("MWB_DIR"));
+        let noeud: u64 = env_obligatoire("MWB_NOEUD").parse().unwrap();
+        enfant_ecrit_sans_fin(&dir, noeud);
+    }
+
+    let td = tempfile::tempdir().unwrap();
+    let dir = td.path().join("store-t9c");
+    let noeud = {
+        let s = SubstrateStore::create(&dir).expect("créer le store");
+        let a = s.create_node(&["MW"]);
+        s.flush().expect("flush initial");
+        a.0
+    };
+
+    let pair = SubstrateStore::open_shared_write(&dir).expect("le pair ouvre en partagé");
+    for tour in 0..10 {
+        let enfant = Enfant::lancer(
+            "t9c_un_detenteur_tue_est_vole_par_son_pair",
+            &[
+                ("MWB_ROLE", "martele".into()),
+                ("MWB_DIR", dir.display().to_string()),
+                ("MWB_NOEUD", noeud.to_string()),
+            ],
+        );
+        // Laisse l'enfant entrer dans une écriture (donc, souvent, dans la
+        // section critique), puis le tue SANS lui laisser libérer le verrou.
+        std::thread::sleep(Duration::from_millis(30));
+        enfant.tuer();
+
+        // Le pair écrit la même entité : s'il ne volait pas le verrou du mort,
+        // il attendrait indéfiniment.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir_c = dir.clone();
+        std::thread::spawn(move || {
+            let s = SubstrateStore::open_shared_write(&dir_c).expect("thread du pair");
+            s.set_node_property(
+                NodeId(noeud),
+                "apres_mort",
+                Value::String(format!("pair-{tour}").into()),
+            );
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_secs(15)).is_ok(),
+            "tour {tour} : le pair n'a pas obtenu le verrou du détenteur tué en 15 s — \
+             le vol sur preuve de mort ne fonctionne pas, le store est bloqué"
+        );
+    }
+    drop(pair);
+
+    let s = SubstrateStore::open(&dir).expect("réouverture exclusive");
+    let lu = s.get_node_property(NodeId(noeud), &PropertyKey::new("apres_mort"));
+    assert_eq!(
+        lu.as_ref(),
+        Some(&Value::String("pair-9".into())),
+        "la dernière écriture du pair n'est pas relue : {lu:?}"
     );
 }

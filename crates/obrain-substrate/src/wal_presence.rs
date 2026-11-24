@@ -91,6 +91,70 @@ pub(crate) fn etat_processus(pid: u64, demarrage: u64) -> EtatProcessus {
     }
 }
 
+/// Empreinte 32 bits du démarrage, pour tenir `(pid, démarrage)` dans UN mot de
+/// 64 bits (verrou d'entité, MP-3b). `0` = démarrage inconnu (plateforme sans
+/// source, ou lecture impossible) : la comparaison est alors sautée, comme pour
+/// [`etat_processus`].
+///
+/// Pourquoi une empreinte et pas deux mots : l'acquisition d'un verrou à deux
+/// mots serait « publier le pid, PUIS le démarrage ». Un `SIGKILL` entre les
+/// deux laisse `(pid vivant, démarrage 0)`, que la preuve de vie tient pour
+/// VIVANT — attente infinie sur un verrou que personne ne détient. Et vider le
+/// démarrage à la libération peut effacer celui du nouveau détenteur. Un mot
+/// unique supprime les deux phases.
+///
+/// Résidu assumé : deux démarrages distincts peuvent avoir la même empreinte
+/// (1 sur 2^32). Le seul effet est de tenir un détenteur pour vivant à tort,
+/// donc d'ATTENDRE — jamais de voler un verrou vivant sur cette base.
+#[must_use]
+pub(crate) fn empreinte_demarrage(demarrage: u64) -> u32 {
+    if demarrage == 0 {
+        return 0;
+    }
+    // FNV-1a sur les 8 octets : dépend des 64 bits, contrairement à un simple
+    // repli `haut ^ bas` qui annulerait des démarrages structurés (secondes en
+    // haut, microsecondes en bas).
+    let octets = demarrage.to_le_bytes();
+    let mut h: u32 = 0x811c_9dc5;
+    for o in octets {
+        h ^= u32::from(o);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    if h == 0 { 1 } else { h }
+}
+
+/// [`etat_processus`] avec l'empreinte du démarrage au lieu de sa valeur : sert
+/// au verrou d'entité, dont le mot unique ne porte que le pid et l'empreinte.
+pub(crate) fn etat_processus_empreinte(pid: u64, empreinte: u32) -> EtatProcessus {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return EtatProcessus::Mort;
+        };
+        if pid <= 0 {
+            return EtatProcessus::Mort;
+        }
+        // SAFETY: `kill(pid, 0)` ne livre aucun signal : il teste seulement
+        // l'existence du processus et la permission de le signaler.
+        let existe = unsafe { libc::kill(pid, 0) } == 0;
+        if !existe && errno() == Some(libc::ESRCH) {
+            return EtatProcessus::Mort;
+        }
+        match lire_demarrage(pid) {
+            Lecture::Absent => EtatProcessus::Mort,
+            Lecture::Connu(h) if empreinte != 0 && empreinte_demarrage(h) != empreinte => {
+                EtatProcessus::Mort
+            }
+            Lecture::Connu(_) | Lecture::Inconnu => EtatProcessus::Vivant,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, empreinte);
+        EtatProcessus::Mort
+    }
+}
+
 /// Ce que le système dit du démarrage d'un processus.
 #[cfg(unix)]
 enum Lecture {
@@ -229,5 +293,48 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert_eq!(etat_processus(pid, 0), EtatProcessus::Mort);
         drop(enfant);
+    }
+}
+
+/// ── PREUVE DE VIE PAR EMPREINTE — gardes défensives ─────────────────────────
+///
+/// Ces quatre issues ne sont pas du code mort : ce sont les cas qu'un pid
+/// RÉATTRIBUÉ ou un appel malformé produisent. Le portillon de couverture du
+/// code neuf exige de les exercer (90,8 % → 94,7 % sans eux).
+#[cfg(test)]
+mod tests_empreinte {
+    use super::*;
+
+    #[test]
+    fn un_pid_hors_type_ou_nul_est_mort() {
+        // `u64::MAX` ne tient pas dans un `pid_t` (i32) : Mort sans appel noyau.
+        assert_eq!(etat_processus_empreinte(u64::MAX, 0), EtatProcessus::Mort);
+        // 0 désigne le groupe de processus, pas un écrivain.
+        assert_eq!(etat_processus_empreinte(0, 0), EtatProcessus::Mort);
+    }
+
+    #[test]
+    fn un_pid_qui_n_existe_plus_est_mort() {
+        let mut enfant = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("enfant");
+        let pid = u64::from(enfant.id());
+        let _ = enfant.wait(); // récolté : le pid n'existe plus
+        assert_eq!(etat_processus_empreinte(pid, 0), EtatProcessus::Mort);
+    }
+
+    #[test]
+    fn une_empreinte_qui_ne_correspond_pas_trahit_une_reutilisation_de_pid() {
+        let moi = u64::from(std::process::id());
+        // Pid vivant (le nôtre) mais démarrage qui ne correspond pas : pid
+        // réattribué ⇒ Mort, donc le verrou d'un mort sera volé.
+        assert_eq!(
+            etat_processus_empreinte(moi, 0xdead_beef),
+            EtatProcessus::Mort
+        );
+        // Empreinte inconnue (0) : on ne peut pas prouver la mort, on attend.
+        assert_eq!(etat_processus_empreinte(moi, 0), EtatProcessus::Vivant);
     }
 }

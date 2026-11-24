@@ -242,6 +242,16 @@ impl PropsZone {
         self.next_heap_page_idx = self.next_heap_page_idx.max(Self::en_u32(borne.pages_tas()));
         self.borne = Some(borne);
         self.partage = partage;
+        if !partage {
+            // Ouverture EXCLUSIVE : aucune écriture concurrente possible, et la
+            // queue trouvée sur le disque vient d'une session de CE store (donc
+            // écrite et complète). On la reprend, comme avant MP-3 — sinon
+            // chaque chaîne neuve allouerait une page de 4 Kio.
+            self.derniere_page_tas_locale = self
+                .next_heap_page_idx
+                .checked_sub(1)
+                .filter(|_| self.next_heap_page_idx > 0);
+        }
     }
 
     fn en_u32(v: u64) -> u32 {
@@ -272,9 +282,15 @@ impl PropsZone {
         let fin = u32::try_from(debut.saturating_add(u64::from(k)))
             .map_err(|_| SubstrateError::WalBadFrame("heap zone page id overflow".into()))?;
         self.next_heap_page_idx = self.next_heap_page_idx.max(fin);
-        if k > 0 {
-            self.derniere_page_tas_locale = Some(fin - 1);
-        }
+        // NE PAS publier la queue ici. `fin - 1` est une page RÉSERVÉE, pas une
+        // page écrite : l'import en lot réserve une plage puis n'écrit les blocs
+        // que plus tard, verrou relâché. Publier la queue à la réservation
+        // autorisait un AUTRE THREAD du même processus à y internir une chaîne ;
+        // le lot écrasait ensuite la page, et la propriété se relisait comme la
+        // valeur d'un autre nœud, sans erreur (le chemin de lecture ne vérifie
+        // ni magic ni CRC). Constat de relecture du 24/11/2026, sur du code
+        // introduit par MP-3. La publication se fait désormais là où la page est
+        // RÉELLEMENT écrite : `intern_bytes`.
         Ok(fin - k)
     }
 
@@ -288,7 +304,10 @@ impl PropsZone {
             return None;
         }
         let tail = self.next_heap_page_idx - 1;
-        if !self.partage || self.derniere_page_tas_locale == Some(tail) {
+        // La condition vaut dans les DEUX modes : en exclusif, « pas de pair »
+        // n'implique pas « page écrite » — un import en lot du même processus
+        // peut l'avoir réservée sans l'écrire.
+        if self.derniere_page_tas_locale == Some(tail) {
             Some(tail)
         } else {
             None
@@ -1398,6 +1417,27 @@ impl PropsZone {
         entry: &PropertyEntry,
     ) -> SubstrateResult<u64> {
         use crate::unite::{UNITE_SIZE, UniteAddr};
+        // ── (MP-3b) PROJECTION PÉRIMÉE : RAFRAÎCHIR AVANT DE LIRE LA TÊTE ────
+        //
+        // `page_slice` ne voit que NOTRE projection (`self.props.len()`), et
+        // seule l'ALLOCATION la fait grandir. Un pair qui alloue des pages
+        // au-delà de notre projection rend donc la page de tête « hors zone ».
+        // Or `append_entry_inner` traite une tête illisible comme une tête
+        // ABSENTE (règle héritée du 19/08 : sur une base héritée, une valeur
+        // parasite ne désigne rien) : il alloue une page neuve SANS chaîner sur
+        // l'ancienne, et toute la chaîne du pair devient inatteignable.
+        //
+        // Mesuré le 24/11 (`t9`, deux processus sur le même nœud, verrou
+        // d'entité pourtant pris) : 54 clés sur 60 d'un des deux écrivains
+        // perdues, l'autre n'en perdant aucune — l'asymétrie suit celui dont la
+        // projection est en retard.
+        //
+        // Le chemin de LECTURE faisait déjà ce rafraîchissement
+        // (`reprojeter_si_zone_agrandie`) ; le chemin d'ÉCRITURE ne le faisait
+        // pas. Deux lectures atomiques de longueur de fichier, pas un verrou.
+        if self.a_grandi_sur_disque() {
+            self.rafraichir_projection()?;
+        }
         let need = entry.encoded_len();
         if need > PAGE_SIZE - core::mem::size_of::<crate::page::PropertyPageHeader>() {
             return Err(SubstrateError::WalBadFrame(format!(
@@ -1883,6 +1923,7 @@ impl PropsZone {
             if let Some(off) = page.append(bytes) {
                 page.seal_crc32();
                 self.write_heap_page(tail, &page)?;
+                self.derniere_page_tas_locale = Some(tail);
                 return Ok(crate::page::HeapRef {
                     page_id: tail,
                     offset: off,
@@ -1897,6 +1938,8 @@ impl PropsZone {
             .expect("fresh heap page fits single entry");
         page.seal_crc32();
         self.write_heap_page(new_idx, &page)?;
+        // La page est ÉCRITE et complète : à nous, on peut la remplir encore.
+        self.derniere_page_tas_locale = Some(new_idx);
         Ok(crate::page::HeapRef {
             page_id: new_idx,
             offset: off,
@@ -2076,6 +2119,40 @@ mod tests {
     /// lot et y écrit sa propre page. Entre processus, la fenêtre est trop
     /// étroite pour un test fiable (`t8c` reste vert 5/5 même avec une barrière
     /// de départ) ; ici l'entrelacement est forcé, donc déterministe.
+    /// (MP-3b, revue du 24/11/2026) Une RÉSERVATION de pages de tas (le chemin
+    /// de l'import en lot) ne doit PAS livrer sa dernière page comme « queue
+    /// réutilisable » : elle n'est pas écrite. Sinon un écrivain du même
+    /// processus y interne une chaîne, le lot écrase ensuite la page, et la
+    /// valeur se relit comme celle d'un autre nœud, sans erreur — le chemin de
+    /// lecture ne vérifie ni magic ni CRC.
+    #[test]
+    fn mp3b_une_reservation_de_tas_ne_livre_pas_sa_queue() {
+        let sf = SubstrateFile::open_tempfile().unwrap();
+        let mut pz = PropsZone::open(&sf).unwrap();
+
+        // 1. Le lot RÉSERVE 3 pages de tas, et ne les écrit pas encore.
+        let (_, debut_tas) = pz.reserver_et_avancer(1, 3).unwrap();
+
+        // 2. Un écrivain unitaire interne une chaîne.
+        let reference = pz.intern_bytes(b"valeur-ecrite-par-un-autre").unwrap();
+
+        // 3. Le lot écrit SES pages, comme le ferait `ecrire_blocs_en_lot`.
+        for i in 0..3u32 {
+            let mut page = HeapPage::new(debut_tas + i);
+            let _ = page.append(b"bloc-du-lot-qui-ecrase-la-page");
+            page.seal_crc32();
+            pz.write_heap_page(debut_tas + i, &page).unwrap();
+        }
+
+        // 4. La valeur de l'écrivain unitaire est intacte.
+        assert_eq!(
+            pz.read_heap(reference).as_deref(),
+            Some(&b"valeur-ecrite-par-un-autre"[..]),
+            "la réservation du lot a livré sa page de queue : l'écriture unitaire \
+             a été écrasée par le bloc du lot"
+        );
+    }
+
     #[test]
     fn mp3_un_lot_de_tas_n_ecrit_pas_sur_la_page_qu_un_pair_a_recue() {
         let sf = SubstrateFile::open_tempfile().unwrap();
