@@ -3034,6 +3034,23 @@ impl CypherTranslator {
                 where_clause,
                 projection,
             } => {
+                // (#368) Plusieurs nœuds du motif liés dehors : l'ancre est UNIQUE,
+                // les autres seraient traduits comme des nœuds LIBRES qui masquent
+                // la variable externe, et le résultat serait FAUX sans erreur.
+                // Un refus nommé vaut mieux qu'un résultat faux.
+                let lies = self.noeuds_lies_dehors(pattern);
+                if lies.len() >= 2 {
+                    return Err(Error::Query(QueryError::new(
+                        QueryErrorKind::Semantic,
+                        format!(
+                            "compréhension de motif liée dehors par plusieurs nœuds ({}) : \
+                             non prise en charge, la seconde variable serait traitée comme un \
+                             nœud libre et le résultat serait faux. Corréler sur un seul nœud, \
+                             ou exprimer la condition dans un WHERE.",
+                            lies.join(", ")
+                        ),
+                    )));
+                }
                 // Build a subplan from the pattern
                 let pattern_plan = match self.entree_ancre_comprehension(pattern) {
                     // (#355) Motif lié dehors par un nœud qui n'est pas le
@@ -3256,12 +3273,35 @@ impl CypherTranslator {
         }
     }
 
+    /// Variables des nœuds d'un motif qui sont DÉJÀ liées dans la portée
+    /// externe, sans doublon, dans l'ordre du motif (#368).
+    fn noeuds_lies_dehors(&self, pattern: &ast::Pattern) -> Vec<String> {
+        let portee = self.scope_kinds.borrow();
+        let mut vues: Vec<String> = Vec::new();
+        if let ast::Pattern::Path(path) = pattern {
+            for v in std::iter::once(&path.start)
+                .chain(path.chain.iter().map(|rel| &rel.target))
+                .filter_map(|node| node.variable.as_ref())
+            {
+                if portee.contains_key(v) && !vues.contains(v) {
+                    vues.push(v.clone());
+                }
+            }
+        }
+        vues
+    }
+
     /// Entrée d'ancrage d'un motif de compréhension dont le premier nœud est
     /// libre mais dont UN SEUL autre nœud est un nœud lié dehors (#355) : un
     /// `NodeScan` nu sur ce nœud. Le traducteur de chemin repart alors de lui
     /// (en avant et à rebours), comme pour un `MATCH`. `None` : motif à
-    /// traduire sans entrée (premier nœud lié ou aucun nœud lié, cas inchangés ;
-    /// plusieurs nœuds liés, que `relever_sous_plan` refuse).
+    /// traduire sans entrée (premier nœud lié ou aucun nœud lié, cas inchangés).
+    ///
+    /// Plusieurs nœuds liés dehors sont REFUSÉS par l'appelant avant d'arriver
+    /// ici (#368) : l'ancre est unique, et laisser passer ce cas rendait un
+    /// résultat faux sans erreur. (Un commentaire antérieur affirmait que
+    /// `relever_sous_plan` refusait ce cas : c'était inexact quand le premier
+    /// nœud est lui aussi lié.)
     fn entree_ancre_comprehension(&self, pattern: &ast::Pattern) -> Option<LogicalOperator> {
         let ast::Pattern::Path(path) = pattern else {
             return None;
