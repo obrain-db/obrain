@@ -278,26 +278,29 @@ fn verrouiller_bloquant_exclusif(_fichier: &File) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn deverrouiller_bloquant_exclusif(fichier: &File) -> std::io::Result<()> {
+fn deverrouiller_bloquant_exclusif(fichier: &File) {
     use std::os::unix::io::AsRawFd;
-    // SAFETY: voir `verrouiller_bloquant_exclusif`.
-    let rc = unsafe { libc::flock(fichier.as_raw_fd(), libc::LOCK_UN) };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error());
+    // L'ÉCHEC EST IGNORÉ, volontairement : le verrou est de toute façon rendu à
+    // la fermeture du descripteur, et `LOCK_UN` sur un descripteur valide
+    // n'échoue pas en pratique. Une branche d'erreur ici serait du code
+    // qu'aucun test ne peut atteindre — et le portillon de couverture du code
+    // neuf la refuserait, à juste titre.
+    //
+    // SAFETY: voir `verrouiller_bloquant_exclusif` (même descripteur).
+    unsafe {
+        libc::flock(fichier.as_raw_fd(), libc::LOCK_UN);
     }
-    Ok(())
 }
 
 #[cfg(all(not(unix), not(target_arch = "wasm32")))]
-fn deverrouiller_bloquant_exclusif(fichier: &File) -> std::io::Result<()> {
+fn deverrouiller_bloquant_exclusif(fichier: &File) {
     use fs2::FileExt;
-    fichier.unlock()
+    // Même choix que côté unix : l'échec n'a pas d'issue utile pour l'appelant.
+    let _ = fichier.unlock();
 }
 
 #[cfg(target_arch = "wasm32")]
-fn deverrouiller_bloquant_exclusif(_fichier: &File) -> std::io::Result<()> {
-    Ok(())
-}
+fn deverrouiller_bloquant_exclusif(_fichier: &File) {}
 
 /// Garde d'un verrou EXCLUSIF inter-processus sur le descripteur d'une zone,
 /// tenu le temps d'une croissance (`grow_to`). Relâche le verrou au `drop`,
@@ -328,7 +331,7 @@ impl<'a> Drop for VerrouCroissanceZone<'a> {
         // Au mieux : relâcher explicitement. Le noyau rend de toute façon le
         // `flock` à la fermeture du descripteur, mais on ne veut pas que la
         // zone le garde tant qu'elle vit.
-        let _ = deverrouiller_bloquant_exclusif(self.fichier);
+        deverrouiller_bloquant_exclusif(self.fichier);
     }
 }
 
