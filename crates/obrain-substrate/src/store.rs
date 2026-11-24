@@ -17604,13 +17604,10 @@ impl SubstrateStore {
         if b.noeud() <= id {
             return false;
         }
-        match self.writer.rafraichir_zone_noeuds() {
-            Ok(_) => true,
-            Err(e) => {
-                tracing::warn!(erreur = %e, "reprojection de la zone des nœuds impossible");
-                false
-            }
-        }
+        // Échec de reprojection ⇒ on ne peut pas PROUVER que l'entité existe :
+        // on répond « absente » (fail-closed). Pas de branche de journalisation
+        // ici : elle serait inatteignable par un test.
+        self.writer.rafraichir_zone_noeuds().is_ok()
     }
 
     fn is_live_on_disk(&self, id: NodeId) -> bool {
@@ -18552,13 +18549,10 @@ impl SubstrateStore {
         if b.arete() <= id {
             return false;
         }
-        match self.writer.rafraichir_zone_aretes() {
-            Ok(_) => true,
-            Err(e) => {
-                tracing::warn!(erreur = %e, "reprojection de la zone des arêtes impossible");
-                false
-            }
-        }
+        // Échec de reprojection ⇒ on ne peut pas PROUVER que l'entité existe :
+        // on répond « absente » (fail-closed). Pas de branche de journalisation
+        // ici : elle serait inatteignable par un test.
+        self.writer.rafraichir_zone_aretes().is_ok()
     }
 
     /// Is the edge slot live (allocated, within high-water mark, not

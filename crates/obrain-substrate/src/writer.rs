@@ -3486,29 +3486,25 @@ impl Writer {
     /// verrou d'écriture de `zones` ; aucun `set_len` (la reprojection ne
     /// tronque jamais — voir [`ZoneFile::rafraichir`]).
     pub(crate) fn rafraichir_zone_noeuds(&self) -> SubstrateResult<bool> {
+        // La zone nœuds est ouverte à la construction du Writer : pas de repli
+        // paresseux ici, il serait inatteignable (et non mesurable).
         let mut zones = self.zones.write();
-        if zones.nodes.is_none() {
-            let sub = self.substrate.lock();
-            zones.nodes = Some(sub.open_zone(Zone::Nodes)?);
-        }
         zones
             .nodes
             .as_mut()
-            .expect("zone nœuds ouverte")
+            .expect("zone nœuds ouverte à la construction du Writer")
             .rafraichir()
     }
 
     /// Pendant de [`Self::rafraichir_zone_noeuds`] pour la zone d'ARÊTES.
     pub(crate) fn rafraichir_zone_aretes(&self) -> SubstrateResult<bool> {
+        // La zone arêtes est ouverte à la construction du Writer : pas de repli
+        // paresseux ici, il serait inatteignable (et non mesurable).
         let mut zones = self.zones.write();
-        if zones.edges.is_none() {
-            let sub = self.substrate.lock();
-            zones.edges = Some(sub.open_zone(Zone::Edges)?);
-        }
         zones
             .edges
             .as_mut()
-            .expect("zone arêtes ouverte")
+            .expect("zone arêtes ouverte à la construction du Writer")
             .rafraichir()
     }
 
