@@ -187,7 +187,18 @@ fn main() {
         {
             let db = ObrainDB::open(&dir).expect("création");
             let s = db.session();
-            s.execute_cypher("CREATE (:N {name: 'a', emb: [0.1, 0.2, 0.3, 0.4]})-[:R]->(:N {name: 'b', emb: [0.4, 0.3, 0.2, 0.1]})")
+            // Les embeddings sont des `Value::Vector` (comme dans la base importée de PO) :
+            // une liste Cypher `[0.1, …]` n'est PAS indexée par l'index vectoriel.
+            let a = db.create_node(&["N"]);
+            let b = db.create_node(&["N"]);
+            for (id, nom, v) in [
+                (a, "a", vec![0.1f32, 0.2, 0.3, 0.4]),
+                (b, "b", vec![0.4f32, 0.3, 0.2, 0.1]),
+            ] {
+                db.set_node_property(id, "name", obrain_common::types::Value::String(nom.into()));
+                db.set_node_property(id, "emb", obrain_common::types::Value::Vector(v.into()));
+            }
+            s.execute_cypher("MATCH (a:N {name: 'a'}), (b:N {name: 'b'}) CREATE (a)-[:R]->(b)")
                 .unwrap();
             let idx = db.create_vector_index("N", "emb", Some(4), Some("cosine"), None, None);
             #[cfg(feature = "vector-index")]
@@ -219,7 +230,7 @@ fn main() {
             (
                 "7c. CALL db.index.vector.queryNodes(...) en lecture seule",
                 "CALL db.index.vector.queryNodes('N_emb', 2, [0.1, 0.2, 0.3, 0.4]) YIELD node AS n, score RETURN n.name AS name, score ORDER BY score DESC",
-                "2 lignes, sans erreur (0 ligne aussi en session écriture : cause non élucidée)",
+                "2 lignes, sans erreur",
             ),
         ] {
             cas(
