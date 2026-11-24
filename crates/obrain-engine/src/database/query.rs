@@ -191,3 +191,93 @@ impl super::ObrainDB {
         result.scalar()
     }
 }
+
+/// Tests de couverture de l'API de requête d'`ObrainDB` (`execute`,
+/// `query_scalar`, `execute_at_epoch`, `execute_with_params`,
+/// `execute_language`) sur une base `new_in_memory()`. GQL est compilé sans
+/// feature : ces tests passent en features par défaut comme en --all-features.
+#[cfg(test)]
+mod tests_couverture_query {
+    use super::super::ObrainDB;
+    use obrain_common::types::Value;
+
+    fn base_peuplee() -> ObrainDB {
+        let db = ObrainDB::new_in_memory();
+        db.execute("INSERT (:Person {name: 'Alix', age: 30})")
+            .unwrap();
+        db.execute("INSERT (:Person {name: 'Bo', age: 40})")
+            .unwrap();
+        db
+    }
+
+    #[test]
+    fn execution_de_requete() {
+        let db = base_peuplee();
+        let result = db.execute("MATCH (n:Person) RETURN n.name").unwrap();
+        assert_eq!(result.row_count(), 2);
+        assert_eq!(result.column_count(), 1);
+    }
+
+    #[test]
+    fn requete_invalide_est_une_erreur() {
+        let db = ObrainDB::new_in_memory();
+        assert!(db.execute("CECI N'EST PAS UNE REQUETE").is_err());
+    }
+
+    #[test]
+    fn scalaire_entier() {
+        let db = base_peuplee();
+        let n: i64 = db.query_scalar("MATCH (n:Person) RETURN count(n)").unwrap();
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn scalaire_chaine() {
+        let db = ObrainDB::new_in_memory();
+        db.execute("INSERT (:Person {name: 'Alix'})").unwrap();
+        let nom: String = db.query_scalar("MATCH (n:Person) RETURN n.name").unwrap();
+        assert_eq!(nom, "Alix");
+    }
+
+    #[test]
+    fn scalaire_refuse_un_resultat_multi_lignes() {
+        let db = base_peuplee();
+        let r: std::result::Result<String, _> = db.query_scalar("MATCH (n:Person) RETURN n.name");
+        assert!(r.is_err(), "deux lignes ne sont pas un scalaire");
+    }
+
+    #[test]
+    fn execution_a_epoque() {
+        let db = base_peuplee();
+        let epoque = db.current_epoch();
+        let result = db
+            .execute_at_epoch("MATCH (n:Person) RETURN n.name", epoque)
+            .unwrap();
+        assert_eq!(result.row_count(), 2);
+    }
+
+    #[test]
+    fn execution_avec_parametres() {
+        let db = base_peuplee();
+        let params = std::collections::HashMap::from([("nom".to_string(), Value::from("Alix"))]);
+        let result = db
+            .execute_with_params("MATCH (n:Person) WHERE n.name = $nom RETURN n.age", params)
+            .unwrap();
+        assert_eq!(result.row_count(), 1);
+        assert_eq!(result.rows[0][0], Value::Int64(30));
+    }
+
+    #[test]
+    fn execution_langage_explicite() {
+        let db = base_peuplee();
+        let result = db
+            .execute_language("MATCH (n:Person) RETURN n.name", "gql", None)
+            .unwrap();
+        assert_eq!(result.row_count(), 2);
+        assert!(
+            db.execute_language("MATCH (n:Person) RETURN n.name", "inconnu", None)
+                .is_err(),
+            "un langage inconnu est refusé"
+        );
+    }
+}
