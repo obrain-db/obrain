@@ -1103,3 +1103,112 @@ impl super::ObrainDB {
         })
     }
 }
+
+/// Tests de couverture de l'indexation d'`ObrainDB` : index de propriété
+/// (création, présence, suppression, reconstruction, recherche par valeur) et
+/// index spatial (construction, recherche par rayon, k-plus-proches, nommage,
+/// suppression). Fonctions non feature-gatées, sur une base `new_in_memory()`.
+#[cfg(test)]
+mod tests_couverture_index {
+    use super::super::ObrainDB;
+    use obrain_common::types::Value;
+
+    fn point(lon: f64, lat: f64) -> Value {
+        Value::List(std::sync::Arc::from(vec![
+            Value::Float64(lon),
+            Value::Float64(lat),
+        ]))
+    }
+
+    #[test]
+    fn recherche_par_propriete() {
+        let db = ObrainDB::new_in_memory();
+        let a = db.create_node_with_props(&["Person"], [("age", Value::Int64(30))]);
+        let _b = db.create_node_with_props(&["Person"], [("age", Value::Int64(40))]);
+        let trentenaires = db.find_nodes_by_property("age", &Value::Int64(30));
+        assert_eq!(trentenaires, vec![a]);
+        assert_eq!(db.find_nodes_by_property("age", &Value::Int64(99)).len(), 0);
+    }
+
+    #[test]
+    fn index_de_propriete_cycle_de_vie() {
+        let db = ObrainDB::new_in_memory();
+        assert!(!db.has_property_index("age"), "aucun index au départ");
+        db.create_property_index("age");
+        assert!(db.has_property_index("age"));
+        assert!(db.drop_property_index("age"));
+        assert!(!db.has_property_index("age"));
+        assert!(!db.drop_property_index("age"), "index déjà supprimé");
+    }
+
+    #[test]
+    fn reconstruction_sans_index_declare() {
+        let db = ObrainDB::new_in_memory();
+        assert_eq!(
+            db.rebuild_property_indexes(),
+            0,
+            "aucune déclaration à rebâtir"
+        );
+        assert_eq!(
+            db.rebuild_ordered_value_index(&[]),
+            0,
+            "liste vide : rien à rebâtir"
+        );
+    }
+
+    #[test]
+    fn index_spatial_et_recherche_par_rayon() {
+        let db = ObrainDB::new_in_memory();
+        let paris = db.create_node_with_props(&["Lieu"], [("pos", point(2.3522, 48.8566))]);
+        let n = db.create_spatial_index("Lieu", "pos").unwrap();
+        assert_eq!(n, 1, "un seul lieu indexé");
+        let proches = db
+            .spatial_search("Lieu:pos", 2.3522, 48.8566, 100.0)
+            .unwrap();
+        assert_eq!(proches.len(), 1);
+        assert_eq!(proches[0].0, paris);
+        let loin = db
+            .spatial_search("Lieu:pos", 4.8357, 45.7640, 100.0)
+            .unwrap();
+        assert_eq!(loin.len(), 0, "Lyon est à ~391 km, hors du rayon de 100 m");
+    }
+
+    #[test]
+    fn index_spatial_k_plus_proches() {
+        let db = ObrainDB::new_in_memory();
+        let paris = db.create_node_with_props(&["Lieu"], [("pos", point(2.3522, 48.8566))]);
+        db.create_node_with_props(&["Lieu"], [("pos", point(4.8357, 45.7640))]);
+        db.create_spatial_index("Lieu", "pos").unwrap();
+        let k1 = db.spatial_knn("Lieu:pos", 2.3522, 48.8566, 1).unwrap();
+        assert_eq!(k1.len(), 1);
+        assert_eq!(k1[0].0, paris, "Paris est le plus proche de Paris");
+    }
+
+    #[test]
+    fn index_spatial_nomme() {
+        let db = ObrainDB::new_in_memory();
+        db.create_node_with_props(&["Lieu"], [("pos", point(2.3522, 48.8566))]);
+        let n = db
+            .create_named_spatial_index("villes", "Lieu", "pos")
+            .unwrap();
+        assert_eq!(n, 1);
+        let noms = db.spatial_index_names();
+        assert!(
+            noms.iter()
+                .any(|(nom, l, p)| nom == "villes" && l == "Lieu" && p == "pos"),
+            "noms rendus : {noms:?}"
+        );
+        let proches = db.spatial_search("villes", 2.3522, 48.8566, 100.0).unwrap();
+        assert_eq!(proches.len(), 1);
+    }
+
+    #[test]
+    fn suppression_d_index_spatial() {
+        let db = ObrainDB::new_in_memory();
+        db.create_node_with_props(&["Lieu"], [("pos", point(2.3522, 48.8566))]);
+        db.create_spatial_index("Lieu", "pos").unwrap();
+        assert!(db.drop_spatial_index("Lieu", "pos").unwrap());
+        let noms = db.spatial_index_names();
+        assert!(!noms.iter().any(|(_, l, p)| l == "Lieu" && p == "pos"));
+    }
+}
