@@ -985,11 +985,11 @@ impl super::Planner {
             match courant {
                 LogicalOperator::Expand(e) => {
                     // (obrain#360) Deux sauts simples CONSÉCUTIFS que rien ne sépare
-                    // sont planifiés en chaîne factorisée (`count_expand_chain`), dont
-                    // `LazyFactorizedChainOperator::reset` ne sait pas se rejouer : la
-                    // source est consommée à la première ligne externe, les suivantes
-                    // ne rendent rien. Mesuré : `EXISTS { (n)<-[]-(m)<-[]-(p) }` réécrit
-                    // rendait {} au lieu des fonctions du projet. Repli. (Un nœud
+                    // sont planifiés en chaîne factorisée (`count_expand_chain`). Cette
+                    // chaîne ne rejouait pas sa source après `reset` (corrigé, obrain#376) :
+                    // `EXISTS { (n)<-[]-(m)<-[]-(p) }` réécrit rendait {} au lieu des
+                    // fonctions du projet. Le repli est conservé par prudence : il garde
+                    // l'ancien chemin d'exécution, éprouvé. (Un nœud
                     // étiqueté ou filtré entre les deux sauts pose un `Filter` qui
                     // casse la chaîne : c'est la forme que l'issue vise.)
                     if let LogicalOperator::Expand(interieur) = e.input.as_ref()

@@ -18,7 +18,8 @@
 use obrain_common::types::LogicalType;
 use obrain_core::execution::chunk::DataChunk;
 use obrain_core::execution::operators::{
-    FactorizedExpandChain, FactorizedExpandOperator, Operator, OperatorResult, ScanOperator,
+    ExpandStep, FactorizedExpandChain, FactorizedExpandOperator, LazyFactorizedChainOperator,
+    Operator, OperatorResult, ScanOperator,
 };
 use obrain_core::graph::Direction;
 use obrain_core::graph::traits::GraphStoreMut;
@@ -272,4 +273,111 @@ fn test_factorized_memory_savings() {
     // Flatten and verify correctness
     let flat = factorized.flatten();
     assert_eq!(flat.row_count(), 10);
+}
+
+// ---------------------------------------------------------------------------
+// obrain#376 : `LazyFactorizedChainOperator::reset` doit rejouer la source.
+// ---------------------------------------------------------------------------
+
+/// A -> B -> C et A -> B2 -> C2 : deux chemins de deux sauts depuis `A`.
+fn chaine_a_deux_sauts() -> LazyFactorizedChainOperator {
+    let store = Arc::new(SubstrateStore::open_tempfile().unwrap());
+    let a = store.create_node(&["Depart"]);
+    let b = store.create_node(&["Milieu"]);
+    let b2 = store.create_node(&["Milieu"]);
+    let c = store.create_node(&["Fin"]);
+    let c2 = store.create_node(&["Fin"]);
+    store.create_edge(a, b, "R");
+    store.create_edge(a, b2, "R");
+    store.create_edge(b, c, "R");
+    store.create_edge(b2, c2, "R");
+    let source = Box::new(ScanOperator::with_label(store.clone(), "Depart"));
+    let pas = |source_column| ExpandStep {
+        source_column,
+        direction: Direction::Outgoing,
+        edge_types: vec!["R".to_string()],
+    };
+    LazyFactorizedChainOperator::new(store, source, vec![pas(0), pas(1)])
+}
+
+fn lignes(op: &mut LazyFactorizedChainOperator) -> usize {
+    let mut n = 0;
+    while let Some(chunk) = op.next().unwrap() {
+        n += chunk.row_count();
+    }
+    n
+}
+
+#[test]
+fn chaine_paresseuse_rejouee_apres_reset_rend_le_meme_resultat() {
+    let mut op = chaine_a_deux_sauts();
+    let premier = lignes(&mut op);
+    assert_eq!(premier, 2);
+    // Épuisée : plus rien sans reset.
+    assert_eq!(lignes(&mut op), 0);
+    for _ in 0..3 {
+        op.reset();
+        assert_eq!(
+            lignes(&mut op),
+            premier,
+            "le rejeu doit égaler le 1er passage"
+        );
+    }
+}
+
+#[test]
+fn chaine_paresseuse_reset_avant_toute_lecture_ne_vide_pas() {
+    // `ApplyOperator` appelle `reset` AVANT la première lecture de chaque ligne.
+    let mut op = chaine_a_deux_sauts();
+    op.reset();
+    assert_eq!(lignes(&mut op), 2);
+}
+
+#[test]
+fn chaine_paresseuse_rejouee_en_mode_factorise() {
+    let mut op = chaine_a_deux_sauts();
+    let premier = op.next_factorized().unwrap().unwrap().logical_row_count();
+    assert_eq!(premier, 2);
+    op.reset();
+    let rejoue = op.next_factorized().unwrap().unwrap().logical_row_count();
+    assert_eq!(rejoue, premier);
+}
+
+#[test]
+fn chaine_paresseuse_source_vide_reste_vide_apres_reset() {
+    let store = Arc::new(SubstrateStore::open_tempfile().unwrap());
+    let source = Box::new(ScanOperator::with_label(store.clone(), "Inconnu"));
+    let mut op = LazyFactorizedChainOperator::new(
+        store,
+        source,
+        vec![ExpandStep {
+            source_column: 0,
+            direction: Direction::Outgoing,
+            edge_types: vec![],
+        }],
+    );
+    assert_eq!(lignes(&mut op), 0);
+    op.reset();
+    assert_eq!(lignes(&mut op), 0);
+}
+
+#[test]
+fn chaine_paresseuse_incomplete_ne_rend_aucune_ligne_aplatie() {
+    // A -> B (un seul saut) : la 2e étape n'a aucune arête, donc aucun chemin
+    // complet de deux sauts. Avant, `next` rendait la ligne du niveau précédent
+    // (3 colonnes au lieu de 5), puis, après `reset`, la rendait encore.
+    let store = Arc::new(SubstrateStore::open_tempfile().unwrap());
+    let a = store.create_node(&["Depart"]);
+    let b = store.create_node(&["Milieu"]);
+    store.create_edge(a, b, "R");
+    let source = Box::new(ScanOperator::with_label(store.clone(), "Depart"));
+    let pas = |source_column| ExpandStep {
+        source_column,
+        direction: Direction::Outgoing,
+        edge_types: vec!["R".to_string()],
+    };
+    let mut op = LazyFactorizedChainOperator::new(store, source, vec![pas(0), pas(1)]);
+    assert_eq!(lignes(&mut op), 0);
+    op.reset();
+    assert_eq!(lignes(&mut op), 0);
 }
