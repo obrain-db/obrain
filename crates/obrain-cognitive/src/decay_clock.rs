@@ -253,21 +253,49 @@ pub fn advance_all(
     let ids: Vec<NodeId> = slots.iter().map(|(id, _)| *id).collect();
     let ancres = sub.get_node_property_batch(&ids, &cle_ancre());
 
+    // Assemble les nœuds vivants avec leur clé de vieillesse `(t_hi, t_ref)`.
+    // Les dormants (colonne ≤ 0) sont comptés et écartés du tri : la loi y est
+    // un point fixe, aucune ancre à écrire.
+    let mut candidats: Vec<((i64, i64, NodeId), f64, Option<EnergyAnchor>, Option<i64>)> =
+        Vec::new();
     for ((node_id, e_ref_col), ancre) in slots.into_iter().zip(ancres) {
         let e_ref_col = e_ref_col as f64;
         if e_ref_col <= 0.0 {
             stats.dormant += 1;
             continue;
         }
+        let ancre_dec = ancre.as_ref().and_then(decode_anchor);
+        let legacy = match &ancre_dec {
+            Some(_) => None,
+            None => legacy_anchor(sub, node_id),
+        };
+        let (t_hi, t_ref) = match &ancre_dec {
+            Some(a) => (a.t_hi_micros, a.t_ref_micros),
+            None => match legacy {
+                Some(t) => (t, t),
+                // Non ancré : le plus ancien, migré en priorité.
+                None => (i64::MIN, i64::MIN),
+            },
+        };
+        candidats.push(((t_hi, t_ref, node_id), e_ref_col, ancre_dec, legacy));
+    }
+
+    // Tri par ancienneté : `t_hi` asc (le nœud le moins avancé d'abord), puis
+    // `t_ref` asc, puis `node_id` — déterministe. La « position de reprise »
+    // est implicite via le high-water mark : un nœud fraîchement avancé a un
+    // `t_hi` plus grand et repart en fond de file ; pas de curseur de slot
+    // fragile qui affamerait les nœuds de tête en permanence.
+    candidats.sort_by_key(|(cle, _, _, _)| *cle);
+
+    for ((_t_hi, _t_ref, node_id), e_ref_col, ancre_dec, legacy) in candidats {
         if max_nodes != 0 && stats.advanced as usize >= max_nodes {
             stats.deferred += 1;
             continue;
         }
 
-        let ancre_dec = ancre.as_ref().and_then(decode_anchor);
         let (e_ref, t_ref, t_hi, h_frozen) = match ancre_dec {
             Some(a) => (a.e_ref, a.t_ref_micros, a.t_hi_micros, a.half_life),
-            None => match legacy_anchor(sub, node_id) {
+            None => match legacy {
                 // Hérité (propriété f64 séparée) : E_ref = colonne.
                 Some(t_ref) => (e_ref_col, t_ref, t_ref, Duration::ZERO),
                 None => {

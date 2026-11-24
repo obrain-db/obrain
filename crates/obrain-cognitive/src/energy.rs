@@ -12,7 +12,7 @@ use dashmap::DashMap;
 use obrain_common::types::NodeId;
 use obrain_reactive::{MutationEvent, MutationListener};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 use web_time::Instant;
 
@@ -228,6 +228,12 @@ pub struct EnergyStore {
     /// thin accelerator.
     #[cfg(feature = "substrate")]
     substrate: Option<Arc<obrain_substrate::SubstrateStore>>,
+    /// Horloge injectable (tests déterministes / simulation) : micros Unix.
+    /// Par défaut [`crate::decay_law::unix_micros`].
+    clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    /// High-water mark DE SESSION : borne les reculs d'horloge au sein d'un
+    /// même processus. Le `t_hi` persisté dans l'ancre borne le redémarrage.
+    session_hi: AtomicI64,
 }
 
 impl EnergyStore {
@@ -243,6 +249,8 @@ impl EnergyStore {
             graph_store: None,
             #[cfg(feature = "substrate")]
             substrate: None,
+            clock: Arc::new(unix_micros),
+            session_hi: AtomicI64::new(0),
         }
     }
 
@@ -261,6 +269,8 @@ impl EnergyStore {
             graph_store: Some(graph_store),
             #[cfg(feature = "substrate")]
             substrate: None,
+            clock: Arc::new(unix_micros),
+            session_hi: AtomicI64::new(0),
         }
     }
 
@@ -298,6 +308,8 @@ impl EnergyStore {
             config,
             graph_store: Some(graph_store),
             substrate: Some(substrate),
+            clock: Arc::new(unix_micros),
+            session_hi: AtomicI64::new(0),
         }
     }
 
@@ -305,6 +317,29 @@ impl EnergyStore {
     #[cfg(feature = "substrate")]
     pub fn is_substrate_backed(&self) -> bool {
         self.substrate.is_some()
+    }
+
+    /// Instant brut de l'horloge injectée, en micros Unix.
+    pub fn now_micros(&self) -> i64 {
+        (self.clock)()
+    }
+
+    /// Instant effectif : `max(now, session_hi)`.
+    ///
+    /// Le high-water mark DE SESSION borne les reculs d'horloge (NTP,
+    /// changement d'heure) au sein d'un même processus : une lecture à 24 h
+    /// suivie d'un recul à 12 h rend toujours 0,5, jamais 0,7071. Le `t_hi`
+    /// persisté dans l'ancre assure la même borne à travers un redémarrage.
+    fn now_eff(&self) -> i64 {
+        let now = self.now_micros();
+        self.session_hi.fetch_max(now, Ordering::Relaxed).max(now)
+    }
+
+    /// Injecte une horloge (tests déterministes / simulation). Reconstruit le
+    /// store : `EnergyStore::with_substrate(cfg, sub).with_clock(horloge)`.
+    pub fn with_clock(mut self, clock: Arc<dyn Fn() -> i64 + Send + Sync>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Sets the maximum number of cache entries. When exceeded, LRU eviction kicks in.
@@ -358,7 +393,8 @@ impl EnergyStore {
         #[cfg(feature = "substrate")]
         if let Some(sub) = self.substrate.as_ref() {
             let law = DecayLaw::new(self.config.default_half_life);
-            return crate::decay_clock::current_energy(sub, node_id, &law).unwrap_or(0.0);
+            return crate::decay_clock::energy_at(sub, node_id, &law, self.now_eff())
+                .unwrap_or(0.0);
         }
 
         if let Some(entry) = self.nodes.get(&node_id) {
@@ -424,7 +460,7 @@ impl EnergyStore {
         #[cfg(feature = "substrate")]
         if let Some(sub) = self.substrate.as_ref() {
             let law = DecayLaw::new(self.config.default_half_life);
-            let now = unix_micros();
+            let now = self.now_eff();
             // `reinforce` rend `None` sur un slot mort ou non alloué — même
             // contrat que l'ancien `boost_node_energy_f32`.
             if let Some(nouvelle) =
@@ -529,7 +565,7 @@ impl EnergyStore {
         let law = DecayLaw::new(self.config.default_half_life);
         #[cfg(feature = "substrate")]
         if let Some(sub) = self.substrate.as_ref() {
-            return match crate::decay_clock::advance_all(sub, &law, max_nodes, unix_micros()) {
+            return match crate::decay_clock::advance_all(sub, &law, max_nodes, self.now_eff()) {
                 Ok(stats) => stats.advanced as usize,
                 Err(_) => 0,
             };
@@ -556,7 +592,7 @@ impl EnergyStore {
     /// fixe, réécrire leur ancre serait deux écritures pour rien).
     #[cfg(feature = "substrate")]
     fn reancrer(&self, sub: &obrain_substrate::SubstrateStore) -> usize {
-        let now = unix_micros();
+        let now = self.now_eff();
         let Ok(slots) = sub.iter_live_node_energies() else {
             return 0;
         };
@@ -677,7 +713,7 @@ impl EnergyStore {
                 return Vec::new();
             };
             let law = DecayLaw::new(self.config.default_half_life);
-            let now = unix_micros();
+            let now = self.now_eff();
             let ids: Vec<NodeId> = pairs.iter().map(|(id, _)| *id).collect();
             let pk_ancre = obrain_common::types::PropertyKey::from(PROP_ENERGY_ANCHOR);
             let pk_legacy =
