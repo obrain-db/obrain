@@ -2010,7 +2010,7 @@ pub struct SubstrateStore {
     /// `self.next_node_id` (bornes de balayage, `slot_high_water`) continuent de
     /// voir un filigrane cohérent pour CE processus, sans changer de nature ni de
     /// coût. Le miroir suit la borne par `fetch_max` — jamais en arrière.
-    borne_allocation: Option<crate::borne_allocation::BorneAllocation>,
+    borne_allocation: Option<Arc<crate::borne_allocation::BorneAllocation>>,
     /// ── CACHE DE BLOCS D'ALLOCATION (optimisation « bulk bump ») ─────────────
     ///
     /// Chaque espace (nœuds, arêtes) tient la borne SUPÉRIEURE `fin` du bloc
@@ -8226,7 +8226,9 @@ impl SubstrateStore {
             if g.is_memory() || lecture_seule {
                 None
             } else {
-                Some(crate::borne_allocation::BorneAllocation::ouvrir(g.path())?)
+                Some(Arc::new(crate::borne_allocation::BorneAllocation::ouvrir(
+                    g.path(),
+                )?))
             }
         };
         let borne_lue = if lecture_seule {
@@ -8547,6 +8549,13 @@ impl SubstrateStore {
             store.relever_filigranes_par_sonde();
         } else {
             store.relever_filigranes_des_zones();
+        }
+        // (MP-3) La zone de propriétés v2 alloue ses pages (et celles du tas)
+        // sur la borne PARTAGÉE : deux écrivains ne posent plus jamais la même
+        // page. Le curseur local calculé à l'ouverture est publié d'abord
+        // (`fetch_max`), puis la zone adopte la borne, qui peut être en avance.
+        if let (Some(b), Some(pz)) = (&store.borne_allocation, &store.props_zone) {
+            pz.write().brancher_borne(Arc::clone(b), partage);
         }
 
         // ── (2026-08-15) LA RECONSTRUCTION DES INDEX A DEMENAGE ──
