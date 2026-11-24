@@ -1133,3 +1133,210 @@ impl super::ObrainDB {
         ids
     }
 }
+
+/// Tests de couverture de l'API CRUD d'`ObrainDB` (nœuds, arêtes, propriétés,
+/// étiquettes, lots, époques) sur une base `new_in_memory()`. Les chemins WAL
+/// et CDC sont traversés par les mêmes appels : aucune assertion ne dépend de
+/// la présence d'un journal moteur.
+#[cfg(test)]
+mod tests_couverture_crud {
+    use super::super::ObrainDB;
+    use obrain_common::types::{EdgeId, NodeId, Value};
+
+    #[test]
+    fn creation_et_lecture_de_noeud() {
+        let db = ObrainDB::new_in_memory();
+        let id = db.create_node(&["Person"]);
+        let node = db.get_node(id).expect("nœud fraîchement créé");
+        assert_eq!(node.id, id);
+        assert!(node.labels.iter().any(|l| l.as_str() == "Person"));
+        let labels = db.get_node_labels(id).expect("nœud vivant");
+        assert!(labels.iter().any(|l| l == "Person"));
+        assert!(db.get_node(NodeId::INVALID).is_none());
+    }
+
+    #[test]
+    fn creation_avec_proprietes() {
+        let db = ObrainDB::new_in_memory();
+        let id = db.create_node_with_props(&["Person"], [("name", Value::from("Alix"))]);
+        let node = db.get_node(id).unwrap();
+        assert_eq!(node.get_property("name"), Some(&Value::from("Alix")));
+        assert!(node.get_property("absent").is_none());
+    }
+
+    #[test]
+    fn suppression_de_noeud() {
+        let db = ObrainDB::new_in_memory();
+        let id = db.create_node(&["Person"]);
+        assert!(db.delete_node(id));
+        assert!(db.get_node(id).is_none());
+        assert!(
+            !db.delete_node(id),
+            "un nœud supprimé ne l'est pas deux fois"
+        );
+    }
+
+    #[test]
+    fn propriete_de_noeud() {
+        let db = ObrainDB::new_in_memory();
+        let id = db.create_node(&["Person"]);
+        db.set_node_property(id, "age", Value::Int64(30));
+        assert_eq!(
+            db.get_node(id).unwrap().get_property("age"),
+            Some(&Value::Int64(30))
+        );
+        db.set_node_property(id, "age", Value::Int64(31));
+        assert_eq!(
+            db.get_node(id).unwrap().get_property("age"),
+            Some(&Value::Int64(31)),
+            "réécrire une propriété remplace sa valeur"
+        );
+        assert!(db.remove_node_property(id, "age"));
+        assert!(
+            !db.remove_node_property(id, "age"),
+            "propriété déjà absente"
+        );
+        assert!(db.get_node(id).unwrap().get_property("age").is_none());
+    }
+
+    #[test]
+    fn etiquettes() {
+        let db = ObrainDB::new_in_memory();
+        let id = db.create_node(&["Person"]);
+        assert!(db.add_node_label(id, "Admin"));
+        let labels = db.get_node_labels(id).unwrap();
+        assert!(labels.iter().any(|l| l == "Person"));
+        assert!(labels.iter().any(|l| l == "Admin"));
+        assert!(db.remove_node_label(id, "Admin"));
+        let labels = db.get_node_labels(id).unwrap();
+        assert!(labels.iter().any(|l| l == "Person"));
+        assert!(!labels.iter().any(|l| l == "Admin"));
+        assert!(!db.remove_node_label(id, "Admin"), "étiquette déjà retirée");
+        assert!(db.get_node_labels(NodeId::INVALID).is_none());
+    }
+
+    #[test]
+    fn creation_et_lecture_d_arete() {
+        let db = ObrainDB::new_in_memory();
+        let a = db.create_node(&["Person"]);
+        let b = db.create_node(&["Person"]);
+        let e = db.create_edge(a, b, "KNOWS");
+        let edge = db.get_edge(e).expect("arête fraîchement créée");
+        assert_eq!(edge.id, e);
+        assert_eq!(edge.src, a);
+        assert_eq!(edge.dst, b);
+        assert_eq!(edge.edge_type.as_str(), "KNOWS");
+        assert!(db.get_edge(EdgeId::INVALID).is_none());
+    }
+
+    #[test]
+    fn arete_avec_proprietes() {
+        let db = ObrainDB::new_in_memory();
+        let a = db.create_node(&["Person"]);
+        let b = db.create_node(&["Person"]);
+        let e = db.create_edge_with_props(a, b, "KNOWS", [("since", Value::Int64(2020))]);
+        assert_eq!(
+            db.get_edge(e).unwrap().get_property("since"),
+            Some(&Value::Int64(2020))
+        );
+    }
+
+    #[test]
+    fn suppression_d_arete() {
+        let db = ObrainDB::new_in_memory();
+        let a = db.create_node(&["Person"]);
+        let b = db.create_node(&["Person"]);
+        let e = db.create_edge(a, b, "KNOWS");
+        assert!(db.delete_edge(e));
+        assert!(db.get_edge(e).is_none());
+        assert!(
+            !db.delete_edge(e),
+            "une arête supprimée ne l'est pas deux fois"
+        );
+    }
+
+    #[test]
+    fn propriete_d_arete() {
+        let db = ObrainDB::new_in_memory();
+        let a = db.create_node(&["Person"]);
+        let b = db.create_node(&["Person"]);
+        let e = db.create_edge(a, b, "KNOWS");
+        db.set_edge_property(e, "weight", Value::Float64(1.5));
+        assert_eq!(
+            db.get_edge(e).unwrap().get_property("weight"),
+            Some(&Value::Float64(1.5))
+        );
+        assert!(db.remove_edge_property(e, "weight"));
+        assert!(!db.remove_edge_property(e, "weight"));
+        assert!(db.get_edge(e).unwrap().get_property("weight").is_none());
+    }
+
+    #[test]
+    fn lots_d_aretes() {
+        let db = ObrainDB::new_in_memory();
+        assert_eq!(db.create_edges_batch(&[]).len(), 0);
+        assert_eq!(db.create_edges_batch_no_wal(&[]).len(), 0);
+        let a = db.create_node(&["Person"]);
+        let b = db.create_node(&["Person"]);
+        let c = db.create_node(&["Person"]);
+        let ids = db.create_edges_batch(&[(a, b, "KNOWS"), (b, c, "KNOWS")]);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(db.edge_count(), 2);
+        let ids2 = db.create_edges_batch_no_wal(&[(c, a, "KNOWS")]);
+        assert_eq!(ids2.len(), 1);
+        assert_eq!(db.edge_count(), 3);
+    }
+
+    #[test]
+    fn creation_sans_wal() {
+        let db = ObrainDB::new_in_memory();
+        let id = db.create_node_no_wal(&["Person"]);
+        assert!(db.get_node(id).is_some());
+    }
+
+    #[test]
+    fn lots_de_noeuds_vectoriels() {
+        let db = ObrainDB::new_in_memory();
+        let ids = db.batch_create_nodes("Doc", "embedding", vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+        assert_eq!(ids.len(), 2);
+        for id in ids {
+            let node = db.get_node(id).unwrap();
+            match node.get_property("embedding") {
+                Some(Value::Vector(v)) => assert_eq!(v.len(), 2),
+                autre => panic!("propriété vectorielle attendue, obtenu {autre:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn epoques_et_historique() {
+        let db = ObrainDB::new_in_memory();
+        let a = db.create_node(&["Person"]);
+        let b = db.create_node(&["Person"]);
+        let e = db.create_edge(a, b, "KNOWS");
+
+        // Un nœud vivant est visible à l'époque courante, pas un inconnu.
+        assert!(db.get_node_at_epoch(a, db.current_epoch()).is_some());
+        assert!(
+            db.get_node_at_epoch(NodeId::INVALID, db.current_epoch())
+                .is_none()
+        );
+
+        // L'historique d'un nœud vivant tient en une entrée (naissance, pas de mort).
+        let hist = db.get_node_history(a);
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].1, None);
+        assert_eq!(hist[0].2.id, a);
+        // À son époque de naissance, le nœud est déjà visible.
+        assert!(db.get_node_at_epoch(a, hist[0].0).is_some());
+        // Historique vide pour un nœud inconnu.
+        assert_eq!(db.get_node_history(NodeId::INVALID).len(), 0);
+
+        // Même contrat pour les arêtes.
+        assert!(db.get_edge_at_epoch(e, db.current_epoch()).is_some());
+        let histe = db.get_edge_history(e);
+        assert_eq!(histe.len(), 1);
+        assert_eq!(histe[0].2.id, e);
+        assert_eq!(db.get_edge_history(EdgeId::INVALID).len(), 0);
+    }
+}
