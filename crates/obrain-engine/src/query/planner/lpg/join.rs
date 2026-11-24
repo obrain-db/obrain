@@ -65,7 +65,8 @@ impl super::Planner {
             QueryErrorKind::Semantic,
             format!(
                 "{forme} refusé : au moins {gauche} × {droite} = {paires} paires (plafond {plafond}). \
-                 Les parties du motif ne partagent aucune variable, donc rien ne peut les apparier. \
+                 Ce produit est calculé EN ENTIER avant tout appariement : même si les parties \
+                 partagent des variables, elles ne sont appariées qu'après coup. \
                  Mesuré le 2026-09-12 sur runtime-dev : 1 251 348 arêtes × 406 335 nœuds a fait \
                  tomber le serveur, sans message. Reliez les parties par une variable commune \
                  (le planificateur en fait alors une jointure amorcée par la graine), bornez par un \

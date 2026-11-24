@@ -62,6 +62,9 @@ struct CypherTranslator {
     /// Variables bound to edges (from MATCH relationship patterns or MERGE relationships).
     /// Used to set `is_edge: true` on `SetPropertyOp` when the SET target is an edge variable.
     edge_variables: RefCell<HashSet<String>>,
+    /// Alias des `shortestPath` d'`OPTIONAL MATCH` corrélés : le chemin n'a pas
+    /// de colonne propre, seulement `_path_length_<alias>` (NULL sans chemin).
+    chemins_courts: RefCell<HashSet<String>>,
     /// Counter for generating unique anonymous variable names.
     anon_counter: Cell<u32>,
     /// Alias-to-output-column-name mapping from the most recent RETURN/WITH clause.
@@ -83,6 +86,7 @@ impl CypherTranslator {
     fn new(marqueur_segment: String) -> Self {
         Self {
             edge_variables: RefCell::new(HashSet::new()),
+            chemins_courts: RefCell::new(HashSet::new()),
             anon_counter: Cell::new(0),
             return_aliases: RefCell::new(HashMap::new()),
             scope_kinds: RefCell::new(HashMap::new()),
@@ -1016,12 +1020,132 @@ impl CypherTranslator {
         // correspondance elle rend une ligne à NULL (obrain#179).
         let input = input.unwrap_or(LogicalOperator::Empty);
 
+        // `OPTIONAL MATCH shortestPath((f)-[..]-(co))` dont les DEUX extrémités
+        // sont déjà liées : une recherche par ligne de gauche, pas un produit
+        // `NodeScan(f) x NodeScan(co)` apparié après coup (obrain#228).
+        if let Some((correle, alias)) = Self::optional_shortest_path_correle(match_clause, &input) {
+            self.chemins_courts.borrow_mut().insert(alias);
+            return Ok(correle);
+        }
+
         // Build the right side with proper shared variable joins
         let right = self.translate_comma_patterns(&match_clause.patterns, None)?;
 
         Ok(LogicalOperator::LeftJoin(LeftJoinOp {
             left: Box::new(input),
             right: Box::new(right),
+            condition: None,
+        }))
+    }
+
+    /// Corrèle un `OPTIONAL MATCH` d'un `shortestPath` / `allShortestPaths`
+    /// dont les deux extrémités sont déjà liées à gauche : `Apply` optionnel
+    /// qui importe ces deux variables, dont le sous-plan est la recherche sur
+    /// un `ParameterScan`. Le sous-plan ne rend que la colonne
+    /// `_path_length_<alias>` (les extrémités restent celles de gauche) ; sans
+    /// chemin, l'`Apply` optionnel rend NULL.
+    ///
+    /// `None` pour tout autre motif (extrémité non liée, étiquette ou
+    /// propriétés en ligne, plusieurs motifs, plusieurs sauts) : l'appelant
+    /// garde alors la jointure externe.
+    fn optional_shortest_path_correle(
+        match_clause: &ast::MatchClause,
+        input: &LogicalOperator,
+    ) -> Option<(LogicalOperator, String)> {
+        let [
+            ast::Pattern::NamedPath {
+                name,
+                path_function: Some(func),
+                pattern,
+            },
+        ] = match_clause.patterns.as_slice()
+        else {
+            return None;
+        };
+        let ast::Pattern::Path(path) = pattern.as_ref() else {
+            return None;
+        };
+        let [rel] = path.chain.as_slice() else {
+            return None;
+        };
+        let nu = |n: &ast::NodePattern| n.labels.is_empty() && n.properties.is_empty();
+        if !nu(&path.start) || !nu(&rel.target) {
+            return None;
+        }
+        let (source_var, target_var) = (path.start.variable.clone()?, rel.target.variable.clone()?);
+        let visibles = visible_variables(input);
+        let lie = |v: &String| visibles.get(v) == Some(&VariableKind::Node);
+        if source_var == target_var || !lie(&source_var) || !lie(&target_var) {
+            return None;
+        }
+        let direction = match rel.direction {
+            ast::Direction::Outgoing => ExpandDirection::Outgoing,
+            ast::Direction::Incoming => ExpandDirection::Incoming,
+            ast::Direction::Undirected => ExpandDirection::Both,
+        };
+        let longueur = format!("_path_length_{name}");
+        let recherche = LogicalOperator::ShortestPath(ShortestPathOp {
+            input: Box::new(LogicalOperator::ParameterScan(ParameterScanOp {
+                columns: vec![source_var.clone(), target_var.clone()],
+            })),
+            source_var: source_var.clone(),
+            target_var: target_var.clone(),
+            edge_types: rel.types.clone(),
+            direction,
+            path_alias: name.clone(),
+            all_paths: matches!(func, ast::PathFunction::AllShortestPaths),
+        });
+        let sous_plan = LogicalOperator::Project(ProjectOp {
+            projections: vec![Projection {
+                expression: LogicalExpression::Variable(longueur.clone()),
+                alias: Some(longueur),
+            }],
+            input: Box::new(recherche),
+            pass_through_input: false,
+        });
+        let apply = LogicalOperator::Apply(ApplyOp {
+            input: Box::new(input.clone()),
+            subplan: Box::new(sous_plan),
+            shared_variables: vec![source_var, target_var],
+            optional: true,
+        });
+        Some((apply, name.clone()))
+    }
+
+    /// Défait [`Self::optional_shortest_path_correle`] : rend la jointure
+    /// externe `LeftJoin(gauche, NodeScan(f) x NodeScan(co) -> ShortestPath)`
+    /// d'un `Apply` optionnel qu'il a produit. Un `WHERE` qui suit un
+    /// `OPTIONAL MATCH` est une condition de JOINTURE (une ligne sans
+    /// correspondance reste, à NULL) : il se classe sur un `LeftJoin`, pas sur
+    /// un `Apply`. `None` si `op` n'est pas un tel `Apply`.
+    fn decorreler_shortest_path(op: &LogicalOperator) -> Option<LogicalOperator> {
+        let LogicalOperator::Apply(apply) = op else {
+            return None;
+        };
+        let LogicalOperator::Project(projet) = apply.subplan.as_ref() else {
+            return None;
+        };
+        let LogicalOperator::ShortestPath(sp) = projet.input.as_ref() else {
+            return None;
+        };
+        if !apply.optional || !matches!(sp.input.as_ref(), LogicalOperator::ParameterScan(_)) {
+            return None;
+        }
+        let scan = |variable: &String, input: Option<Box<LogicalOperator>>| {
+            LogicalOperator::NodeScan(NodeScanOp {
+                variable: variable.clone(),
+                label: None,
+                input,
+                pushdown_hint: None,
+            })
+        };
+        let source = scan(&sp.source_var, None);
+        let cible = scan(&sp.target_var, Some(Box::new(source)));
+        let mut right = sp.clone();
+        right.input = Box::new(cible);
+        Some(LogicalOperator::LeftJoin(LeftJoinOp {
+            left: apply.input.clone(),
+            right: Box::new(LogicalOperator::ShortestPath(right)),
             condition: None,
         }))
     }
@@ -1522,6 +1646,10 @@ impl CypherTranslator {
             ))
         })?;
         let mut predicate = self.translate_expression(&where_clause.predicate)?;
+
+        // `OPTIONAL MATCH shortestPath` corrélé (obrain#228) : le `WHERE` est
+        // une condition de jointure, on revient à la jointure externe.
+        let input = Self::decorreler_shortest_path(&input).unwrap_or(input);
 
         // Compréhension de motif dans le prédicat : réécrite comme dans un
         // `RETURN` (Apply + collect), le filtre lit sa colonne (#195,
@@ -2896,6 +3024,17 @@ impl CypherTranslator {
             }
             ast::Expression::Unary { op, operand } => {
                 let operand_expr = self.translate_expression(operand)?;
+                // `sp IS [NOT] NULL` sur un chemin court corrélé : le chemin
+                // n'existe que par sa longueur, NULL sans chemin.
+                let operand_expr = match (&operand_expr, op) {
+                    (
+                        LogicalExpression::Variable(v),
+                        ast::UnaryOp::IsNull | ast::UnaryOp::IsNotNull,
+                    ) if self.chemins_courts.borrow().contains(v) => {
+                        LogicalExpression::Variable(format!("_path_length_{v}"))
+                    }
+                    _ => operand_expr,
+                };
                 // Unary positive is identity: just return the operand
                 if *op == ast::UnaryOp::Pos {
                     return Ok(operand_expr);
