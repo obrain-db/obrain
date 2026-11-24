@@ -144,7 +144,22 @@ impl SlotsTouches {
 /// and applies each to the corresponding zone mmap. It stops at the first
 /// decode error.
 pub fn replay_from(substrate: &SubstrateFile, from_offset: u64) -> SubstrateResult<ReplayStats> {
-    replay_from_avec(substrate, from_offset, true)
+    replay_from_avec(substrate, from_offset, true, None)
+}
+
+/// [`replay_from`] avec un OBSERVATEUR appelé après CHAQUE record appliqué.
+///
+/// Sert aux tests à prouver un invariant qui porte sur les états INTERMÉDIAIRES
+/// du rejeu (obrain#350) : un pair vivant lit les zones partagées pendant que
+/// l'on rejoue, et ne voit pas seulement l'état final. Hors tests, ne pas
+/// l'utiliser.
+#[doc(hidden)]
+pub fn replay_from_observe(
+    substrate: &SubstrateFile,
+    from_offset: u64,
+    observateur: &mut dyn FnMut(),
+) -> SubstrateResult<ReplayStats> {
+    replay_from_avec(substrate, from_offset, true, Some(observateur))
 }
 
 /// Rejeu d'un LECTEUR RO : identique à [`replay_from`], sauf qu'il n'écarte PAS
@@ -167,13 +182,65 @@ pub fn replay_from_lecteur(
     substrate: &SubstrateFile,
     from_offset: u64,
 ) -> SubstrateResult<ReplayStats> {
-    replay_from_avec(substrate, from_offset, false)
+    replay_from_avec(substrate, from_offset, false, None)
+}
+
+/// Entités des transactions EN VOL au terme de la fenêtre rejouée : celles que
+/// le rejeu écarte à la fin, et qu'il ne doit donc JAMAIS rendre vivantes en
+/// chemin (obrain#350).
+#[derive(Default)]
+struct EcartesEnVol {
+    noeuds: std::collections::HashSet<u32>,
+    aretes: std::collections::HashSet<u64>,
+}
+
+type EnVol = std::collections::HashMap<u64, (Vec<u32>, Vec<u64>)>;
+
+/// Automate des transactions en vol sur la fenêtre `[from_offset, fin)` : une
+/// déclaration entre dans l'état de sa transaction, `TxCommit` le retire, une
+/// suppression retire l'entité (son slot peut être réutilisé). C'est le même
+/// automate que `wal_io::plus_ancienne_declaration_en_vol`, et il s'arrête à la
+/// même frontière que le rejeu (première erreur de l'itérateur).
+fn transactions_en_vol(reader: &WalReader, from_offset: u64) -> EnVol {
+    let mut en_vol: EnVol = std::collections::HashMap::new();
+    for item in reader.iter_from(from_offset) {
+        let Ok((rec, _, _)) = item else { break };
+        match &rec.payload {
+            WalPayload::TxNoeudEnAttente { tx, node_id } => {
+                en_vol.entry(*tx).or_default().0.push(*node_id);
+            }
+            WalPayload::TxAreteEnAttente { tx, edge_id } => {
+                en_vol.entry(*tx).or_default().1.push(*edge_id);
+            }
+            WalPayload::TxCommit { tx } => {
+                en_vol.remove(tx);
+            }
+            // Une entité SUPPRIMÉE n'est plus en vol — et son slot peut être
+            // réutilisé par une création ultérieure (hors transaction, donc sans
+            // record d'attente). Sans ce retrait, le rejeu d'un ROLLBACK
+            // (NodeDelete) suivi d'une réutilisation du slot tombstonerait un
+            // nœud légitime.
+            WalPayload::NodeDelete { node_id } => {
+                for (n, _) in en_vol.values_mut() {
+                    n.retain(|id| id != node_id);
+                }
+            }
+            WalPayload::EdgeDelete { edge_id } => {
+                for (_, e) in en_vol.values_mut() {
+                    e.retain(|id| id != edge_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    en_vol
 }
 
 fn replay_from_avec(
     substrate: &SubstrateFile,
     from_offset: u64,
     ecarter_en_vol: bool,
+    mut observateur: Option<&mut dyn FnMut()>,
 ) -> SubstrateResult<ReplayStats> {
     let wal_path = substrate.wal_path();
     let reader = WalReader::open(&wal_path)?;
@@ -222,8 +289,26 @@ fn replay_from_avec(
     let mut touches = SlotsTouches::AUCUN;
     // (2026-11-01, D-DUR) Entités déclarées en attente par transaction, tant
     // qu'aucun `TxCommit` ne les a publiées. Ce qui reste à la fin est en vol.
-    let mut en_vol: std::collections::HashMap<u64, (Vec<u32>, Vec<u64>)> =
-        std::collections::HashMap::new();
+    //
+    // ── CONNU AVANT D'APPLIQUER, PAS APRÈS (obrain#350) ─────────────────────
+    // L'état final est calculé par un balayage préalable de la fenêtre. Il
+    // sert à deux choses : écarter ces entités à la fin (inchangé), et ne pas
+    // les RENDRE VIVANTES en chemin. Un `NodeUpdateV3` / `EdgeUpdate` rejoué
+    // réécrit les `flags` du record avec ceux du WAL, donc EFFACE le tombstone
+    // posé par un rejeu précédent : l'entité d'une transaction jamais scellée
+    // redevenait vivante, dans les zones PARTAGÉES, jusqu'au tombstone final de
+    // CE rejeu. Un pair vivant qui énumérait pendant ce temps la servait (mesuré
+    // : `enum_RoleD = 95` pour 90, ~0,5 % sous contention).
+    let en_vol_final: EnVol = if ecarter_en_vol {
+        transactions_en_vol(&reader, from_offset)
+    } else {
+        EnVol::new()
+    };
+    let mut ecartes = EcartesEnVol::default();
+    for (n, e) in en_vol_final.values() {
+        ecartes.noeuds.extend(n.iter().copied());
+        ecartes.aretes.extend(e.iter().copied());
+    }
 
     // On tient l'itérateur (au lieu d'un `for`) pour pouvoir lire, APRÈS la
     // boucle, le drapeau « queue incomplète » — l'information que l'itérateur
@@ -234,33 +319,6 @@ fn replay_from_avec(
         match item {
             Ok((rec, off, len)) => {
                 stats.last_lsn = stats.last_lsn.max(rec.lsn);
-                match &rec.payload {
-                    WalPayload::TxNoeudEnAttente { tx, node_id } => {
-                        en_vol.entry(*tx).or_default().0.push(*node_id);
-                    }
-                    WalPayload::TxAreteEnAttente { tx, edge_id } => {
-                        en_vol.entry(*tx).or_default().1.push(*edge_id);
-                    }
-                    WalPayload::TxCommit { tx } => {
-                        en_vol.remove(tx);
-                    }
-                    // Une entité SUPPRIMÉE n'est plus en vol — et son slot
-                    // peut être réutilisé par une création ultérieure (hors
-                    // transaction, donc sans record d'attente). Sans ce
-                    // retrait, le rejeu d'un ROLLBACK (NodeDelete) suivi d'une
-                    // réutilisation du slot tombstonerait un nœud légitime.
-                    WalPayload::NodeDelete { node_id } => {
-                        for (n, _) in en_vol.values_mut() {
-                            n.retain(|id| id != node_id);
-                        }
-                    }
-                    WalPayload::EdgeDelete { edge_id } => {
-                        for (_, e) in en_vol.values_mut() {
-                            e.retain(|id| id != edge_id);
-                        }
-                    }
-                    _ => {}
-                }
                 // (2026-09-06, fix CONSTAT-REMAP-PROPS-DETACHEMENT) Compte les
                 // records de permutation de slots de la fenêtre : le store
                 // rafraîchit ensuite les owner stamps des chaînes PropsZone v2
@@ -286,9 +344,13 @@ fn replay_from_avec(
                     &mut zorder,
                     &mut simplex,
                     &mut touches,
+                    &ecartes,
                 )? {
                     Applied::Yes => stats.applied += 1,
                     Applied::Skipped => stats.skipped_unsupported += 1,
+                }
+                if let Some(o) = observateur.as_deref_mut() {
+                    o();
                 }
                 stats.stopped_at = off + len as u64;
             }
@@ -379,6 +441,7 @@ fn replay_from_avec(
     // journal, et les re-poser est idempotent). Sans ce bloc, ses nœuds et
     // arêtes — physiquement dans les zones — revenaient publiés à la
     // réouverture : 50/50 mesurés sur `durabilite_commit_kill9`.
+    let mut en_vol = en_vol_final;
     en_vol.retain(|_, (n, e)| !n.is_empty() || !e.is_empty());
     if ecarter_en_vol && !en_vol.is_empty() {
         for (tx, (noeuds, aretes)) in &en_vol {
@@ -402,6 +465,7 @@ fn replay_from_avec(
                     &mut zorder,
                     &mut simplex,
                     &mut touches,
+                    &ecartes,
                 )?;
                 stats.entites_en_vol_ecartees += 1;
             }
@@ -424,6 +488,7 @@ fn replay_from_avec(
                     &mut zorder,
                     &mut simplex,
                     &mut touches,
+                    &ecartes,
                 )?;
                 stats.entites_en_vol_ecartees += 1;
             }
@@ -723,6 +788,7 @@ fn apply(
     zorder: &mut Option<ZoneFile>,
     simplex: &mut SimplexReplayZones,
     touches: &mut SlotsTouches,
+    ecartes: &EcartesEnVol,
 ) -> SubstrateResult<Applied> {
     match &rec.payload {
         WalPayload::NodeInsert {
@@ -750,6 +816,12 @@ fn apply(
             // PRESERVE (zone vierge -> 0 = public, coherent avec la
             // migration en bloc declaree). Les writers v3 emettent
             // NodeInsertV3.
+            // (obrain#350) Une entité d'une transaction EN VOL ne redevient jamais
+            // vivante, même un instant : ce record réécrit les `flags`, et le
+            // tombstone d'un rejeu précédent serait effacé dans les zones partagées.
+            if ecartes.noeuds.contains(node_id) {
+                updated.set_tombstoned();
+            }
             zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]
                 .copy_from_slice(bytemuck::bytes_of(&updated));
             Ok(Applied::Yes)
@@ -774,6 +846,12 @@ fn apply(
             updated.flags |= crate::record::node_flags::ALLOCATED;
             // (jalon 2) la trame V3 restaure l'appartenance.
             updated.tenant_id = *tenant_id;
+            // (obrain#350) Une entité d'une transaction EN VOL ne redevient jamais
+            // vivante, même un instant : ce record réécrit les `flags`, et le
+            // tombstone d'un rejeu précédent serait effacé dans les zones partagées.
+            if ecartes.noeuds.contains(node_id) {
+                updated.set_tombstoned();
+            }
             zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]
                 .copy_from_slice(bytemuck::bytes_of(&updated));
             Ok(Applied::Yes)
@@ -807,6 +885,12 @@ fn apply(
             updated.community_id = *community_id;
             // (jalon 2) trame ANCIENNE : tenant existant preserve — voir
             // NodeInsert.
+            // (obrain#350) Une entité d'une transaction EN VOL ne redevient jamais
+            // vivante, même un instant : ce record réécrit les `flags`, et le
+            // tombstone d'un rejeu précédent serait effacé dans les zones partagées.
+            if ecartes.noeuds.contains(node_id) {
+                updated.set_tombstoned();
+            }
             zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]
                 .copy_from_slice(bytemuck::bytes_of(&updated));
             Ok(Applied::Yes)
@@ -840,6 +924,12 @@ fn apply(
             updated.community_id = *community_id;
             // (jalon 2) la trame V3 restaure l'appartenance.
             updated.tenant_id = *tenant_id;
+            // (obrain#350) Une entité d'une transaction EN VOL ne redevient jamais
+            // vivante, même un instant : ce record réécrit les `flags`, et le
+            // tombstone d'un rejeu précédent serait effacé dans les zones partagées.
+            if ecartes.noeuds.contains(node_id) {
+                updated.set_tombstoned();
+            }
             zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]
                 .copy_from_slice(bytemuck::bytes_of(&updated));
             Ok(Applied::Yes)
@@ -865,6 +955,10 @@ fn apply(
             updated.dst = *dst;
             updated.edge_type = *edge_type;
             updated.weight_u16 = *weight_u16;
+            // (obrain#350) Voir `NodeInsert` : une arête en vol reste tombstonée.
+            if ecartes.aretes.contains(edge_id) {
+                updated.flags |= crate::record::edge_flags::TOMBSTONED;
+            }
             zf.as_slice_mut()[offset..offset + EdgeRecord::SIZE]
                 .copy_from_slice(bytemuck::bytes_of(&updated));
             Ok(Applied::Yes)
@@ -913,6 +1007,10 @@ fn apply(
             updated.ricci_u8 = *ricci_u8;
             updated.flags = *flags;
             updated.engram_tag = *engram_tag;
+            // (obrain#350) Voir `NodeInsert` : une arête en vol reste tombstonée.
+            if ecartes.aretes.contains(edge_id) {
+                updated.flags |= crate::record::edge_flags::TOMBSTONED;
+            }
             zf.as_slice_mut()[offset..offset + EdgeRecord::SIZE]
                 .copy_from_slice(bytemuck::bytes_of(&updated));
             Ok(Applied::Yes)
@@ -1656,6 +1754,7 @@ fn apply(
                 zorder,
                 simplex,
                 touches,
+                ecartes,
             )?;
             apply_engram_states(
                 substrate,
