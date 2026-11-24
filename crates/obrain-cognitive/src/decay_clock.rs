@@ -272,7 +272,14 @@ pub fn advance_all(
                 Some(t_ref) => (e_ref_col, t_ref, t_ref, Duration::ZERO),
                 None => {
                     // Aucune ancre : ancrage de migration à now (point 4).
-                    write_anchor(sub, node_id, e_ref_col, now_micros, now_micros, law.half_life());
+                    write_anchor(
+                        sub,
+                        node_id,
+                        e_ref_col,
+                        now_micros,
+                        now_micros,
+                        law.half_life(),
+                    );
                     stats.unanchored += 1;
                     continue;
                 }

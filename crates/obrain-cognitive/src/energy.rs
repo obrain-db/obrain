@@ -706,7 +706,9 @@ impl EnergyStore {
                     let composite = ancres.get(i).and_then(|v| v.as_ref());
                     (
                         id,
-                        crate::decay_clock::energy_from_parts(e_ref, composite, t_legacy, &law, now),
+                        crate::decay_clock::energy_from_parts(
+                            e_ref, composite, t_legacy, &law, now,
+                        ),
                     )
                 })
                 .collect();
