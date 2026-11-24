@@ -14515,13 +14515,6 @@ impl SubstrateStore {
         if !unitaires.is_empty() {
             self.props_lot_chainees_sur_existant
                 .fetch_add(unitaires.len() as u64, Ordering::AcqRel);
-            tracing::warn!(
-                target: "substrate::props_lot",
-                "bulk_import_node_props : {} entité(s) portaient déjà une chaîne de \
-                 propriétés ; leurs valeurs passent par le chemin unitaire, qui chaîne \
-                 sur la tête existante (le lot ne détache pas — obrain#386)",
-                unitaires.len()
-            );
         }
         let mut cles: std::collections::HashMap<&str, u16> = std::collections::HashMap::new();
         for liste in &retenues {
@@ -14682,13 +14675,6 @@ impl SubstrateStore {
         if !tetes_perdues.is_empty() {
             self.props_lot_poses_perdues
                 .fetch_add(tetes_perdues.len() as u64, Ordering::AcqRel);
-            tracing::warn!(
-                target: "substrate::props_lot",
-                "bulk_import_node_props : {} tête(s) de chaîne NON posées — une écriture \
-                 unitaire est arrivée pendant la construction ; ces entités repassent par \
-                 le chemin unitaire (leurs pages restent orphelines — obrain#386)",
-                tetes_perdues.len()
-            );
             for slot in tetes_perdues {
                 let i = (slot - premier_slot) as usize;
                 // Les valeurs de ce slot ÉTAIENT en page : ces pages restent
