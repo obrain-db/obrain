@@ -45177,6 +45177,177 @@ mod tests {
             "et toujours jugée cohérente après reconstruction éventuelle"
         );
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // (2026-11-24) COMPATIBILITÉ HÉRITÉE — id 1 occupé par un AUTRE type
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// REPRODUCTION DE L'ÉTAT HÉRITÉ : le compteur partagé des types d'arêtes
+    /// (`Espace::Types::premier_indice`) démarre à 2 et réserve l'id 1 à
+    /// SYNAPSE ; une base NEUVE ne produit donc jamais PART_OF=1. Pour obtenir
+    /// une base persistée où l'id 1 porte PART_OF (l'état d'une base antérieure
+    /// à la couche cognitive), on écrit le dictionnaire hérité À LA MAIN : base
+    /// vierge fermée, puis `substrate.dict` remplacé par un `DictSnapshot` dont
+    /// `edge_types = ["", "PART_OF"]` (indice 0 = sentinelle « pas d'arête »,
+    /// indice 1 = PART_OF). À l'ouverture, `amorcer_registres_partages` publie
+    /// PART_OF à l'id 1 dans la table partagée, exactement comme une telle base
+    /// la porterait.
+    fn base_heritee_part_of_id1(chemin: &std::path::Path) -> (NodeId, NodeId, EdgeId) {
+        use obrain_core::graph::traits::GraphStoreMut;
+        // (1) Base vierge fermée : dict vide + table partagée vide.
+        {
+            let s = SubstrateStore::create(chemin).unwrap();
+            s.close().unwrap();
+        }
+        // (2) Dict hérité : PART_OF à l'id 1.
+        {
+            let chemin_dict = chemin.join(DICT_FILENAME);
+            let mut snap = crate::dict::DictSnapshot::load(&chemin_dict).unwrap();
+            snap.edge_types = vec!["".to_string(), "PART_OF".to_string()];
+            snap.persist(&chemin_dict).unwrap();
+        }
+        // (3) Réouverture : PART_OF s'interne à l'id 1, une arête réelle le porte.
+        {
+            let s = SubstrateStore::open(chemin).unwrap();
+            let a = s.create_node(&["n"]);
+            let b = s.create_node(&["n"]);
+            let part_of = s.create_edge(a, b, "PART_OF");
+            s.flush().unwrap();
+            s.close().unwrap();
+            (a, b, part_of)
+        }
+    }
+
+    /// RÉGRESSION (2026-11-24, complément STORE RÉEL de
+    /// `synapse_id1_occupe_par_un_autre_type_ne_ment_pas`) : sur une base
+    /// PERSISTÉE où l'id 1 porte PART_OF, SYNAPSE s'interne à un id k ≠ 1, et
+    /// après réouverture les arêtes de chaque type restent associées au BON type
+    /// — aucune réinterprétation silencieuse des références stockées — et créer
+    /// une NOUVELLE synapse fonctionne.
+    #[test]
+    fn base_heritee_part_of_id1_reouverture_preserve_les_types() {
+        use obrain_core::graph::traits::{GraphStore, GraphStoreMut};
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (a, b, part_of) = base_heritee_part_of_id1(&chemin);
+
+        let synapse;
+        {
+            let s = SubstrateStore::open(&chemin).unwrap();
+            // SYNAPSE ne prend PAS l'id 1 (occupé par PART_OF) : il retombe sur
+            // un id libre k ≠ 1.
+            synapse = s.create_synapse_slot(a, b, 0.5).unwrap();
+
+            let reg = s.edge_types.read();
+            assert_eq!(
+                reg.name_for(1).as_deref(),
+                Some("PART_OF"),
+                "l'id 1 reste PART_OF"
+            );
+            let id_synapse = reg.id_for("SYNAPSE").expect("SYNAPSE interné");
+            assert_ne!(id_synapse, 1, "SYNAPSE reçoit un id libre, pas l'id 1 occupé");
+            assert_eq!(reg.name_for(id_synapse).as_deref(), Some("SYNAPSE"));
+
+            assert_eq!(
+                s.scan_typed_edge_weights("PART_OF").unwrap().len(),
+                1,
+                "une seule arête PART_OF"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("SYNAPSE").unwrap().len(),
+                1,
+                "une seule arête SYNAPSE"
+            );
+
+            s.flush().unwrap();
+            s.close().unwrap();
+        }
+
+        // Réouverture : les références stockées ne sont PAS réinterprétées.
+        {
+            let s = SubstrateStore::open(&chemin).unwrap();
+            assert_eq!(
+                s.edge_type(part_of).as_deref(),
+                Some("PART_OF"),
+                "l'arête PART_OF reste PART_OF"
+            );
+            assert_eq!(
+                s.edge_type(synapse).as_deref(),
+                Some("SYNAPSE"),
+                "l'arête SYNAPSE reste SYNAPSE"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("PART_OF").unwrap().len(),
+                1,
+                "scan PART_OF : 1 arête, pas la synapse"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("SYNAPSE").unwrap().len(),
+                1,
+                "scan SYNAPSE : 1 arête, pas l'arête PART_OF"
+            );
+
+            // Création d'une NOUVELLE synapse : fonctionne et va au bon type.
+            let c = s.create_node(&["n"]);
+            let nouvelle = s.create_synapse_slot(a, c, 0.7).unwrap();
+            assert_eq!(s.edge_type(nouvelle).as_deref(), Some("SYNAPSE"));
+            assert_eq!(
+                s.scan_typed_edge_weights("SYNAPSE").unwrap().len(),
+                2,
+                "la nouvelle synapse s'ajoute aux existantes"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("PART_OF").unwrap().len(),
+                1,
+                "l'arête PART_OF n'est pas touchée"
+            );
+        }
+    }
+
+    /// MÊME base héritée, mais la synapse n'est PAS flushée : le nom « SYNAPSE »
+    /// (à un id k ≠ 1) ne vit que dans le WAL (`EdgeTypeIntern`). Le rejeu WAL à
+    /// la réouverture doit résoudre SYNAPSE → k SANS réinterpréter l'id 1
+    /// (PART_OF) comme une synapse.
+    #[test]
+    fn base_heritee_synapse_k_survit_au_rejeu_wal() {
+        use obrain_core::graph::traits::GraphStore;
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (a, b, part_of) = base_heritee_part_of_id1(&chemin);
+
+        let synapse;
+        {
+            let s = SubstrateStore::open(&chemin).unwrap();
+            synapse = s.create_synapse_slot(a, b, 0.5).unwrap();
+            // Panne AVANT flush : drop SANS close(). Le dict ne porte PAS encore
+            // SYNAPSE (il n'a que PART_OF=1) ; le WAL, lui, porte l'EdgeTypeIntern
+            // {SYNAPSE → k} + l'écriture de la synapse.
+        }
+
+        {
+            let s = SubstrateStore::open(&chemin).unwrap();
+            assert_eq!(
+                s.edge_type(part_of).as_deref(),
+                Some("PART_OF"),
+                "PART_OF intact après rejeu WAL"
+            );
+            assert_eq!(
+                s.edge_type(synapse).as_deref(),
+                Some("SYNAPSE"),
+                "SYNAPSE résolu à k via le rejeu WAL"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("PART_OF").unwrap().len(),
+                1,
+                "l'id 1 n'est pas réinterprété : PART_OF ≠ SYNAPSE"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("SYNAPSE").unwrap().len(),
+                1,
+                "le rejeu WAL a bien résolu SYNAPSE → k"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
