@@ -18,8 +18,8 @@ use web_time::Instant;
 
 use crate::decay_law::{DecayLaw, epoch_secs_to_micros, unix_micros};
 use crate::store_trait::{
-    OptionalGraphStore, PROP_ENERGY, PROP_ENERGY_LAST_ACTIVATED_EPOCH, epoch_to_instant,
-    load_node_f64, now_epoch_secs, persist_node_f64,
+    OptionalGraphStore, PROP_ENERGY, PROP_ENERGY_ANCHOR, PROP_ENERGY_LAST_ACTIVATED_EPOCH,
+    epoch_to_instant, load_node_f64, now_epoch_secs, persist_node_f64,
 };
 
 // ---------------------------------------------------------------------------
@@ -679,28 +679,35 @@ impl EnergyStore {
             let law = DecayLaw::new(self.config.default_half_life);
             let now = unix_micros();
             let ids: Vec<NodeId> = pairs.iter().map(|(id, _)| *id).collect();
-            let pk = obrain_common::types::PropertyKey::from(PROP_ENERGY_LAST_ACTIVATED_EPOCH);
+            let pk_ancre = obrain_common::types::PropertyKey::from(PROP_ENERGY_ANCHOR);
+            let pk_legacy =
+                obrain_common::types::PropertyKey::from(PROP_ENERGY_LAST_ACTIVATED_EPOCH);
             let ancres = self
                 .graph_store
                 .as_ref()
-                .map(|gs| gs.get_node_property_batch(&ids, &pk))
+                .map(|gs| gs.get_node_property_batch(&ids, &pk_ancre))
+                .unwrap_or_default();
+            let legacy = self
+                .graph_store
+                .as_ref()
+                .map(|gs| gs.get_node_property_batch(&ids, &pk_legacy))
                 .unwrap_or_default();
             return pairs
                 .into_iter()
                 .enumerate()
                 .map(|(i, (id, e))| {
                     let e_ref = e as f64;
-                    let t_ref = ancres
+                    let t_legacy = legacy
                         .get(i)
                         .and_then(|v| v.as_ref())
                         .and_then(|v| v.as_float64())
                         .filter(|s| s.is_finite() && *s > 0.0)
                         .map(epoch_secs_to_micros);
-                    let e_now = match t_ref {
-                        Some(t) => law.energy_at(e_ref, crate::decay_law::elapsed_since(t, now)),
-                        None => e_ref,
-                    };
-                    (id, e_now)
+                    let composite = ancres.get(i).and_then(|v| v.as_ref());
+                    (
+                        id,
+                        crate::decay_clock::energy_from_parts(e_ref, composite, t_legacy, &law, now),
+                    )
                 })
                 .collect();
         }

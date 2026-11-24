@@ -406,22 +406,52 @@ impl ThinkerFleetConfig<ConsolidatorTomlCfg> {
     pub fn inner(&self) -> ConsolidatorConfig {
         let defaults = ConsolidatorConfig::default();
         let t = &self.inner_toml;
-        // Un `decay_factor` configuré n'est plus appliqué : il est signalé, et
-        // la loi reprend la main. Sans ce cri, une configuration existante
-        // croirait piloter une décroissance qu'elle ne pilote plus.
-        if let Some(f) = t.decay_factor {
-            tracing::warn!(
-                decay_factor = f,
-                "thinkers.consolidator.decay_factor est DÉPRÉCIÉ et IGNORÉ : la                  décroissance est dérivée de half_life_secs (un facteur fixe de                  0,99/60 s donnerait une demi-vie de 69 min au lieu de 24 h)"
-            );
-        }
-        // La cadence se dérive de la demi-vie ; `interval_secs` reste une
-        // avance explicite (utile aux tests et aux déploiements qui veulent
-        // matérialiser plus ou moins souvent) — et ne change RIEN à la loi,
-        // qui est ancrée par nœud.
-        let half_life = t
+        // MIGRATION `decay_factor` (point 6 de la revue). L'ancien contrat
+        // garantissait : « multiplier l'énergie par `f` toutes les
+        // `interval_secs` secondes ». Le nouveau garantit : « décroissance
+        // exponentielle de demi-vie `half_life_secs`, cadence dérivée ». Pour
+        // CONSERVER l'ancien comportement quand `f` et sa période `Δt`
+        // (`interval_secs`) sont connus, on convertit `H = −Δt·ln2 / ln f`
+        // (0 < f < 1). Sans période, l'incompatibilité est annoncée.
+        let mut half_life = t
             .half_life_secs
             .map_or(defaults.half_life, Duration::from_secs);
+        if t.half_life_secs.is_none()
+            && let Some(f) = t.decay_factor
+        {
+            let f = f as f64;
+            if (0.0..1.0).contains(&f) {
+                match t.interval_secs {
+                    Some(dt_secs) if dt_secs > 0 => {
+                        let h = crate::decay_law::DecayLaw::implied_half_life(
+                            f,
+                            Duration::from_secs(dt_secs),
+                        );
+                        if !h.is_zero() {
+                            tracing::warn!(
+                                decay_factor = f,
+                                interval_secs = dt_secs,
+                                half_life_secs = h.as_secs(),
+                                "thinkers.consolidator.decay_factor MIGRÉ : H = −Δt·ln2 / ln f"
+                            );
+                            half_life = h;
+                        } else {
+                            tracing::error!(decay_factor = f, "decay_factor non convertible : ignoré");
+                        }
+                    }
+                    _ => {
+                        tracing::error!(
+                            decay_factor = f,
+                            "thinkers.consolidator.decay_factor est INCOMPATIBLE SANS période                              (interval_secs absent) : l'ancien comportement (f par intervalle)                              n'est PAS conservé — fixez half_life_secs explicitement"
+                        );
+                    }
+                }
+            } else {
+                tracing::error!(decay_factor = f, "decay_factor hors de (0,1) : ignoré");
+            }
+        }
+        // La cadence se dérive de la demi-vie ; `interval_secs` reste une
+        // avance explicite — et ne change RIEN à la loi, qui est ancrée par nœud.
         let interval = t.interval_secs.map_or_else(
             || crate::decay_law::DecayLaw::new(half_life).tick_interval(),
             Duration::from_secs,
@@ -591,21 +621,24 @@ mod tests {
         assert!(!cfg.consolidator.enabled);
         let c = cfg.consolidator.inner();
         assert_eq!(c.interval, Duration::from_secs(120));
-        // CONTRAT CHANGÉ (2026-11-24). L'assertion précédente était
-        // `assert!((c.decay_factor - 0.95).abs() < 1e-6)` : un facteur
-        // multiplicatif CONSTANT était le seul pilotage de la décroissance, et
-        // c'est précisément le défaut (0,99 toutes les 60 s = demi-vie de
-        // 69 min au lieu de 24 h, 20,9× trop rapide). Le champ n'existe plus.
-        // La ligne `decay_factor = 0.95` ci-dessus reste ACCEPTÉE au parsing
-        // (une configuration déployée ne doit pas casser) mais sa valeur est
-        // IGNORÉE ; ce qui pilote la loi, c'est `half_life_secs`.
-        assert_eq!(c.half_life, Duration::from_secs(24 * 3600));
+        // CONTRAT CHANGÉ (2026-11-24), puis MIGRÉ (point 6 de la revue).
+        // L'ANCIEN contrat garantissait « multiplier par 0,95 toutes les 120 s »
+        // (demi-vie effective H = 120·ln2/−ln(0,95) ≈ 1621 s). Le NOUVEAU
+        // garantit une loi exponentielle de demi-vie `half_life_secs`. Ici
+        // `decay_factor` ET `interval_secs` sont connus : on CONVERTIT, donc
+        // l'ancien comportement est conservé (pas juste ignoré).
+        // `decay_factor` est un f32 : 0.95f32 → f64 porte ~4e-4 d'erreur relative,
+        // donc on compare à tolérance serrée, pas à l'égalité exacte.
+        let h = crate::decay_law::DecayLaw::implied_half_life(0.95, Duration::from_secs(120));
         assert!(
-            (c.tick_factor()
-                - crate::decay_law::DecayLaw::new(Duration::from_secs(24 * 3600)).tick_factor())
-            .abs()
-                < 1e-12,
-            "la tique vaut 2^(-1/64) quelle que soit la valeur de decay_factor"
+            (c.half_life.as_secs_f64() - h.as_secs_f64()).abs() < 0.01,
+            "H migré {c:?} vs attendu {h:?}",
+            c = c.half_life
+        );
+        assert!(
+            (c.half_life.as_secs_f64() - 1621.5).abs() < 20.0,
+            "H = 120·ln2/−ln(0,95) ≈ 1621 s, mesuré {:?}",
+            c.half_life
         );
 
         let w = cfg.warden.inner();
@@ -634,6 +667,23 @@ mod tests {
             c.interval,
             crate::decay_law::DecayLaw::new(Duration::from_secs(3600)).tick_interval()
         );
+    }
+
+    /// Point 6 — `decay_factor` SEUL (sans `interval_secs`) ne peut pas être
+    /// converti : l'ancien comportement n'est PAS conservé, et le contrat le
+    /// dit (half_life retombe sur le défaut).
+    #[test]
+    fn decay_factor_sans_periode_reste_le_defaut_et_annonce_l_incompatibilite() {
+        let text = r#"
+            [consolidator]
+            enabled = true
+            decay_factor = 0.99
+        "#;
+        let mut cfg: ThinkersConfig = toml::from_str(text).expect("parse");
+        cfg.recompute_runtime();
+        let c = cfg.consolidator.inner();
+        // Aucune période connue : on ne peut pas convertir, le défaut prime.
+        assert_eq!(c.half_life, Duration::from_secs(24 * 3600));
     }
 
     #[test]
