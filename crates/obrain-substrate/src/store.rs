@@ -1964,7 +1964,12 @@ struct ReversePartOf {
 /// `feature_epoch_ne_voit_pas_les_ecritures_d_un_pair`). Sans la seconde
 /// moitié, une base ouverte en écriture partagée sert un CSR périmé sans rien
 /// signaler. Voir `csr_cached` et `tests/csr_cache_partage.rs`.
-type CleCsr = (u64, u64);
+///
+/// Troisième composante : la révision structurelle locale du `Writer`
+/// (tombstones, réactivations, mises à jour et poids d'arête). Sans fichier WAL
+/// (`open_memory`) la taille vaut 0 et l'époque ne bouge pas sur ces écritures :
+/// c'est elle qui rend le CSR exact (#292).
+type CleCsr = (u64, u64, u64);
 
 /// Une entrée du cache CSR : sa clé et l'adjacence construite.
 pub type EntreeCsr = (CleCsr, std::sync::Arc<crate::geometric::CsrAdjacency>);
@@ -25371,20 +25376,30 @@ impl SubstrateStore {
         }
     }
 
-    /// CSR partagé, reconstruit SEULEMENT si `feature_epoch` a bougé (#292).
+    /// CSR partagé, reconstruit SEULEMENT si sa clé a bougé (#292).
     ///
     /// Mesuré : `CsrAdjacency::build` = **238 ms** sur 5,11 M d'arêtes
     /// (`examples/mesure_csr.rs`), appelé 7 fois par `geometric.rs`.
     ///
-    /// `feature_epoch` est incrémenté par `note_feature_mutation()`, appelé
-    /// par `ecrire_node` et `ecrire_edge` : toute création, suppression ou
-    /// réécriture de nœud/arête le fait avancer. C'est ce qui rend le cache
-    /// sûr — un CSR périmé fausserait SILENCIEUSEMENT HKS, Ricci, le pas de
-    /// chaleur, la résistance effective et les géodésiques.
+    /// Clé = `(feature_epoch, taille du WAL, révision structurelle)`.
+    /// `feature_epoch` n'avance que par `ecrire_node` / `ecrire_edge`
+    /// (créations et réécritures complètes) : il NE voit PAS `tombstone_edge`,
+    /// `tombstone_node`, `revive_*`, `update_edge` ni les écritures de poids.
+    /// Ces écritures-là font avancer `Writer::structure_rev`, la troisième
+    /// composante. La taille du WAL rattrape les écritures d'un PAIR (atome
+    /// d'époque par processus) pour un store sur fichier.
+    ///
+    /// NE TRAITE PAS : (1) le group commit (`OBRAIN_GROUP_COMMIT=1`), où la
+    /// taille du fichier WAL ne bouge qu'à la pose du tampon — une écriture
+    /// d'un PAIR peut donc rester invisible un court instant ; nos propres
+    /// écritures, elles, sont couvertes par la révision ; (2) la troncature du
+    /// WAL, qui ramène la taille à 0 et peut recréer une clé déjà vue après une
+    /// écriture d'un pair. Un CSR périmé fausserait SILENCIEUSEMENT HKS, Ricci,
+    /// le pas de chaleur, la résistance effective et les géodésiques.
     ///
     /// Un appelant qui aurait besoin d'un instantané strictement cohérent avec
     /// un état donné doit continuer d'appeler `CsrAdjacency::build` : le cache
-    /// ne promet pas l'atomicité entre l'epoch lu et le build.
+    /// ne promet pas l'atomicité entre la clé lue et le build.
     pub fn csr_cached(&self) -> std::sync::Arc<crate::geometric::CsrAdjacency> {
         // L'époque seule ne suffit PAS : c'est un atome PAR PROCESSUS, donc un
         // pair qui crée une arête ne la fait pas bouger (mesuré : test
@@ -25392,6 +25407,8 @@ impl SubstrateStore {
         // WAL, elle, est partagée : toute mutation d'un pair y ajoute une trame.
         // Sans elle, une base ouverte en écriture partagée servirait un CSR
         // périmé en silence — HKS, Ricci, géodésiques sur une topologie morte.
+        // La révision est lue AVANT le build : une écriture concurrente fait
+        // reconstruire au prochain appel, jamais servir du périmé.
         let (epoch, wal_len) = {
             let sub = self.substrate.lock();
             let len = sub.wal_path().metadata().map(|m| m.len()).unwrap_or(0);
@@ -25400,7 +25417,7 @@ impl SubstrateStore {
                 len,
             )
         };
-        let cle = (epoch, wal_len);
+        let cle = (epoch, wal_len, self.writer.structure_rev());
         {
             let cache = self.csr_cache.read();
             if let Some((c, csr)) = cache.as_ref()
