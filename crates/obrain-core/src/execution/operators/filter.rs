@@ -405,8 +405,8 @@ enum GenreElement {
 fn genre_element(list_expr: &FilterExpression) -> GenreElement {
     match list_expr {
         FilterExpression::FunctionCall { name, args } => match name.to_ascii_lowercase().as_str() {
-            "nodes" => GenreElement::Noeud,
-            "relationships" | "edges" => GenreElement::Arete,
+            "nodes" | "__genre_noeuds" => GenreElement::Noeud,
+            "relationships" | "edges" | "__genre_aretes" => GenreElement::Arete,
             // `tail(relationships(p))`, `head(…)`, `reverse(…)` : le genre
             // est celui de la liste d'origine.
             "tail" | "head" | "reverse" => {
@@ -4780,6 +4780,11 @@ impl ExpressionPredicate {
                     .map(|a| self.eval_instant_arg(a, chunk, row))
                     .collect::<Option<Vec<Value>>>()?;
                 duration_entre(&name.to_lowercase()["duration.".len()..], &valeurs)
+            }
+            // Enveloppe identité posée par le traducteur Cypher : elle dit le
+            // genre (nœud / arête) des éléments de la liste (`genre_element`).
+            "__genre_noeuds" | "__genre_aretes" if args.len() == 1 => {
+                self.eval_expr(&args[0], chunk, row)
             }
             // `<expression>.<propriété>` quand la base n'est pas une variable :
             // `duration.between(a, b).days`, `$map.cle`. Le traducteur pose
