@@ -820,6 +820,27 @@ pub(crate) fn expression_kind(
             k @ (VariableKind::NodeList | VariableKind::EdgeList) => k,
             _ => VariableKind::Other,
         },
+        // `[x IN liste | corps]` : la liste des corps ; `[x IN ns WHERE ..]`
+        // (corps = x) garde le genre de la liste filtrée (#229).
+        LogicalExpression::ListComprehension {
+            variable,
+            list_expr,
+            map_expr,
+            ..
+        } => {
+            let mut interne = entree.clone();
+            interne.insert(
+                variable.clone(),
+                expression_kind(list_expr, entree).element(),
+            );
+            expression_kind(map_expr, &interne).list_of()
+        }
+        // Enveloppe posée par `etiquette_genre_liste` : identité.
+        LogicalExpression::FunctionCall { name, args, .. }
+            if matches!(name.as_str(), "__genre_noeuds" | "__genre_aretes") && args.len() == 1 =>
+        {
+            expression_kind(&args[0], entree)
+        }
         LogicalExpression::FunctionCall { name, args, .. }
             if matches!(name.to_ascii_lowercase().as_str(), "nodes") && args.len() == 1 =>
         {

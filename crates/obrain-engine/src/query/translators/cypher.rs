@@ -110,6 +110,29 @@ impl CypherTranslator {
         }
     }
 
+    /// Étiquette la liste parcourue par une compréhension ou un prédicat de
+    /// liste avec le genre de ses éléments quand il est prouvé.
+    ///
+    /// Les éléments d'une liste de nœuds ou d'arêtes voyagent comme leur
+    /// identifiant entier, et les deux séries se recoupent : l'évaluateur ne
+    /// peut pas deviner. Il lit le genre sur la forme de la liste source
+    /// (`nodes(p)`, `relationships(p)`), ce qui ne couvre ni `WITH nodes(p) AS
+    /// ns`, ni `collect(t)`, ni une liste filtrée (obrain-db/obrain#229,
+    /// réouverture). Le traducteur, lui, connaît le genre (`VariableKind`) :
+    /// il le pose par une enveloppe identité que l'évaluateur reconnaît.
+    fn etiquette_genre_liste(&self, liste: LogicalExpression) -> LogicalExpression {
+        let nom = match expression_kind(&liste, &self.scope_kinds.borrow()) {
+            VariableKind::NodeList => "__genre_noeuds",
+            VariableKind::EdgeList => "__genre_aretes",
+            _ => return liste,
+        };
+        LogicalExpression::FunctionCall {
+            name: nom.into(),
+            args: vec![liste],
+            distinct: false,
+        }
+    }
+
     /// Generates a unique anonymous variable name.
     fn next_anon_var(&self) -> String {
         let id = self.anon_counter.get();
@@ -2965,7 +2988,7 @@ impl CypherTranslator {
                 filter,
                 projection,
             } => {
-                let list_expr = self.translate_expression(list)?;
+                let list_expr = self.etiquette_genre_liste(self.translate_expression(list)?);
                 let filter_expr = filter
                     .as_ref()
                     .map(|f| self.translate_expression(f))
@@ -3000,7 +3023,9 @@ impl CypherTranslator {
                 Ok(LogicalExpression::ListPredicate {
                     kind: ir_kind,
                     variable: variable.clone(),
-                    list_expr: Box::new(self.translate_expression(list)?),
+                    list_expr: Box::new(
+                        self.etiquette_genre_liste(self.translate_expression(list)?),
+                    ),
                     predicate: Box::new(self.translate_expression(predicate)?),
                 })
             }
