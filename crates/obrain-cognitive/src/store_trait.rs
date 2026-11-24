@@ -67,6 +67,13 @@ pub const PROP_SYNAPSE_REINFORCEMENT_COUNT: &str = "_cog_synapse_reinforcement_c
 /// Node property key for the epoch timestamp of the last energy activation.
 /// Same rationale as `PROP_SYNAPSE_LAST_REINFORCED_EPOCH`.
 pub const PROP_ENERGY_LAST_ACTIVATED_EPOCH: &str = "_cog_energy_last_activated_epoch";
+/// Node property key for the COMPOSITE energy anchor `(E_ref, t_ref, t_hi, H)`.
+///
+/// A single `Bytes` property (32 octets) carrying the whole temporal state,
+/// written in ONE mutation so the (energy reference, anchor) pair is atomic
+/// (see `crate::decay_clock`). `PROP_ENERGY_LAST_ACTIVATED_EPOCH` stays as the
+/// legacy read fallback for pre-composite bases.
+pub const PROP_ENERGY_ANCHOR: &str = "_cog_energy_anchor";
 
 /// Node property key for utility score.
 pub const PROP_UTILITY_SCORE: &str = "_cog_utility_score";
