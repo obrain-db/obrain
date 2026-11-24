@@ -1142,14 +1142,42 @@ pub fn bottleneck_nodes(store: &SubstrateStore, threshold: f32) -> Vec<(NodeId, 
 // as an orthogonal score to detect homonyms and promote structural
 // analogues.
 //
+// # Opérateur normalisé : décision (#346)
+//
+// Passer de `L = D − A` à `L_sym = I − D^{-1/2} A D^{-1/2}` (#288/#305) est
+// VOULU : le spectre de `L_sym` est dans [0, 2] quel que soit le degré maximal,
+// donc l'expansion de Tchebychev est stable sans connaître `d_max` (l'ancien
+// Euler explicite divergeait dès 15 voisins). C'est un changement de
+// SÉMANTIQUE, pas seulement de schéma numérique : le HKS est maintenant
+// invariant d'échelle en degré. Conséquence exacte, vérifiée par test
+// (`hks_hub_d_etoile_vaut_un_plus_exp_moins_2t_sur_2_independamment_du_degre`) :
+// sur une étoile, `HKS(hub, t) = (1 + e^{-2t}) / 2` pour tout degré (spectre
+// {0, 1 (×(k−1)), 2}) ; mesuré identique à 1e-7 pour 8 et 200 feuilles. Le
+// descripteur de rôle ne distingue donc PAS un hub de 8 feuilles d'un hub de
+// 200 : le degré brut doit venir d'un autre signal. Les valeurs ne sont pas
+// comparables à celles de l'opérateur `D − A` (d'où le sidecar `HKS2`).
+//
 // # Bench budget
 //
-// 3 heat-kernel steps × O(k) per timescale, amortised over the full
-// node sweep via CSR reuse. For `t_local=0.1, t_meso=1.0, t_global=10.0`
-// and `dt=0.125`, total step count is ≈ 0.8 + 8 + 80 = ~89 steps, so
-// budget ≈ 89 × 1.4 ms = 125 ms per full refresh on 10⁶. Well under
-// the 50 ms × 3 gate when the CSR is reused (which it is — we build
-// once, diffuse three times).
+// Un produit creux-vecteur `Â·v` par degré de Tchebychev ; une séquence de
+// vecteurs `T_k(Â)v` PARTAGÉE entre les trois échelles, par sonde de Hutchinson
+// (32 sondes). Degrés MESURÉS (`cheb_degree`, test
+// `hks_degres_chebyshev_aux_trois_echelles`) : 6 (t = 0,1), 11 (t = 1), 24
+// (t = 10) ; la séquence partagée fait donc 24 produits par sonde, soit
+// 24 × 32 = 768 produits creux-vecteur pour un rafraîchissement 3 échelles.
+// Séquentiel (pas de rayon sur ce chemin).
+//
+// Mesuré (dgx aarch64, 20 cœurs, charge ≈ 10 pendant la mesure donc bruitée ;
+// `cargo bench -p obrain-substrate --bench hks_refresh`, degré moyen ≈ 8) :
+//
+// | n          | local (t=0,1) | méso (t=1) | global (t=10) | 3 échelles |
+// |------------|---------------|------------|---------------|------------|
+// | 10⁵        | 168 ms        | 314 ms     | 651 ms        | 661 ms     |
+// | 10⁶        | 2,38 s        | 3,58 s     | 7,67 s        | 8,35 s     |
+//
+// Le budget « ≤ 150 ms à 10⁶ » de `benches/hks_refresh.rs` n'est PAS tenu par
+// l'opérateur actuel (ordre de grandeur : ×55 au-dessus). L'ancien chiffre
+// (« ≈ 89 pas × 1,4 ms = 125 ms ») ne décrivait plus le code.
 
 /// Timescales for the HKS descriptor — exposed so the Predictor / retrieval
 /// can pass them back in to compare stored signatures against fresh queries.
@@ -3189,5 +3217,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #346 — Conséquence de l'opérateur normalisé, mesurée et figée : sur une
+    /// étoile, le HKS du hub vaut `(1 + e^{-2t}) / 2` QUEL QUE SOIT le degré
+    /// (spectre de `L_sym` d'une étoile : {0, 1 (×(k-1)), 2}, et le hub porte
+    /// le poids 1/2 sur les modes 0 et 2). Diagonale EXACTE (Dirac au hub),
+    /// sans bruit de Hutchinson : 8 et 200 feuilles donnent la même valeur.
+    #[test]
+    fn hks_hub_d_etoile_vaut_un_plus_exp_moins_2t_sur_2_independamment_du_degre() {
+        for k in [8usize, 200] {
+            let (_td, s) = store();
+            let (c, _l) = star(&s, k);
+            let csr = CsrAdjacency::build(&s);
+            let adj = SymNormAdjacency::from_csr(&csr);
+            let hw = csr.slot_high_water as usize;
+            let hub = u64::from(c) as usize;
+            let mut dirac = vec![0.0f64; hw];
+            dirac[hub] = 1.0;
+            for t in [0.1f64, 1.0, 10.0] {
+                let h = heat_apply_chebyshev(&adj, &dirac, &[t])[0][hub];
+                let attendu = (1.0 + (-2.0 * t).exp()) / 2.0;
+                assert!(
+                    (h - attendu).abs() < 1e-7,
+                    "k={k} t={t}: HKS(hub) exact = {h}, attendu {attendu}"
+                );
+            }
+        }
+    }
+
+    /// #346 — Degrés de Tchebychev (donc nombre de produits creux-vecteur par
+    /// sonde) aux trois échelles : ce sont ces chiffres, et non l'ancien
+    /// `dt = 0.125`, qui dimensionnent le budget documenté en tête de section.
+    #[test]
+    fn hks_degres_chebyshev_aux_trois_echelles() {
+        let d: Vec<usize> = [HKS_T_LOCAL, HKS_T_MESO, HKS_T_GLOBAL]
+            .iter()
+            .map(|&t| cheb_degree(f64::from(t)))
+            .collect();
+        assert_eq!(d, vec![6, 11, 24], "degrés Tchebychev aux 3 échelles");
     }
 }

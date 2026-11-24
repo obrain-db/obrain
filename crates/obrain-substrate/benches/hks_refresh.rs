@@ -3,7 +3,7 @@
 //! # Acceptance criterion
 //!
 //! A full 3-scale HKS refresh on a 10⁶-node substrate with
-//! `AVG_DEGREE ≈ 8` must complete in **≤ 150 ms** (gate per scale is
+//! `AVG_DEGREE ≈ 8` was meant to complete in **≤ 150 ms** (gate per scale is
 //! 50 ms, three scales = 150 ms total), running the Hutchinson
 //! stochastic diagonal estimator with K=32 Rademacher probes.
 //!
@@ -11,14 +11,15 @@
 //!
 //! Three benchmark functions:
 //!
-//! 1. `hks_local` — single-scale HKS at `t=0.1` (≈ 1 heat step per probe).
-//! 2. `hks_meso` — single-scale HKS at `t=1.0` (≈ 8 heat steps per probe).
-//! 3. `hks_global` — single-scale HKS at `t=10.0` (≈ 80 heat steps per probe).
+//! 1. `hks_local` — single-scale HKS at `t=0.1` (Chebyshev degree 6).
+//! 2. `hks_meso` — single-scale HKS at `t=1.0` (Chebyshev degree 11).
+//! 3. `hks_global` — single-scale HKS at `t=10.0` (Chebyshev degree 24).
 //! 4. `hks_all_scales` — [`compute_hks_descriptors`] end-to-end.
 //!
 //! The per-scale benches help pinpoint where the time goes: HKS cost
-//! is dominated by `heat_step_unweighted_csr` × `HKS_HUTCHINSON_PROBES`
-//! × `n_steps(t)`, so local is cheapest and global is dominant.
+//! is dominated by the sparse mat-vec × `HKS_HUTCHINSON_PROBES`
+//! × Chebyshev degree (6 / 11 / 24, shared across scales), so local is
+//! cheapest and global is dominant.
 //!
 //! # Run
 //!

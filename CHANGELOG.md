@@ -6,6 +6,20 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 
 ## [0.0.1] — en préparation (branche de release, 2026-11)
 
+### Suites de #305 : opérateur HKS et budget (#346)
+
+- **Documenté (décision : voulu)** : le HKS utilise `L_sym = I − D^{-1/2} A D^{-1/2}`
+  (spectre dans [0, 2], Tchebychev stable sans `d_max`), pas `D − A`. Conséquence
+  mesurée : sur une étoile, `HKS(hub, t) = (1 + e^{-2t})/2` quel que soit le degré
+  (identique à 1e-7 pour 8 et 200 feuilles) ; `search_by_role` ne sépare pas des
+  hubs de degrés différents. Écrit dans `search_by_role` et `geometric.rs`, avec test.
+- **Budget HKS corrigé** : l'ancien « ~89 pas, ~125 ms » décrivait l'opérateur
+  d'avant. Mesuré (dgx, charge ≈ 10) : 3 échelles = 661 ms à 10⁵ nœuds, 8,35 s à
+  10⁶ ; la porte « ≤ 150 ms à 10⁶ » du banc n'est pas tenue.
+- **Non traité (décision requise)** : les courbures de Ricci d'une base remplie
+  avant #305 restent servies sans recalcul ; aucune version de formule n'est
+  enregistrée dans le format persisté. Voir #346.
+
 ### Index spatial en GQL (PR #282)
 
 - **Nouveau, GQL** : `point(lon, lat)` et `distance(a, b)` (mètres, haversine) ;
