@@ -1545,6 +1545,25 @@ impl CypherTranslator {
         if with_clause.is_wildcard {
             let mut plan = input;
 
+            // `WITH *, expr AS alias` : les variables en portée passent, les items s'y ajoutent.
+            if !with_clause.items.is_empty() {
+                let projections: Vec<Projection> = with_clause
+                    .items
+                    .iter()
+                    .map(|item| {
+                        Ok(Projection {
+                            expression: self.translate_expression(&item.expression)?,
+                            alias: item.alias.clone(),
+                        })
+                    })
+                    .collect::<Result<_>>()?;
+                plan = LogicalOperator::Project(ProjectOp {
+                    projections,
+                    input: Box::new(plan),
+                    pass_through_input: true,
+                });
+            }
+
             if let Some(where_clause) = &with_clause.where_clause {
                 let predicate = self.translate_expression(&where_clause.predicate)?;
                 plan = wrap_filter(plan, predicate);

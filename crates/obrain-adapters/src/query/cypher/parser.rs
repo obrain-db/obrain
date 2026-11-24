@@ -564,8 +564,15 @@ impl<'a> Parser<'a> {
             false
         };
 
+        // `WITH *, expr AS alias` : toutes les variables en portée, plus les items nommés
+        // (openCypher 9). `WITH *` nu reste une liste vide.
         let items = if is_wildcard {
-            Vec::new()
+            if self.current.kind == TokenKind::Comma {
+                self.advance();
+                self.parse_projection_items()?
+            } else {
+                Vec::new()
+            }
         } else {
             self.parse_projection_items()?
         };
