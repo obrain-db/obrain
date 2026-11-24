@@ -295,3 +295,46 @@ mod tests {
         drop(enfant);
     }
 }
+
+/// ── PREUVE DE VIE PAR EMPREINTE — gardes défensives ─────────────────────────
+///
+/// Ces quatre issues ne sont pas du code mort : ce sont les cas qu'un pid
+/// RÉATTRIBUÉ ou un appel malformé produisent. Le portillon de couverture du
+/// code neuf exige de les exercer (90,8 % → 94,7 % sans eux).
+#[cfg(test)]
+mod tests_empreinte {
+    use super::*;
+
+    #[test]
+    fn un_pid_hors_type_ou_nul_est_mort() {
+        // `u64::MAX` ne tient pas dans un `pid_t` (i32) : Mort sans appel noyau.
+        assert_eq!(etat_processus_empreinte(u64::MAX, 0), EtatProcessus::Mort);
+        // 0 désigne le groupe de processus, pas un écrivain.
+        assert_eq!(etat_processus_empreinte(0, 0), EtatProcessus::Mort);
+    }
+
+    #[test]
+    fn un_pid_qui_n_existe_plus_est_mort() {
+        let mut enfant = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("enfant");
+        let pid = u64::from(enfant.id());
+        let _ = enfant.wait(); // récolté : le pid n'existe plus
+        assert_eq!(etat_processus_empreinte(pid, 0), EtatProcessus::Mort);
+    }
+
+    #[test]
+    fn une_empreinte_qui_ne_correspond_pas_trahit_une_reutilisation_de_pid() {
+        let moi = u64::from(std::process::id());
+        // Pid vivant (le nôtre) mais démarrage qui ne correspond pas : pid
+        // réattribué ⇒ Mort, donc le verrou d'un mort sera volé.
+        assert_eq!(
+            etat_processus_empreinte(moi, 0xdead_beef),
+            EtatProcessus::Mort
+        );
+        // Empreinte inconnue (0) : on ne peut pas prouver la mort, on attend.
+        assert_eq!(etat_processus_empreinte(moi, 0), EtatProcessus::Vivant);
+    }
+}

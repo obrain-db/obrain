@@ -720,3 +720,32 @@ mod tests_verrou_entite {
         );
     }
 }
+
+/// ── PALIERS D'ATTENTE DU VERROU D'ENTITÉ ────────────────────────────────────
+#[cfg(test)]
+mod tests_paliers_attente {
+    use super::*;
+
+    /// Un verrou tenu quelques dizaines de millisecondes par un AUTRE thread fait
+    /// traverser les trois paliers d'attente (spin, yield, sommeil). Sans ce
+    /// test, deux des trois branches ne sont jamais exercées — et le portillon de
+    /// couverture les compte comme non couvertes.
+    ///
+    /// DISPERSION : la durée est volontairement large ; le test n'affirme rien
+    /// sur le temps, seulement sur le fait que les deux prises réussissent.
+    #[test]
+    fn l_attente_traverse_les_trois_paliers() {
+        let td = tempfile::tempdir().unwrap();
+        let borne = BorneAllocation::ouvrir(td.path()).expect("borne");
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let _g = borne.verrouiller_entite(42);
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            });
+            // Laisse le premier thread prendre le verrou avant de concourir.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let _g = borne.verrouiller_entite(42);
+        });
+    }
+}
