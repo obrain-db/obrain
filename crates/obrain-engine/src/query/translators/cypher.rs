@@ -1524,12 +1524,27 @@ impl CypherTranslator {
         let mut predicate = self.translate_expression(&where_clause.predicate)?;
 
         // Compréhension de motif dans le prédicat : réécrite comme dans un
-        // `RETURN` (Apply + collect), le filtre lit sa colonne (#195,
-        // famille 2). Pas sous un `OPTIONAL MATCH` : l'Apply masquerait la
-        // jointure externe que la suite classe.
-        let input = if Self::expr_contains_pc_only(&predicate)
-            && !matches!(input, LogicalOperator::LeftJoin(_))
-        {
+        // `RETURN` (Apply + collect), le filtre lit sa colonne (#195, famille 2).
+        // Sous un `OPTIONAL MATCH`, la réécriture se fait sur le côté DROIT de
+        // la jointure externe (#357) : l'Apply au-dessus de la jointure la
+        // masquerait.
+        if let LogicalOperator::LeftJoin(left_join) = input {
+            let (right, predicate) = if Self::expr_contains_pc_only(&predicate) {
+                self.relever_a_droite(&left_join.left, *left_join.right, predicate)?
+            } else {
+                (*left_join.right, predicate)
+            };
+            // Les conjonctions dont toutes les variables viennent de la droite
+            // (dont la colonne de la compréhension) deviennent un filtre de
+            // droite : une ligne de gauche sans candidat sort avec des NULL.
+            let (join, post_filter) =
+                build_left_join_with_predicates(*left_join.left, right, Some(predicate));
+            return Ok(match post_filter {
+                Some(pf) => wrap_filter(join, pf),
+                None => join,
+            });
+        }
+        let input = if Self::expr_contains_pc_only(&predicate) {
             let alias = self.next_anon_var();
             let (input, reecrit) =
                 self.rewrite_expr_pattern_comprehension(input, predicate, &alias)?;
@@ -1538,20 +1553,62 @@ impl CypherTranslator {
         } else {
             input
         };
+        Ok(wrap_filter(input, predicate))
+    }
 
-        // When the input is a LeftJoin (from OPTIONAL MATCH), classify the
-        // predicate so right-side references become join conditions rather
-        // than post-filters (which would incorrectly eliminate NULL rows).
-        if let LogicalOperator::LeftJoin(left_join) = input {
-            let (join, post_filter) =
-                build_left_join_with_predicates(*left_join.left, *left_join.right, Some(predicate));
-            if let Some(pf) = post_filter {
-                Ok(wrap_filter(join, pf))
-            } else {
-                Ok(join)
+    /// Relève, sur le côté DROIT d'une jointure externe, les compréhensions de
+    /// motif d'un prédicat d'`OPTIONAL MATCH` (#357). Toutes leurs ancres doivent
+    /// être produites par la droite ; une ancre seulement à gauche est refusée
+    /// par une erreur de traduction nommée.
+    fn relever_a_droite(
+        &self,
+        gauche: &LogicalOperator,
+        droite: LogicalOperator,
+        predicate: LogicalExpression,
+    ) -> Result<(LogicalOperator, LogicalExpression)> {
+        let vars_gauche = visible_variables(gauche);
+        let vars_droite = visible_variables(&droite);
+        let mut ancres = Vec::new();
+        Self::ancres_comprehensions(&predicate, &mut ancres);
+        if let Some(ancre) = ancres
+            .iter()
+            .find(|a| vars_gauche.contains_key(*a) && !vars_droite.contains_key(*a))
+        {
+            return Err(Error::Query(QueryError::new(
+                QueryErrorKind::Semantic,
+                format!(
+                    "compréhension de motif dans le WHERE d'un OPTIONAL MATCH, ancrée sur \
+                     '{ancre}' qui n'est produit que par la partie gauche : non prise en \
+                     charge. Ancrer la compréhension sur une variable de l'OPTIONAL MATCH, \
+                     ou la placer dans un WITH avant l'OPTIONAL MATCH."
+                ),
+            )));
+        }
+        let alias = self.next_anon_var();
+        self.rewrite_expr_pattern_comprehension(droite, predicate, &alias)
+    }
+
+    /// Ancres (premier nœud du sous-plan) des compréhensions d'une expression.
+    fn ancres_comprehensions(expr: &LogicalExpression, out: &mut Vec<String>) {
+        match expr {
+            LogicalExpression::PatternComprehension { subplan, .. } => {
+                out.extend(Self::extract_anchor_variable(subplan));
             }
-        } else {
-            Ok(wrap_filter(input, predicate))
+            LogicalExpression::FunctionCall { args, .. } => {
+                for a in args {
+                    Self::ancres_comprehensions(a, out);
+                }
+            }
+            LogicalExpression::Binary { left, right, .. } => {
+                Self::ancres_comprehensions(left, out);
+                Self::ancres_comprehensions(right, out);
+            }
+            LogicalExpression::Unary { operand, .. } => Self::ancres_comprehensions(operand, out),
+            other => {
+                for e in Self::sous_expressions_a_parcourir(other) {
+                    Self::ancres_comprehensions(e, out);
+                }
+            }
         }
     }
 
