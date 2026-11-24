@@ -3368,7 +3368,64 @@ impl CypherTranslator {
             LogicalExpression::Unary { operand, .. } => {
                 Self::expr_contains_pattern_comprehension(operand)
             }
-            _ => false,
+            // #357 : tout nœud qui PORTE des sous-expressions doit être
+            // parcouru, sinon la compréhension qu'il contient atteint le
+            // planificateur telle quelle (« PatternComprehension reached the
+            // planner without being rewritten »). Étaient oubliés : l'accès par
+            // indice `[…][0]`, la tranche `[…][0..1]`, `CASE`, la liste et la
+            // map littérales.
+            other => Self::sous_expressions_a_parcourir(other)
+                .into_iter()
+                .any(Self::expr_contains_pattern_comprehension),
+        }
+    }
+
+    /// Enfants directs d'une expression pour les variantes ajoutées par #357
+    /// (accès par indice, tranche, `CASE`, liste, map). Les variantes déjà
+    /// traitées explicitement (`Binary`, `Unary`, `FunctionCall`) n'y figurent pas.
+    fn sous_expressions_a_parcourir(expr: &LogicalExpression) -> Vec<&LogicalExpression> {
+        match expr {
+            LogicalExpression::IndexAccess { base, index } => vec![&**base, &**index],
+            LogicalExpression::SliceAccess { base, start, end } => {
+                let mut v: Vec<&LogicalExpression> = vec![&**base];
+                v.extend(start.as_deref());
+                v.extend(end.as_deref());
+                v
+            }
+            LogicalExpression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                let mut v: Vec<&LogicalExpression> = Vec::new();
+                v.extend(operand.as_deref());
+                for (quand, alors) in when_clauses {
+                    v.push(quand);
+                    v.push(alors);
+                }
+                v.extend(else_clause.as_deref());
+                v
+            }
+            LogicalExpression::List(items) => items.iter().collect(),
+            LogicalExpression::Map(entries) => entries.iter().map(|(_, v)| v).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Réécrit UNE sous-expression : si elle contient une compréhension de
+    /// motif, la relève (Apply + collect) et rend l'expression de remplacement ;
+    /// sinon la rend telle quelle. Le sous-plan relevé rend exactement une ligne
+    /// par ligne d'entrée, donc la cardinalité est préservée.
+    fn reecrire_sous_expression(
+        &self,
+        input: LogicalOperator,
+        expr: LogicalExpression,
+    ) -> Result<(LogicalOperator, LogicalExpression)> {
+        if Self::expr_contains_pattern_comprehension(&expr) {
+            let alias = self.next_anon_var();
+            self.rewrite_expr_pattern_comprehension(input, expr, &alias)
+        } else {
+            Ok((input, expr))
         }
     }
 
@@ -3384,7 +3441,10 @@ impl CypherTranslator {
                 Self::expr_contains_pc_only(left) || Self::expr_contains_pc_only(right)
             }
             LogicalExpression::Unary { operand, .. } => Self::expr_contains_pc_only(operand),
-            _ => false,
+            // #357 : mêmes nœuds porteurs que `expr_contains_pattern_comprehension`.
+            other => Self::sous_expressions_a_parcourir(other)
+                .into_iter()
+                .any(Self::expr_contains_pc_only),
         }
     }
 
@@ -3583,6 +3643,111 @@ impl CypherTranslator {
                         right: new_right,
                     },
                 ))
+            }
+            // #357 : `NOT (size([…]) = 0)`. Le détecteur annonçait déjà `Unary`
+            // mais ce bras manquait : l'expression retombait sur « rien à faire ».
+            LogicalExpression::Unary { op, operand } => {
+                let (input, operand) = self.reecrire_sous_expression(input, *operand)?;
+                Ok((
+                    input,
+                    LogicalExpression::Unary {
+                        op,
+                        operand: Box::new(operand),
+                    },
+                ))
+            }
+            // #357 : `[(c)-[:SP]->(p) | p.id][0]` et `[…][0..1]`.
+            LogicalExpression::IndexAccess { base, index } => {
+                let (input, base) = self.reecrire_sous_expression(input, *base)?;
+                let (input, index) = self.reecrire_sous_expression(input, *index)?;
+                Ok((
+                    input,
+                    LogicalExpression::IndexAccess {
+                        base: Box::new(base),
+                        index: Box::new(index),
+                    },
+                ))
+            }
+            LogicalExpression::SliceAccess { base, start, end } => {
+                let (mut input, base) = self.reecrire_sous_expression(input, *base)?;
+                let mut nouveau_start = None;
+                if let Some(s) = start {
+                    let (i, e) = self.reecrire_sous_expression(input, *s)?;
+                    input = i;
+                    nouveau_start = Some(Box::new(e));
+                }
+                let mut nouveau_end = None;
+                if let Some(e) = end {
+                    let (i, e) = self.reecrire_sous_expression(input, *e)?;
+                    input = i;
+                    nouveau_end = Some(Box::new(e));
+                }
+                Ok((
+                    input,
+                    LogicalExpression::SliceAccess {
+                        base: Box::new(base),
+                        start: nouveau_start,
+                        end: nouveau_end,
+                    },
+                ))
+            }
+            // #357 : `CASE WHEN size([…]) > 0 THEN … END`. La compréhension est
+            // relevée pour TOUTES les lignes, y compris celles dont la branche
+            // n'est pas prise : elle est sans effet de bord, et le sous-plan
+            // rend exactement une ligne par ligne d'entrée.
+            LogicalExpression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                let mut input = input;
+                let mut nouvel_operand = None;
+                if let Some(o) = operand {
+                    let (i, e) = self.reecrire_sous_expression(input, *o)?;
+                    input = i;
+                    nouvel_operand = Some(Box::new(e));
+                }
+                let mut nouveaux_when = Vec::with_capacity(when_clauses.len());
+                for (quand, alors) in when_clauses {
+                    let (i, q) = self.reecrire_sous_expression(input, quand)?;
+                    let (i, a) = self.reecrire_sous_expression(i, alors)?;
+                    input = i;
+                    nouveaux_when.push((q, a));
+                }
+                let mut nouveau_else = None;
+                if let Some(e) = else_clause {
+                    let (i, e) = self.reecrire_sous_expression(input, *e)?;
+                    input = i;
+                    nouveau_else = Some(Box::new(e));
+                }
+                Ok((
+                    input,
+                    LogicalExpression::Case {
+                        operand: nouvel_operand,
+                        when_clauses: nouveaux_when,
+                        else_clause: nouveau_else,
+                    },
+                ))
+            }
+            LogicalExpression::List(items) => {
+                let mut input = input;
+                let mut nouveaux = Vec::with_capacity(items.len());
+                for item in items {
+                    let (i, e) = self.reecrire_sous_expression(input, item)?;
+                    input = i;
+                    nouveaux.push(e);
+                }
+                Ok((input, LogicalExpression::List(nouveaux)))
+            }
+            LogicalExpression::Map(entries) => {
+                let mut input = input;
+                let mut nouvelles = Vec::with_capacity(entries.len());
+                for (cle, valeur) in entries {
+                    let (i, e) = self.reecrire_sous_expression(input, valeur)?;
+                    input = i;
+                    nouvelles.push((cle, e));
+                }
+                Ok((input, LogicalExpression::Map(nouvelles)))
             }
             other => {
                 // Fallback: no rewrite possible, return as-is
