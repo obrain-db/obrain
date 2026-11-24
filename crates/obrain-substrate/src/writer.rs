@@ -533,12 +533,13 @@ impl Writer {
     /// checkpoint à la fin. Le chemin unitaire journalise une
     /// `NodePropHeadUpdate` par PROPRIÉTÉ, soit ≈ 12 M trames sur le noyau
     /// Linux pour un état que le checkpoint rend durable de toute façon.
-    pub fn poser_tetes_props_en_lot(&self, tetes: &[(u32, U48)]) -> SubstrateResult<()> {
+    pub fn poser_tetes_props_en_lot(&self, tetes: &[(u32, U48)]) -> SubstrateResult<u64> {
         if tetes.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         self.with_node_zone(|zf| {
             let octets = zf.as_slice_mut();
+            let mut sautes = 0u64;
             for &(idx, tete) in tetes {
                 let champ = idx as usize * NodeRecord::SIZE + 14; // first_prop_off
                 if champ + 6 > octets.len() {
@@ -546,9 +547,23 @@ impl Writer {
                         "poser_tetes_props_en_lot : slot {idx} hors de la zone nœuds"
                     )));
                 }
+                // (2026-11-24, #386) Ne PAS écraser une tête déjà posée : un
+                // écrivain unitaire concurrent a pu re-ancrer la chaîne de ce
+                // slot. L'écraser détacherait sa chaîne en entier. On saute et
+                // on compte — le lot reste lock-free, la collision devient un
+                // refus visible au lieu d'une destruction silencieuse.
+                if octets[champ..champ + 6].iter().any(|b| *b != 0) {
+                    sautes += 1;
+                    continue;
+                }
                 octets[champ..champ + 6].copy_from_slice(&tete.0);
             }
-            Ok(())
+            if sautes > 0 {
+                tracing::warn!(
+                    "poser_tetes_props_en_lot : {sautes} têtes déjà posées sautées (écrivain concurrent ?)"
+                );
+            }
+            Ok(sautes)
         })
     }
 
@@ -557,12 +572,13 @@ impl Writer {
     /// la zone arêtes, sans WAL par arête (même contrat : base neuve, le
     /// checkpoint de l'appelant rend l'état durable). Le champ écrit est
     /// `first_prop_off` (décalage [`EdgeRecord::FIRST_PROP_OFF_BYTES`]).
-    pub fn poser_tetes_props_arete_en_lot(&self, tetes: &[(u32, U48)]) -> SubstrateResult<()> {
+    pub fn poser_tetes_props_arete_en_lot(&self, tetes: &[(u32, U48)]) -> SubstrateResult<u64> {
         if tetes.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         self.with_edge_zone(|zf| {
             let octets = zf.as_slice_mut();
+            let mut sautes = 0u64;
             for &(idx, tete) in tetes {
                 let champ = idx as usize * EdgeRecord::SIZE + EdgeRecord::FIRST_PROP_OFF_BYTES;
                 if champ + 6 > octets.len() {
@@ -570,9 +586,19 @@ impl Writer {
                         "poser_tetes_props_arete_en_lot : slot {idx} hors de la zone arêtes"
                     )));
                 }
+                // (2026-11-24, #386) Même garde que le jumeau nœud.
+                if octets[champ..champ + 6].iter().any(|b| *b != 0) {
+                    sautes += 1;
+                    continue;
+                }
                 octets[champ..champ + 6].copy_from_slice(&tete.0);
             }
-            Ok(())
+            if sautes > 0 {
+                tracing::warn!(
+                    "poser_tetes_props_arete_en_lot : {sautes} têtes déjà posées sautées (écrivain concurrent ?)"
+                );
+            }
+            Ok(sautes)
         })
     }
 

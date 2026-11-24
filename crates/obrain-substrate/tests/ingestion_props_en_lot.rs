@@ -598,3 +598,32 @@ fn le_lot_de_blobs_refuse_une_base_ouverte_en_lecture_seule() {
     let s = SubstrateStore::open_read_only(d.path()).unwrap();
     let _ = s.bulk_import_node_props(1, &refs_du_jeu(&seuls));
 }
+
+#[test]
+fn lot_ne_ecrase_pas_une_tete_deja_posee() {
+    let td = tempfile::tempdir().unwrap();
+    let s = SubstrateStore::create(td.path().join("kb")).unwrap();
+
+    // Un écrivain UNITAIRE pose une tête (set_node_property re-ancre la chaîne).
+    let id = s.create_node(&["N"]);
+    s.set_node_property(id, "k", Value::Int64(7));
+
+    // Le lot tente de poser une tête DIFFÉRENTE sur le même slot : elle est
+    // SAUTÉE (et comptée), pas écrasée — sinon la chaîne unitaire serait
+    // détachée en entier (#386).
+    let slot = id.0 as u32;
+    let sautes = s
+        .writer()
+        .poser_tetes_props_en_lot(&[(slot, obrain_substrate::U48::from_u64(999))])
+        .unwrap();
+    assert_eq!(
+        sautes, 1,
+        "la tête déjà posée doit être sautée, pas écrasée"
+    );
+
+    // La chaîne unitaire est intacte : la propriété est toujours lisible.
+    assert_eq!(
+        s.get_node_property(id, &PropertyKey::new("k")),
+        Some(Value::Int64(7))
+    );
+}
