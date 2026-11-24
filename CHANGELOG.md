@@ -6,6 +6,33 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
 
 ## [0.0.1] — en préparation (branche de release, 2026-11)
 
+### Écriture partagée : la MÊME entité depuis deux processus (MP-3b)
+
+- **Corrigé, substrat** : deux processus qui écrivaient le même nœud ou la
+  même arête perdaient des propriétés. Mesuré le 24/11/2026 sur `main`
+  `b8ee6f87` : `t9` perdait **47 valeurs sur 240**, presque toutes des arêtes —
+  `set_edge_property` n'avait aucun verrou, pas même local, et la page de tête
+  d'une chaîne était relue-modifiée-réécrite sous un verrou par processus.
+  Deux corrections : un **verrou d'entité inter-processus** dans
+  `substrate.alloc` (240 tranches d'un mot à l'offset 64 ; `0` = libre, sinon
+  pid et empreinte du démarrage ; vol **uniquement sur preuve de mort**, jamais
+  sur délai), et le **rafraîchissement de la projection** avant toute lecture de
+  tête de chaîne — un pair qui alloue au-delà de notre projection rendait la
+  tête « hors zone », et une tête illisible était traitée comme absente, ce qui
+  rendait toute sa chaîne inatteignable (54 clés sur 60 perdues chez un
+  écrivain, l'autre intact).
+- **Garantie** : propriétés posées par N processus sur la MÊME entité, sans
+  perte (`t9`), y compris la même clé (le dernier écrivain gagne, `t9b`) et
+  après le `kill -9` d'un détenteur (son verrou est volé sur preuve de mort,
+  `t9c`). Restent hors garantie : deux imports en lot concurrents sur la même
+  entité, l'arène des blobs (MP-3c) et la convergence des valeurs concurrentes
+  (#334).
+- **Documentation** : `docs/LIMITES-v0.0.1.md` passe la ligne « même entité » en
+  garantie, et **corrige une phrase fausse** : « un processus ne voit les
+  écritures d'un pair qu'à sa réouverture ». Depuis que la zone v2 est en mmap
+  partagé, un lecteur vivant voit les pages d'un pair, y compris au milieu d'un
+  ajout.
+
 ### Suites de #305 : opérateur HKS et budget (#346)
 
 - **Documenté (décision : voulu)** : le HKS utilise `L_sym = I − D^{-1/2} A D^{-1/2}`

@@ -1398,6 +1398,27 @@ impl PropsZone {
         entry: &PropertyEntry,
     ) -> SubstrateResult<u64> {
         use crate::unite::{UNITE_SIZE, UniteAddr};
+        // ── (MP-3b) PROJECTION PÉRIMÉE : RAFRAÎCHIR AVANT DE LIRE LA TÊTE ────
+        //
+        // `page_slice` ne voit que NOTRE projection (`self.props.len()`), et
+        // seule l'ALLOCATION la fait grandir. Un pair qui alloue des pages
+        // au-delà de notre projection rend donc la page de tête « hors zone ».
+        // Or `append_entry_inner` traite une tête illisible comme une tête
+        // ABSENTE (règle héritée du 19/08 : sur une base héritée, une valeur
+        // parasite ne désigne rien) : il alloue une page neuve SANS chaîner sur
+        // l'ancienne, et toute la chaîne du pair devient inatteignable.
+        //
+        // Mesuré le 24/11 (`t9`, deux processus sur le même nœud, verrou
+        // d'entité pourtant pris) : 54 clés sur 60 d'un des deux écrivains
+        // perdues, l'autre n'en perdant aucune — l'asymétrie suit celui dont la
+        // projection est en retard.
+        //
+        // Le chemin de LECTURE faisait déjà ce rafraîchissement
+        // (`reprojeter_si_zone_agrandie`) ; le chemin d'ÉCRITURE ne le faisait
+        // pas. Deux lectures atomiques de longueur de fichier, pas un verrou.
+        if self.a_grandi_sur_disque() {
+            self.rafraichir_projection()?;
+        }
         let need = entry.encoded_len();
         if need > PAGE_SIZE - core::mem::size_of::<crate::page::PropertyPageHeader>() {
             return Err(SubstrateError::WalBadFrame(format!(
