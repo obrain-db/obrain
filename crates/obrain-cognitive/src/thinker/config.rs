@@ -194,12 +194,13 @@ pub struct ConsolidatorTomlCfg {
     /// Maximum duration of a single tick, in milliseconds.
     #[serde(default)]
     pub max_tick_ms: Option<u64>,
-    /// DÉPRÉCIÉ, IGNORÉ. Le facteur multiplicatif fixe appliqué à chaque
+    /// DÉPRÉCIÉ, MIGRÉ. Le facteur multiplicatif fixe appliqué à chaque
     /// tique est le défaut qu'on corrige : `0.99` toutes les 60 s implique une
     /// demi-vie de 69 min au lieu de 24 h (20,9× trop rapide). La décroissance
     /// est désormais dérivée de `half_life_secs`. Le champ reste accepté pour
-    /// qu'une configuration existante continue de se charger ; sa valeur est
-    /// signalée puis ignorée.
+    /// qu'une configuration existante continue de se charger : SI la période
+    /// `interval_secs` est connue, il est converti (`H = −Δt·ln2 / ln f`) ;
+    /// SANS période, l'incompatibilité est signalée et le défaut conservé.
     #[serde(default)]
     pub decay_factor: Option<f32>,
     /// Demi-vie de l'énergie, en secondes. La cadence de tique en est dérivée
