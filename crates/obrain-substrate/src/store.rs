@@ -832,16 +832,18 @@ pub(crate) struct EdgeTypeRegistry {
 }
 
 impl EdgeTypeRegistry {
-    /// Le prochain id LIBRE : au-delà du plus grand id porté, jamais 0 (« pas
-    /// d'arête »). Voir `LabelRegistry::prochain_bit_libre` pour le défaut corrigé.
+    /// Le prochain id LIBRE : au-delà du plus grand id porté, jamais 0 ni 1
+    /// (« pas d'arête » et « SYNAPSE » sont réservés). Voir
+    /// `LabelRegistry::prochain_bit_libre` pour le défaut corrigé, et
+    /// [`crate::record::SYNAPSE_EDGE_TYPE_ID`] pour la réservation.
     fn prochain_id_libre(&self) -> usize {
         self.par_id
             .keys()
             .map(|&i| usize::from(i) + 1)
             .max()
-            .unwrap_or(1)
+            .unwrap_or(crate::record::SYNAPSE_EDGE_TYPE_ID as usize + 1)
             .max(self.id_to_name.len())
-            .max(1)
+            .max(crate::record::SYNAPSE_EDGE_TYPE_ID as usize + 1)
     }
 
     /// Inscrit un nom à un id IMPOSÉ — ou au premier id libre si `id` est `None`
@@ -850,6 +852,30 @@ impl EdgeTypeRegistry {
     pub(crate) fn interner_a(&mut self, name: &str, id: Option<u16>) -> SubstrateResult<u16> {
         if let Some(&connu) = self.name_to_id.get(name) {
             return Ok(connu);
+        }
+        // ── ID BIEN CONNU RÉSERVÉ À SYNAPSE (2026-11-24) ─────────────────
+        // « SYNAPSE » est TOUJOURS à l'id réservé 1, quel que soit l'ordre
+        // d'internement. C'est ce qui rend le nom lisible par `id_for`/`name_for`
+        // après une panne AVANT flush : le dictionnaire nom→id (persisté seulement
+        // à `flush()`) n'est pas nécessaire pour résoudre ce type, et l'id est
+        // stable d'un processus à l'autre — l'enregistrement `EdgeTypeIntern` du
+        // WAL, qui le journalisait, pouvait être emporté par une troncature.
+        if name == crate::record::SYNAPSE_EDGE_TYPE_NAME {
+            let id = crate::record::SYNAPSE_EDGE_TYPE_ID;
+            if let Some(autre) = self.par_id.get(&id) {
+                if autre.as_str() != name {
+                    return Err(SubstrateError::Internal(format!(
+                        "EdgeTypeRegistry : l'id réservé {id} porte déjà {autre:?}, \
+                         on refuse d'y inscrire {name:?}"
+                    )));
+                }
+                return Ok(id);
+            }
+            let name: ArcStr = name.into();
+            self.name_to_id.insert(name.clone(), id);
+            self.par_id.insert(id, name.clone());
+            self.id_to_name.push(name);
+            return Ok(id);
         }
         let id = match id {
             Some(i) => i,
@@ -907,11 +933,27 @@ impl EdgeTypeRegistry {
     }
 
     pub(crate) fn name_for(&self, id: u16) -> Option<ArcStr> {
-        self.par_id.get(&id).cloned()
+        if let Some(n) = self.par_id.get(&id) {
+            return Some(n.clone());
+        }
+        // Id bien connu : résoluble même quand le dictionnaire n'a pas été
+        // flushé (panne avant flush).
+        if id == crate::record::SYNAPSE_EDGE_TYPE_ID {
+            return Some(ArcStr::from(crate::record::SYNAPSE_EDGE_TYPE_NAME));
+        }
+        None
     }
 
     pub(crate) fn id_for(&self, name: &str) -> Option<u16> {
-        self.name_to_id.get(name).copied()
+        if let Some(&id) = self.name_to_id.get(name) {
+            return Some(id);
+        }
+        // Id bien connu : résoluble même quand le dictionnaire n'a pas été
+        // flushé (panne avant flush).
+        if name == crate::record::SYNAPSE_EDGE_TYPE_NAME {
+            return Some(crate::record::SYNAPSE_EDGE_TYPE_ID);
+        }
+        None
     }
 
     /// Dump the edge-type names in id order for persistence via
@@ -18724,7 +18766,17 @@ impl SubstrateStore {
         // obtiennent le même id.
         use crate::registres_partages::Espace;
         let neuf = self.edge_types.read().id_for(name).is_none();
-        let global = self.interne_global(Espace::Types, name)?;
+        // ── ID BIEN CONNU RÉSERVÉ À SYNAPSE (2026-11-24) ─────────────────
+        // « SYNAPSE » ne passe PAS par la table partagée : son id est réservé
+        // (`record::SYNAPSE_EDGE_TYPE_ID`, et `Espace::Types::premier_indice`
+        // démarre à 2 pour ne jamais le redistribuer). Le résoudre LOCALEMENT
+        // le rend lisible par `id_for`/`name_for` après une panne sans flush,
+        // quel que soit l'ordre d'internement des autres types d'arêtes.
+        let global = if name == crate::record::SYNAPSE_EDGE_TYPE_NAME {
+            None
+        } else {
+            self.interne_global(Espace::Types, name)?
+        };
         let id = {
             let mut reg = self.edge_types.write();
             self.inscrire_avec_global(

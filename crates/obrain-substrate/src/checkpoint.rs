@@ -196,9 +196,19 @@ fn checkpoint_sous_fence(
         }
     }
     // Side-cars simpliciaux nommés (T4) — même discipline que les zones.
+    // (2026-11-24) L'index d'incidence des synapses (répertoire + postings) est
+    // un side-car NOMMÉ comme les simpliciaux : il n'a AUCUN enregistrement WAL
+    // (l'append d'incidence est une écriture mmap directe, cf.
+    // `create_synapse_slot`), donc un checkpoint qui ne le fsync pas le perd à la
+    // première coupure de courant — alors que les arêtes SYNAPSE, elles, sont
+    // fsyncées par la boucle de zones ci-dessus. Sans ce fsync, après un
+    // checkpoint + coupure, `for_each_synapse` (qui lit l'incidence) rendrait 0
+    // tandis que `len()`/`snapshot()` (qui lisent la colonne d'arêtes) rendraient 2.
     for name in [
         crate::simplex_zone::SIMPLEX_HEAP_FILENAME,
         crate::simplex_incidence::SIMPLEX_POSTINGS_FILENAME,
+        crate::synapse_incidence::SYNAPSE_INCIDENCE_FILENAME,
+        crate::synapse_incidence::SYNAPSE_POSTINGS_FILENAME,
     ] {
         let zf = substrate.open_named_zone(name)?;
         if !zf.is_empty() {

@@ -211,7 +211,12 @@ impl Espace {
     pub fn premier_indice(self) -> u64 {
         match self {
             Espace::Labels => 0,
-            Espace::Types | Espace::Cles => 1,
+            // Id 1 des TYPES d'arêtes est RÉSERVÉ au type bien connu « SYNAPSE »
+            // (`record::SYNAPSE_EDGE_TYPE_ID`) : le compteur partagé ne le
+            // distribue jamais, pour que ce type garde le même id dans tous les
+            // processus et survive à une panne sans flush (voir store.rs).
+            Espace::Types => 2,
+            Espace::Cles => 1,
         }
     }
 
@@ -1201,11 +1206,13 @@ mod tests {
     }
 
     #[test]
-    fn les_types_et_cles_commencent_a_1() {
+    fn les_types_commencent_a_2_et_les_cles_a_1() {
         let td = tempfile::tempdir().unwrap();
         let r = RegistresPartages::ouvrir(td.path()).unwrap();
-        // 0 est la sentinelle nulle des données : jamais distribué.
-        assert_eq!(r.interner(Espace::Types, "PART_OF").unwrap(), Some(1));
+        // 0 est la sentinelle nulle des données : jamais distribué. L'id 1 des
+        // types d'arêtes est RÉSERVÉ à « SYNAPSE » (record::SYNAPSE_EDGE_TYPE_ID),
+        // donc jamais distribué non plus : le premier type ordinaire part à 2.
+        assert_eq!(r.interner(Espace::Types, "PART_OF").unwrap(), Some(2));
         assert_eq!(r.interner(Espace::Cles, "titre").unwrap(), Some(1));
         // Les labels, eux, ont un bit 0 légitime.
         assert_eq!(r.interner(Espace::Labels, "N").unwrap(), Some(0));
@@ -1253,8 +1260,9 @@ mod tests {
             "un indice non nommé est un TROU (`None`), jamais une chaîne vide : {v:?}"
         );
 
-        // Les types et les clés commencent à l'indice 1 (0 est la sentinelle
-        // nulle des données) : le filigrane suit l'INDICE, pas le rang.
+        // Les types d'arêtes commencent à l'indice 2 (0 est la sentinelle
+        // nulle des données, 1 est RÉSERVÉ à « SYNAPSE ») : le filigrane suit
+        // l'INDICE, pas le rang.
         assert!(
             r.noms_indexes(Espace::Types).is_empty(),
             "résultat attendu vide"
@@ -1262,8 +1270,8 @@ mod tests {
         r.interner(Espace::Types, "PART_OF").unwrap();
         assert_eq!(
             r.noms_indexes(Espace::Types),
-            vec![None, Some("PART_OF".to_string())],
-            "l'indice 0 des types est un trou, pas un nom"
+            vec![None, None, Some("PART_OF".to_string())],
+            "l'indice 0 est un trou, l'indice 1 est réservé à SYNAPSE, PART_OF est à 2"
         );
     }
 

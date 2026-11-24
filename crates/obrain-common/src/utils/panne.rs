@@ -60,3 +60,23 @@ pub fn point_creation_noeud(rang: u64) {
         std::process::abort();
     }
 }
+
+/// 0 = désarmé ; sinon le processus s'arrête entre l'écriture de l'ancre
+/// composite et celle du miroir de colonne, dans `decay_clock::reinforce`.
+static ARRET_ENTRE_ANCRE_ET_MIROIR: AtomicU8 = AtomicU8::new(0);
+
+/// Arme l'arrêt (`abort`, état d'un SIGKILL) juste après l'écriture de
+/// l'ancre composite et AVANT le miroir de colonne.
+#[doc(hidden)]
+pub fn armer_arret_entre_ancre_et_miroir() {
+    ARRET_ENTRE_ANCRE_ET_MIROIR.store(1, Ordering::SeqCst);
+}
+
+/// À appeler entre l'ancre composite et le miroir de colonne.
+#[doc(hidden)]
+#[inline]
+pub fn point_entre_ancre_et_miroir() {
+    if ARRET_ENTRE_ANCRE_ET_MIROIR.load(Ordering::Relaxed) == 1 {
+        std::process::abort();
+    }
+}

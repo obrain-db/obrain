@@ -214,6 +214,10 @@ pub fn reinforce(
 
     // UNE mutation atomique porte tout l'état temporel.
     write_anchor(sub, node_id, nouvelle, now_micros, t_hi, h);
+    // Point d'injection (test de durabilité) : un SIGKILL ICI laisse l'ancre
+    // écrite mais pas le miroir — la lecture expose alors 0,5 ou 0,75, jamais
+    // une ancre déchirée (0,375 / 1,0).
+    obrain_common::utils::panne::point_entre_ancre_et_miroir();
     // Miroir de colonne, best-effort : la lecture ne dépend pas de lui.
     let _ = sub.set_node_energy_f32(node_id, nouvelle as f32);
     Some(nouvelle)
