@@ -314,6 +314,38 @@ pub enum SubstrateError {
     #[error("tenant {0} irrecevable comme principal (sentinelle non-migre reservee)")]
     PrincipalIrrecevable(u32),
 
+    /// ── UNE TÊTE DE CHAÎNE POINTE SUR UNE PAGE RÉSERVÉE JAMAIS ÉCRITE ─────
+    ///
+    /// `append_entry_inner` lit la page de tête (`read_page(h)`). Quand cette
+    /// page est en magic 0 (jamais écrite) MAIS que son index est SOUS la
+    /// frontière d'allocation (`BorneAllocation::pages_props` / miroir local),
+    /// ce n'est PAS une valeur parasite de base héritée — celles-ci tombent
+    /// AU-DESSUS de la frontière, puisque la frontière est par construction le
+    /// premier index jamais alloué. C'est une page RÉSERVÉE qu'aucun écrivain
+    /// n'a jamais remplie : un écrivain tué (`kill -9`) entre la réservation
+    /// (`reserver_et_avancer`) et l'écriture, ou un `flush` qui a synchronisé
+    /// les têtes avant la zone de propriétés.
+    ///
+    /// Traiter cette tête comme ABSENTE (sémantique 19/08) allouait une page
+    /// neuve SANS chaînage sur l'ancienne : toute la chaîne antérieure devenait
+    /// inatteignable, en silence (le journal était en `debug!`). On refuse
+    /// donc, en le nommant — rien n'est écrit, la chaîne antérieure reste
+    /// intacte. L'appelant de plus haut niveau (`set_node_property`) compte le
+    /// refus (`v2_appends_refuses`) et replie sur la DashMap : la valeur n'est
+    /// pas perdue, et le refus devient VISIBLE au lieu d'une perte muette.
+    #[error(
+        "tête de chaîne de propriétés INEXPLOITABLE : la page {page} du propriétaire \
+         {demandeur} est en magic 0 sous la frontière d'allocation {frontiere} — page \
+         RÉSERVÉE mais jamais écrite (écrivain tué, ou flush ayant synchronisé les têtes \
+         avant la zone de propriétés). Repartir sur une page neuve sans chaînage rendrait \
+         la chaîne antérieure inatteignable en silence : refus nommé, rien n'est écrit"
+    )]
+    TeteInexploitable {
+        page: u32,
+        demandeur: u32,
+        frontiere: u32,
+    },
+
     /// Le parcours a ete INTERROMPU par une annulation cooperative.
     ///
     /// N'est PAS une erreur de stockage : rien n'est corrompu, rien n'a

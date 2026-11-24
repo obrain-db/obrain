@@ -1265,6 +1265,7 @@ impl PropsZone {
             // Échouer, à l inverse, condamnerait toute base héritée à rester
             // en DashMap — ce qui est précisément ce qu on cherche à supprimer.
             let lecture = self.read_page(h);
+            let frontiere = self.frontiere_pages();
             let tete = match &lecture {
                 Err(raison) => Err(format!("{raison}")),
                 Ok(p) => match p.owner_kind() {
@@ -1280,6 +1281,30 @@ impl PropsZone {
                     Some(_) => Ok(*p),
                 },
             };
+            // ── (obrain#389) MAGIC 0 SOUS LA FRONTIÈRE : PERTE SILENCIEUSE ──
+            //
+            // Une tête en magic 0 dont l'index est SOUS la frontière d'allocation
+            // (`frontiere_pages`) n'est PAS une valeur parasite de base héritée :
+            // la frontière est, par construction, le premier index jamais alloué,
+            // donc les valeurs parasites d'avant T17f tombent AU-DESSUS. Une page
+            // sous la frontière en magic 0 est une page RÉSERVÉE (`reserver_et_avancer`
+            // / `allouer_index_pages`) mais jamais écrite — écrivain tué, ou flush
+            // ayant msync les têtes avant la zone de propriétés.
+            //
+            // La traiter comme une tête ABSENTE (sémantique 19/08) allouait une page
+            // neuve SANS chaînage et rendait la chaîne antérieure inatteignable, en
+            // silence (le journal était en `debug!`). On REFUSE à la place, en le
+            // nommant : rien n'est écrit, la chaîne antérieure reste intacte.
+            if let Ok(p) = &lecture
+                && p.header.magic == 0
+                && h < frontiere
+            {
+                return Err(SubstrateError::TeteInexploitable {
+                    page: h,
+                    demandeur: owner_id,
+                    frontiere,
+                });
+            }
             let mut page = match tete {
                 Ok(p) => p,
                 Err(raison) => {
@@ -3007,6 +3032,60 @@ mod tests {
             .expect("une page jamais écrite doit repartir sur une page neuve");
         assert_eq!(pz.read_page(h2).unwrap().header.node_id, 12);
         assert_eq!(pz.collect_entries(Some(h2)).unwrap(), vec![entry.clone()]);
+    }
+
+    /// (obrain#389) Une tête qui pointe sur une page RÉSERVÉE mais jamais
+    /// écrite (magic 0, index SOUS la frontière d'allocation) n'est PAS une
+    /// valeur parasite de base héritée — c'est le résidu d'un écrivain tué
+    /// (`kill -9`) entre la réservation et l'écriture, ou d'un `flush` qui a
+    /// synchronisé les têtes avant la zone de propriétés.
+    ///
+    /// AVANT le correctif, `append_entry_inner` traitait cette tête comme
+    /// ABSENTE : il allouait une page neuve SANS chaînage sur l'ancienne, et
+    /// la chaîne antérieure (ici la propriété `a`) devenait inatteignable,
+    /// SANS aucune erreur (le journal était en `debug!`). Ce test verrouille
+    /// le refus nommé : la chaîne antérieure reste intacte, rien n'est écrit.
+    #[test]
+    fn tete_sur_page_reservee_jamais_ecrite_est_refusee_sans_perdre_la_chaine() {
+        let (_sf, mut pz) = open_zone();
+        let a = PropertyEntry::new(1, PropertyValue::I64(7));
+        let b = PropertyEntry::new(2, PropertyValue::I64(8));
+
+        // Nœud 1 porte une chaîne antérieure (tête = page 1).
+        let tete_anterieure = pz.append_entry_node(1, None, &a).unwrap();
+
+        // Un écrivain tué -9 laisse une tête durable pointant sur une page
+        // RÉSERVÉE mais jamais écrite : l'index est sous la frontière, le
+        // magic est 0. `reserver_et_avancer` est exactement l'API de
+        // réservation concernée (elle avance le curseur sans écrire la page).
+        let (reservee, _tas) = pz.reserver_et_avancer(1, 0).unwrap();
+        assert_eq!(pz.read_page(reservee).unwrap().header.magic, 0);
+        assert!(
+            reservee < pz.frontiere_pages(),
+            "le scénario exige une page réservée SOUS la frontière"
+        );
+
+        // AVANT le correctif : `Ok(tête neuve)` et la propriété `a` devenait
+        // inatteignable en silence. APRÈS : erreur nommée, rien n'est écrit.
+        let res = pz.append_entry_inner(1, OwnerKind::Node, Some(reservee), &b);
+        match res {
+            Err(SubstrateError::TeteInexploitable {
+                page,
+                demandeur,
+                frontiere,
+            }) => {
+                assert_eq!(page, reservee);
+                assert_eq!(demandeur, 1);
+                assert_eq!(frontiere, pz.frontiere_pages());
+            }
+            autre => panic!("attendu SubstrateError::TeteInexploitable, reçu {autre:?}"),
+        }
+
+        // La chaîne antérieure est restée atteignable : aucune perte muette.
+        assert_eq!(
+            pz.collect_entries(Some(tete_anterieure)).unwrap(),
+            vec![a.clone()]
+        );
     }
 
     #[test]
