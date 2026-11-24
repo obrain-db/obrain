@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use web_time::Instant;
 
+use crate::decay_law::{DecayLaw, epoch_secs_to_micros, unix_micros};
 use crate::store_trait::{
     OptionalGraphStore, PROP_ENERGY, PROP_ENERGY_LAST_ACTIVATED_EPOCH, epoch_to_instant,
     load_node_f64, now_epoch_secs, persist_node_f64,
@@ -159,6 +160,17 @@ impl NodeEnergy {
         self.last_activated = now;
     }
 
+    /// Matérialise la décroissance jusqu'à `now` et déplace l'ancre.
+    ///
+    /// Sert au chemin sans substrat, où l'ancre est un `Instant` : c'est
+    /// légitime DANS une session (la loi ne dépend que de `Δt`), mais cette
+    /// ancre ne survit pas au processus — en mode substrat l'ancre est un
+    /// epoch Unix persisté (voir [`crate::decay_law`]).
+    pub fn advance_to(&mut self, now: Instant) {
+        self.energy = self.energy_at(now);
+        self.last_activated = now;
+    }
+
     /// Returns the stored (non-decayed) energy value.
     pub fn raw_energy(&self) -> f64 {
         self.energy
@@ -261,14 +273,22 @@ impl EnergyStore {
     /// [`SubstrateStore::set_node_energy_f32`](obrain_substrate::SubstrateStore::set_node_energy_f32). The in-memory `DashMap`
     /// cache is retained as a warm-read accelerator.
     ///
-    /// Decay semantics shift from lazy-per-read (legacy) to eager-periodic-
-    /// batch — callers must invoke [`Self::decay_all`] on a schedule (the
-    /// Consolidator Thinker from T13 owns this cadence at runtime).
+    /// **Ancre physique (2026-11-24).** `SubstrateStore` implémente déjà
+    /// `GraphStoreMut`, donc le canal de propriétés est disponible : on le
+    /// rattache ici pour que l'instant de référence
+    /// (`_cog_energy_last_activated_epoch`, secondes epoch `f64`) soit écrit à
+    /// chaque boost et relu à chaque lecture. Sans ce rattachement il n'existe
+    /// AUCUN endroit où écrire l'ancre : la colonne se relit telle quelle au
+    /// redémarrage et l'énergie est figée (défaut mesuré : +12 700 % d'erreur
+    /// à 168 h pour une demi-vie de 24 h). La décroissance n'a donc plus
+    /// besoin d'une cadence pour être JUSTE ; [`Self::decay_tick`] ne sert plus
+    /// qu'à faire vieillir les nœuds que personne ne lit.
     #[cfg(feature = "substrate")]
     pub fn with_substrate(
         config: EnergyConfig,
         substrate: Arc<obrain_substrate::SubstrateStore>,
     ) -> Self {
+        let graph_store: Arc<dyn obrain_core::graph::GraphStoreMut> = substrate.clone();
         Self {
             nodes: DashMap::new(),
             #[cfg(feature = "synapse")]
@@ -276,7 +296,7 @@ impl EnergyStore {
             access_counter: AtomicU64::new(0),
             max_cache_entries: 0,
             config,
-            graph_store: None,
+            graph_store: Some(graph_store),
             substrate: Some(substrate),
         }
     }
@@ -328,18 +348,17 @@ impl EnergyStore {
     /// Returns the current energy for a node.
     ///
     /// In **legacy mode**, decay is applied on read via `NodeEnergy::current_energy()`.
-    /// In **substrate-backed mode**, the raw column value is returned — decay
-    /// is eager/batched (see [`Self::decay_all`]). Returns `0.0` if the node
-    /// has never been tracked (or has tombstoned / missing column).
+    /// In **substrate-backed mode**, the value returned is
+    /// `E_ref · 2^(-Δt / H)` where `E_ref` is the column and `t_ref` the
+    /// persisted epoch anchor — so the decay is correct even if no tick ran,
+    /// even across a restart. Returns `0.0` if the node has never been tracked
+    /// (or has tombstoned / missing column).
     pub fn get_energy(&self, node_id: NodeId) -> f64 {
-        // Substrate-backed: column is source of truth.
+        // Substrate-backed: column = E_ref, property = t_ref.
         #[cfg(feature = "substrate")]
         if let Some(sub) = self.substrate.as_ref() {
-            match sub.get_node_energy_f32(node_id) {
-                Ok(Some(v)) => return v as f64,
-                Ok(None) => return 0.0,
-                Err(_) => return 0.0,
-            }
+            let law = DecayLaw::new(self.config.default_half_life);
+            return crate::decay_clock::current_energy(sub, node_id, &law).unwrap_or(0.0);
         }
 
         if let Some(entry) = self.nodes.get(&node_id) {
@@ -376,12 +395,21 @@ impl EnergyStore {
 
     /// Boosts a node's energy by `amount`.
     ///
-    /// **Substrate mode**: dispatches to
-    /// [`SubstrateStore::boost_node_energy_f32`](obrain_substrate::SubstrateStore::boost_node_energy_f32) which logs an
-    /// `EnergyReinforce` WAL record + mutates the u16 Q1.15 column.
-    /// The column saturates at `config.max_energy` clamped to the Q1.15
-    /// range (`[0, 1.0]` — values > 1.0 in the legacy config are silently
-    /// clamped by the fixed-point encoding).
+    /// **Substrate mode**: lit la colonne (`E_ref`), applique la décroissance
+    /// écoulue depuis l'ancre persistée, ajoute `amount`, clampe, puis écrit
+    /// colonne ET ancre (`EnergyReinforce` + `PropSetInline`). La valeur rendue
+    /// par [`Self::get_energy`] est donc toujours cohérente avec l'ancre.
+    ///
+    /// **Saturation (choix explicite).** La colonne Q1.15 porte `[0, 1]` : un
+    /// boost sur un nœud déjà à 1,0 ne peut PAS s'accumuler, et c'est
+    /// irréversible — l'information « ce nœud a été boosté 5 fois plutôt que 1 »
+    /// est perdue. On ne compense pas en gonflant la valeur (elle est le
+    /// multiplicateur de la loi) ni en trichant sur l'ancre : les trois
+    /// régimes sont distincts et testés (`tests/decay_regimes_test.rs`) —
+    /// sous le seuil, au seuil, au-dessus. Seule la borne haute est
+    /// destructive, et elle l'est de façon uniforme : un nœud saturé et un
+    /// nœud boosté une fois ne sont PAS distinguables dans la colonne, mais
+    /// ils le sont par la date de leur dernière activation.
     ///
     /// **Legacy mode**: if the node is not yet tracked, it is created with
     /// the boost as initial energy. The new energy value is written through
@@ -395,20 +423,21 @@ impl EnergyStore {
         // mutation.
         #[cfg(feature = "substrate")]
         if let Some(sub) = self.substrate.as_ref() {
-            // Q1.15 tops out at ~1.0; clamp max_energy into that range.
-            let max_q = max_energy.min(1.0) as f32;
-            let amt = amount as f32;
-            if let Ok(Some(new_v)) = sub.boost_node_energy_f32(node_id, amt, max_q) {
-                // Sync cache to reflect the durable value (for snapshot/len parity).
+            let law = DecayLaw::new(self.config.default_half_life);
+            let now = unix_micros();
+            // `reinforce` rend `None` sur un slot mort ou non alloué — même
+            // contrat que l'ancien `boost_node_energy_f32`.
+            if let Some(nouvelle) =
+                crate::decay_clock::reinforce(sub, node_id, amount, &law, max_energy, now)
+            {
+                // Cache chaud, pour la parité de `len()`/`snapshot()` legacy.
                 self.nodes
                     .entry(node_id)
                     .and_modify(|e| {
-                        e.energy = new_v as f64;
+                        e.energy = nouvelle;
                         e.last_activated = Instant::now();
                     })
-                    .or_insert_with(|| {
-                        NodeEnergy::new(new_v as f64, self.config.default_half_life)
-                    });
+                    .or_insert_with(|| NodeEnergy::new(nouvelle, law.half_life()));
                 self.touch(node_id);
                 self.maybe_evict();
             }
@@ -446,8 +475,13 @@ impl EnergyStore {
     ///
     /// **Substrate mode**: dispatches to [`SubstrateStore::decay_all_energy`](obrain_substrate::SubstrateStore::decay_all_energy)
     /// which logs a single `EnergyDecay` WAL record and rewrites every live
-    /// slot in one pass. This is the replacement for the legacy
-    /// per-read exponential decay.
+    /// slot in one pass, puis avance toutes les ancres au même instant.
+    ///
+    /// **À ne pas câbler tel quel.** Ce facteur est CONSTANT : l'appliquer
+    /// toutes les 60 s avec `0.99` donne une demi-vie effective de 69 min au
+    /// lieu de 24 h (20,9× trop rapide), et l'appliquer une fois par
+    /// redémarrage donne l'erreur inverse. La production doit appeler
+    /// [`Self::decay_tick`], qui dérive le facteur de `Δt` et de la demi-vie.
     ///
     /// **Legacy mode**: iterates the hot cache and multiplies each
     /// `raw_energy`, resetting `last_activated` to `now`. The backing
@@ -457,6 +491,11 @@ impl EnergyStore {
         #[cfg(feature = "substrate")]
         if let Some(sub) = self.substrate.as_ref() {
             let _ = sub.decay_all_energy(factor as f32);
+            // La colonne vient d'être multipliée : les ancres doivent avancer
+            // au MÊME instant, sinon la lecture paresseuse rejouerait le même
+            // intervalle (double décroissance). C'est le seul cas où les
+            // ancres bougent en masse sans que chaque valeur soit recalculée.
+            self.reancrer(sub);
             // Invalidate cache — cheapest path is to clear, next read re-reads
             // the column. The cache is a best-effort accelerator in
             // substrate mode, not a source of truth.
@@ -472,18 +511,79 @@ impl EnergyStore {
         }
     }
 
+    /// Avance chaque nœud le long de SA PROPRE loi, depuis SA PROPRE ancre
+    /// persistée, jusqu'à l'instant courant. Rend le nombre de nœuds avancés.
+    ///
+    /// C'est le remplaçant de [`Self::decay_all`] côté production : le facteur
+    /// n'est plus un paramètre, il est calculé par nœud à partir de `Δt` et de
+    /// la demi-vie (`2^(-Δt/H)`). Une tique manquée — ou un redémarrage, ou
+    /// une machine éteinte une semaine — ne perd rien : la tique suivante voit
+    /// un `Δt` plus grand et applique la même loi. C'est la propriété de
+    /// semi-groupe de l'exponentielle, et c'est ce que le facteur fixe du stub
+    /// (0,99 toutes les 60 s) ne pouvait pas donner.
+    ///
+    /// `max_nodes` borne le travail d'une tique (0 = pas de borne) : les nœuds
+    /// non traités gardent leur ancre et sont rattrapés à la suivante, sans
+    /// erreur.
+    pub fn decay_tick(&self, max_nodes: usize) -> usize {
+        let law = DecayLaw::new(self.config.default_half_life);
+        #[cfg(feature = "substrate")]
+        if let Some(sub) = self.substrate.as_ref() {
+            return match crate::decay_clock::advance_all(sub, &law, max_nodes, unix_micros()) {
+                Ok(stats) => stats.advanced as usize,
+                Err(_) => 0,
+            };
+        }
+        // Chemin sans substrat : l'ancre est un `Instant` de la cache — même
+        // loi, seule horloge disponible.
+        let now = Instant::now();
+        let mut n = 0usize;
+        for mut entry in self.nodes.iter_mut() {
+            if max_nodes != 0 && n >= max_nodes {
+                break;
+            }
+            entry.advance_to(now);
+            n += 1;
+        }
+        n
+    }
+
+    /// Avance l'ancre de chaque nœud porteur d'énergie jusqu'à maintenant.
+    ///
+    /// Réservé à [`Self::decay_all`], où un seul facteur a été appliqué à
+    /// toute la colonne : dans ce cas précis les ancres doivent bouger en
+    /// masse. Les nœuds d'énergie nulle sont sautés (la loi y est un point
+    /// fixe, réécrire leur ancre serait deux écritures pour rien).
+    #[cfg(feature = "substrate")]
+    fn reancrer(&self, sub: &obrain_substrate::SubstrateStore) -> usize {
+        let now = unix_micros();
+        let Ok(slots) = sub.iter_live_node_energies() else {
+            return 0;
+        };
+        let mut n = 0;
+        for (id, e) in slots {
+            if e <= 0.0 {
+                continue;
+            }
+            crate::decay_clock::persist_anchor(sub, id, now);
+            n += 1;
+        }
+        n
+    }
+
     /// Returns all node IDs whose current energy is below `threshold`.
     pub fn list_low_energy(&self, threshold: f64) -> Vec<NodeId> {
         #[cfg(feature = "substrate")]
-        if let Some(sub) = self.substrate.as_ref() {
-            return match sub.iter_live_node_energies() {
-                Ok(pairs) => pairs
-                    .into_iter()
-                    .filter(|(_, e)| (*e as f64) < threshold)
-                    .map(|(id, _)| id)
-                    .collect(),
-                Err(_) => Vec::new(),
-            };
+        if self.substrate.is_some() {
+            // Passe par `snapshot` : la loi doit être appliquée AVANT le
+            // seuil, sinon un nœud qui a décru sous le seuil depuis la
+            // dernière tique échappe à l'archivage.
+            return self
+                .snapshot()
+                .into_iter()
+                .filter(|(_, e)| *e < threshold)
+                .map(|(id, _)| id)
+                .collect();
         }
 
         self.nodes
@@ -564,18 +664,45 @@ impl EnergyStore {
 
     /// Returns all tracked node IDs with their current energy.
     ///
-    /// **Substrate mode**: iterates the authoritative on-disk column
-    /// (O(N) mmap scan of live non-tombstoned slots). Tombstoned nodes and
-    /// slots beyond the high-water mark are excluded.
+    /// **Substrate mode**: itère la colonne autoritaire (O(N) en mmap sur les
+    /// slots vivants non enterrés) et applique la loi jusqu'à maintenant. Les
+    /// ancres sont lues en UN lot (`get_node_property_batch`) : N valeurs pour
+    /// une seule acquisition de verrou, pas N.
     ///
     /// **Legacy mode**: snapshots the DashMap cache, applying decay on read.
     pub fn snapshot(&self) -> Vec<(NodeId, f64)> {
         #[cfg(feature = "substrate")]
         if let Some(sub) = self.substrate.as_ref() {
-            return match sub.iter_live_node_energies() {
-                Ok(pairs) => pairs.into_iter().map(|(id, e)| (id, e as f64)).collect(),
-                Err(_) => Vec::new(),
+            let Ok(pairs) = sub.iter_live_node_energies() else {
+                return Vec::new();
             };
+            let law = DecayLaw::new(self.config.default_half_life);
+            let now = unix_micros();
+            let ids: Vec<NodeId> = pairs.iter().map(|(id, _)| *id).collect();
+            let pk = obrain_common::types::PropertyKey::from(PROP_ENERGY_LAST_ACTIVATED_EPOCH);
+            let ancres = self
+                .graph_store
+                .as_ref()
+                .map(|gs| gs.get_node_property_batch(&ids, &pk))
+                .unwrap_or_default();
+            return pairs
+                .into_iter()
+                .enumerate()
+                .map(|(i, (id, e))| {
+                    let e_ref = e as f64;
+                    let t_ref = ancres
+                        .get(i)
+                        .and_then(|v| v.as_ref())
+                        .and_then(|v| v.as_float64())
+                        .filter(|s| s.is_finite() && *s > 0.0)
+                        .map(epoch_secs_to_micros);
+                    let e_now = match t_ref {
+                        Some(t) => law.energy_at(e_ref, crate::decay_law::elapsed_since(t, now)),
+                        None => e_ref,
+                    };
+                    (id, e_now)
+                })
+                .collect();
         }
 
         self.nodes

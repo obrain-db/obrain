@@ -174,6 +174,16 @@ pub mod engine;
 pub mod error;
 pub mod store_trait;
 
+/// Loi de décroissance `E(t) = E_ref · 2^(-Δt / H)` et horloge PHYSIQUE
+/// (epoch Unix, persistable). Zéro dépendance : compilé dès que l'énergie ou
+/// un penseur en a besoin.
+pub mod decay_law;
+
+/// Matérialisation de la décroissance sur la colonne d'énergie du substrat
+/// (ancre lue/écrite dans la zone de propriétés).
+#[cfg(feature = "substrate")]
+pub mod decay_clock;
+
 // ---------------------------------------------------------------------------
 // Re-exports
 // ---------------------------------------------------------------------------
