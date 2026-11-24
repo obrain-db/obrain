@@ -1036,3 +1036,150 @@ fn t8b_les_pages_d_un_ecrivain_tue_restent_reservees_et_un_troisieme_alloue_au_d
         &ecarts[..ecarts.len().min(6)]
     );
 }
+
+// ===========================================================================
+// T8c — UN IMPORT EN LOT ET UN ÉCRIVAIN UNITAIRE EN MÊME TEMPS (MP-3, revue)
+// ===========================================================================
+//
+// t8 et t8b n'exercent que le chemin UNITAIRE (`set_node_property`). L'import
+// en lot (`bulk_import_node_props`) accumule ses pages neuves de tas dans un
+// tampon et les écrit d'UN bloc depuis `debut` : il suppose les index CONTIGUS.
+// Avec une borne partagée, un pair peut recevoir une page entre deux des
+// nôtres ; le bloc écrirait alors par-dessus la page du pair, et notre propre
+// page suivante resterait à zéro (défaut relevé par la revue indépendante du
+// 24/11, jamais couvert par un test jusqu'ici).
+//
+// Valeurs de 200 octets (sous le seuil blob, donc dans le TAS) : un paquet de
+// nœuds remplit plusieurs pages de tas, ce qui donne au pair le temps d'en
+// réserver entre elles.
+
+/// Barrière de départ : sans elle, le premier enfant peut finir avant que le
+/// second n'ouvre la base, et le test ne prouve plus rien (constaté : vert en
+/// 0,07 s sans recouvrement). Chaque enfant ouvre, annonce « PRET », puis attend
+/// le drapeau que le parent pose quand les DEUX sont prêts.
+fn barriere_t8c() {
+    annoncer("PRET");
+    attendre_fichier(Path::new(&env_obligatoire("MWB_GO")), "le départ de t8c");
+}
+
+fn valeur_t8c(role: &str, i: u64, cle: &str) -> String {
+    format!("{role}-{i}-{cle}-{}", "y".repeat(180))
+}
+
+/// Enfant « lot » : crée `n` nœuds, puis importe leurs propriétés en LOT, une
+/// séquence d'identifiants consécutifs par appel (l'import exige des slots
+/// contigus). Annonce les ids dans l'ordre de création.
+fn enfant_import_en_lot(dir: &Path, role: &str, n: u64) -> ! {
+    let s = SubstrateStore::open_shared_write(dir).expect("open_shared_write (lot)");
+    barriere_t8c();
+    let ids: Vec<u64> = (0..n).map(|_| s.create_node(&["MW"]).0).collect();
+    let mut debut = 0usize;
+    while debut < ids.len() {
+        let mut fin = debut + 1;
+        while fin < ids.len() && ids[fin] == ids[fin - 1] + 1 {
+            fin += 1;
+        }
+        let paquet: Vec<Vec<(&str, Value)>> = (debut..fin)
+            .map(|i| {
+                CLES_T8
+                    .iter()
+                    .map(|cle| (*cle, Value::String(valeur_t8c(role, i as u64, cle).into())))
+                    .collect()
+            })
+            .collect();
+        s.bulk_import_node_props(ids[debut] as u32, &paquet)
+            .expect("bulk_import_node_props");
+        debut = fin;
+    }
+    let liste = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    annoncer(&format!("IDS {liste}"));
+    std::process::exit(0);
+}
+
+/// Enfant « unitaire » du même format de valeurs (200 o, dans le tas).
+fn enfant_unitaire_t8c(dir: &Path, role: &str, n: u64) -> ! {
+    let s = SubstrateStore::open_shared_write(dir).expect("open_shared_write (unitaire)");
+    barriere_t8c();
+    let mut ids = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let id = s.create_node(&["MW"]);
+        for cle in CLES_T8 {
+            s.set_node_property(id, cle, Value::String(valeur_t8c(role, i, cle).into()));
+        }
+        ids.push(id.0);
+    }
+    let liste = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    annoncer(&format!("IDS {liste}"));
+    std::process::exit(0);
+}
+
+#[test]
+fn t8c_un_import_en_lot_et_un_ecrivain_unitaire_ne_s_ecrasent_pas() {
+    if let Some(r) = role() {
+        let dir = PathBuf::from(env_obligatoire("MWB_DIR"));
+        let n: u64 = env_obligatoire("MWB_N").parse().unwrap();
+        let tag = env_obligatoire("MWB_TAG");
+        match r.as_str() {
+            "lot" => enfant_import_en_lot(&dir, &tag, n),
+            "unitaire" => enfant_unitaire_t8c(&dir, &tag, n),
+            autre => panic!("rôle inconnu {autre}"),
+        }
+    }
+    const TEST: &str = "t8c_un_import_en_lot_et_un_ecrivain_unitaire_ne_s_ecrasent_pas";
+    let td = tempfile::tempdir().unwrap();
+    let dir = td.path().join("store-t8c");
+    creer_store(&dir);
+    let go = td.path().join("go-t8c");
+    let lancer = |role: &str, tag: &str, n: u64| {
+        Enfant::lancer(
+            TEST,
+            &[
+                ("MWB_ROLE", role.into()),
+                ("MWB_TAG", tag.into()),
+                ("MWB_DIR", dir.display().to_string()),
+                ("MWB_N", n.to_string()),
+                ("MWB_GO", go.display().to_string()),
+            ],
+        )
+    };
+    let mut l = lancer("lot", "L", 400);
+    let mut u = lancer("unitaire", "U", 400);
+    l.attendre_ligne("PRET");
+    u.attendre_ligne("PRET");
+    std::fs::write(&go, b"go").expect("poser le drapeau de départ");
+    let ids_l = ids_depuis(&l.attendre_ligne("IDS "));
+    let ids_u = ids_depuis(&u.attendre_ligne("IDS "));
+    l.terminer();
+    u.terminer();
+
+    let s = SubstrateStore::open(&dir).expect("réouverture exclusive");
+    let mut ecarts = Vec::new();
+    for (tag, ids) in [("L", &ids_l), ("U", &ids_u)] {
+        for (i, id) in ids.iter().enumerate() {
+            for cle in CLES_T8 {
+                let attendu = Value::String(valeur_t8c(tag, i as u64, cle).into());
+                let lu = s.get_node_property(NodeId(*id), &PropertyKey::new(cle));
+                if lu.as_ref() != Some(&attendu) {
+                    ecarts.push(format!(
+                        "{tag} nœud {id} clé {cle} : {}",
+                        match &lu {
+                            None => "ABSENTE".into(),
+                            Some(Value::String(v)) => format!("{:?}", &v[..v.len().min(20)]),
+                            Some(autre) => format!("{autre:?}"),
+                        }
+                    ));
+                }
+            }
+        }
+    }
+    let n_ecarts = ecarts.len();
+    assert_eq!(
+        n_ecarts,
+        0,
+        "{n_ecarts} valeur(s) sur {} perdues ou remplacées : un lot de pages de tas \
+         a été écrit d'un bloc sur des index qu'un pair avait reçus (premiers \
+         écarts : {:#?})",
+        2 * 400 * CLES_T8.len(),
+        &ecarts[..ecarts.len().min(6)]
+    );
+}

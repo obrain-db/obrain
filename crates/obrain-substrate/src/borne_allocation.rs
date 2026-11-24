@@ -327,13 +327,31 @@ impl BorneAllocation {
         mot(&self.map, OFF_PUBLICATIONS).fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Force les pages sales de la borne vers le disque.
+    /// (MP-3) Comme [`Self::synchroniser`], mais l'erreur REMONTE : depuis que la
+    /// borne porte les curseurs de pages, sa durabilité avant celle des zones
+    /// est une exigence de correction en écriture partagée (voir `flush`).
+    pub fn synchroniser_durable(&self) -> SubstrateResult<()> {
+        self.map.flush()?;
+        Ok(())
+    }
+
+    /// Force les pages sales de la borne vers le disque, en IGNORANT l'échec.
     ///
-    /// Appelé aux points où le substrat est déjà en train de rendre tout le reste
-    /// durable (le flush). Ce n'est PAS une exigence de correction : la borne est
-    /// reconstruite depuis les zones à chaque ouverture. C'est une politesse —
-    /// sans elle, un redémarrage propre après un flush rejouerait le relevé des
-    /// zones pour rien.
+    /// Ce n'est PAS une exigence de correction pour les bornes d'IDENTIFIANTS
+    /// (`noeud`, `arete`, `engram`) : elles se reconstituent depuis les zones à
+    /// chaque ouverture, donc les perdre ne coûte qu'un relevé.
+    ///
+    /// Ce n'est plus vrai depuis MP-3 des curseurs de PAGES (`pages_props`,
+    /// `pages_tas`) : une page réservée mais pas encore écrite laisse un TROU,
+    /// et la frontière recalculée à l'ouverture (préfixe contigu supposé) passe
+    /// SOUS ce trou. Sans la borne pour la relever (`fetch_max`), l'ouverture
+    /// réallouerait des pages vivantes. Ces deux mots-là exigent
+    /// [`Self::synchroniser_durable`], appelée AVANT les zones.
+    ///
+    /// Les appelants qui ne peuvent pas échouer (chemin « store propre » du
+    /// dictionnaire, où le WAL est immobile donc aucune réservation n'a eu lieu
+    /// depuis le dernier `flush`) peuvent garder cette variante : la borne y est
+    /// déjà durable.
     pub fn synchroniser(&self) {
         let _ = self.map.flush();
     }

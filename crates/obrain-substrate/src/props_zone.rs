@@ -850,14 +850,21 @@ impl PropsZone {
             return self.write_heap_page(idx, page);
         }
         self.ensure_heap_page_addressable(idx)?;
+        // (MP-3, revue du 24/11 — B1) Même règle que `poser_page_remplie` : avec
+        // une borne partagée, un pair peut avoir reçu une page entre deux des
+        // nôtres. Écrire le bloc d'un seul tenant depuis `debut` écraserait sa
+        // page et laisserait la nôtre à zéro. Un `debug_assert` gardait ce cas,
+        // donc rien en release. Ce qui est accumulé part maintenant.
+        if !lot.neuves.octets.is_empty()
+            && lot.neuves.debut as usize + lot.neuves.octets.len() / HEAP_PAGE_SIZE != idx as usize
+        {
+            let debut = lot.neuves.debut as u64 * HEAP_PAGE_SIZE as u64;
+            self.heap.ecrire_a(debut, &lot.neuves.octets)?;
+            lot.neuves.octets.clear();
+        }
         if lot.neuves.octets.is_empty() {
             lot.neuves.debut = idx;
         }
-        debug_assert_eq!(
-            lot.neuves.debut as usize + lot.neuves.octets.len() / HEAP_PAGE_SIZE,
-            idx as usize,
-            "les pages de tas d'un lot sont contiguës"
-        );
         lot.neuves
             .octets
             .extend_from_slice(bytemuck::bytes_of(page));
@@ -2062,6 +2069,61 @@ impl PropsZone {
 mod tests {
     use super::*;
     use crate::page::{HeapRef, PropertyValue};
+
+    /// (MP-3, revue du 24/11 — B1) Un lot de pages de tas qui n'est plus
+    /// contigu ne doit pas être écrit d'un bloc. Le pair est SIMULÉ dans ce
+    /// processus : il réserve une page sur la borne partagée au milieu de notre
+    /// lot et y écrit sa propre page. Entre processus, la fenêtre est trop
+    /// étroite pour un test fiable (`t8c` reste vert 5/5 même avec une barrière
+    /// de départ) ; ici l'entrelacement est forcé, donc déterministe.
+    #[test]
+    fn mp3_un_lot_de_tas_n_ecrit_pas_sur_la_page_qu_un_pair_a_recue() {
+        let sf = SubstrateFile::open_tempfile().unwrap();
+        let mut pz = PropsZone::open(&sf).unwrap();
+        let td = tempfile::tempdir().unwrap();
+        let borne = std::sync::Arc::new(
+            crate::borne_allocation::BorneAllocation::ouvrir(td.path()).unwrap(),
+        );
+        pz.brancher_borne(std::sync::Arc::clone(&borne), true);
+
+        // Deux entrées par page de tas.
+        let charge = |i: u8| vec![b'a' + i; 1500];
+        let mut lot = TasEnLot::default();
+        let mut nos_refs = Vec::new();
+        for i in 0..2u8 {
+            nos_refs.push((pz.intern_bytes_en_lot(&mut lot, &charge(i)).unwrap(), i));
+        }
+        // Le PAIR reçoit la page suivante et l'écrit.
+        let page_du_pair = u32::try_from(borne.reserver_pages_tas(1)).unwrap();
+        let mut sienne = HeapPage::new(page_du_pair);
+        let off_pair = sienne.append(b"PAGE-DU-PAIR").unwrap();
+        sienne.seal_crc32();
+        pz.write_heap_page(page_du_pair, &sienne).unwrap();
+        // Nous continuons : nos pages suivantes sont au-delà de la sienne.
+        for i in 2..6u8 {
+            nos_refs.push((pz.intern_bytes_en_lot(&mut lot, &charge(i)).unwrap(), i));
+        }
+        pz.clore_tas_en_lot(&mut lot).unwrap();
+
+        assert_eq!(
+            pz.read_heap(HeapRef {
+                page_id: page_du_pair,
+                offset: off_pair,
+            })
+            .as_deref(),
+            Some(&b"PAGE-DU-PAIR"[..]),
+            "la page reçue par le pair a été écrasée par notre lot"
+        );
+        for (href, i) in nos_refs {
+            assert_ne!(href.page_id, page_du_pair, "nous n'écrivons jamais sa page");
+            assert_eq!(
+                pz.read_heap(href),
+                Some(charge(i)),
+                "notre entrée {i} (page {}) est illisible",
+                href.page_id
+            );
+        }
+    }
 
     // =================================================================
     // ETAPE 1 — DURABILITE

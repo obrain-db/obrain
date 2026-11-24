@@ -23,9 +23,10 @@ This project was forked from [GrafeoDB/grafeo](https://github.com/GrafeoDB/grafe
   vidé avant d'être écrit. Les pages réservées par un écrivain tué -9 restent
   réservées pour tous.
 - **Garantie** : propriétés posées par N processus sur des entités DISTINCTES,
-  sans perte ni écrasement (`mw_interprocess_phase_b::t8`, `t8b`). Reste hors
-  garantie : la même entité écrite par deux processus (voir
-  `docs/LIMITES-v0.0.1.md`).
+  sans perte ni écrasement (`mw_interprocess_phase_b::t8`, `t8b`, `t8c` : deux
+  écrivains, un écrivain tué -9 en pleine pose, et un import en lot concurrent
+  d'un écrivain unitaire). Reste hors garantie : la même entité écrite par deux
+  processus (voir `docs/LIMITES-v0.0.1.md`).
 
 ### Index spatial en GQL (PR #282)
 
