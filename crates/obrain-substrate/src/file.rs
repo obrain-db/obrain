@@ -277,30 +277,35 @@ fn verrouiller_bloquant_exclusif(_fichier: &File) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
+/// Rend le verrou exclusif tenu par la garde de croissance.
+///
+/// UNE seule fonction, les plateformes en `cfg` INTERNE : le portillon de
+/// couverture du code neuf exige que TOUTE fonction ajoutée apparaisse dans le
+/// rapport de mesure, et une fonction dont tout le corps est `cfg`-é hors de la
+/// plateforme mesurée n'y apparaît pas.
+///
+/// L'ÉCHEC EST IGNORÉ, volontairement : le verrou est de toute façon rendu à la
+/// fermeture du descripteur, et `LOCK_UN` sur un descripteur valide n'échoue pas
+/// en pratique. Une branche d'erreur serait du code qu'aucun test n'atteint.
 fn deverrouiller_bloquant_exclusif(fichier: &File) {
-    use std::os::unix::io::AsRawFd;
-    // L'ÉCHEC EST IGNORÉ, volontairement : le verrou est de toute façon rendu à
-    // la fermeture du descripteur, et `LOCK_UN` sur un descripteur valide
-    // n'échoue pas en pratique. Une branche d'erreur ici serait du code
-    // qu'aucun test ne peut atteindre — et le portillon de couverture du code
-    // neuf la refuserait, à juste titre.
-    //
-    // SAFETY: voir `verrouiller_bloquant_exclusif` (même descripteur).
-    unsafe {
-        libc::flock(fichier.as_raw_fd(), libc::LOCK_UN);
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: voir `verrouiller_bloquant_exclusif` (même descripteur).
+        unsafe {
+            libc::flock(fichier.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+    #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+    {
+        use fs2::FileExt;
+        let _ = fichier.unlock();
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = fichier;
     }
 }
-
-#[cfg(all(not(unix), not(target_arch = "wasm32")))]
-fn deverrouiller_bloquant_exclusif(fichier: &File) {
-    use fs2::FileExt;
-    // Même choix que côté unix : l'échec n'a pas d'issue utile pour l'appelant.
-    let _ = fichier.unlock();
-}
-
-#[cfg(target_arch = "wasm32")]
-fn deverrouiller_bloquant_exclusif(_fichier: &File) {}
 
 /// Garde d'un verrou EXCLUSIF inter-processus sur le descripteur d'une zone,
 /// tenu le temps d'une croissance (`grow_to`). Relâche le verrou au `drop`,
