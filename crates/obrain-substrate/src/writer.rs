@@ -107,6 +107,24 @@ pub struct Writer {
     /// (des pairs écrivent la zone sans passer par ce `Writer`). Voir
     /// [`crate::index_labels`].
     index_labels: crate::index_labels::IndexLabels,
+    /// Révision STRUCTURELLE locale (#292) : avance après chaque écriture qui
+    /// change ce que `CsrAdjacency::build` lit — drapeaux tombstone des nœuds
+    /// et des arêtes, poids et champs mutables d'arête. Ni `feature_epoch`
+    /// (qui ne suit que `ecrire_node`/`ecrire_edge`) ni la taille du WAL (nulle
+    /// sans fichier WAL, donc pour `open_memory`) ne les voient. Atome par
+    /// processus : les écritures d'un pair restent captées par la taille du
+    /// WAL. Voir `SubstrateStore::csr_cached`.
+    structure_rev: std::sync::atomic::AtomicU64,
+}
+
+/// Garde qui fait avancer `Writer::structure_rev` à la SORTIE de la fonction
+/// d'écriture (succès, retour anticipé ou erreur), donc après la mutation.
+struct RevisionStructure<'a>(&'a Writer);
+
+impl Drop for RevisionStructure<'_> {
+    fn drop(&mut self) {
+        self.0.note_structure_change();
+    }
 }
 
 #[derive(Default)]
@@ -212,6 +230,7 @@ impl Writer {
             simplex_index: Mutex::new(None),
             simplex_passes_cache: Mutex::new(None),
             index_labels: crate::index_labels::IndexLabels::new(index_labels_actif),
+            structure_rev: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -357,6 +376,21 @@ impl Writer {
     fn note_feature_mutation(&self) {
         let sub = self.substrate.lock();
         sub.feature_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Révision structurelle locale : voir le champ `structure_rev`.
+    pub fn structure_rev(&self) -> u64 {
+        self.structure_rev
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Marque un changement de ce que lit `CsrAdjacency::build`. À appeler
+    /// APRÈS l'écriture : un lecteur qui voit la nouvelle révision voit alors
+    /// forcément la nouvelle donnée (l'inverse figerait un CSR périmé sous une
+    /// clé fraîche).
+    fn note_structure_change(&self) {
+        self.structure_rev
             .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
@@ -619,6 +653,7 @@ impl Writer {
     /// crash — the tombstone is then implicit).
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn tombstone_node(&self, idx: u32) -> SubstrateResult<()> {
+        let _rev = RevisionStructure(self);
         let rec = WalRecord {
             lsn: 0,
             timestamp: unix_micros(),
@@ -664,6 +699,7 @@ impl Writer {
     /// migrer.
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn revive_node(&self, idx: u32) -> SubstrateResult<()> {
+        let _rev = RevisionStructure(self);
         let Some(cur) = self.read_node(idx)? else {
             return Ok(());
         };
@@ -712,6 +748,7 @@ impl Writer {
     /// de chainage qui a deja son verrou et ses invariants ailleurs.
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn revive_edge(&self, idx: u64) -> SubstrateResult<()> {
+        let _rev = RevisionStructure(self);
         let Some(cur) = self.read_edge(idx)? else {
             return Ok(());
         };
@@ -1137,6 +1174,7 @@ impl Writer {
     /// Replay restores the slot exactly as it was at commit time.
     #[tracing::instrument(level = "trace", skip(self, edge))]
     pub fn update_edge(&self, idx: u64, edge: EdgeRecord) -> SubstrateResult<()> {
+        let _rev = RevisionStructure(self);
         let rec = WalRecord {
             lsn: 0,
             timestamp: unix_micros(),
@@ -1167,6 +1205,7 @@ impl Writer {
     /// Silently no-ops if the slot is beyond the current zone length.
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn tombstone_edge(&self, idx: u64) -> SubstrateResult<()> {
+        let _rev = RevisionStructure(self);
         let rec = WalRecord {
             lsn: 0,
             timestamp: unix_micros(),
@@ -1493,6 +1532,7 @@ impl Writer {
     /// `crate::store::SubstrateStore::coact_reinforce` enforces typing.
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn coact_reinforce_at(&self, idx: u64, delta_q16: u16) -> SubstrateResult<u16> {
+        let _rev = RevisionStructure(self);
         self.with_edge_zone(|zf| {
             let offset = idx as usize * EdgeRecord::SIZE;
             ensure_room(zf, offset + EdgeRecord::SIZE, self.min_headroom)?;
@@ -1540,6 +1580,7 @@ impl Writer {
         edge_high_water: u64,
         coact_type_id: u16,
     ) -> SubstrateResult<()> {
+        let _rev = RevisionStructure(self);
         let rec = WalRecord {
             lsn: 0,
             timestamp: unix_micros(),
@@ -1562,6 +1603,7 @@ impl Writer {
     /// WAL payload: [`WalPayload::SynapseReinforce`].
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn reinforce_synapse(&self, idx: u64, new_weight_u16: u16) -> SubstrateResult<()> {
+        let _rev = RevisionStructure(self);
         let rec = WalRecord {
             lsn: 0,
             timestamp: unix_micros(),

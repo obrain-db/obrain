@@ -102,17 +102,18 @@ fn non_correlee_dans_return() {
     assert_eq!(rows, vec![vec![Value::Int64(2)]]);
 }
 
-/// Lié dehors ailleurs qu'au premier nœud : erreur nette, pas un résultat faux.
+/// Lié dehors ailleurs qu'au premier nœud (#355). Avant #355 cette forme était
+/// REFUSÉE (« erreur nette, pas un résultat faux ») ; l'ancrage sur le nœud lié
+/// la rend désormais. Le jeu de `base()` n'a qu'un seul lien `LINKS` vers un
+/// `Tag` (celui de `n5`) : le résultat exact est `n5`, ni plus ni moins.
 #[test]
-fn correlee_ailleurs_qu_au_premier_noeud_refusee() {
+fn correlee_ailleurs_qu_au_premier_noeud() {
     let db = base();
-    let err = db
-        .execute_cypher(
-            "MATCH (n:Note) WHERE size([(t:Tag)<-[:LINKS]-(n) | t.name]) > 0 RETURN n.id",
-        )
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("'n'"), "{err}");
+    let rows = lignes(
+        &db,
+        "MATCH (n:Note) WHERE size([(t:Tag)<-[:LINKS]-(n) | t.name]) > 0 RETURN n.id",
+    );
+    assert_eq!(rows, vec![vec![v("n5")]]);
 }
 
 /// Non corrélée : calculée UNE fois (produit avec une ligne), pas rejouée par

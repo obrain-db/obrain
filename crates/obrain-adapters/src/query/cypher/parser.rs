@@ -564,10 +564,14 @@ impl<'a> Parser<'a> {
             false
         };
 
-        let items = if is_wildcard {
-            Vec::new()
-        } else {
+        // `WITH *, expr AS alias` : le `*` peut etre suivi d'items supplementaires.
+        let items = if !is_wildcard {
             self.parse_projection_items()?
+        } else if self.current.kind == TokenKind::Comma {
+            self.advance();
+            self.parse_projection_items()?
+        } else {
+            Vec::new()
         };
 
         let where_clause = if self.current.kind == TokenKind::Where {

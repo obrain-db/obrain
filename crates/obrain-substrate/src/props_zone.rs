@@ -181,6 +181,17 @@ pub struct PropsZone {
     /// a T17d concern.
     next_page_idx: u32,
     next_heap_page_idx: u32,
+    /// (MP-3) Borne d'allocation PARTAGÉE entre processus. `None` en mode
+    /// mémoire : les deux curseurs ci-dessus suffisent alors, comme avant.
+    /// Présente, toute allocation d'index passe par `fetch_add` sur elle, et
+    /// les curseurs locaux deviennent des MIROIRS (jamais en avance sur elle).
+    borne: Option<std::sync::Arc<crate::borne_allocation::BorneAllocation>>,
+    /// (MP-3) Vrai si d'AUTRES processus peuvent écrire (`open_shared_write`) :
+    /// la page de queue du tas n'est alors reprise que si elle est à nous.
+    partage: bool,
+    /// (MP-3) Dernière page de tas allouée par CE processus : la seule qu'il
+    /// ait le droit de relire-modifier-réécrire en écriture partagée.
+    derniere_page_tas_locale: Option<u32>,
     /// (feat slots512-wiring, étape 5) Carrier packé « ouvert » :
     /// `(index du carrier, prochaine unité libre 1..=7)`. Réinitialisé à
     /// l'ouverture (None) — un carrier laissé à moitié plein par un arrêt
@@ -207,7 +218,95 @@ impl PropsZone {
             heap,
             next_page_idx,
             next_heap_page_idx,
+            borne: None,
+            partage: false,
+            derniere_page_tas_locale: None,
             carrier_pack_ouvert: None,
+        })
+    }
+
+    /// (MP-3) Branche la borne d'allocation PARTAGÉE. Publie d'abord les
+    /// curseurs locaux calculés depuis les magics (`fetch_max` : jamais en
+    /// arrière), puis adopte la borne, qui peut être EN AVANCE — pages
+    /// réservées par un pair, écrites ou pas encore. Toute allocation suivante
+    /// réserve sur elle. `partage` dit si d'autres processus peuvent écrire :
+    /// en exclusif, la page de queue du tas reste reprise comme avant.
+    pub(crate) fn brancher_borne(
+        &mut self,
+        borne: std::sync::Arc<crate::borne_allocation::BorneAllocation>,
+        partage: bool,
+    ) {
+        borne.publier_filigrane_pages_props(u64::from(self.next_page_idx));
+        borne.publier_filigrane_pages_tas(u64::from(self.next_heap_page_idx));
+        self.next_page_idx = self.next_page_idx.max(Self::en_u32(borne.pages_props()));
+        self.next_heap_page_idx = self.next_heap_page_idx.max(Self::en_u32(borne.pages_tas()));
+        self.borne = Some(borne);
+        self.partage = partage;
+    }
+
+    fn en_u32(v: u64) -> u32 {
+        u32::try_from(v).unwrap_or(u32::MAX)
+    }
+
+    /// (MP-3) LE point d'allocation d'index de pages de propriétés : rend le
+    /// début `d` d'une plage `[d, d+k)` que personne d'autre ne recevra. Avec
+    /// une borne : `fetch_add` partagé, puis le miroir local avance (jamais en
+    /// arrière). Sans borne : le curseur local, exactement comme avant.
+    fn allouer_index_pages(&mut self, k: u32) -> SubstrateResult<u32> {
+        let debut = match &self.borne {
+            Some(b) => b.reserver_pages_props(u64::from(k)),
+            None => u64::from(self.next_page_idx),
+        };
+        let fin = u32::try_from(debut.saturating_add(u64::from(k)))
+            .map_err(|_| SubstrateError::WalBadFrame("props zone page id overflow".into()))?;
+        self.next_page_idx = self.next_page_idx.max(fin);
+        Ok(fin - k)
+    }
+
+    /// Pendant de [`Self::allouer_index_pages`] pour les pages de tas.
+    fn allouer_index_pages_tas(&mut self, k: u32) -> SubstrateResult<u32> {
+        let debut = match &self.borne {
+            Some(b) => b.reserver_pages_tas(u64::from(k)),
+            None => u64::from(self.next_heap_page_idx),
+        };
+        let fin = u32::try_from(debut.saturating_add(u64::from(k)))
+            .map_err(|_| SubstrateError::WalBadFrame("heap zone page id overflow".into()))?;
+        self.next_heap_page_idx = self.next_heap_page_idx.max(fin);
+        if k > 0 {
+            self.derniere_page_tas_locale = Some(fin - 1);
+        }
+        Ok(fin - k)
+    }
+
+    /// (MP-3) Page de tas de queue dans laquelle CE processus peut encore
+    /// écrire. Sans écriture partagée : `next_heap_page_idx - 1`, comme avant.
+    /// En écriture partagée : seulement si c'est la dernière page que NOUS
+    /// avons allouée — relire-modifier-réécrire la page de queue d'un pair
+    /// écraserait ce qu'il y met.
+    fn page_tas_de_queue(&self) -> Option<u32> {
+        if self.next_heap_page_idx == 0 {
+            return None;
+        }
+        let tail = self.next_heap_page_idx - 1;
+        if !self.partage || self.derniere_page_tas_locale == Some(tail) {
+            Some(tail)
+        } else {
+            None
+        }
+    }
+
+    /// (MP-3) Frontière d'allocation des pages de propriétés : le maximum du
+    /// miroir local et de la borne partagée (des pairs ont pu réserver au-delà).
+    fn frontiere_pages(&self) -> u32 {
+        self.borne.as_ref().map_or(self.next_page_idx, |b| {
+            self.next_page_idx.max(Self::en_u32(b.pages_props()))
+        })
+    }
+
+    /// Pendant de [`Self::frontiere_pages`] pour le tas.
+    fn frontiere_tas(&self) -> u32 {
+        self.borne.as_ref().map_or(self.next_heap_page_idx, |b| {
+            self.next_heap_page_idx.max(Self::en_u32(b.pages_tas()))
         })
     }
 
@@ -351,11 +450,11 @@ impl PropsZone {
     }
 
     pub fn allocated_page_count(&self) -> u32 {
-        self.next_page_idx.saturating_sub(1)
+        self.frontiere_pages().saturating_sub(1)
     }
 
     pub fn allocated_heap_page_count(&self) -> u32 {
-        self.next_heap_page_idx
+        self.frontiere_tas()
     }
 
     /// Shrink both zone files to their live extent (compact time).
@@ -372,11 +471,11 @@ impl PropsZone {
     /// the zones (same discipline as `grow_to`). Safe at `compact`, where
     /// the store is exclusively held.
     pub fn shrink_to_fit(&mut self) -> SubstrateResult<()> {
-        let props_target = u64::from(self.next_page_idx) * PAGE_SIZE as u64;
+        let props_target = u64::from(self.frontiere_pages()) * PAGE_SIZE as u64;
         if props_target < self.props.len() {
             self.props.shrink_to(props_target)?;
         }
-        let heap_target = u64::from(self.next_heap_page_idx) * HEAP_PAGE_SIZE as u64;
+        let heap_target = u64::from(self.frontiere_tas()) * HEAP_PAGE_SIZE as u64;
         if heap_target < self.heap.len() {
             self.heap.shrink_to(heap_target)?;
         }
@@ -519,11 +618,6 @@ impl PropsZone {
         Ok(a || b)
     }
 
-    /// Fin courante des pages de propriétés et du tas (prochains index libres).
-    pub(crate) fn fins(&self) -> (u32, u32) {
-        (self.next_page_idx, self.next_heap_page_idx)
-    }
-
     /// (T27) Écrit en PARALLÈLE des blocs de pages déjà construits, chacun à
     /// son index de départ, puis avance les fins de zone. Les blocs doivent
     /// couvrir EXACTEMENT `[fin_courante, fin_props)` et `[fin_tas_courante,
@@ -611,15 +705,17 @@ impl PropsZone {
         pages_props: u32,
         pages_tas: u32,
     ) -> SubstrateResult<(u32, u32)> {
-        let (debut_pages, debut_tas) = self.fins();
+        // (MP-3) La réservation est sur la borne PARTAGÉE quand elle existe :
+        // deux processus obtiennent des plages disjointes, pas seulement deux
+        // threads.
+        let debut_pages = self.allouer_index_pages(pages_props)?;
+        let debut_tas = self.allouer_index_pages_tas(pages_tas)?;
         if pages_props > 0 {
             self.ensure_page_addressable(debut_pages.saturating_add(pages_props - 1))?;
         }
         if pages_tas > 0 {
             self.ensure_heap_page_addressable(debut_tas.saturating_add(pages_tas - 1))?;
         }
-        self.next_page_idx = debut_pages.saturating_add(pages_props);
-        self.next_heap_page_idx = debut_tas.saturating_add(pages_tas);
         Ok((debut_pages, debut_tas))
     }
 
@@ -633,11 +729,7 @@ impl PropsZone {
         suivante: Option<u32>,
         tampon: &mut TamponPages,
     ) -> SubstrateResult<u32> {
-        let idx = self.next_page_idx;
-        self.next_page_idx = self
-            .next_page_idx
-            .checked_add(1)
-            .ok_or_else(|| SubstrateError::WalBadFrame("props zone page id overflow".into()))?;
+        let idx = self.allouer_index_pages(1)?;
         if let Some(prev) = suivante {
             page.header.next_page = encode_page_id(prev);
         }
@@ -647,14 +739,18 @@ impl PropsZone {
             self.write_page(idx, page)?;
             return Ok(idx);
         }
+        // (MP-3) Avec une borne partagée, un pair peut avoir réservé des pages
+        // entre deux des nôtres : le lot n'est alors plus contigu, et l'écrire
+        // d'un bloc depuis `tampon.debut` écraserait les pages du pair. Ce qui
+        // est accumulé part maintenant ; le lot repart de cette page.
+        if !tampon.octets.is_empty()
+            && tampon.debut as usize + tampon.octets.len() / PAGE_SIZE != idx as usize
+        {
+            self.vider_pages(tampon)?;
+        }
         if tampon.octets.is_empty() {
             tampon.debut = idx;
         }
-        debug_assert_eq!(
-            tampon.debut as usize + tampon.octets.len() / PAGE_SIZE,
-            idx as usize,
-            "les pages d'un lot sont contiguës"
-        );
         tampon.octets.extend_from_slice(bytemuck::bytes_of(page));
         if tampon.octets.len() >= BLOC_ECRITURE {
             self.vider_pages(tampon)?;
@@ -694,9 +790,8 @@ impl PropsZone {
         if lot.page.is_none()
             && lot.reprise.is_none()
             && lot.neuves.octets.is_empty()
-            && self.next_heap_page_idx > 0
+            && let Some(tail) = self.page_tas_de_queue()
         {
-            let tail = self.next_heap_page_idx - 1;
             lot.page = Some((tail, self.read_heap_page(tail)?));
             lot.reprise = Some(tail);
         }
@@ -714,11 +809,7 @@ impl PropsZone {
             page.seal_crc32();
             self.poser_page_tas(lot, idx, &page)?;
         }
-        let new_idx = self.next_heap_page_idx;
-        self.next_heap_page_idx = self
-            .next_heap_page_idx
-            .checked_add(1)
-            .ok_or_else(|| SubstrateError::WalBadFrame("heap zone page id overflow".into()))?;
+        let new_idx = self.allouer_index_pages_tas(1)?;
         let mut page = HeapPage::new(new_idx);
         let off = page
             .append(bytes)
@@ -759,14 +850,21 @@ impl PropsZone {
             return self.write_heap_page(idx, page);
         }
         self.ensure_heap_page_addressable(idx)?;
+        // (MP-3, revue du 24/11 — B1) Même règle que `poser_page_remplie` : avec
+        // une borne partagée, un pair peut avoir reçu une page entre deux des
+        // nôtres. Écrire le bloc d'un seul tenant depuis `debut` écraserait sa
+        // page et laisserait la nôtre à zéro. Un `debug_assert` gardait ce cas,
+        // donc rien en release. Ce qui est accumulé part maintenant.
+        if !lot.neuves.octets.is_empty()
+            && lot.neuves.debut as usize + lot.neuves.octets.len() / HEAP_PAGE_SIZE != idx as usize
+        {
+            let debut = lot.neuves.debut as u64 * HEAP_PAGE_SIZE as u64;
+            self.heap.ecrire_a(debut, &lot.neuves.octets)?;
+            lot.neuves.octets.clear();
+        }
         if lot.neuves.octets.is_empty() {
             lot.neuves.debut = idx;
         }
-        debug_assert_eq!(
-            lot.neuves.debut as usize + lot.neuves.octets.len() / HEAP_PAGE_SIZE,
-            idx as usize,
-            "les pages de tas d'un lot sont contiguës"
-        );
         lot.neuves
             .octets
             .extend_from_slice(bytemuck::bytes_of(page));
@@ -1208,11 +1306,7 @@ impl PropsZone {
         entry: &PropertyEntry,
     ) -> SubstrateResult<u32> {
         // Allocate a fresh page with next_page = old head.
-        let new_idx = self.next_page_idx;
-        self.next_page_idx = self
-            .next_page_idx
-            .checked_add(1)
-            .ok_or_else(|| SubstrateError::WalBadFrame("props zone page id overflow".into()))?;
+        let new_idx = self.allouer_index_pages(1)?;
         let mut page = PropertyPage::with_owner(owner_id, kind);
         if let Some(prev) = head {
             page.header.next_page = encode_page_id(prev);
@@ -1235,11 +1329,7 @@ impl PropsZone {
         next_brut: Option<u64>,
         entry: &PropertyEntry,
     ) -> SubstrateResult<u32> {
-        let new_idx = self.next_page_idx;
-        self.next_page_idx = self
-            .next_page_idx
-            .checked_add(1)
-            .ok_or_else(|| SubstrateError::WalBadFrame("props zone page id overflow".into()))?;
+        let new_idx = self.allouer_index_pages(1)?;
         let mut page = PropertyPage::with_owner(owner_id, kind);
         if let Some(prev) = next_brut {
             page.header.next_page = U48::from_u64(prev);
@@ -1391,11 +1481,9 @@ impl PropsZone {
                 });
             }
             // Nouveau carrier : unité 0 = contrôle, unité 1 = 1re chaîne.
-            let carrier = self.next_page_idx;
-            self.next_page_idx = self
-                .next_page_idx
-                .checked_add(1)
-                .ok_or_else(|| SubstrateError::WalBadFrame("props zone page id overflow".into()))?;
+            // (MP-3) Alloué sur la borne partagée comme toute page : le carrier
+            // OUVERT est donc toujours à nous, et un pair ne peut pas y écrire.
+            let carrier = self.allouer_index_pages(1)?;
             self.ensure_page_addressable(carrier)?;
             {
                 let mut ctrl = crate::unite::CarrierControl::new();
@@ -1790,8 +1878,7 @@ impl PropsZone {
             )));
         }
         // Try current tail page; otherwise allocate a new one.
-        if self.next_heap_page_idx > 0 {
-            let tail = self.next_heap_page_idx - 1;
+        if let Some(tail) = self.page_tas_de_queue() {
             let mut page = self.read_heap_page(tail)?;
             if let Some(off) = page.append(bytes) {
                 page.seal_crc32();
@@ -1803,11 +1890,7 @@ impl PropsZone {
             }
         }
         // Allocate a new heap page.
-        let new_idx = self.next_heap_page_idx;
-        self.next_heap_page_idx = self
-            .next_heap_page_idx
-            .checked_add(1)
-            .ok_or_else(|| SubstrateError::WalBadFrame("heap zone page id overflow".into()))?;
+        let new_idx = self.allouer_index_pages_tas(1)?;
         let mut page = HeapPage::new(new_idx);
         let off = page
             .append(bytes)
@@ -1986,6 +2069,61 @@ impl PropsZone {
 mod tests {
     use super::*;
     use crate::page::{HeapRef, PropertyValue};
+
+    /// (MP-3, revue du 24/11 — B1) Un lot de pages de tas qui n'est plus
+    /// contigu ne doit pas être écrit d'un bloc. Le pair est SIMULÉ dans ce
+    /// processus : il réserve une page sur la borne partagée au milieu de notre
+    /// lot et y écrit sa propre page. Entre processus, la fenêtre est trop
+    /// étroite pour un test fiable (`t8c` reste vert 5/5 même avec une barrière
+    /// de départ) ; ici l'entrelacement est forcé, donc déterministe.
+    #[test]
+    fn mp3_un_lot_de_tas_n_ecrit_pas_sur_la_page_qu_un_pair_a_recue() {
+        let sf = SubstrateFile::open_tempfile().unwrap();
+        let mut pz = PropsZone::open(&sf).unwrap();
+        let td = tempfile::tempdir().unwrap();
+        let borne = std::sync::Arc::new(
+            crate::borne_allocation::BorneAllocation::ouvrir(td.path()).unwrap(),
+        );
+        pz.brancher_borne(std::sync::Arc::clone(&borne), true);
+
+        // Deux entrées par page de tas.
+        let charge = |i: u8| vec![b'a' + i; 1500];
+        let mut lot = TasEnLot::default();
+        let mut nos_refs = Vec::new();
+        for i in 0..2u8 {
+            nos_refs.push((pz.intern_bytes_en_lot(&mut lot, &charge(i)).unwrap(), i));
+        }
+        // Le PAIR reçoit la page suivante et l'écrit.
+        let page_du_pair = u32::try_from(borne.reserver_pages_tas(1)).unwrap();
+        let mut sienne = HeapPage::new(page_du_pair);
+        let off_pair = sienne.append(b"PAGE-DU-PAIR").unwrap();
+        sienne.seal_crc32();
+        pz.write_heap_page(page_du_pair, &sienne).unwrap();
+        // Nous continuons : nos pages suivantes sont au-delà de la sienne.
+        for i in 2..6u8 {
+            nos_refs.push((pz.intern_bytes_en_lot(&mut lot, &charge(i)).unwrap(), i));
+        }
+        pz.clore_tas_en_lot(&mut lot).unwrap();
+
+        assert_eq!(
+            pz.read_heap(HeapRef {
+                page_id: page_du_pair,
+                offset: off_pair,
+            })
+            .as_deref(),
+            Some(&b"PAGE-DU-PAIR"[..]),
+            "la page reçue par le pair a été écrasée par notre lot"
+        );
+        for (href, i) in nos_refs {
+            assert_ne!(href.page_id, page_du_pair, "nous n'écrivons jamais sa page");
+            assert_eq!(
+                pz.read_heap(href),
+                Some(charge(i)),
+                "notre entrée {i} (page {}) est illisible",
+                href.page_id
+            );
+        }
+    }
 
     // =================================================================
     // ETAPE 1 — DURABILITE

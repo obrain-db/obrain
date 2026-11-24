@@ -1,15 +1,17 @@
 [![CI](https://github.com/obrain-db/obrain/actions/workflows/ci.yml/badge.svg)](https://github.com/obrain-db/obrain/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![MSRV](https://img.shields.io/badge/MSRV-1.91.1-blue)](Cargo.toml)
-[![Couverture](https://img.shields.io/endpoint?url=https%3A%2F%2Fobrain-db.github.io%2Fobrain%2Fcouverture.json)](https://obrain-db.github.io/obrain/)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fobrain-db.github.io%2Fobrain%2Fcouverture.json)](https://obrain-db.github.io/obrain/)
 
-# Obrain — base de données graphe embarquée, en Rust
+**English** · [Français](README.fr.md)
 
-Obrain est un moteur de graphe **embarqué** (une bibliothèque, pas un serveur) : stockage « topology-as-storage » sur fichiers mémoire-mappés, journal d'écriture anticipée (WAL) natif, transactions, langage GQL, algorithmes de graphe par procédures `CALL`, et vecteurs comme type de première classe.
+# Obrain — an embedded graph database in Rust
 
-Ce README décrit **ce que la v0.0.1 fait et prouve**. Chaque exemple de code ci-dessous est exécuté tel quel par `crates/obrain/tests/readme_examples.rs` ; chaque garantie renvoie au test qui la verrouille ; chaque chiffre renvoie à [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Ce qui n'est pas vérifié est dans [Roadmap](#roadmap), pas ici. Les limites connues sont dans [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md).
+Obrain is an **embedded** graph engine (a library, not a server): "topology-as-storage" on memory-mapped files, a native write-ahead log (WAL), transactions, the GQL language, graph algorithms exposed as `CALL` procedures, and vectors as a first-class type.
 
-## Démarrage rapide (Rust)
+This README describes **what v0.0.1 does and proves**. Every code example below is run as-is by `crates/obrain/tests/readme_examples.rs`; every guarantee points to the test that locks it; every figure points to [docs/BENCHMARKS.md](docs/BENCHMARKS.md). What is not verified is in the [Roadmap](#roadmap), not here. Known limits are in [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md).
+
+## Quick start (Rust)
 
 ```bash
 cargo add obrain
@@ -47,46 +49,46 @@ fn main() {
 }
 ```
 
-Base persistante : `ObrainDB::open("chemin/vers/base")` ouvre ou crée un répertoire `substrate.*` ; `db.close()` le ferme proprement. **`open` exige la feature `storage`** (`cargo add obrain --features storage`) : le profil `embedded` par défaut est en mémoire seulement. (Test : `stockage_persistant_rouvrir_et_relire`, sous `--features wal`.)
+Persistent database: `ObrainDB::open("path/to/db")` opens or creates a directory of `substrate.*` files; `db.close()` closes it cleanly. **`open` requires the `storage` feature** (`cargo add obrain --features storage`): the default `embedded` profile is in-memory only. (Test: `stockage_persistant_rouvrir_et_relire`, under `--features wal`.)
 
-## Garanties
+## Guarantees
 
-| Garantie | Ce qu'elle veut dire | Test qui la verrouille |
+| Guarantee | What it means | Test that locks it |
 |---|---|---|
-| **Un commit acquitté est durable** | Quand `commit()` (explicite, ou implicite pour chaque statement hors transaction) rend `Ok`, les écritures sont dans le WAL **et** acquittées par le disque (`fsync` — `F_FULLFSYNC` sur macOS). Trois tests, trois couvertures distinctes : **crash du processus (`kill -9`)** — tout commit acquitté est là à la réouverture (ce test seul passe aussi sans `fsync` : le cache de pages survit au processus, mesuré) ; **oracle de `fsync`** — après chaque `commit()` acquitté, la ligne durable du WAL (`wal_octets_durables`, l'offset couvert par un `fsync` terminé) couvre la frame du commit (rouge sans `fsync`) ; **coupure simulée (WAL tronqué à la ligne durable)** — tout ce qui n'était pas `fsync`é est retiré du WAL, exactement les commits acquittés reviennent. Une vraie coupure de courant n'est pas testée : la troncature ne rejoue la coupure que pour le WAL, pas pour les zones mmap. | `obrain-engine/tests/durabilite_commit_kill9.rs` (`un_commit_acquitte_survit_a_un_kill_9`, oracle dans chaque enfant, `une_coupure_simulee_ne_garde_que_les_commits_durables`), `obrain-substrate/tests/wal_fsync_partage.rs` |
-| **Une transaction jamais commitée ne laisse rien** | Un processus qui disparaît avec une transaction ouverte ne publie rien à la réouverture : le WAL porte les frontières de transaction, le rejeu écarte ce qui n'a pas été scellé. | `durabilite_commit_kill9.rs` (test 2) |
-| **Un commit refusé ne laisse rien** | Un conflit de validation (deux sessions, même entité, la seconde commitée après le début de la première) est refusé, et rien de la transaction refusée ne reste — ni en mémoire, ni sur disque après réouverture. | `obrain-engine/tests/echec_commit_rembobinage.rs` |
-| **`ROLLBACK` ne retire que ses propres créations** | Deux sessions concurrentes : annuler l'une ne touche jamais aux commits de l'autre. | `obrain-engine/tests/rollback_isolation.rs` |
-| **Isolation par instantané** | Une transaction ouverte ne voit pas un commit voisin postérieur à son début. | `readme_examples.rs::mvcc_snapshot_isolation_…` |
-| **Reprise après crash** | Un WAL tronqué ou déchiré est rejoué jusqu'à la frontière valide, jamais au-delà ; un trou de zéros suivi de données est nommé, pas confondu avec une fin de fichier. | `obrain-substrate/tests/crash_safety.rs`, `wal_recovery_reelle.rs` |
-| **Format on-disk figé (v3)** | Une base écrite par la v0.0.1 se rouvre par toute v0.0.x ; une base d'une version plus récente est refusée, jamais lue comme vide. | `obrain-engine/tests/format_fige_v3.rs`, fixture `tests/golden/v3-mini` |
-| **Opcode WAL inconnu ⇒ refus nommé, jamais lu comme vide** | Un `substrate.wal` qui porte une frame complète (CRC valide) d'un opcode que ce binaire ne connaît pas a été écrit par une version plus récente : l'ouverture est refusée avec une erreur qui nomme l'opcode et l'offset, le WAL n'est ni rejoué partiellement ni tronqué ni modifié. Une queue déchirée (frame incomplète) reste une frontière de crash. | `obrain-substrate/tests/wal_opcode_inconnu.rs`, `obrain-engine/tests/format_fige_v3.rs` (tests `…opcode…`), fixture `tests/golden/v3-mini-opcode-futur` |
-| **La lecture seule n'écrit pas (`open_read_only`)** | Ouvrir une base en lecture seule, l'interroger et la fermer ne modifie **aucun octet d'aucun fichier**, n'en crée aucun, n'en supprime aucun — que la base ait été fermée proprement, laissée par un écrivain tué avant son flush, ou qu'un écrivain partagé soit vivant. Ce n'est pas une discipline du code : `substrate.meta`, le verrou, les zones et le WAL sont ouverts **sans droit d'écriture**, et meta et zones sont projetés en privé (copy-on-write). Le WAL en attente est rejoué **en mémoire** ; des degrés au CRC périmé sont recalculés en mémoire ; un graphe nommé s'ouvre lui aussi en lecture seule. Toute mutation est refusée : `Transaction(ReadOnly)` pour une requête, `LectureSeule` pour une opération du substrat (flush, checkpoint, réparation, append WAL), panique portant ce message pour les API directes infaillibles (`create_node` rend un identifiant, pas un `Result`). Un dossier qui n'est pas une base **échoue sans qu'une base y soit créée**. Sont **refusées** plutôt que servies en écrivant (`LectureSeuleRefusee`, qui dit quoi lancer) : une base d'un format antérieur à migrer, un sidecar hérité portant des vecteurs à migrer, une base sans `substrate.dirlock`. **Verrou** : partagé — il exclut l'écrivain exclusif (`open`) d'un autre processus, **pas** un écrivain partagé ni d'autres lecteurs ; face à un écrivain partagé vivant, le lecteur voit l'état de son ouverture, sans isolation au-delà (voir LIMITES). Seule exception, à la demande de l'opérateur : `OBRAIN_TRIGRAMMES_PERSISTER=1` publie le cache de trigrammes (fichiers à part, `rename` atomique). | `obrain-substrate/tests/lecture_seule_contrat.rs` (empreinte de tous les fichiers avant/après, un test par état ; écrivain vivant dans un autre processus ; base aux droits d'écriture retirés), `obrain-engine/tests/lecture_seule_contrat.rs` |
-| **Un seul écrivain par base (`open`)** | Le répertoire est verrouillé (fcntl) ; un second processus est refusé, et le refus nomme le détenteur (Linux, macOS). | `obrain-substrate/tests/verrou_apres_drop.rs` |
-| **Écriture partagée restreinte (`open_shared_write`)** | N processus créent des **nœuds et arêtes sans propriétés** : aucune perte, aucune collision de slots, et chacun voit les écritures des autres à sa **réouverture**. Une base héritée (sidecar non vide) est refusée, nommée, sans modification. Ne sont **pas** garantis : propriétés écrites par plusieurs processus, transactions concurrentes entre processus, visibilité sans réouverture (voir LIMITES). | `obrain-engine/tests/ecriture_multi_processus.rs`, `obrain-substrate/tests/wal_chaine_cas.rs`, `obrain-substrate/tests/mw_interprocess_append.rs`, `obrain-substrate/tests/base_heritee_shared_write.rs` |
+| **An acknowledged commit is durable** | When `commit()` (explicit, or implicit for each statement outside a transaction) returns `Ok`, the writes are in the WAL **and** acknowledged by the disk (`fsync` — `F_FULLFSYNC` on macOS). Three tests, three distinct coverages: **process crash (`kill -9`)** — every acknowledged commit is there after reopening (this test alone also passes without `fsync`: the page cache survives the process, measured); **`fsync` oracle** — after each acknowledged `commit()`, the durable WAL line (`wal_octets_durables`, the offset covered by a completed `fsync`) covers the commit's frame (red without `fsync`); **simulated cut (WAL truncated at the durable line)** — everything not `fsync`ed is removed from the WAL, exactly the acknowledged commits come back. A real power cut is not tested: the truncation only replays the cut for the WAL, not for the mmap zones. | `obrain-engine/tests/durabilite_commit_kill9.rs` (`un_commit_acquitte_survit_a_un_kill_9`, oracle in each child, `une_coupure_simulee_ne_garde_que_les_commits_durables`), `obrain-substrate/tests/wal_fsync_partage.rs` |
+| **An uncommitted transaction leaves nothing** | A process that disappears with an open transaction publishes nothing on reopening: the WAL carries transaction boundaries, and replay discards what was not sealed. | `durabilite_commit_kill9.rs` (test 2) |
+| **A refused commit leaves nothing** | A validation conflict (two sessions, same entity, the second committed after the first started) is refused, and nothing of the refused transaction remains — neither in memory nor on disk after reopening. | `obrain-engine/tests/echec_commit_rembobinage.rs` |
+| **`ROLLBACK` only removes its own creations** | Two concurrent sessions: rolling back one never touches the other's commits. | `obrain-engine/tests/rollback_isolation.rs` |
+| **Snapshot isolation** | An open transaction does not see a neighbouring commit made after its start. | `readme_examples.rs::mvcc_snapshot_isolation_…` |
+| **Crash recovery** | A truncated or torn WAL is replayed up to the last valid boundary, never beyond; a run of zeros followed by data is reported by name, not mistaken for an end of file. | `obrain-substrate/tests/crash_safety.rs`, `wal_recovery_reelle.rs` |
+| **On-disk format frozen (v3)** | A database written by v0.0.1 reopens with any v0.0.x; a database from a newer version is refused, never read as empty. | `obrain-engine/tests/format_fige_v3.rs`, fixture `tests/golden/v3-mini` |
+| **Unknown WAL opcode ⇒ named refusal, never read as empty** | A `substrate.wal` holding a complete frame (valid CRC) of an opcode this binary does not know was written by a newer version: opening is refused with an error naming the opcode and the offset; the WAL is neither partly replayed, nor truncated, nor modified. A torn tail (incomplete frame) remains a crash boundary. | `obrain-substrate/tests/wal_opcode_inconnu.rs`, `obrain-engine/tests/format_fige_v3.rs` (tests `…opcode…`), fixture `tests/golden/v3-mini-opcode-futur` |
+| **Read-only mode does not write (`open_read_only`)** | Opening a database read-only, querying it and closing it modifies **no byte of any file**, creates none, deletes none — whether the database was closed cleanly, left by a writer killed before its flush, or while a shared writer is alive. This is not a coding discipline: `substrate.meta`, the lock, the zones and the WAL are opened **without write rights**, and meta and zones are mapped privately (copy-on-write). The pending WAL is replayed **in memory**; degree columns with a stale CRC are recomputed in memory; a named graph also opens read-only. Any mutation is refused: `Transaction(ReadOnly)` for a query, `LectureSeule` for a substrate operation (flush, checkpoint, repair, WAL append), a panic carrying that message for infallible direct APIs (`create_node` returns an identifier, not a `Result`). A directory that is not a database **fails without a database being created in it**. Some cases are **refused** rather than served by writing (`LectureSeuleRefusee`, which says what to run): a database in an older format to migrate, an inherited sidecar holding vectors to migrate, a database without `substrate.dirlock`. **Lock**: shared — it excludes the exclusive writer (`open`) from another process, **not** a shared writer nor other readers; against a live shared writer, the reader sees the state at its opening, with no isolation beyond that (see LIMITS). One exception, at the operator's request: `OBRAIN_TRIGRAMMES_PERSISTER=1` publishes the trigram cache (separate files, atomic `rename`). | `obrain-substrate/tests/lecture_seule_contrat.rs` (fingerprint of all files before/after, one test per state; live writer in another process; database with write rights removed), `obrain-engine/tests/lecture_seule_contrat.rs` |
+| **A single writer per database (`open`)** | The directory is locked (fcntl); a second process is refused, and the refusal names the holder (Linux, macOS). | `obrain-substrate/tests/verrou_apres_drop.rs` |
+| **Restricted shared writing (`open_shared_write`)** | N processes create **nodes and edges without properties**: no loss, no slot collision, and each sees the others' writes on **reopening**. An inherited database (non-empty sidecar) is refused, named, without modification. Not guaranteed: properties written by several processes, concurrent transactions across processes, visibility without reopening (see LIMITS). | `obrain-engine/tests/ecriture_multi_processus.rs`, `obrain-substrate/tests/wal_chaine_cas.rs`, `obrain-substrate/tests/mw_interprocess_append.rs`, `obrain-substrate/tests/base_heritee_shared_write.rs` |
 
-Ce que la v0.0.1 **ne garantit pas** : l'écriture multi-processus au-delà du périmètre restreint ci-dessus (propriétés partagées, transactions concurrentes entre processus, visibilité sans réouverture), et tout ce qui est listé dans [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md).
+What v0.0.1 **does not guarantee**: multi-process writing beyond the restricted scope above (shared properties, concurrent transactions across processes, visibility without reopening), and everything listed in [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md).
 
-## Fonctionnalités (features par défaut du crate `obrain`)
+## Features (default features of the `obrain` crate)
 
-- **Modèle** : graphe de propriétés étiqueté (LPG). RDF et les autres langages (Cypher, SPARQL, Gremlin, GraphQL, SQL/PGQ) existent derrière des features non activées par défaut et ne sont pas couverts par ce README.
-- **Langage** : GQL (ISO/IEC 39075) — `INSERT`, `MATCH`, `SET`, `DELETE`, `RETURN`, agrégats, `CALL … YIELD`.
-- **Transactions** : `begin_transaction` / `commit` / `rollback`, savepoints, auto-commit par statement, détection de conflit write-write, isolation par instantané.
-- **Stockage** : en mémoire (`new_in_memory`, défaut) ou persistant (`open`, feature `storage`), format `substrate.*` v3, WAL + checkpoint.
-- **Vecteurs** : `Value::Vector` stocké avec le graphe ; retrieval par paliers L0/L1/L2 (binaire 128 bits → Hamming 512 bits → cosinus f16) ; BM25 ; recherche hybride (feature `hybrid-search`, incluse dans `embedded`) en Rust (`ObrainDB::hybrid_search`) et en GQL (`CALL obrain.hybrid_search`, voir ci-dessous).
-- **Algorithmes** (`CALL obrain.<nom>(…)`), chacun exécuté par le harnais sur un petit graphe :
+- **Model**: labelled property graph (LPG). RDF and the other languages (Cypher, SPARQL, Gremlin, GraphQL, SQL/PGQ) exist behind features that are not enabled by default and are not covered by this README.
+- **Language**: GQL (ISO/IEC 39075) — `INSERT`, `MATCH`, `SET`, `DELETE`, `RETURN`, aggregates, `CALL … YIELD`.
+- **Transactions**: `begin_transaction` / `commit` / `rollback`, savepoints, auto-commit per statement, write-write conflict detection, snapshot isolation.
+- **Storage**: in memory (`new_in_memory`, default) or persistent (`open`, feature `storage`), `substrate.*` format v3, WAL + checkpoint.
+- **Vectors**: `Value::Vector` stored with the graph; retrieval in tiers L0/L1/L2 (128-bit binary → 512-bit Hamming → f16 cosine); BM25; hybrid search (feature `hybrid-search`, included in `embedded`) in Rust (`ObrainDB::hybrid_search`) and in GQL (`CALL obrain.hybrid_search`, see below).
+- **Algorithms** (`CALL obrain.<name>(…)`), each run by the harness on a small graph:
 
-| Famille | Procédures |
+| Family | Procedures |
 |---|---|
-| Centralité | `pagerank`, `personalized_pagerank({seed_nodes})`, `betweenness_centrality`, `closeness_centrality`, `degree_centrality`, `hits` |
-| Communautés | `louvain`, `leiden`, `label_propagation`, `stable_communities` |
-| Plus courts chemins | `dijkstra(source)`, `astar(source, target)` (heuristique nulle sans coordonnées : exact, égal à Dijkstra), `bellman_ford(source)`, `sssp({source: 'nom'})` (source désignée par sa propriété `name`), `floyd_warshall` |
-| Parcours et structure | `bfs(source)`, `dfs(source)`, `connected_components`, `strongly_connected_components`, `topological_sort`, `bridges`, `articulation_points`, `kcore` (alias `k_core`), `subgraph.khop(center, k)`, `irreducible_kernel`, `subgraph_contraction({node_ids})` |
-| Agrégation et similarité | `clustering_coefficient`, `triangle_count`, `similarity(a, b, metric)` et `similarity.topk(a, k, metric)` avec `metric` ∈ `jaccard` (défaut), `overlap`, `cosine`, `adamic_adar` ; raccourcis `jaccard(a, b)`, `cosine_similarity(a, b)`, `adamic_adar(a, b)` |
-| Flot et arbres couvrants | `max_flow({source, sink})`, `min_cost_max_flow({source, sink})` (identifiants de nœuds), `kruskal`, `prim` |
-| Géométrie spectrale | `spectral_embedding`, `heat_kernel_diffusion({seed_nodes})`, `hilbert_features` |
+| Centrality | `pagerank`, `personalized_pagerank({seed_nodes})`, `betweenness_centrality`, `closeness_centrality`, `degree_centrality`, `hits` |
+| Communities | `louvain`, `leiden`, `label_propagation`, `stable_communities` |
+| Shortest paths | `dijkstra(source)`, `astar(source, target)` (null heuristic without coordinates: exact, equal to Dijkstra), `bellman_ford(source)`, `sssp({source: 'name'})` (source designated by its `name` property), `floyd_warshall` |
+| Traversal and structure | `bfs(source)`, `dfs(source)`, `connected_components`, `strongly_connected_components`, `topological_sort`, `bridges`, `articulation_points`, `kcore` (alias `k_core`), `subgraph.khop(center, k)`, `irreducible_kernel`, `subgraph_contraction({node_ids})` |
+| Aggregation and similarity | `clustering_coefficient`, `triangle_count`, `similarity(a, b, metric)` and `similarity.topk(a, k, metric)` with `metric` ∈ `jaccard` (default), `overlap`, `cosine`, `adamic_adar`; shortcuts `jaccard(a, b)`, `cosine_similarity(a, b)`, `adamic_adar(a, b)` |
+| Flow and spanning trees | `max_flow({source, sink})`, `min_cost_max_flow({source, sink})` (node identifiers), `kruskal`, `prim` |
+| Spectral geometry | `spectral_embedding`, `heat_kernel_diffusion({seed_nodes})`, `hilbert_features` |
 
-Syntaxe :
+Syntax:
 
 ```sql
 CALL obrain.pagerank()
@@ -95,9 +97,9 @@ CALL obrain.louvain() YIELD node_id, community_id
 CALL obrain.pagerank() YIELD node_id AS id, score AS rank
 ```
 
-### Recherche hybride (feature `hybrid-search`)
+### Hybrid search (feature `hybrid-search`)
 
-`CALL obrain.hybrid_search` fusionne BM25 (index texte) et cosinus (index vectoriel) — par défaut en Reciprocal Rank Fusion. Il faut un index texte sur `:label(text_property)` (`create_text_index`) et, pour la part vectorielle, un index vectoriel sur `:label(vector_property)` (`create_vector_index`) ; sans index, l'erreur nomme ceux qu'elle attend. Le vecteur de requête est une liste de nombres ou un paramètre (`$vec`) ; sans vecteur, seul BM25 contribue. Les scores RRF sont ceux de la fusion (rang à base 1, `rrf_k` = 60) ; `fusion: 'weighted'` combine les scores normalisés avec `weights`.
+`CALL obrain.hybrid_search` fuses BM25 (text index) and cosine (vector index) — by default with Reciprocal Rank Fusion. It needs a text index on `:label(text_property)` (`create_text_index`) and, for the vector part, a vector index on `:label(vector_property)` (`create_vector_index`); without an index, the error names the ones it expects. The query vector is a list of numbers or a parameter (`$vec`); without a vector, only BM25 contributes. RRF scores are those of the fusion (1-based rank, `rrf_k` = 60); `fusion: 'weighted'` combines the normalised scores with `weights`.
 
 ```sql
 CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph', [1.0, 0.0, 0.0], {k: 3}) YIELD node_id, score
@@ -106,84 +108,84 @@ CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph', [1.0, 0.0, 0.0], 
 CALL obrain.hybrid_search('Doc', 'title', 'emb', 'Rust graph', [1.0, 0.0, 0.0], {k: 3, fusion: 'weighted', weights: [0.5, 0.5]}) YIELD node_id, score
 ```
 
-Options (map en dernier argument) : `k` (défaut 10), `fusion` (`'rrf'` défaut, `'weighted'`), `rrf_k` (défaut 60), `weights`. Colonnes : `node_id`, `score`. L'enchaînement `CALL … YIELD … MATCH … RETURN` est exécuté par `readme_examples.rs` (module `recherche_hybride`).
+Options (a map as the last argument): `k` (default 10), `fusion` (`'rrf'` default, `'weighted'`), `rrf_k` (default 60), `weights`. Columns: `node_id`, `score`. The chaining `CALL … YIELD … MATCH … RETURN` is run by `readme_examples.rs` (module `recherche_hybride`).
 
-## Couche cognitive (feature `cognitive`)
+## Cognitive layer (feature `cognitive`)
 
-Obrain porte une couche cognitive — énergie des nœuds à demi-vie, synapses hebbiennes, cicatrices, tissu de connaissance (`risk_score`), activation propagée. Depuis le crate `obrain` :
+Obrain carries a cognitive layer — node energy with a half-life, Hebbian synapses, scars, a knowledge fabric (`risk_score`), propagated activation. From the `obrain` crate:
 
 ```bash
-cargo add obrain --features cognitive       # moteur : énergie, synapses, UDF, CALL obrain.cognitive.spread / distill
-cargo add obrain --features cognitive-full  # + detect_gaps, synthesize, engrams, décision
+cargo add obrain --features cognitive       # engine: energy, synapses, UDFs, CALL obrain.cognitive.spread / distill
+cargo add obrain --features cognitive-full  # + detect_gaps, synthesize, engrams, decision
 ```
 
-**Opt-in.** Ouvrir une base (`ObrainDB::open_substrate`, `new_in_memory`) ne lance **aucune** tâche cognitive : énergie et synapses restent à zéro, comme sans la feature. Pour que chaque mutation alimente la couche, ouvrir la base en mode observé :
+**Opt-in.** Opening a database (`ObrainDB::open_substrate`, `new_in_memory`) starts **no** cognitive task: energy and synapses stay at zero, as without the feature. To have every mutation feed the layer, open the database in observed mode:
 
 ```rust
-let db = obrain::ObrainDB::open_substrate_observed("./ma_base")?; // ou new_in_memory_observed()
+let db = obrain::ObrainDB::open_substrate_observed("./my_db")?; // or new_in_memory_observed()
 ```
 
-Le mode observé lance un runtime tokio dédié (1 worker) si aucun n'est courant et une tâche de vidage ; la co-activation passe en `edges`. Attention : en mode observé, les écritures de la couche dans le journal (WAL) sont asynchrones et non synchronisées : ne pas l'utiliser pour des données devant survivre à un crash avant la règle de durabilité correspondante.
+Observed mode starts a dedicated tokio runtime (1 worker) if none is current, and a flush task; co-activation goes to `edges`. Warning: in observed mode, the layer's writes to the log (WAL) are asynchronous and not synchronised: do not use it for data that must survive a crash before the corresponding durability rule.
 
 ```sql
-CALL obrain.cognitive.spread([0], {hops: 2})                 -- activation propagée depuis un nœud
-CALL obrain.cognitive.distill({min_weight: 0.1})             -- connexions synaptiques fortes
+CALL obrain.cognitive.spread([0], {hops: 2})                 -- activation propagated from a node
+CALL obrain.cognitive.distill({min_weight: 0.1})             -- strong synaptic connections
 MATCH (n:Person) RETURN n.name, obrain.energy(id(n)) AS energy
 MATCH (n) RETURN obrain.risk(id(n)) AS risk ORDER BY risk DESC LIMIT 10
 MATCH (n:Person {name: 'Alix'}) RETURN obrain.synapses(id(n)) AS connections
 ```
 
-Ces appels sont exécutés par `readme_examples.rs` sous `--features cognitive` (module `cognitif`) ; ce test vérifie qu'ils ne renvoient pas d'erreur, pas leurs valeurs. Documentation du modèle : `crates/obrain-cognitive`.
+These calls are run by `readme_examples.rs` under `--features cognitive` (module `cognitif`); that test checks that they return no error, not their values. Model documentation: `crates/obrain-cognitive`.
 
 ## Performance
 
-Les benchs reproductibles, la commande exacte, le matériel et les chiffres sont dans [docs/BENCHMARKS.md](docs/BENCHMARKS.md). Aucun chiffre n'est repris ici.
+The reproducible benchmarks, the exact command, the hardware and the figures are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). No figure is repeated here.
 
 ## Installation
 
 ```bash
-cargo add obrain                                           # profil embedded : GQL + vecteurs/texte/hybride + algorithmes + parallélisme (en mémoire)
-cargo add obrain --features storage                        # + bases persistantes (ObrainDB::open, WAL, checkpoint)
+cargo add obrain                                           # embedded profile: GQL + vectors/text/hybrid + algorithms + parallelism (in memory)
+cargo add obrain --features storage                        # + persistent databases (ObrainDB::open, WAL, checkpoint)
 cargo add obrain --no-default-features --features gql      # minimal
-cargo add obrain --no-default-features --features full     # tous les langages + stockage + RDF + CDC
+cargo add obrain --no-default-features --features full     # all languages + storage + RDF + CDC
 ```
 
-MSRV : 1.91.1 (`rust-version` du workspace, vérifiée en CI).
+MSRV: 1.91.1 (the workspace `rust-version`, checked in CI).
 
-## Exemples
+## Examples
 
-`examples/rust/` (`cargo run -p obrain-examples --bin <nom>`) : `basic`, `transactions`, `parameterized`, `persistence`, `vector_search`, `algorithms`, `multi_language`, `social_network`, `knowledge_base`, `iot_stream`, `migrate-v2`, `bench-load` (les deux derniers noms de binaire contiennent un tiret).
+`examples/rust/` (`cargo run -p obrain-examples --bin <name>`): `basic`, `transactions`, `parameterized`, `persistence`, `vector_search`, `algorithms`, `multi_language`, `social_network`, `knowledge_base`, `iot_stream`, `migrate-v2`, `bench-load` (the last two binary names contain a hyphen).
 
 ## Bindings
 
-Le code des bindings est dans `crates/bindings/` : C (`c`), C# (`csharp`), Dart (`dart`), Go (`go`), Node.js (`node`), Python (`python`), avec les intégrations LangChain (`python/integrations/langchain_obrain`) et LlamaIndex (`python/integrations/llama_index_obrain`). Chacun est construit et testé par son propre job CI (« Bindings C », « Bindings C# », « Bindings Dart », « Bindings Go », « Bindings Node », « Bindings Python », « Bindings LangChain/LlamaIndex »). Aucun n'est publié sur son registre : la chaîne de publication (`.github/workflows/release.yml`) ne publie que les crates Rust sur crates.io. Les paquets `packages/obrain-cli-{npm,python}` sont des enveloppes du CLI, pas des bindings.
+The binding code is in `crates/bindings/`: C (`c`), C# (`csharp`), Dart (`dart`), Go (`go`), Node.js (`node`), Python (`python`), with the LangChain (`python/integrations/langchain_obrain`) and LlamaIndex (`python/integrations/llama_index_obrain`) integrations. Each is built and tested by its own CI job ("Bindings C", "Bindings C#", "Bindings Dart", "Bindings Go", "Bindings Node", "Bindings Python", "Bindings LangChain/LlamaIndex"). None is published to its registry: the release chain (`.github/workflows/release.yml`) only publishes the Rust crates to crates.io. The `packages/obrain-cli-{npm,python}` packages are wrappers around the CLI, not bindings.
 
 ## Roadmap
 
-Ce qui n'est **pas** dans la v0.0.1 :
+What is **not** in v0.0.1:
 
-- Publication des bindings sur leurs registres (PyPI, npm, NuGet, pub.dev, Go) et du paquet WebAssembly `crates/obrain-web` (paquet d'essai, `publish = false`, voir son README).
-- Serveur HTTP, protocole Bolt, playground, serveur MCP : non implémentés dans ce dépôt.
-- Comparatif LDBC (`graph-bench`) rejoué avec une version épinglée.
+- Publishing the bindings to their registries (PyPI, npm, NuGet, pub.dev, Go) and the WebAssembly package `crates/obrain-web` (trial package, `publish = false`, see its README).
+- HTTP server, Bolt protocol, playground, MCP server: not implemented in this repository.
+- LDBC comparison (`graph-bench`) re-run with a pinned version.
 
 ## Documentation
 
-- [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md) — limites connues, chacune avec son test.
-- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — méthode et chiffres.
-- [docs/rfc/substrate/format-spec.md](docs/rfc/substrate/format-spec.md) — format on-disk (§ 0 : état réel v0.0.1).
+- [docs/LIMITES-v0.0.1.md](docs/LIMITES-v0.0.1.md) — known limits, each with its test.
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — method and figures.
+- [docs/rfc/substrate/format-spec.md](docs/rfc/substrate/format-spec.md) — on-disk format (§ 0: real state of v0.0.1).
 - [docs/MIGRATION.md](docs/MIGRATION.md), [docs/architecture/overview.md](docs/architecture/overview.md).
 - [CHANGELOG.md](CHANGELOG.md).
 
-## Contribuer
+## Contributing
 
-Voir [CONTRIBUTING.md](CONTRIBUTING.md). La CI (`.github/workflows/ci.yml`) joue : format, clippy et rustdoc sans aucun avertissement (`-D warnings`), tests, couverture de code, compilation `--all-features` (`-D warnings`), MSRV, `cargo deny`, vérification des manifestes de publication et `cargo package` du premier crate de l'ordre de publication, les bancs sur bases fabriquées, le WAL partagé entre processus, les sept jobs de bindings, les jobs navigateur (wasm32, `obrain-web`, persistance OPFS sous Chrome headless), et les tests d'intégrité sur macOS (job conditionné à la variable de dépôt `CI_MACOS`, sinon « skipped »).
+See [CONTRIBUTING.md](CONTRIBUTING.md). The CI (`.github/workflows/ci.yml`) runs: format, clippy and rustdoc with no warnings (`-D warnings`), tests, code coverage, `--all-features` compilation (`-D warnings`), MSRV, `cargo deny`, checks of the publication manifests and `cargo package` of the first crate in the publication order, the benchmarks on fabricated databases, the cross-process shared WAL, the seven binding jobs, the browser jobs (wasm32, `obrain-web`, OPFS persistence under headless Chrome), and the integrity tests on macOS (job conditional on the repository variable `CI_MACOS`, otherwise "skipped").
 
-**Couverture de code.** Le badge en tête de ce README et la [page de couverture](https://obrain-db.github.io/obrain/) (total et détail par crate) sont publiés par la CI à chaque passage sur `main` : aucun chiffre n'est recopié à la main. La cible du projet est 95 % des lignes. Le job « Couverture » impose deux contrôles, dont les seuils et la méthode sont commentés dans `ci.yml` : le code neuf d'une PR couvert à 95 %, et un plancher global (cliquet) qui ne baisse jamais.
+**Code coverage.** The badge at the top of this README and the [coverage page](https://obrain-db.github.io/obrain/) (total and per-crate detail) are published by the CI on every push to `main`: no figure is copied by hand. The project target is 95 % of lines. The "Coverage" job enforces two checks, whose thresholds and method are commented in `ci.yml`: the new code of a PR must be 95 % covered, and a global floor (ratchet) that never decreases.
 
-## Remerciements
+## Acknowledgements
 
-Obrain est un fork de [GrafeoDB](https://github.com/GrafeoDB/grafeo) (Apache-2.0) — voir [NOTICE](NOTICE). Le moteur d'exécution s'inspire de [DuckDB](https://duckdb.org/) (exécution vectorisée push-based, parallélisme morsel-driven) et de [Kuzu](https://github.com/kuzudb/kuzu) (adjacence CSR, traitement factorisé).
+Obrain is a fork of [GrafeoDB](https://github.com/GrafeoDB/grafeo) (Apache-2.0) — see [NOTICE](NOTICE). The execution engine draws on [DuckDB](https://duckdb.org/) (vectorised push-based execution, morsel-driven parallelism) and [Kuzu](https://github.com/kuzudb/kuzu) (CSR adjacency, factorised processing).
 
-## Licence
+## License
 
-Apache-2.0 — voir [LICENSE](LICENSE) et [NOTICE](NOTICE).
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -110,6 +110,29 @@ impl CypherTranslator {
         }
     }
 
+    /// Étiquette la liste parcourue par une compréhension ou un prédicat de
+    /// liste avec le genre de ses éléments quand il est prouvé.
+    ///
+    /// Les éléments d'une liste de nœuds ou d'arêtes voyagent comme leur
+    /// identifiant entier, et les deux séries se recoupent : l'évaluateur ne
+    /// peut pas deviner. Il lit le genre sur la forme de la liste source
+    /// (`nodes(p)`, `relationships(p)`), ce qui ne couvre ni `WITH nodes(p) AS
+    /// ns`, ni `collect(t)`, ni une liste filtrée (obrain-db/obrain#229,
+    /// réouverture). Le traducteur, lui, connaît le genre (`VariableKind`) :
+    /// il le pose par une enveloppe identité que l'évaluateur reconnaît.
+    fn etiquette_genre_liste(&self, liste: LogicalExpression) -> LogicalExpression {
+        let nom = match expression_kind(&liste, &self.scope_kinds.borrow()) {
+            VariableKind::NodeList => "__genre_noeuds",
+            VariableKind::EdgeList => "__genre_aretes",
+            _ => return liste,
+        };
+        LogicalExpression::FunctionCall {
+            name: nom.into(),
+            args: vec![liste],
+            distinct: false,
+        }
+    }
+
     /// Generates a unique anonymous variable name.
     fn next_anon_var(&self) -> String {
         let id = self.anon_counter.get();
@@ -1541,6 +1564,38 @@ impl CypherTranslator {
         // If there's no input, use Empty which produces a single row for projection evaluation
         let input = input.unwrap_or(LogicalOperator::Empty);
 
+        // `WITH *, expr AS alias` : on explicite `*` en variables de la portee
+        // (tri stable, sans variables internes) suivies des items, puis on
+        // traite le `WITH` comme un `WITH` explicite.
+        if with_clause.is_wildcard && !with_clause.items.is_empty() {
+            let mut noms: Vec<String> = visible_variables(&input)
+                .into_keys()
+                .filter(|n| !n.starts_with('_'))
+                .filter(|n| {
+                    !with_clause
+                        .items
+                        .iter()
+                        .any(|i| i.alias.as_deref() == Some(n.as_str()))
+                })
+                .collect();
+            noms.sort();
+            let mut items: Vec<ast::ProjectionItem> = noms
+                .into_iter()
+                .map(|n| ast::ProjectionItem {
+                    expression: ast::Expression::Variable(n),
+                    alias: None,
+                    span: None,
+                })
+                .collect();
+            items.extend(with_clause.items.iter().cloned());
+            let explicite = ast::WithClause {
+                is_wildcard: false,
+                items,
+                ..with_clause.clone()
+            };
+            return self.translate_with(&explicite, Some(input));
+        }
+
         // WITH *: skip projection, all variables pass through unchanged
         if with_clause.is_wildcard {
             let mut plan = input;
@@ -2933,7 +2988,7 @@ impl CypherTranslator {
                 filter,
                 projection,
             } => {
-                let list_expr = self.translate_expression(list)?;
+                let list_expr = self.etiquette_genre_liste(self.translate_expression(list)?);
                 let filter_expr = filter
                     .as_ref()
                     .map(|f| self.translate_expression(f))
@@ -2968,7 +3023,9 @@ impl CypherTranslator {
                 Ok(LogicalExpression::ListPredicate {
                     kind: ir_kind,
                     variable: variable.clone(),
-                    list_expr: Box::new(self.translate_expression(list)?),
+                    list_expr: Box::new(
+                        self.etiquette_genre_liste(self.translate_expression(list)?),
+                    ),
                     predicate: Box::new(self.translate_expression(predicate)?),
                 })
             }
@@ -2977,8 +3034,32 @@ impl CypherTranslator {
                 where_clause,
                 projection,
             } => {
+                // (#368) Plusieurs nœuds du motif liés dehors : l'ancre est UNIQUE,
+                // les autres seraient traduits comme des nœuds LIBRES qui masquent
+                // la variable externe, et le résultat serait FAUX sans erreur.
+                // Un refus nommé vaut mieux qu'un résultat faux.
+                let lies = self.noeuds_lies_dehors(pattern);
+                if lies.len() >= 2 {
+                    return Err(Error::Query(QueryError::new(
+                        QueryErrorKind::Semantic,
+                        format!(
+                            "compréhension de motif liée dehors par plusieurs nœuds ({}) : \
+                             non prise en charge, la seconde variable serait traitée comme un \
+                             nœud libre et le résultat serait faux. Corréler sur un seul nœud, \
+                             ou exprimer la condition dans un WHERE.",
+                            lies.join(", ")
+                        ),
+                    )));
+                }
                 // Build a subplan from the pattern
-                let pattern_plan = self.translate_pattern(pattern, None)?;
+                let pattern_plan = match self.entree_ancre_comprehension(pattern) {
+                    // (#355) Motif lié dehors par un nœud qui n'est pas le
+                    // premier : le chemin repart de ce nœud, posé en entrée
+                    // (un `NodeScan` que `relever_sous_plan` remplacera par le
+                    // `ParameterScan` de l'ancre).
+                    Some(entree) => self.translate_pattern(pattern, Some(entree))?,
+                    None => self.translate_pattern(pattern, None)?,
+                };
                 // Apply optional WHERE filter
                 let subplan = if let Some(where_expr) = where_clause {
                     let pred = self.translate_expression(where_expr)?;
@@ -3192,6 +3273,61 @@ impl CypherTranslator {
         }
     }
 
+    /// Variables des nœuds d'un motif qui sont DÉJÀ liées dans la portée
+    /// externe, sans doublon, dans l'ordre du motif (#368).
+    fn noeuds_lies_dehors(&self, pattern: &ast::Pattern) -> Vec<String> {
+        let portee = self.scope_kinds.borrow();
+        let mut vues: Vec<String> = Vec::new();
+        if let ast::Pattern::Path(path) = pattern {
+            for v in std::iter::once(&path.start)
+                .chain(path.chain.iter().map(|rel| &rel.target))
+                .filter_map(|node| node.variable.as_ref())
+            {
+                if portee.contains_key(v) && !vues.contains(v) {
+                    vues.push(v.clone());
+                }
+            }
+        }
+        vues
+    }
+
+    /// Entrée d'ancrage d'un motif de compréhension dont le premier nœud est
+    /// libre mais dont UN SEUL autre nœud est un nœud lié dehors (#355) : un
+    /// `NodeScan` nu sur ce nœud. Le traducteur de chemin repart alors de lui
+    /// (en avant et à rebours), comme pour un `MATCH`. `None` : motif à
+    /// traduire sans entrée (premier nœud lié ou aucun nœud lié, cas inchangés).
+    ///
+    /// Plusieurs nœuds liés dehors sont REFUSÉS par l'appelant avant d'arriver
+    /// ici (#368) : l'ancre est unique, et laisser passer ce cas rendait un
+    /// résultat faux sans erreur. (Un commentaire antérieur affirmait que
+    /// `relever_sous_plan` refusait ce cas : c'était inexact quand le premier
+    /// nœud est lui aussi lié.)
+    fn entree_ancre_comprehension(&self, pattern: &ast::Pattern) -> Option<LogicalOperator> {
+        let ast::Pattern::Path(path) = pattern else {
+            return None;
+        };
+        let portee = self.scope_kinds.borrow();
+        let lies: Vec<&String> = std::iter::once(&path.start)
+            .chain(path.chain.iter().map(|rel| &rel.target))
+            .filter_map(|node| node.variable.as_ref())
+            .filter(|v| portee.contains_key(*v))
+            .collect();
+        let [ancre] = lies.as_slice() else {
+            return None;
+        };
+        if path.start.variable.as_ref() == Some(*ancre) {
+            return None;
+        }
+        // Repartir du milieu exige un nœud ET des relations à un saut avant lui.
+        Self::anchor_index(path, &portee, false)?;
+        Some(LogicalOperator::NodeScan(NodeScanOp {
+            variable: (*ancre).clone(),
+            label: None,
+            input: None,
+            pushdown_hint: None,
+        }))
+    }
+
     /// Replaces the leaf `NodeScan(variable)` in a pattern subplan with
     /// `ParameterScan(columns: [variable])`, for correlated execution.
     fn replace_anchor_with_parameter_scan(op: LogicalOperator, anchor: &str) -> LogicalOperator {
@@ -3272,7 +3408,64 @@ impl CypherTranslator {
             LogicalExpression::Unary { operand, .. } => {
                 Self::expr_contains_pattern_comprehension(operand)
             }
-            _ => false,
+            // #357 : tout nœud qui PORTE des sous-expressions doit être
+            // parcouru, sinon la compréhension qu'il contient atteint le
+            // planificateur telle quelle (« PatternComprehension reached the
+            // planner without being rewritten »). Étaient oubliés : l'accès par
+            // indice `[…][0]`, la tranche `[…][0..1]`, `CASE`, la liste et la
+            // map littérales.
+            other => Self::sous_expressions_a_parcourir(other)
+                .into_iter()
+                .any(Self::expr_contains_pattern_comprehension),
+        }
+    }
+
+    /// Enfants directs d'une expression pour les variantes ajoutées par #357
+    /// (accès par indice, tranche, `CASE`, liste, map). Les variantes déjà
+    /// traitées explicitement (`Binary`, `Unary`, `FunctionCall`) n'y figurent pas.
+    fn sous_expressions_a_parcourir(expr: &LogicalExpression) -> Vec<&LogicalExpression> {
+        match expr {
+            LogicalExpression::IndexAccess { base, index } => vec![&**base, &**index],
+            LogicalExpression::SliceAccess { base, start, end } => {
+                let mut v: Vec<&LogicalExpression> = vec![&**base];
+                v.extend(start.as_deref());
+                v.extend(end.as_deref());
+                v
+            }
+            LogicalExpression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                let mut v: Vec<&LogicalExpression> = Vec::new();
+                v.extend(operand.as_deref());
+                for (quand, alors) in when_clauses {
+                    v.push(quand);
+                    v.push(alors);
+                }
+                v.extend(else_clause.as_deref());
+                v
+            }
+            LogicalExpression::List(items) => items.iter().collect(),
+            LogicalExpression::Map(entries) => entries.iter().map(|(_, v)| v).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Réécrit UNE sous-expression : si elle contient une compréhension de
+    /// motif, la relève (Apply + collect) et rend l'expression de remplacement ;
+    /// sinon la rend telle quelle. Le sous-plan relevé rend exactement une ligne
+    /// par ligne d'entrée, donc la cardinalité est préservée.
+    fn reecrire_sous_expression(
+        &self,
+        input: LogicalOperator,
+        expr: LogicalExpression,
+    ) -> Result<(LogicalOperator, LogicalExpression)> {
+        if Self::expr_contains_pattern_comprehension(&expr) {
+            let alias = self.next_anon_var();
+            self.rewrite_expr_pattern_comprehension(input, expr, &alias)
+        } else {
+            Ok((input, expr))
         }
     }
 
@@ -3288,7 +3481,10 @@ impl CypherTranslator {
                 Self::expr_contains_pc_only(left) || Self::expr_contains_pc_only(right)
             }
             LogicalExpression::Unary { operand, .. } => Self::expr_contains_pc_only(operand),
-            _ => false,
+            // #357 : mêmes nœuds porteurs que `expr_contains_pattern_comprehension`.
+            other => Self::sous_expressions_a_parcourir(other)
+                .into_iter()
+                .any(Self::expr_contains_pc_only),
         }
     }
 
@@ -3487,6 +3683,111 @@ impl CypherTranslator {
                         right: new_right,
                     },
                 ))
+            }
+            // #357 : `NOT (size([…]) = 0)`. Le détecteur annonçait déjà `Unary`
+            // mais ce bras manquait : l'expression retombait sur « rien à faire ».
+            LogicalExpression::Unary { op, operand } => {
+                let (input, operand) = self.reecrire_sous_expression(input, *operand)?;
+                Ok((
+                    input,
+                    LogicalExpression::Unary {
+                        op,
+                        operand: Box::new(operand),
+                    },
+                ))
+            }
+            // #357 : `[(c)-[:SP]->(p) | p.id][0]` et `[…][0..1]`.
+            LogicalExpression::IndexAccess { base, index } => {
+                let (input, base) = self.reecrire_sous_expression(input, *base)?;
+                let (input, index) = self.reecrire_sous_expression(input, *index)?;
+                Ok((
+                    input,
+                    LogicalExpression::IndexAccess {
+                        base: Box::new(base),
+                        index: Box::new(index),
+                    },
+                ))
+            }
+            LogicalExpression::SliceAccess { base, start, end } => {
+                let (mut input, base) = self.reecrire_sous_expression(input, *base)?;
+                let mut nouveau_start = None;
+                if let Some(s) = start {
+                    let (i, e) = self.reecrire_sous_expression(input, *s)?;
+                    input = i;
+                    nouveau_start = Some(Box::new(e));
+                }
+                let mut nouveau_end = None;
+                if let Some(e) = end {
+                    let (i, e) = self.reecrire_sous_expression(input, *e)?;
+                    input = i;
+                    nouveau_end = Some(Box::new(e));
+                }
+                Ok((
+                    input,
+                    LogicalExpression::SliceAccess {
+                        base: Box::new(base),
+                        start: nouveau_start,
+                        end: nouveau_end,
+                    },
+                ))
+            }
+            // #357 : `CASE WHEN size([…]) > 0 THEN … END`. La compréhension est
+            // relevée pour TOUTES les lignes, y compris celles dont la branche
+            // n'est pas prise : elle est sans effet de bord, et le sous-plan
+            // rend exactement une ligne par ligne d'entrée.
+            LogicalExpression::Case {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                let mut input = input;
+                let mut nouvel_operand = None;
+                if let Some(o) = operand {
+                    let (i, e) = self.reecrire_sous_expression(input, *o)?;
+                    input = i;
+                    nouvel_operand = Some(Box::new(e));
+                }
+                let mut nouveaux_when = Vec::with_capacity(when_clauses.len());
+                for (quand, alors) in when_clauses {
+                    let (i, q) = self.reecrire_sous_expression(input, quand)?;
+                    let (i, a) = self.reecrire_sous_expression(i, alors)?;
+                    input = i;
+                    nouveaux_when.push((q, a));
+                }
+                let mut nouveau_else = None;
+                if let Some(e) = else_clause {
+                    let (i, e) = self.reecrire_sous_expression(input, *e)?;
+                    input = i;
+                    nouveau_else = Some(Box::new(e));
+                }
+                Ok((
+                    input,
+                    LogicalExpression::Case {
+                        operand: nouvel_operand,
+                        when_clauses: nouveaux_when,
+                        else_clause: nouveau_else,
+                    },
+                ))
+            }
+            LogicalExpression::List(items) => {
+                let mut input = input;
+                let mut nouveaux = Vec::with_capacity(items.len());
+                for item in items {
+                    let (i, e) = self.reecrire_sous_expression(input, item)?;
+                    input = i;
+                    nouveaux.push(e);
+                }
+                Ok((input, LogicalExpression::List(nouveaux)))
+            }
+            LogicalExpression::Map(entries) => {
+                let mut input = input;
+                let mut nouvelles = Vec::with_capacity(entries.len());
+                for (cle, valeur) in entries {
+                    let (i, e) = self.reecrire_sous_expression(input, valeur)?;
+                    input = i;
+                    nouvelles.push((cle, e));
+                }
+                Ok((input, LogicalExpression::Map(nouvelles)))
             }
             other => {
                 // Fallback: no rewrite possible, return as-is

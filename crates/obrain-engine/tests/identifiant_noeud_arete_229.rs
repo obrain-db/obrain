@@ -139,3 +139,94 @@ fn chemin_de_longueur_nulle() {
     );
     assert_eq!(rows, vec![vec![s("c1")], vec![s("root")]]);
 }
+
+// ---------------------------------------------------------------------------
+// Réouverture de #229 : la liste garde son genre au-delà de la forme de
+// `chat_11`. Bases neuves, ids 1 et 2 communs à un nœud et à une arête.
+// ---------------------------------------------------------------------------
+
+fn requete(db: &ObrainDB, q: &str) -> Vec<Vec<Value>> {
+    let mut rows = db
+        .execute_cypher(q)
+        .unwrap_or_else(|e| panic!("{q}\n{e}"))
+        .rows;
+    rows.sort_by_key(|l| format!("{l:?}"));
+    rows
+}
+
+/// `ana_09_get_circular_dependencies` : `nodes(path)` passé par deux `WITH`
+/// puis lu par une compréhension.
+#[test]
+fn ana_09_cycle_par_comprehension() {
+    let db = ObrainDB::new_in_memory();
+    db.session()
+        .execute_cypher("CREATE (a:F {p: 'a'})-[:I]->(b:F {p: 'b'})-[:I]->(a)")
+        .unwrap();
+    let rows = requete(
+        &db,
+        "MATCH path = (f:F)-[:I*2..3]->(f) WITH nodes(path) AS ns \
+         WITH [n IN ns | n.p] AS cycle RETURN DISTINCT cycle ORDER BY size(cycle) LIMIT 10",
+    );
+    assert!(!rows.is_empty(), "{rows:?}");
+    for r in &rows {
+        let Value::List(l) = &r[0] else {
+            panic!("{r:?}")
+        };
+        assert!(l.iter().all(|v| matches!(v, Value::String(_))), "{r:?}");
+    }
+}
+
+/// `ws_14_get_workspace_milestone_progress` : `collect(DISTINCT t)` filtré par
+/// `IS NOT NULL`, puis prédicat dans une compréhension.
+#[test]
+fn ws_14_collect_distinct_filtre_puis_comprehension() {
+    let db = ObrainDB::new_in_memory();
+    db.session()
+        .execute_cypher(
+            "CREATE (w:W {id: 'w'})-[:IT]->(:T {status: 'C'}), (w)-[:IT]->(:T {status: 'P'})",
+        )
+        .unwrap();
+    let rows = requete(
+        &db,
+        "MATCH (w:W {id: 'w'}) OPTIONAL MATCH (w)-[:IT]->(t1:T) \
+         WITH [x IN collect(DISTINCT t1) WHERE x IS NOT NULL] AS tasks \
+         RETURN size(tasks) AS total, size([t IN tasks WHERE t.status = 'C']) AS c",
+    );
+    assert_eq!(rows, vec![vec![Value::Int64(2), Value::Int64(1)]]);
+}
+
+/// Voisins : la même forme avec des arêtes doit continuer à marcher.
+#[test]
+fn comprehension_sur_liste_d_aretes() {
+    let db = base();
+    let rows = lignes(
+        &db,
+        "MATCH path = (root:ChatSession {id: $id})<-[:SPAWNED_BY*2]-(c) \
+         WITH relationships(path) AS rs WITH [r IN rs | r.k] AS ks RETURN ks",
+    );
+    assert_eq!(rows, vec![vec![Value::List(vec![s("e1"), s("e2")].into())]]);
+}
+
+/// Prédicat de liste (`any` / `all`) sur une liste prouvée nœuds, relue après
+/// un `WITH` : même cause, autre opérateur.
+#[test]
+fn predicat_de_liste_apres_with() {
+    let db = ObrainDB::new_in_memory();
+    db.session()
+        .execute_cypher("CREATE (a:F {p: 'a'})-[:I {p: 'x'}]->(b:F {p: 'b'})-[:I {p: 'y'}]->(a)")
+        .unwrap();
+    let rows = requete(
+        &db,
+        "MATCH path = (f:F {p: 'a'})-[:I*2]->(f) WITH nodes(path) AS ns, relationships(path) AS rs \
+         RETURN any(n IN ns WHERE n.p = 'b'), all(n IN ns WHERE n.p = 'a'), \
+                any(r IN rs WHERE r.p = 'y')",
+    );
+    assert_eq!(
+        rows,
+        vec![vec![
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Bool(true)
+        ]]
+    );
+}
