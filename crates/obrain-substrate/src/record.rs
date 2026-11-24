@@ -402,6 +402,17 @@ pub const COACT_EDGE_TYPE_NAME: &str = "COACT";
 /// `scan_typed_edge_weights`).
 pub const SYNAPSE_EDGE_TYPE_NAME: &str = "SYNAPSE";
 
+/// Well-known edge-type id RESERVED for [`SYNAPSE_EDGE_TYPE_NAME`].
+///
+/// (2026-11-24) Id 1 est réservé (comme le slot 0 des nœuds/arêtes) pour que
+/// la colonne des synapses reste lisible PAR NOM après une panne qui a tronqué
+/// le WAL de données avant que le dictionnaire nom→id n'ait été flushé.
+/// `SynapseStore::len()`/`snapshot()`/`list_synapses()` résolvent « SYNAPSE »
+/// via `EdgeTypeRegistry::id_for`, persisté seulement à `flush()` : sans id
+/// stable, l'enregistrement `EdgeTypeIntern` du WAL était la seule autre
+/// source, et une troncature du WAL la perd (banc d'injection dgx, b8ee6f87).
+pub const SYNAPSE_EDGE_TYPE_ID: u16 = 1;
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
 pub struct EdgeRecord {
