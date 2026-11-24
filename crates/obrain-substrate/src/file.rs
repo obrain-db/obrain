@@ -278,6 +278,61 @@ fn verrouiller_bloquant_exclusif(_fichier: &File) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
+fn deverrouiller_bloquant_exclusif(fichier: &File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: voir `verrouiller_bloquant_exclusif`.
+    let rc = unsafe { libc::flock(fichier.as_raw_fd(), libc::LOCK_UN) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
+fn deverrouiller_bloquant_exclusif(fichier: &File) -> std::io::Result<()> {
+    use fs2::FileExt;
+    fichier.unlock()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn deverrouiller_bloquant_exclusif(_fichier: &File) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Garde d'un verrou EXCLUSIF inter-processus sur le descripteur d'une zone,
+/// tenu le temps d'une croissance (`grow_to`). Relâche le verrou au `drop`,
+/// sur TOUT chemin — y compris d'erreur : sans cela, une erreur de `set_len`
+/// ou de `map_mut` laisserait la zone verrouillée tant qu'elle vit.
+///
+/// (obrain#388) Le `flock` est posé sur le DESCRIPTEUR DE LA ZONE elle-même,
+/// pas sur un fichier dédié : c'est le seul objet que deux écrivains partagés
+/// tiennent déjà en commun pour une même zone, et sa croissance est RARE (une
+/// fois par palier), donc un appel système y est indifférent. Aucun autre
+/// `flock` du dépôt ne porte sur les fichiers de zone (le verrou du store vit
+/// sur `substrate.dirlock`, celui du rejeu sur `substrate.rejeulock`, celui de
+/// restauration sur `substrate.restauration.lock`) : pas de collision. Le
+/// noyau rend le `flock` à la mort du processus : aucun verrou orphelin.
+struct VerrouCroissanceZone<'a> {
+    fichier: &'a File,
+}
+
+impl<'a> VerrouCroissanceZone<'a> {
+    fn prendre(fichier: &'a File) -> std::io::Result<Self> {
+        verrouiller_bloquant_exclusif(fichier)?;
+        Ok(Self { fichier })
+    }
+}
+
+impl<'a> Drop for VerrouCroissanceZone<'a> {
+    fn drop(&mut self) {
+        // Au mieux : relâcher explicitement. Le noyau rend de toute façon le
+        // `flock` à la fermeture du descripteur, mais on ne veut pas que la
+        // zone le garde tant qu'elle vit.
+        let _ = deverrouiller_bloquant_exclusif(self.fichier);
+    }
+}
+
+#[cfg(unix)]
 pub(crate) fn deverrouiller_fichier(fichier: &File) -> std::io::Result<()> {
     use std::os::unix::io::AsRawFd;
     // SAFETY: voir `verrouiller_fichier`.
@@ -1643,9 +1698,27 @@ impl ZoneFile {
                 // mappe plus, jamais moins. Mono-écrivain : `reelle == self.len`, et
                 // comme `new_len > self.len`, `cible == new_len` — comportement
                 // INCHANGÉ (les tests de politique de croissance le verrouillent).
+                //
+                // (obrain#388) VERROU EXCLUSIF INTER-PROCESSUS AUTOUR DE [relire
+                // la longueur → set_len → remap]. Le `max` ci-dessus protège déjà
+                // contre un pair qui a grandi AVANT notre lecture de la taille ;
+                // il ne protège PAS contre un pair qui grandit ENTRE cette
+                // lecture et notre `set_len` : notre `set_len(cible)` tronquerait
+                // alors ses pages (SIGBUS s'il y écrit, chaînes de propriétés
+                // inatteignables sinon). Le `flock` sérialise la croissance de
+                // deux écrivains partagés sur la même zone.
+                let _verrou = VerrouCroissanceZone::prendre(file)?;
+                // Longueur RELUE sous le verrou : entre cette lecture et notre
+                // `set_len`, aucun pair ne peut plus faire grandir le fichier.
                 let reelle = file.metadata()?.len();
                 let cible = new_len.max(reelle);
-                file.set_len(cible)?;
+                // `set_len` ne descend JAMAIS sous une longueur observée sous le
+                // verrou : si un pair avait déjà grandi au-delà de `new_len`, on
+                // mappe SA taille au lieu de tronquer. (Quand `new_len <= reelle`,
+                // `set_len` serait de toute façon un no-op — on le saute.)
+                if new_len > reelle {
+                    file.set_len(cible)?;
+                }
                 // SAFETY: same invariants as `open_or_create`.
                 let m = unsafe { MmapOptions::new().len(cible as usize).map_mut(&*file)? };
                 // `madvise(MADV_HUGEPAGE)` must be re-applied after every remap — the
@@ -2902,6 +2975,250 @@ mod tests {
         zf.grow_to(4096).unwrap();
         let err = zf.grow_to(1024).unwrap_err();
         assert!(matches!(err, SubstrateError::WalBadFrame(_)));
+    }
+
+    /// (obrain#388) CAS DÉTERMINISTE de la branche « un pair a déjà grandi » :
+    /// quand le fichier a été agrandi par un autre écrivain au-delà de notre
+    /// cible, `grow_to` mappe la taille réelle au lieu de tronquer. Couvre le
+    /// chemin `new_len <= reelle` (on saute `set_len`).
+    #[test]
+    fn grow_to_ne_tronque_pas_un_pair_qui_a_deja_grandi() {
+        let dir = tempdir().unwrap();
+        let zone = dir.path().join("substrate.nodes");
+        let mut zf = ZoneFile::open_or_create(&zone).unwrap();
+        zf.grow_to(4096).unwrap();
+        // Un pair agrandit directement le fichier (descripteur séparé, comme un
+        // écrivain partagé) au-delà de notre projection.
+        {
+            let f = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&zone)
+                .unwrap();
+            f.set_len(65536).unwrap();
+        }
+        // Notre cible (8192) est en-deçà de la taille réelle (65536) : grow_to
+        // doit mapper 65536, jamais tronquer à 8192.
+        zf.grow_to(8192).unwrap();
+        assert_eq!(zf.len(), 65536);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  VERROU DE CROISSANCE DE ZONE (obrain#388)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Chemin de la zone que la sonde doit verrouiller (voir
+    /// `sonde_grow_verrou_exterieur`). Absente : la sonde est inerte.
+    const GROW_SONDE_ENV: &str = "OBRAIN_GROW_SONDE";
+    /// Fichier-drapeau dont l'apparition libère la sonde.
+    const GROW_LIBERE_ENV: &str = "OBRAIN_GROW_LIBERE";
+    /// Chemin de la zone d'un enfant du stress (voir
+    /// `enfant_croissance_concurrente`).
+    const GROW_STRESS_PATH_ENV: &str = "OBRAIN_GROW_STRESS_PATH";
+    /// Cible de croissance (octets) d'un enfant du stress.
+    const GROW_STRESS_CIBLE_ENV: &str = "OBRAIN_GROW_STRESS_CIBLE";
+
+    /// Côté ENFANT de la sonde : ouvre le fichier de zone désigné par
+    /// `GROW_SONDE_ENV`, prend un `flock` EXCLUSIF bloquant, annonce
+    /// « GROW_HELD » sur stdout, puis attend le drapeau `GROW_LIBERE_ENV`
+    /// pour relâcher (et sortir). Sans la variable — exécution ordinaire de la
+    /// suite — ne fait rien.
+    #[test]
+    fn sonde_grow_verrou_exterieur() {
+        let Some(zone) = std::env::var_os(GROW_SONDE_ENV) else {
+            return;
+        };
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&zone)
+            .expect("ouvrir la zone");
+        verrouiller_bloquant_exclusif(&f).expect("flock exclusif sur la zone");
+        println!("GROW_HELD");
+        use std::io::Write as _;
+        std::io::stdout().flush().ok();
+
+        let drapeau =
+            PathBuf::from(std::env::var_os(GROW_LIBERE_ENV).expect("drapeau de libération"));
+        let debut = std::time::Instant::now();
+        while !drapeau.exists() {
+            assert!(
+                debut.elapsed() < std::time::Duration::from_secs(30),
+                "libération jamais venue"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(f); // relâche le flock
+    }
+
+    /// (obrain#388) PREUVE DÉTERMINISTE du verrou : `grow_to` prend un `flock`
+    /// EXCLUSIF sur le descripteur de la zone, et attend donc un détenteur
+    /// extérieur. Un verrou `flock` est porté par la DESCRIPTION DE FICHIER :
+    /// deux `open` distincts (ici deux PROCESSUS) entrent en exclusion, ce qui
+    /// sérialise la paire [relire la longueur → set_len → remap].
+    ///
+    /// Sans le verrou, `grow_to` revient immédiatement alors que la sonde tient
+    /// encore le `flock` — c'est le ROUGE attendu avant le correctif.
+    #[test]
+    fn grow_to_attend_un_verrou_exclusif_exterieur() {
+        let dir = tempdir().unwrap();
+        let zone = dir.path().join("substrate.nodes");
+        {
+            let mut zf = ZoneFile::open_or_create(&zone).unwrap();
+            zf.grow_to(4096).unwrap();
+        }
+
+        let exe = std::env::current_exe().expect("binaire de test");
+        let drapeau = dir.path().join("libere");
+        let mut enfant = std::process::Command::new(&exe)
+            .args([
+                "--exact",
+                "--nocapture",
+                "file::tests::sonde_grow_verrou_exterieur",
+            ])
+            .env(GROW_SONDE_ENV, &zone)
+            .env(GROW_LIBERE_ENV, &drapeau)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .expect("engendrer la sonde");
+
+        // Attend que l'enfant annonce qu'il tient le verrou exclusif.
+        {
+            use std::io::BufRead as _;
+            let sortie = enfant.stdout.as_mut().expect("stdout de la sonde");
+            let mut lignes = std::io::BufReader::new(sortie).lines();
+            let mut tenu = false;
+            for _ in 0..64 {
+                match lignes.next() {
+                    Some(Ok(l)) if l.starts_with("GROW_HELD") => {
+                        tenu = true;
+                        break;
+                    }
+                    Some(Ok(_)) => continue,
+                    Some(Err(e)) => panic!("lecture de la sonde : {e}"),
+                    None => break,
+                }
+            }
+            assert!(tenu, "la sonde n'a pas annoncé le verrou");
+        }
+
+        // `grow_to` doit BLOQUER tant que la sonde tient le verrou.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let zone2 = zone.clone();
+        let ouvrier = std::thread::spawn(move || {
+            let mut zf = ZoneFile::open_or_create(&zone2).unwrap();
+            let r = zf.grow_to(8192).map(|_| zf.len());
+            tx.send(r).unwrap();
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert!(
+            rx.try_recv().is_err(),
+            "grow_to n'a PAS attendu le verrou exclusif extérieur : terminé alors que la sonde le tient encore"
+        );
+
+        // Libère la sonde : `grow_to` doit alors aboutir.
+        std::fs::write(&drapeau, b"go").unwrap();
+        let statut = enfant.wait().expect("attendre la sonde");
+        assert!(statut.success(), "la sonde a échoué : {statut:?}");
+
+        let resultat = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("grow_to doit aboutir après libération")
+            .expect("grow_to a échoué");
+        assert_eq!(resultat, 8192);
+        ouvrier.join().unwrap();
+    }
+
+    /// Côté ENFANT du stress : ouvre la zone désignée par
+    /// `GROW_STRESS_PATH_ENV` et monte l'échelle de paliers jusqu'à la cible
+    /// `GROW_STRESS_CIBLE_ENV`. « Refuse de rétrécir » est attendu quand un
+    /// pair a déjà grandi au-delà — c'est le partage normal, pas un défaut.
+    /// Sans la variable — exécution ordinaire de la suite — ne fait rien.
+    #[test]
+    fn enfant_croissance_concurrente() {
+        let (Some(chemin), Some(cible)) = (
+            std::env::var_os(GROW_STRESS_PATH_ENV),
+            std::env::var_os(GROW_STRESS_CIBLE_ENV),
+        ) else {
+            return;
+        };
+        let cible: u64 = cible.to_string_lossy().parse().expect("cible numérique");
+        let mut zf = ZoneFile::open_or_create(Path::new(&chemin)).expect("ouvrir la zone");
+        for palier in [4096u64, 65536, 1048576, 2097152, 4194304, 8388608] {
+            if palier > cible {
+                break;
+            }
+            match zf.grow_to(palier) {
+                Ok(()) => {}
+                Err(SubstrateError::WalBadFrame(_)) => {}
+                Err(e) => panic!("grow_to inattendu : {e}"),
+            }
+        }
+    }
+
+    /// (obrain#388) STRESS INTER-PROCESSUS : plusieurs processus font grandir
+    /// la même zone jusqu'à des tailles différentes, puis on vérifie (a) que la
+    /// longueur finale est le maximum demandé — une croissance plus petite
+    /// n'a tronqué aucune croissance plus grande — et (b) qu'une sentinelle
+    /// écrite AVANT la croissance est toujours lisible.
+    ///
+    /// La course exacte (un pair grandit ENTRE notre `metadata` et notre
+    /// `set_len`) n'est pas reproductible de façon déterministe sans
+    /// instrumentation : ce test dresse N processus sur M paliers et attrape la
+    /// troncature si elle se produit (longueur finale inférieure au maximum
+    /// demandé). La preuve DÉTERMINISTE du verrou, elle, est
+    /// `grow_to_attend_un_verrou_exclusif_exterieur`.
+    #[test]
+    fn croissance_concurrente_ne_tronque_pas() {
+        let dir = tempdir().unwrap();
+        let zone = dir.path().join("substrate.nodes");
+        // Sentinelle écrite AVANT toute croissance concurrente.
+        {
+            let mut zf = ZoneFile::open_or_create(&zone).unwrap();
+            zf.grow_to(4096).unwrap();
+            zf.as_slice_mut()[0] = 0xAB;
+            zf.msync().unwrap();
+            zf.fsync().unwrap();
+        }
+
+        let cibles: &[u64] = &[1 << 20, 2 << 20, 4 << 20, 8 << 20];
+        let mut enfants = Vec::new();
+        for &cible in cibles {
+            enfants.push(
+                std::process::Command::new(std::env::current_exe().expect("binaire de test"))
+                    .args([
+                        "--exact",
+                        "--test-threads=1",
+                        "file::tests::enfant_croissance_concurrente",
+                    ])
+                    .env(GROW_STRESS_PATH_ENV, &zone)
+                    .env(GROW_STRESS_CIBLE_ENV, cible.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::inherit())
+                    .spawn()
+                    .expect("engendrer l'enfant"),
+            );
+        }
+        for mut e in enfants {
+            let statut = e.wait().expect("attendre l'enfant");
+            assert!(statut.success(), "un enfant a échoué : {statut:?}");
+        }
+
+        // (a) la longueur finale est le maximum demandé : aucune croissance
+        // n'a été tronquée par une croissance concurrente plus petite.
+        let reelle = std::fs::metadata(&zone).expect("metadata").len();
+        let max_cible = cibles.iter().copied().max().unwrap();
+        assert!(
+            reelle >= max_cible,
+            "la zone a été tronquée : longueur finale {reelle} < maximum demandé {max_cible}"
+        );
+
+        // (b) la sentinelle écrite avant la croissance est toujours lisible.
+        let zf = ZoneFile::open_or_create(&zone).unwrap();
+        assert_eq!(zf.as_slice()[0], 0xAB, "la sentinelle a été perdue");
     }
 
     // ═══════════════════════════════════════════════════════════════════
