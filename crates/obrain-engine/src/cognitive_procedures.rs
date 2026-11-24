@@ -1194,3 +1194,203 @@ fn extract_nested_map_float(
     }
     None
 }
+
+/// Tests des aides de lecture des arguments de procédure (`extract_*`) : ce
+/// sont des fonctions pures sur `LogicalExpression`, jusqu'ici exercées
+/// seulement à travers les procédures cognitives elles-mêmes. Les `execute_*`
+/// demandent un moteur cognitif réel et restent aux tests d'intégration.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn int(n: i64) -> LogicalExpression {
+        LogicalExpression::Literal(Value::Int64(n))
+    }
+
+    fn float(f: f64) -> LogicalExpression {
+        LogicalExpression::Literal(Value::Float64(f))
+    }
+
+    fn texte(s: &str) -> LogicalExpression {
+        LogicalExpression::Literal(Value::String(s.into()))
+    }
+
+    fn booleen(b: bool) -> LogicalExpression {
+        LogicalExpression::Literal(Value::Bool(b))
+    }
+
+    fn map(entries: Vec<(&str, LogicalExpression)>) -> LogicalExpression {
+        LogicalExpression::Map(
+            entries
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        )
+    }
+
+    fn liste(items: Vec<LogicalExpression>) -> LogicalExpression {
+        LogicalExpression::List(items)
+    }
+
+    #[test]
+    fn extract_map_int_lit_un_entier_sous_sa_cle() {
+        let arg = map(vec![("autre", int(1)), ("k", int(42)), ("k", int(7))]);
+        assert_eq!(
+            extract_map_int(Some(&arg), "k"),
+            Some(42),
+            "première occurrence"
+        );
+        assert_eq!(extract_map_int(Some(&arg), "absente"), None);
+        assert_eq!(extract_map_int(None, "k"), None, "argument absent");
+        assert_eq!(
+            extract_map_int(Some(&int(42)), "k"),
+            None,
+            "argument qui n'est pas une map"
+        );
+        let mauvais_type = map(vec![("k", float(1.0))]);
+        assert_eq!(extract_map_int(Some(&mauvais_type), "k"), None);
+        let vide = map(vec![]);
+        assert_eq!(extract_map_int(Some(&vide), "k"), None);
+    }
+
+    #[test]
+    fn extract_map_float_accepte_flottant_et_entier() {
+        let arg = map(vec![("f", float(1.5)), ("n", int(2)), ("s", texte("x"))]);
+        assert_eq!(extract_map_float(Some(&arg), "f"), Some(1.5));
+        assert_eq!(
+            extract_map_float(Some(&arg), "n"),
+            Some(2.0),
+            "entier promu"
+        );
+        assert_eq!(extract_map_float(Some(&arg), "s"), None, "texte refusé");
+        assert_eq!(extract_map_float(Some(&arg), "absente"), None);
+        assert_eq!(extract_map_float(None, "f"), None);
+        assert_eq!(extract_map_float(Some(&liste(vec![])), "f"), None);
+    }
+
+    #[test]
+    fn extract_map_string_et_bool() {
+        let arg = map(vec![
+            ("s", texte("abc")),
+            ("b", booleen(true)),
+            ("n", int(1)),
+        ]);
+        assert_eq!(extract_map_string(Some(&arg), "s"), Some("abc".to_string()));
+        assert_eq!(
+            extract_map_string(Some(&arg), "n"),
+            None,
+            "entier refusé comme texte"
+        );
+        assert_eq!(extract_map_string(Some(&arg), "absente"), None);
+        assert_eq!(extract_map_string(None, "s"), None);
+        assert_eq!(extract_map_string(Some(&texte("abc")), "s"), None);
+
+        assert_eq!(extract_map_bool(Some(&arg), "b"), Some(true));
+        assert_eq!(
+            extract_map_bool(Some(&arg), "n"),
+            None,
+            "entier refusé comme booléen"
+        );
+        assert_eq!(extract_map_bool(Some(&arg), "absente"), None);
+        assert_eq!(extract_map_bool(None, "b"), None);
+        assert_eq!(extract_map_bool(Some(&booleen(true)), "b"), None);
+    }
+
+    #[test]
+    fn extract_node_id_list_exige_une_liste_d_entiers() {
+        let ids =
+            extract_node_id_list(Some(&liste(vec![int(1), int(2), int(3)]))).expect("liste valide");
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids[0], obrain_common::types::NodeId(1));
+        assert_eq!(ids[2], obrain_common::types::NodeId(3));
+        assert_eq!(
+            extract_node_id_list(Some(&liste(vec![]))).map(|v| v.len()),
+            Some(0),
+            "liste vide acceptée"
+        );
+        assert_eq!(
+            extract_node_id_list(Some(&liste(vec![int(1), texte("x")]))),
+            None,
+            "élément non entier"
+        );
+        assert_eq!(extract_node_id_list(Some(&int(1))), None, "pas une liste");
+        assert_eq!(extract_node_id_list(None), None);
+    }
+
+    #[test]
+    fn extract_map_string_list_exige_des_textes() {
+        let arg = map(vec![
+            ("ok", liste(vec![texte("a"), texte("b")])),
+            ("mixte", liste(vec![texte("a"), int(1)])),
+            ("pas_liste", texte("a")),
+        ]);
+        assert_eq!(
+            extract_map_string_list(Some(&arg), "ok"),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(
+            extract_map_string_list(Some(&arg), "mixte"),
+            None,
+            "élément non texte"
+        );
+        assert_eq!(extract_map_string_list(Some(&arg), "pas_liste"), None);
+        assert_eq!(extract_map_string_list(Some(&arg), "absente"), None);
+        assert_eq!(extract_map_string_list(None, "ok"), None);
+        assert_eq!(extract_map_string_list(Some(&int(1)), "ok"), None);
+    }
+
+    #[test]
+    fn extract_map_float_list_promeut_les_entiers() {
+        let arg = map(vec![
+            ("ok", liste(vec![float(0.5), int(2)])),
+            ("mixte", liste(vec![float(0.5), texte("x")])),
+            ("pas_liste", float(0.5)),
+        ]);
+        assert_eq!(
+            extract_map_float_list(Some(&arg), "ok"),
+            Some(vec![0.5, 2.0])
+        );
+        assert_eq!(extract_map_float_list(Some(&arg), "mixte"), None);
+        assert_eq!(extract_map_float_list(Some(&arg), "pas_liste"), None);
+        assert_eq!(extract_map_float_list(Some(&arg), "absente"), None);
+        assert_eq!(extract_map_float_list(None, "ok"), None);
+        assert_eq!(extract_map_float_list(Some(&liste(vec![])), "ok"), None);
+    }
+
+    #[test]
+    fn extract_nested_map_float_descend_d_un_niveau() {
+        let arg = map(vec![
+            (
+                "poids",
+                map(vec![("f", float(0.25)), ("n", int(3)), ("s", texte("x"))]),
+            ),
+            ("plat", float(1.0)),
+        ]);
+        assert_eq!(
+            extract_nested_map_float(Some(&arg), "poids", "f"),
+            Some(0.25)
+        );
+        assert_eq!(
+            extract_nested_map_float(Some(&arg), "poids", "n"),
+            Some(3.0),
+            "entier promu"
+        );
+        assert_eq!(
+            extract_nested_map_float(Some(&arg), "poids", "s"),
+            None,
+            "texte refusé"
+        );
+        assert_eq!(
+            extract_nested_map_float(Some(&arg), "poids", "absente"),
+            None
+        );
+        assert_eq!(
+            extract_nested_map_float(Some(&arg), "plat", "f"),
+            None,
+            "la valeur externe n'est pas une map"
+        );
+        assert_eq!(extract_nested_map_float(Some(&arg), "absente", "f"), None);
+        assert_eq!(extract_nested_map_float(None, "poids", "f"), None);
+        assert_eq!(extract_nested_map_float(Some(&int(1)), "poids", "f"), None);
+    }
+}
