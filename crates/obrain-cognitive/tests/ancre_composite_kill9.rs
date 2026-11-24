@@ -7,7 +7,9 @@
 //! ancre valide ou `None` (jamais une ancre déchirée), et `current_energy`
 //! n'expose que 0,5 ou 0,75 — jamais 0,375 (énergie neuve + ancienne ancre) ni
 //! 1,0 (ancienne énergie + nouvelle ancre), les deux combinaisons déchirées que
-//! l'ancien code (colonne puis ancre séparées) exposait.
+//! l'ancien code (colonne puis ancre séparées) exposait. Deux bancs distinguent
+//! la PREMIÈRE création (jamais engagée : `None` admissible) de la MISE À JOUR
+//! d'un état DURABLE (`None` inadmissible — perdre A serait un défaut).
 //!
 //! DISTINCTION DES PANNES. Le `abort()` simule un SIGKILL : le noyau préserve le
 //! cache de pages, donc les octets déjà écrits (ancre en zone de propriétés,
@@ -138,5 +140,122 @@ fn l_ancre_composite_reste_coherente_sous_sigkill() {
     assert!(
         (energie - 1.0).abs() > 0.15,
         "1,0 est la combinaison déchirée (ancienne énergie + nouvelle ancre), rendu {energie}"
+    );
+}
+
+/// Enfant : ouvre une base neuve, pose un état initial DURABLE A (énergie 0,5
+/// + ancre composite, puis `flush()`), vérifie que A se relit, marque `pret`,
+/// arme l'arrêt entre ancre et miroir, puis renforce 0,25 → 0,75. Il meurt sur
+/// le point d'injection (abort), sans jamais écrire le miroir. Ce qui le
+/// distingue de [`enfant_renforce_et_meurt_entre_ancre_et_miroir`] : A est ICI
+/// durable, donc le parent peut exiger qu'il ne soit JAMAIS perdu.
+#[test]
+fn enfant_renforce_apres_ancre_durable_et_meurt() {
+    let Ok(dir) = std::env::var(ENV_ENFANT) else {
+        return;
+    };
+    let dir = Path::new(&dir);
+    let chemin = dir.join("kb");
+    let sub = Arc::new(SubstrateStore::create(&chemin).expect("create"));
+    let id = sub.create_node(&["n"]);
+    assert_eq!(id, NodeId(1), "premier nœud d'une base neuve");
+    let now = unix_micros();
+    // État initial cohérent A : énergie 0,5, ancre composite (0,5, now, H).
+    decay_clock::persist_anchor_explicit(&sub, id, 0.5, now, H);
+    sub.set_node_energy_f32(id, 0.5).expect("colonne initiale");
+    // A devient DURABLE : le flush msync les zones (dont la propriété d'ancre)
+    // et commit le WAL. La récupération ne peut plus le perdre.
+    sub.flush().expect("flush de l'état initial A");
+    // Vérifie la relecture de A AVANT la mutation — c'est le préalable du test.
+    let a = decay_clock::read_anchor(&sub, id).expect("A doit se relire avant la mutation");
+    assert!(
+        (a.e_ref - 0.5).abs() < 1e-9,
+        "l'ancre durable de départ est A=0,5 (relu {})",
+        a.e_ref
+    );
+    // Marqueur posé APRÈS l'état durable : tout ce que le parent mesure ensuite
+    // a bien eu lieu dans cet enfant.
+    std::fs::write(dir.join("pret"), b"ok").expect("marqueur pret");
+
+    // Arme l'arrêt entre l'ancre composite et le miroir de colonne.
+    obrain_common::utils::panne::armer_arret_entre_ancre_et_miroir();
+    // Mutation A → B : l'ancre (0,75) est écrite, puis abort AVANT le miroir.
+    let _ = decay_clock::reinforce(&sub, id, 0.25, &law(), 1.0, now);
+    // Atteint seulement si l'injection n'est pas sur le chemin.
+    std::process::exit(3);
+}
+
+/// Tue l'enfant au point d'injection, rouvre, et vérifie que la récupération
+/// d'une MUTATION sur un état durable retrouve A complet OU B complet — jamais
+/// `None` (perdre A serait un défaut), jamais une ancre déchirée, jamais un
+/// hybride (0,375 / 1,0). Contraste avec
+/// [`l_ancre_composite_reste_coherente_sous_sigkill`] : là, la PREMIÈRE
+/// création n'était pas durable et `None` restait admissible ; ici, l'état
+/// durable A rend `None` inadmissible.
+#[test]
+fn l_ancre_durable_n_est_jamais_perdue_sous_sigkill() {
+    if std::env::var(ENV_ENFANT).is_ok() {
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let mut enfant = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "enfant_renforce_apres_ancre_durable_et_meurt",
+            "--exact",
+            "--nocapture",
+        ])
+        .env(ENV_ENFANT, td.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn enfant");
+
+    // Attendre que l'état durable A soit posé.
+    let mut tours = 0u32;
+    while !td.path().join("pret").exists() {
+        tours += 1;
+        assert!(tours < 1200, "l'enfant n'a jamais posé `pret`");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let statut = enfant.wait().expect("wait enfant");
+    assert!(
+        !statut.success() && statut.code() != Some(3),
+        "l'enfant devait mourir sur le point d'injection : {statut:?}"
+    );
+
+    // Réouverture.
+    let sub = Arc::new(SubstrateStore::open(td.path().join("kb")).expect("open"));
+    let id = NodeId(1);
+
+    // (a) L'ancre n'est JAMAIS perdue : A était durable, la récupération rend
+    // donc A (0,5) ou B (0,75). `None` est ici un défaut (A durable perdu),
+    // et un e_ref hors {0,5 ; 0,75} est une ancre déchirée (0,375 / 1,0).
+    let a = decay_clock::read_anchor(&sub, id)
+        .expect("A était durable : la récupération ne doit jamais rendre None");
+    assert!(
+        (a.e_ref - 0.5).abs() < 1e-9 || (a.e_ref - 0.75).abs() < 1e-9,
+        "l'ancre doit être A (0,5) ou B (0,75), pas {}",
+        a.e_ref
+    );
+    assert!(
+        (a.e_ref - 0.375).abs() > 1e-9 && (a.e_ref - 1.0).abs() > 1e-9,
+        "aucun état hybride déchiré (0,375 / 1,0) : relu {}",
+        a.e_ref
+    );
+
+    // (b) L'énergie exposée est cohérente : ≈0,5 ou ≈0,75, jamais 0,375 ni 1,0.
+    let energie = decay_clock::current_energy(&sub, id, &law()).expect("énergie lisible");
+    assert!(
+        energie > 0.45 && energie <= 0.76,
+        "get_energy doit rendre ≈0,5 ou ≈0,75 (rendu {})",
+        energie
+    );
+    assert!(
+        (energie - 0.375).abs() > 0.05,
+        "0,375 est la combinaison déchirée (rendu {energie})"
+    );
+    assert!(
+        (energie - 1.0).abs() > 0.15,
+        "1,0 est la combinaison déchirée (rendu {energie})"
     );
 }
