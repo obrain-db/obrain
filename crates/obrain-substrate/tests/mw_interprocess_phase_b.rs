@@ -105,7 +105,7 @@ const DELAI_LIGNE: Duration = Duration::from_secs(60);
 struct Enfant {
     process: Child,
     lignes: std::sync::mpsc::Receiver<String>,
-    lecteur: std::thread::JoinHandle<()>,
+    _lecteur: std::thread::JoinHandle<()>,
 }
 
 impl Enfant {
@@ -141,7 +141,7 @@ impl Enfant {
         Self {
             process,
             lignes: rx,
-            lecteur,
+            _lecteur: lecteur,
         }
     }
 
