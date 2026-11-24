@@ -1105,9 +1105,31 @@ impl SynapseStore {
         }
 
         let scale = max_total / total;
+        let max_w = self.config.max_synapse_weight;
         for (key, _) in &entries {
-            if let Some(mut syn) = self.synapses.get_mut(key) {
-                syn.scale_weight(scale);
+            let Some(mut syn) = self.synapses.get_mut(key) else {
+                continue;
+            };
+            syn.scale_weight(scale);
+            // (2026-11-24) PERSISTANCE DE LA NORMALISATION. Avant ce
+            // correctif, `scale_weight` ne touchait que le cache chaud :
+            // à la réouverture, `load_from_substrate_column` réhydrate la
+            // DashMap depuis la colonne, et les arêtes réduites par la
+            // normalisation (toutes SAUF celle que `reinforce` réécrit
+            // après coup via le write-through) REPARTAIENT à leur ancien
+            // poids. La normalisation compétitive de Hebb est un
+            // apprentissage DURABLE : chaque poids réduit est donc
+            // réécrit sur la colonne (`reinforce_edge_synapse_f32`,
+            // WAL-logged + mmap, même chemin que le write-through).
+            // Seules les arêtes déjà présentes en colonne sont touchées —
+            // une synapse neuve n'a pas encore d'`edge_id` ici, et son
+            // poids sera de toute façon persisté par le write-through de
+            // `reinforce`. Coût : O(degré) écritures WAL, payé UNIQUEMENT
+            // quand la normalisation se déclenche (total > max_total).
+            #[cfg(feature = "substrate")]
+            if let (Some(sub), Some(eid)) = (self.substrate.as_ref(), self.edge_ids.get(key)) {
+                let normalized = (syn.raw_weight() / max_w).clamp(0.0, 1.0);
+                let _ = sub.reinforce_edge_synapse_f32(*eid, normalized as f32);
             }
         }
     }
@@ -1290,8 +1312,9 @@ impl SynapseStore {
     /// `spread()` l'appelle pour des milliers de nœuds. Cette méthode
     /// inverse le flux : l'appelant fournit un callback, le store itère les
     /// voisins synapse (substrate : scan direct des arêtes SYNAPSE ;
-    /// DashMap : scan du cache) et invoque `f(neighbor, weight)` — zéro
-    /// allocation tas tant que le degré tient en ligne (16), l'ordre n'est
+    /// DashMap : scan du cache) et invoque `f(neighbor, weight)`. La
+    /// déduplication passe par un `HashSet` des clés vues (O(degré) en
+    /// mémoire, jamais une source d'itération) ; l'ordre d'émission n'est
     /// pas garanti (le spread s'en moque : la propagation est additive).
     ///
     /// **Contrat (2026-11-23) : une émission par arête, jamais deux.** En mode
@@ -1328,11 +1351,17 @@ impl SynapseStore {
             // entries are fresher … they win on key collision ») et que la
             // branche sans substrat ci-dessous, qui émet aussi `current_weight()`.
             //
-            // Bornes : `vus` reste sur la pile tant que le degré ≤ 16 (capacité
-            // inline, comme `node_to_keys`), et la recherche linéaire est la même
-            // que celle d'`index_insert` — la normalisation compétitive borne le
-            // degré bien avant que ça compte.
-            let mut vus: smallvec::SmallVec<[SynapseKey; 16]> = smallvec::SmallVec::new();
+            // `vus` est UNIQUEMENT l'ensemble des clés déjà émises (test
+            // d'appartenance), jamais une source d'itération : l'ordre
+            // d'émission reste celui du parcours (cache chaud d'abord, puis
+            // incidence), pas celui d'un `HashSet`. La recherche linéaire
+            // antérieure (SmallVec) était O(degré²) — mesuré 7,8 ms à
+            // degré 5000 contre <1 ms avec le HashSet. L'ancienne
+            // justification (« la normalisation compétitive borne le degré »)
+            // était fausse : elle borne le POIDS TOTAL sortant, pas le
+            // NOMBRE de synapses (bootstrap_batch crée des voisinages de
+            // plusieurs milliers sans normalisation).
+            let mut vus: HashSet<SynapseKey> = HashSet::new();
 
             // 1. Sur-couche chaude — snapshot des clés AVANT d'appeler `f`
             // (l'ancien code tenait le garde de `node_to_keys` pendant le
@@ -1345,10 +1374,9 @@ impl SynapseStore {
                 let Some(w) = self.synapses.get(k).map(|s| s.value().current_weight()) else {
                     continue;
                 };
-                if vus.contains(k) {
+                if !vus.insert(*k) {
                     continue;
                 }
-                vus.push(*k);
                 let neighbor = if k.0 == node_id { k.1 } else { k.0 };
                 f(neighbor, w);
             }
@@ -1365,10 +1393,9 @@ impl SynapseStore {
                         // Une arête déjà émise depuis le cache (ou un posting
                         // dupliqué) ne repasse pas : c'est le correctif.
                         let key = SynapseKey::new(NodeId(r.src as u64), NodeId(r.dst as u64));
-                        if vus.contains(&key) {
+                        if !vus.insert(key) {
                             continue;
                         }
-                        vus.push(key);
                         let neighbor = if r.src as u64 == node_id.0 {
                             NodeId(r.dst as u64)
                         } else {
