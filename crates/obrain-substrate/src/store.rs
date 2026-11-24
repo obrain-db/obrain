@@ -862,20 +862,22 @@ impl EdgeTypeRegistry {
         // WAL, qui le journalisait, pouvait être emporté par une troncature.
         if name == crate::record::SYNAPSE_EDGE_TYPE_NAME {
             let id = crate::record::SYNAPSE_EDGE_TYPE_ID;
-            if let Some(autre) = self.par_id.get(&id) {
-                if autre.as_str() != name {
-                    return Err(SubstrateError::Internal(format!(
-                        "EdgeTypeRegistry : l'id réservé {id} porte déjà {autre:?}, \
-                         on refuse d'y inscrire {name:?}"
-                    )));
+            match self.par_id.get(&id) {
+                None => {
+                    // Id 1 libre : on réserve l'id bien connu.
+                    let name: ArcStr = name.into();
+                    self.name_to_id.insert(name.clone(), id);
+                    self.par_id.insert(id, name.clone());
+                    self.id_to_name.push(name);
+                    return Ok(id);
                 }
-                return Ok(id);
+                Some(autre) if autre.as_str() == name => return Ok(id),
+                // Id 1 déjà pris par un AUTRE type (base héritée antérieure à la
+                // couche cognitive) : on ne force pas, on retombe sur l'allocation
+                // générique d'un id libre. La lecture résout alors SYNAPSE via
+                // name_to_id tant que le dictionnaire est présent.
+                Some(_) => {}
             }
-            let name: ArcStr = name.into();
-            self.name_to_id.insert(name.clone(), id);
-            self.par_id.insert(id, name.clone());
-            self.id_to_name.push(name);
-            return Ok(id);
         }
         let id = match id {
             Some(i) => i,
@@ -951,7 +953,16 @@ impl EdgeTypeRegistry {
         // Id bien connu : résoluble même quand le dictionnaire n'a pas été
         // flushé (panne avant flush).
         if name == crate::record::SYNAPSE_EDGE_TYPE_NAME {
-            return Some(crate::record::SYNAPSE_EDGE_TYPE_ID);
+            // L'id bien connu n'est rendu que s'il est libre ou déjà SYNAPSE.
+            // Sur une base héritée où l'id 1 porte un AUTRE type (ex. PART_OF),
+            // renvoyer 1 ferait compter ces arêtes comme des synapses.
+            return match self.par_id.get(&crate::record::SYNAPSE_EDGE_TYPE_ID) {
+                None => Some(crate::record::SYNAPSE_EDGE_TYPE_ID),
+                Some(n) if n.as_str() == crate::record::SYNAPSE_EDGE_TYPE_NAME => {
+                    Some(crate::record::SYNAPSE_EDGE_TYPE_ID)
+                }
+                Some(_) => None,
+            };
         }
         None
     }
@@ -45460,6 +45471,35 @@ mod indice_libre_tests {
             "AT_COMMIT n'est pas écrasé"
         );
         assert_eq!(r.name_for(id).as_deref(), Some("PARENT"));
+    }
+
+    /// RÉGRESSION (2026-11-24) : l'id bien connu « SYNAPSE » (1) ne doit ni
+    /// mentir ni bloquer sur une base héritée où l'id 1 porte un AUTRE type.
+    #[test]
+    fn synapse_id1_occupe_par_un_autre_type_ne_ment_pas() {
+        let mut r = EdgeTypeRegistry::default();
+        // Base antérieure à la couche cognitive : le premier type interné a
+        // reçu l'id 1, et ce n'était PAS SYNAPSE.
+        let dict: Vec<String> = ["", "PART_OF"].iter().map(|s| s.to_string()).collect();
+        r.load_from(&dict).unwrap();
+        // 1. La lecture ne ment pas : l'id 1 est PART_OF, pas SYNAPSE.
+        assert_eq!(
+            r.id_for("SYNAPSE"),
+            None,
+            "id_for ne doit pas rendre l'id 1 à tort quand il porte PART_OF"
+        );
+        // 2. L'internement n'échoue pas : il retombe sur un id libre.
+        let id = r
+            .interner_a("SYNAPSE", None)
+            .expect("SYNAPSE doit s'interner même si l'id 1 est occupé");
+        assert!(
+            id > 1,
+            "SYNAPSE reçoit un id libre, pas l'id 1 occupé : {id}"
+        );
+        // 3. Les deux noms sont correctement résolus.
+        assert_eq!(r.id_for("SYNAPSE"), Some(id));
+        assert_eq!(r.name_for(id).as_deref(), Some("SYNAPSE"));
+        assert_eq!(r.name_for(1).as_deref(), Some("PART_OF"), "PART_OF intact");
     }
 
     /// Même défaut pour les clés de propriétés : un trou ne doit pas être réattribué.
