@@ -39,6 +39,15 @@
 //! lecture utilise `now_eff = max(now, t_hi)`, si bien qu'un recul d'horloge
 //! ne rend jamais plus que ce qui a déjà été observé.
 //!
+//! ## Limite du contrat à travers un redémarrage
+//!
+//! `t_hi` n'est écrit que par les chemins d'ÉCRITURE (`reinforce` /
+//! `advance_all`). Une LECTURE seule d'un instant plus grand fait monter le
+//! high-water mark DE SESSION (`session_hi`, en mémoire) mais ne persiste
+//! rien. Après un crash suivi d'un recul d'horloge, on repart donc sur le
+//! dernier `t_hi` durable : l'énergie peut remonter vers la valeur qu'implique
+//! cette dernière borne. Limitation documentée du contrat, pas une corruption.
+//!
 //! ## H est FIGÉE dans l'ancre
 //!
 //! Si `H` ne venait que de la configuration courante, rouvrir avec une autre

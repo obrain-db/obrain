@@ -115,6 +115,10 @@ pub struct ConsolidatorStats {
 /// Energy decay + synapse pruning + engram reinforcement Thinker.
 pub struct Consolidator {
     config: ConsolidatorConfig,
+    /// Horloge injectable (tests déterministes / simulation) : micros Unix.
+    /// Par défaut [`crate::decay_law::unix_micros`]. Même abstraction que
+    /// [`crate::energy::EnergyStore`] : unifie la source de temps du penseur.
+    clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     // Stats are written only by the Thinker thread but read by callers
     // using AtomicU64 would require heavier plumbing. Keep a parking_lot
     // mutex for now — tick is infrequent, contention is irrelevant.
@@ -126,6 +130,7 @@ impl Consolidator {
     pub fn new(config: ConsolidatorConfig) -> Self {
         Self {
             config,
+            clock: Arc::new(unix_micros),
             stats: parking_lot::Mutex::new(ConsolidatorStats::default()),
         }
     }
@@ -133,6 +138,20 @@ impl Consolidator {
     /// Returns a snapshot of the accumulated stats.
     pub fn stats(&self) -> ConsolidatorStats {
         *self.stats.lock()
+    }
+
+    /// Injecte une horloge (tests déterministes / simulation). Par défaut
+    /// [`crate::decay_law::unix_micros`]. Même builder que
+    /// [`crate::energy::EnergyStore::with_clock`] : une horloge figée rend la
+    /// tique reproductible sans toucher à la vraie montre.
+    pub fn with_clock(mut self, clock: Arc<dyn Fn() -> i64 + Send + Sync>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Instant brut de l'horloge injectée, en micros Unix.
+    pub fn now_micros(&self) -> i64 {
+        (self.clock)()
     }
 
     /// Une tique : avance la colonne d'énergie le long des ancres physiques,
@@ -166,7 +185,13 @@ impl Thinker for Consolidator {
         self.config.interval
     }
     fn tick(&self, store: &Arc<SubstrateStore>) -> Result<ThinkerTickReport, ThinkerTickError> {
-        let (report, avance) = self.tick_impl(store, unix_micros())?;
+        // L'instant vient de l'horloge injectée (défaut `unix_micros`), pas
+        // d'un appel direct à la montre : les tests peuvent figer le temps.
+        // La monotonie INTER-PROCESSUS ne repose pas ici sur un high-water
+        // mark de session : `advance_all` persiste `t_hi` dans l'ancre à
+        // chaque matérialisation, et c'est ce `t_hi` durable qui borne les
+        // reculs d'horloge à travers un redémarrage (voir `decay_law`).
+        let (report, avance) = self.tick_impl(store, self.now_micros())?;
         let mut s = self.stats.lock();
         s.ticks += 1;
         s.nodes_decayed += avance.advanced;

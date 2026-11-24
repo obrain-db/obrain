@@ -22,6 +22,16 @@
 //! elle est **exacte sans qu'aucune minuterie ne tourne**. La tique
 //! périodique ([`advance_all`]) ne sert qu'à faire vieillir les nœuds que
 //! PERSONNE NE LIT, pour `list_low_energy` et l'archivage.
+//!
+//! ## Contrat de monotonie
+//!
+//! Monotonie garantie au sein d'une session (via `session_hi`, en mémoire,
+//! dans [`crate::energy::EnergyStore`]) ; à travers un redémarrage, reprise
+//! sur la dernière borne durable `t_hi` (écrite seulement par [`reinforce`] /
+//! [`advance_all`]). Une lecture seule d'un instant plus grand n'est PAS
+//! persistée : après un crash suivi d'un recul d'horloge, l'énergie peut
+//! remonter vers la valeur impliquée par le dernier `t_hi` durable —
+//! limitation documentée, pas une corruption.
 
 use std::sync::Arc;
 use std::time::Duration;
