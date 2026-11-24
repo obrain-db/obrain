@@ -1541,6 +1541,38 @@ impl CypherTranslator {
         // If there's no input, use Empty which produces a single row for projection evaluation
         let input = input.unwrap_or(LogicalOperator::Empty);
 
+        // `WITH *, expr AS alias` : on explicite `*` en variables de la portee
+        // (tri stable, sans variables internes) suivies des items, puis on
+        // traite le `WITH` comme un `WITH` explicite.
+        if with_clause.is_wildcard && !with_clause.items.is_empty() {
+            let mut noms: Vec<String> = visible_variables(&input)
+                .into_keys()
+                .filter(|n| !n.starts_with('_'))
+                .filter(|n| {
+                    !with_clause
+                        .items
+                        .iter()
+                        .any(|i| i.alias.as_deref() == Some(n.as_str()))
+                })
+                .collect();
+            noms.sort();
+            let mut items: Vec<ast::ProjectionItem> = noms
+                .into_iter()
+                .map(|n| ast::ProjectionItem {
+                    expression: ast::Expression::Variable(n),
+                    alias: None,
+                    span: None,
+                })
+                .collect();
+            items.extend(with_clause.items.iter().cloned());
+            let explicite = ast::WithClause {
+                is_wildcard: false,
+                items,
+                ..with_clause.clone()
+            };
+            return self.translate_with(&explicite, Some(input));
+        }
+
         // WITH *: skip projection, all variables pass through unchanged
         if with_clause.is_wildcard {
             let mut plan = input;
