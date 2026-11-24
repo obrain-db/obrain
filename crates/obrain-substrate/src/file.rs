@@ -130,6 +130,19 @@ pub(crate) fn verrouiller_fichier_bloquant(fichier: &File) -> std::io::Result<()
     Ok(())
 }
 
+/// Déverrouille le `flock(LOCK_EX)` posé par [`verrouiller_fichier_bloquant`].
+/// Symétrique exact de cette dernière : `flock` et `fcntl` sont des mécanismes
+/// INDÉPENDANTS — [`deverrouiller_fichier`] (qui fait `F_UNLCK` fcntl) ne
+/// libérerait PAS un verrou `flock`.
+#[cfg(unix)]
+pub(crate) fn deverrouiller_fichier_bloquant(fichier: &File) {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: `flock` reçoit un descripteur ouvert par l'appelant.
+    // L'erreur est ignorée : le noyau libère le verrou à la mort du processus,
+    // et un échec de LOCK_UN ne laisse qu'un verrou qui tombera au `drop`.
+    let _ = unsafe { libc::flock(fichier.as_raw_fd(), libc::LOCK_UN) };
+}
+
 #[cfg(unix)]
 pub(crate) fn verrouiller_fichier(fichier: &File, exclusif: bool) -> std::io::Result<()> {
     use std::os::unix::io::AsRawFd;
@@ -1643,11 +1656,6 @@ impl ZoneFile {
                 // mappe plus, jamais moins. Mono-écrivain : `reelle == self.len`, et
                 // comme `new_len > self.len`, `cible == new_len` — comportement
                 // INCHANGÉ (les tests de politique de croissance le verrouillent).
-                let reelle = file.metadata()?.len();
-                let cible = new_len.max(reelle);
-                file.set_len(cible)?;
-                // SAFETY: same invariants as `open_or_create`.
-                let m = unsafe { MmapOptions::new().len(cible as usize).map_mut(&*file)? };
                 // `madvise(MADV_HUGEPAGE)` must be re-applied after every remap — the
                 // hint lives on the VMA, not on the file. A zone that crossed the
                 // HUGE_PAGE_MIN_BYTES threshold during this grow will now be eligible
@@ -1665,11 +1673,33 @@ impl ZoneFile {
                     let nom = self.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     est_zone_props_v2_nom(nom)
                 };
-                if !est_zone_props_v2 {
-                    advise_huge_pages(&m, cible);
-                }
-                *map = Some(m);
-                self.len = cible;
+                // ── VERROU DE CROISSANCE INTER-PROCESSUS (#388) ─────────
+                // `max(reelle)` ne ferme PAS le TOCTOU : entre `metadata().len()`
+                // et `set_len`, un pair peut agrandir le fichier, et notre
+                // `set_len(cible)` (taille PÉRIMÉE) le tronquerait. `flock(LOCK_EX)`
+                // sur le fichier de zone sérialise {fstat; set_len; mmap} entre
+                // processus ; le noyau libère le verrou à la mort (pas de verrou
+                // bloqué après un kill -9, contrairement à un spinlock CAS).
+                #[cfg(unix)]
+                verrouiller_fichier_bloquant(file)?;
+                let croissance = (|| -> SubstrateResult<()> {
+                    let reelle = file.metadata()?.len();
+                    let cible = new_len.max(reelle);
+                    file.set_len(cible)?;
+                    // SAFETY: same invariants as `open_or_create`.
+                    let m = unsafe { MmapOptions::new().len(cible as usize).map_mut(&*file)? };
+                    if !est_zone_props_v2 {
+                        advise_huge_pages(&m, cible);
+                    }
+                    *map = Some(m);
+                    self.len = cible;
+                    Ok(())
+                })();
+                // Libéré même en cas d'échec de la croissance : `flock` ne survit
+                // pas à la fermeture, mais on ne laisse jamais un verrou traîner.
+                #[cfg(unix)]
+                deverrouiller_fichier_bloquant(file);
+                croissance?;
             }
             ZoneBacking::Ram(z) => {
                 // SAFETY: `grow_to` prend `&mut self` — aucune vue rendue par
