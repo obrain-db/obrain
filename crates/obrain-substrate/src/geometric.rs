@@ -401,6 +401,10 @@ pub fn refresh_all_ricci(store: &SubstrateStore) -> SubstrateResult<RicciRefresh
         stats.negative_fraction = neg as f32 / stats.edges_visited as f32;
         stats.positive_fraction = pos as f32 / stats.edges_visited as f32;
     }
+    // Le recalcul est effectif : on persiste la version de formule (#346).
+    // Posé APRÈS le succès, jamais avant — une coupure au milieu laisse
+    // l'ancienne version (donc un avertissement à la prochaine lecture).
+    store.marquer_ricci_formule_a_jour()?;
     Ok(stats)
 }
 
@@ -691,6 +695,18 @@ pub fn node_curvature(store: &SubstrateStore, node: NodeId) -> Option<f32> {
 pub fn compute_all_node_curvatures(
     store: &SubstrateStore,
 ) -> SubstrateResult<HashMap<NodeId, f32>> {
+    // Les `ricci_u8` lus ici sont ceux persistés par `refresh_all_ricci` /
+    // `refresh_stale_edges`. Une base antérieure à #305 porte l'ANCIENNE
+    // formule : on le signale une fois, sans bloquer (recalcul à la demande).
+    // Contrôle en AMONT de la boucle : `node_curvature` est appelé par nœud,
+    // relire le sidecar à chaque appel serait une régression O(V) en E/S.
+    if !store.ricci_formule_a_jour() {
+        AVERTI_RICCI_PERIME.get_or_init(|| {
+            tracing::warn!(
+                "courbure de Ricci périmée : la formule a changé (#305), relancez refresh_all_ricci sur cette base"
+            );
+        });
+    }
     let mut out: HashMap<NodeId, f32> = HashMap::new();
     for nid in GraphStore::node_ids(store) {
         if let Some(k) = node_curvature(store, nid) {
@@ -1181,6 +1197,17 @@ pub fn bottleneck_nodes(store: &SubstrateStore, threshold: f32) -> Vec<(NodeId, 
 
 /// Timescales for the HKS descriptor — exposed so the Predictor / retrieval
 /// can pass them back in to compare stored signatures against fresh queries.
+/// Version de la formule de courbure de Ricci. v1 = ancien opérateur (avant
+/// #305), v2 = borne de Jost-Liu corrigée. Bumpée quand la SÉMANTIQUE des
+/// `ricci_u8` persistés change ; les bases antérieures sont alors « périmées »
+/// et doivent repasser par [`refresh_all_ricci`].
+pub const RICCI_FORMULA_VERSION: u32 = 2;
+
+/// Avertissement unique (par processus) « courbure périmée », porté par un
+/// `OnceLock` : la lecture d'une base périmée ne doit pas journaliser à chaque
+/// nœud, seulement au premier usage.
+static AVERTI_RICCI_PERIME: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
 pub const HKS_T_LOCAL: f32 = 0.1;
 pub const HKS_T_MESO: f32 = 1.0;
 pub const HKS_T_GLOBAL: f32 = 10.0;
@@ -1742,6 +1769,59 @@ mod tests {
     fn link(s: &SubstrateStore, a: NodeId, b: NodeId) {
         let _ = s.create_edge(a, b, "E");
         let _ = s.create_edge(b, a, "E");
+    }
+
+    #[test]
+    fn marqueur_de_version_ricci_cycle_de_vie() {
+        let (_td, s) = store();
+        // Base neuve : aucun marqueur ⇒ formule « périmée » (pré-#305).
+        assert!(
+            !s.ricci_formule_a_jour(),
+            "une base neuve ne porte pas de marqueur de version Ricci"
+        );
+
+        let a = s.create_node(&["N"]);
+        let b = s.create_node(&["N"]);
+        let c = s.create_node(&["N"]);
+        link(&s, a, b);
+        link(&s, b, c);
+        link(&s, a, c);
+
+        refresh_all_ricci(&s).expect("refresh_all_ricci");
+        assert!(
+            s.ricci_formule_a_jour(),
+            "après un recalcul complet, la version de formule est à jour"
+        );
+    }
+
+    #[test]
+    fn compute_all_node_curvatures_avertit_une_base_perimee() {
+        let (_td, s) = store();
+        // Base neuve : pas de marqueur → `compute_all_node_curvatures` passe
+        // par le bloc d'avertissement (couverture du chemin « formule périmée »).
+        let _ = compute_all_node_curvatures(&s).expect("curvatures (base vide)");
+    }
+
+    #[test]
+    fn marquer_ricci_formule_a_jour_couvre_les_chemins_d_erreur() {
+        let (td, s) = store();
+        let dir = td.path().join("ricci");
+        let chemin = dir.join("substrate.ricci.version");
+        let temporaire = dir.join("substrate.ricci.version.tmp");
+        // 1. File::create échoue : le chemin .tmp est un répertoire (EISDIR).
+        std::fs::create_dir_all(&temporaire).unwrap();
+        assert!(
+            s.marquer_ricci_formule_a_jour().is_err(),
+            "File::create sur un répertoire doit échouer"
+        );
+        std::fs::remove_dir_all(&temporaire).unwrap();
+        // 2. rename échoue : la destination est un répertoire non vide.
+        std::fs::create_dir_all(&chemin).unwrap();
+        std::fs::write(chemin.join("occupe"), b"x").unwrap();
+        assert!(
+            s.marquer_ricci_formule_a_jour().is_err(),
+            "rename vers un répertoire non vide doit échouer"
+        );
     }
 
     /// Trefoil graph — three triangles `{A1,A2,A3}`, `{B1,B2,B3}`,

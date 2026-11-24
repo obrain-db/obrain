@@ -222,6 +222,12 @@ pub const DICT_FILENAME_PUB: &str = DICT_FILENAME;
 /// fusionne avec la fenetre WAL a l'ouverture (`merge_wal_external_edges`).
 pub(crate) const EXTEDGES_FILENAME: &str = "substrate.extedges";
 
+/// Version de la formule de courbure de Ricci (voir
+/// [`crate::geometric::RICCI_FORMULA_VERSION`]). L'absence du sidecar, ou une
+/// version antérieure, signale des `ricci_u8` persistés avec l'ancienne
+/// formule (avant #305) : ils doivent être recalculés à la demande.
+pub(crate) const RICCI_VERSION_FILENAME: &str = "substrate.ricci.version";
+
 /// (MP-5) Premier sidecar du régime hérité qui porte une donnée, s'il existe.
 ///
 /// Un sidecar absent, de longueur nulle, ou dont le snapshot décode SANS nœud
@@ -11121,6 +11127,57 @@ impl SubstrateStore {
         std::fs::metadata(&chemin)
             .map(|m| m.len() > 0)
             .unwrap_or(false)
+    }
+
+    /// Vrai si les `ricci_u8` persistés sont à la version courante de la
+    /// formule de Ricci. L'absence du marqueur (base antérieure à #305) rend
+    /// `false` — c'est le signal « valeurs périmées, à recalculer ».
+    pub fn ricci_formule_a_jour(&self) -> bool {
+        let chemin = {
+            let sub = self.substrate.lock();
+            sub.path().join(RICCI_VERSION_FILENAME)
+        };
+        let Ok(contenu) = std::fs::read_to_string(&chemin) else {
+            return false;
+        };
+        contenu
+            .lines()
+            .find_map(|l| l.strip_prefix("version="))
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .is_some_and(|v| v == crate::geometric::RICCI_FORMULA_VERSION)
+    }
+
+    /// Persiste la version courante de la formule de Ricci. Appelé par
+    /// [`crate::geometric::refresh_all_ricci`] APRÈS le recalcul effectif.
+    /// Écriture atomique (tmp + fsync + rename) : une coupure ne laisse jamais
+    /// un marqueur partiel, seulement l'ancien état ou le nouveau.
+    pub fn marquer_ricci_formule_a_jour(&self) -> SubstrateResult<()> {
+        let chemin = {
+            let sub = self.substrate.lock();
+            sub.path().join(RICCI_VERSION_FILENAME)
+        };
+        let temporaire = chemin.with_file_name(format!("{RICCI_VERSION_FILENAME}.tmp"));
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&temporaire).map_err(|e| {
+                SubstrateError::Internal(format!(
+                    "marqueur Ricci : création de {} impossible : {e}",
+                    temporaire.display()
+                ))
+            })?;
+            f.write_all(
+                format!("version={}\n", crate::geometric::RICCI_FORMULA_VERSION).as_bytes(),
+            )
+            .map_err(SubstrateError::Io)?;
+            f.sync_all().map_err(SubstrateError::Io)?;
+        }
+        std::fs::rename(&temporaire, &chemin).map_err(|e| {
+            SubstrateError::Internal(format!(
+                "marqueur Ricci : rename vers {} impossible : {e}",
+                chemin.display()
+            ))
+        })?;
+        Ok(())
     }
 
     /// Pose le marqueur de migration ACHEVÉE.
