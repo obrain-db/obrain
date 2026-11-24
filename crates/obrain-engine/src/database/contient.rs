@@ -262,3 +262,62 @@ fn balayer(store: &dyn GraphStore, cle: &PropertyKey, predicat: &PredicatTexte<'
     }
     out
 }
+
+/// Tests de couverture de l'opérateur CONTAINS d'`ObrainDB` (`contient`,
+/// `contient_limite`, `contient_avec_route` et l'énum `RouteContient`), sur une
+/// base `new_in_memory()` sans index texte : la route attendue est le balayage.
+#[cfg(test)]
+mod tests_couverture_contient {
+    use super::{ObrainDB, RouteContient};
+    use obrain_common::types::Value;
+
+    fn base_nommee() -> ObrainDB {
+        let db = ObrainDB::new_in_memory();
+        db.create_node_with_props(&["Person"], [("name", Value::from("alix"))]);
+        db.create_node_with_props(&["Person"], [("name", Value::from("alexandre"))]);
+        db.create_node_with_props(&["Person"], [("name", Value::from("bob"))]);
+        db
+    }
+
+    #[test]
+    fn nom_des_routes() {
+        assert_eq!(RouteContient::Index.nom(), "index");
+        assert_eq!(RouteContient::Balayage.nom(), "balayage");
+    }
+
+    #[test]
+    fn contient_trouve_les_noeuds() {
+        let db = base_nommee();
+        let result = db.contient("name", "al").unwrap();
+        assert_eq!(result.row_count(), 2, "alix et alexandre contiennent 'al'");
+        let result = db.contient("name", "ali").unwrap();
+        assert_eq!(result.row_count(), 1, "seul alix contient 'ali'");
+    }
+
+    #[test]
+    fn contient_aucun_resultat() {
+        let db = base_nommee();
+        let result = db.contient("name", "zzz").unwrap();
+        assert_eq!(result.row_count(), 0);
+    }
+
+    #[test]
+    fn contient_limite_tronque() {
+        let db = base_nommee();
+        let result = db.contient_limite("name", "al", 1).unwrap();
+        assert_eq!(result.row_count(), 1, "la limite borne le résultat");
+    }
+
+    #[test]
+    fn contient_avec_route_retourne_resultat_et_route() {
+        let db = base_nommee();
+        let reponse = db.contient_avec_route("name", "al", None).unwrap();
+        assert_eq!(reponse.result.row_count(), 2);
+        // Sans index texte (features par défaut), la route est le balayage.
+        assert_eq!(reponse.route, RouteContient::Balayage);
+        assert!(
+            reponse.result.rows_scanned.unwrap_or(0) > 0,
+            "un balayage rend un compte de lignes examinées"
+        );
+    }
+}
