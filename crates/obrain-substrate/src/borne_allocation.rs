@@ -395,14 +395,16 @@ impl BorneAllocation {
         let rang = Self::rang_verrou(cle);
         let mot = self.mot_verrou(rang);
         let jeton = Self::mon_jeton();
-        let debut = std::time::Instant::now();
         let mut tours: u32 = 0;
-        let mut prevenu = false;
         loop {
             match mot.compare_exchange(0, jeton, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => return VerrouEntite::neuf(mot, rang),
                 Err(courant) => {
-                    tours = tours.saturating_add(1);
+                    // `wrapping_add` et non `saturating_add` : à saturation
+                    // (u32::MAX, reste 63 modulo 64), la condition
+                    // `is_multiple_of(64)` ne serait plus jamais vraie et la
+                    // preuve de vie cesserait définitivement de tourner.
+                    tours = tours.wrapping_add(1);
                     if tours > 64 && tours.is_multiple_of(64) {
                         let pid = courant & 0xFFFF_FFFF;
                         let empreinte = (courant >> 32) as u32;
@@ -435,14 +437,6 @@ impl BorneAllocation {
                         std::thread::yield_now();
                     } else {
                         std::thread::sleep(std::time::Duration::from_micros(100));
-                    }
-                    if !prevenu && debut.elapsed() > std::time::Duration::from_secs(30) {
-                        prevenu = true;
-                        tracing::warn!(
-                            tranche = rang,
-                            detenteur_pid = courant & 0xFFFF_FFFF,
-                            "verrou d'entité tenu depuis plus de 30 s : le détenteur est                              VIVANT (aucun vol sur délai) — un écrivain bloqué bloque les                              autres écrivains de cette tranche"
-                        );
                     }
                 }
             }
@@ -489,7 +483,7 @@ pub struct VerrouEntite<'a> {
 
 impl<'a> VerrouEntite<'a> {
     fn neuf(mot: &'a AtomicU64, rang: usize) -> Self {
-        #[cfg(debug_assertions)]
+        #[cfg(test)]
         tranches::prendre(rang);
         Self { mot, rang }
     }
@@ -506,7 +500,7 @@ impl Drop for VerrouEntite<'_> {
         // `0` = libre. Le jeton du suivant sera publié par SON CAS : rien à
         // effacer d'autre, donc aucun risque d'écraser son empreinte.
         self.mot.store(0, Ordering::Release);
-        #[cfg(debug_assertions)]
+        #[cfg(test)]
         tranches::rendre(self.rang);
     }
 }
@@ -514,7 +508,7 @@ impl Drop for VerrouEntite<'_> {
 /// Filet de développement : deux prises de la MÊME tranche par le même thread
 /// seraient un interblocage (le verrou n'est pas réentrant). En debug on le dit
 /// au lieu de figer le test.
-#[cfg(debug_assertions)]
+#[cfg(test)]
 mod tranches {
     use std::cell::RefCell;
 

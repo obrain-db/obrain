@@ -45,8 +45,33 @@ use obrain_substrate::wal_io::{
 // Harnais inter-processus
 // ---------------------------------------------------------------------------
 
+/// Rôle d'enfant, ou `None` pour le parent.
+///
+/// `MWB_ROLE` SEUL fait foi. Ne JAMAIS y ajouter une autre variable : un test
+/// existant (`t7`) ne passe que `MWB_ROLE` + ses propres chemins, sans
+/// `MWB_DIR` ; exiger `MWB_DIR` l'a fait basculer dans la branche PARENT, et ce
+/// parent a relancé un enfant, et ainsi de suite — **bombe à processus** du
+/// 24/11/2026, 1 800 processus en 40 s, charge machine à 260. C'est la garde de
+/// profondeur ci-dessous qui protège de cette classe d'accident, pas le rôle.
 fn role() -> Option<String> {
     std::env::var("MWB_ROLE").ok()
+}
+
+/// Garde anti-récursion du harnais. Chaque `Enfant::lancer` incrémente
+/// `MWB_PROFONDEUR` ; au-delà de 2, l'enfant refuse de démarrer. Un harnais qui
+/// se réengendre devient donc une erreur nommée en trois processus, au lieu
+/// d'une bombe à processus qui sature la machine avant qu'on la voie.
+fn refuser_si_trop_profond() {
+    let profondeur: u32 = std::env::var("MWB_PROFONDEUR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        profondeur <= 2,
+        "profondeur d'enfant {profondeur} > 2 : le harnais de test se réengendre \
+         (un enfant exécute la branche PARENT). Vérifier que la branche enfant \
+         est bien prise, et arrêter la machine avant qu'elle sature."
+    );
 }
 
 fn env_obligatoire(cle: &str) -> String {
@@ -72,9 +97,15 @@ fn attendre_fichier(p: &Path, quoi: &str) {
     }
 }
 
+/// Délai maximal d'attente d'une ligne d'enfant. Sans borne, un enfant bloqué
+/// — exactement le mode de défaillance qu'un verrou peut introduire — fige la
+/// CI au lieu de la faire échouer.
+const DELAI_LIGNE: Duration = Duration::from_secs(60);
+
 struct Enfant {
     process: Child,
-    lignes: std::io::Lines<std::io::BufReader<std::process::ChildStdout>>,
+    lignes: std::sync::mpsc::Receiver<String>,
+    lecteur: std::thread::JoinHandle<()>,
 }
 
 impl Enfant {
@@ -87,11 +118,30 @@ impl Enfant {
         for (k, v) in vars {
             cmd.env(k, v);
         }
+        // Profondeur de génération : la garde `refuser_si_trop_profond` s'en sert
+        // pour arrêter net un harnais qui se réengendre.
+        let profondeur: u32 = std::env::var("MWB_PROFONDEUR")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        cmd.env("MWB_PROFONDEUR", (profondeur + 1).to_string());
         let mut process = cmd.spawn().expect("lancer l'enfant");
         let sortie = process.stdout.take().expect("stdout de l'enfant");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let lecteur = std::thread::spawn(move || {
+            for ligne in std::io::BufReader::new(sortie)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if tx.send(ligne).is_err() {
+                    break;
+                }
+            }
+        });
         Self {
             process,
-            lignes: std::io::BufReader::new(sortie).lines(),
+            lignes: rx,
+            lecteur,
         }
     }
 
@@ -99,13 +149,18 @@ impl Enfant {
     /// de cette ligne.
     fn attendre_ligne(&mut self, prefixe: &str) -> String {
         loop {
-            match self.lignes.next() {
-                Some(Ok(l)) => {
+            match self.lignes.recv_timeout(DELAI_LIGNE) {
+                Ok(l) => {
                     if let Some(reste) = l.strip_prefix(prefixe) {
                         return reste.trim().to_string();
                     }
                 }
-                autre => panic!("enfant terminé sans « {prefixe} » ({autre:?})"),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+                    "enfant muet depuis {DELAI_LIGNE:?} en attendant « {prefixe} » — un                      appairage ou un verrou bloqué doit échouer, pas figer la CI"
+                ),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("enfant terminé sans « {prefixe} »")
+                }
             }
         }
     }
@@ -1238,6 +1293,7 @@ fn enfant_meme_entite(dir: &Path, role: &str, noeud: u64, arete: u64, k: u64) ->
 
 #[test]
 fn t9_deux_processus_ecrivent_des_cles_distinctes_sur_la_meme_entite() {
+    refuser_si_trop_profond();
     if let Some(r) = role() {
         let dir = PathBuf::from(env_obligatoire("MWB_DIR"));
         let k: u64 = env_obligatoire("MWB_K").parse().unwrap();
@@ -1338,6 +1394,7 @@ fn enfant_martele(dir: &Path, role: &str, noeud: u64, n: u64) -> ! {
 
 #[test]
 fn t9b_deux_processus_martelent_la_meme_cle_puis_le_dernier_ecrivain_gagne() {
+    refuser_si_trop_profond();
     if let Some(r) = role() {
         let dir = PathBuf::from(env_obligatoire("MWB_DIR"));
         let noeud: u64 = env_obligatoire("MWB_NOEUD").parse().unwrap();
@@ -1375,6 +1432,27 @@ fn t9b_deux_processus_martelent_la_meme_cle_puis_le_dernier_ecrivain_gagne() {
     b.attendre_ligne("FINI");
     a.terminer();
     b.terminer();
+
+    // AVANT l'écriture finale du parent : la valeur laissée par le martèlement
+    // doit être EXACTEMENT la dernière d'un des deux écrivains. Une page
+    // déchirée, une valeur d'un rang antérieur ou un mélange laisserait autre
+    // chose. (Sans ce contrôle, `t9b` ne prouvait rien : l'écriture finale du
+    // parent écrase tout, pertes comprises — constat de relecture du 24/11.)
+    {
+        let s = SubstrateStore::open_read_only(&dir).expect("relecture après martèlement");
+        let lu = s.get_node_property(NodeId(noeud), &PropertyKey::new("martelee"));
+        let attendu = [
+            Value::String(format!("A-{}", N - 1).into()),
+            Value::String(format!("B-{}", N - 1).into()),
+        ];
+        assert!(
+            lu.as_ref().is_some_and(|v| attendu.contains(v)),
+            "après martèlement de la même clé, la valeur relue devrait être la dernière \
+             d'un des deux écrivains (A-{} ou B-{}), obtenu : {lu:?}",
+            N - 1,
+            N - 1
+        );
+    }
 
     // Le DERNIER écrivain est le parent, en exclusif : sa valeur doit être celle
     // qu'on relit, quoi qu'aient fait les deux autres (pas de résurrection,
@@ -1417,6 +1495,7 @@ fn enfant_ecrit_sans_fin(dir: &Path, noeud: u64) -> ! {
 
 #[test]
 fn t9c_un_detenteur_tue_est_vole_par_son_pair() {
+    refuser_si_trop_profond();
     if let Some(_r) = role() {
         let dir = PathBuf::from(env_obligatoire("MWB_DIR"));
         let noeud: u64 = env_obligatoire("MWB_NOEUD").parse().unwrap();

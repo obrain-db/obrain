@@ -26564,6 +26564,13 @@ impl GraphStoreMut for SubstrateStore {
         // embeddings off the anon heap. Scalar values still take the
         // in-memory path.
         if let Value::Vector(ref v) = value {
+            // (MP-3b, revue du 24/11) Le chemin VECTEUR de NŒUD sortait AVANT le
+            // verrou d'entité, alors que son pendant ARÊTE le prend : deux
+            // processus qui écrivaient un vecteur sur le même nœud pouvaient
+            // s'entrelacer dans la colonne dense, protégée seulement par un
+            // verrou intra-processus. Même asymétrie que celle corrigée sur les
+            // scalaires d'arête — on ferme.
+            let _verrou_entite = self.verrou_entite(id.0);
             self.route_vector_write(EntityKind::Node, id.0 as u32, key, v);
             self.notify_vector_written(id, key, v);
             self.notify_node_property_set(id, key);
