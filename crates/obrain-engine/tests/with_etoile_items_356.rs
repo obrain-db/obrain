@@ -49,7 +49,7 @@ fn plusieurs_items_et_un_item_qui_lit_le_precedent_de_la_portee() {
 #[test]
 fn where_apres_les_items() {
     let q = "MATCH (n:F) WITH collect(n.v) AS vs WITH *, size(vs) AS cnt WHERE cnt > 5 RETURN cnt";
-    assert!(lignes(&base(), q).is_empty());
+    assert_eq!(lignes(&base(), q), Vec::<Vec<Value>>::new());
     let q = "MATCH (n:F) WITH collect(n.v) AS vs WITH *, size(vs) AS cnt WHERE cnt > 1 RETURN cnt";
     assert_eq!(lignes(&base(), q).len(), 1);
 }
