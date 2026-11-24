@@ -663,6 +663,35 @@ fermées par #231 sur la forme de `chat_11` et `topo_04` : la forme de PO n'est
 pas celle que leurs tests figent. La colonne de tri fuitée des 79 + 6
 requêtes ci-dessus : #353.
 
+### Rejeu sur `main` 7bf1696a (24/11) — même base, même harnais
+
+Rejeu des 325 requêtes sur `main` au SHA `7bf1696a` (tête `578cde3b` au moment de l'écriture), harnais compilé avec `cypher`,
+`algos` et `vector-index`, base du clone Neo4j, lecture seule, `dgx` (charge 1,5
+au départ). Il repart de la passe `4a37c0be` (même base, même harnais) : il mesure
+ce qui a changé entre les deux, et non une nouvelle référence.
+
+| verdict (ensembles normalisés, 313 requêtes ok des deux côtés) | `4a37c0be` | `main` 7bf1696a |
+|---|---:|---:|
+| requêtes en erreur côté obrain | 16 | **12** |
+| dont propres à obrain (hors APOC communs à Neo4j) | 13 | **9** |
+| identiques (lignes + empreinte) | 139 | **215** |
+| `EQUIVALENT` strict | 173 | **253** |
+| `EQUIVALENT` à une colonne de tri près | 79 | 0 |
+| `VALEURS` (valeurs différentes, dont colonne fuitée) | 34 | 37 |
+| `LIGNES_DIFFERENTES` | 10 | 10 |
+| `COLONNES_AUTRES` | 13 | 13 |
+| somme des médianes (ok des deux, plus de 5 ms) | — | 282 s (passe `4a37c0be` : 276 s, même script) |
+
+**Ce qui a bougé** (les 4 passages « erreur → ok » ne suffisent pas à conclure) :
+
+- `ana_09` passe **à l'équivalence** ; `chat_23` passe à ok, avec un écart de format de date seulement (`+00:00` contre `Z`).
+- `nbh_01` et `nbh_02` passent de « erreur » à ok : leur colonne `owner` concorde avec Neo4j ; l'écart restant est une **carte** (`props`) où obrain supprime les clés à valeur absente, alors que Neo4j les garde (`keys({a: m.id})`). Reproduction et issue : #378. Le symptôme de #355 est réglé ; #355 est fermée.
+- La famille « colonne de tri fuitée » disparaît : 79 requêtes repassent à l'équivalence (#353).
+
+**Erreurs propres à obrain restantes** (9) : six requêtes vectorielles, dont la base rejouée n'a pas d'index vectoriel nommé (état du banc, pas un défaut du moteur) ; `ws_14` (identifiant nœud/arête partagé, #229 fermée, à reconfirmer) ; `code_44` (produit cartésien, #228 ouverte) ; `persona_10` (`PatternComprehension` dans un `WHERE`, #357 ouverte).
+
+Les fichiers sont sur `s3://obrain-bancs/bancs/2026-11-23_bd9b3b4_dgx/main7bf1696a/` avec `liste.sha256` (vérifiée après téléchargement).
+
 ### Temps — moteur `bd9b3b4f`, index natifs présents, **avant** #345
 
 Somme des médianes sur les 307 requêtes : **329,3 s côté obrain, 31,1 s côté
