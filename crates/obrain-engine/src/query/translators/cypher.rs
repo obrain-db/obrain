@@ -2978,7 +2978,14 @@ impl CypherTranslator {
                 projection,
             } => {
                 // Build a subplan from the pattern
-                let pattern_plan = self.translate_pattern(pattern, None)?;
+                let pattern_plan = match self.entree_ancre_comprehension(pattern) {
+                    // (#355) Motif lié dehors par un nœud qui n'est pas le
+                    // premier : le chemin repart de ce nœud, posé en entrée
+                    // (un `NodeScan` que `relever_sous_plan` remplacera par le
+                    // `ParameterScan` de l'ancre).
+                    Some(entree) => self.translate_pattern(pattern, Some(entree))?,
+                    None => self.translate_pattern(pattern, None)?,
+                };
                 // Apply optional WHERE filter
                 let subplan = if let Some(where_expr) = where_clause {
                     let pred = self.translate_expression(where_expr)?;
@@ -3190,6 +3197,38 @@ impl CypherTranslator {
             LogicalOperator::Filter(filter) => Self::extract_anchor_variable(&filter.input),
             _ => None,
         }
+    }
+
+    /// Entrée d'ancrage d'un motif de compréhension dont le premier nœud est
+    /// libre mais dont UN SEUL autre nœud est un nœud lié dehors (#355) : un
+    /// `NodeScan` nu sur ce nœud. Le traducteur de chemin repart alors de lui
+    /// (en avant et à rebours), comme pour un `MATCH`. `None` : motif à
+    /// traduire sans entrée (premier nœud lié ou aucun nœud lié, cas inchangés ;
+    /// plusieurs nœuds liés, que `relever_sous_plan` refuse).
+    fn entree_ancre_comprehension(&self, pattern: &ast::Pattern) -> Option<LogicalOperator> {
+        let ast::Pattern::Path(path) = pattern else {
+            return None;
+        };
+        let portee = self.scope_kinds.borrow();
+        let lies: Vec<&String> = std::iter::once(&path.start)
+            .chain(path.chain.iter().map(|rel| &rel.target))
+            .filter_map(|node| node.variable.as_ref())
+            .filter(|v| portee.contains_key(*v))
+            .collect();
+        let [ancre] = lies.as_slice() else {
+            return None;
+        };
+        if path.start.variable.as_ref() == Some(*ancre) {
+            return None;
+        }
+        // Repartir du milieu exige un nœud ET des relations à un saut avant lui.
+        Self::anchor_index(path, &portee, false)?;
+        Some(LogicalOperator::NodeScan(NodeScanOp {
+            variable: (*ancre).clone(),
+            label: None,
+            input: None,
+            pushdown_hint: None,
+        }))
     }
 
     /// Replaces the leaf `NodeScan(variable)` in a pattern subplan with
