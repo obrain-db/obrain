@@ -944,6 +944,11 @@ impl super::Planner {
         }
     }
 
+    /// Saut simple d'un chemin non nommé : la forme que `count_expand_chain` compte.
+    fn saut_simple(e: &ExpandOp) -> bool {
+        e.min_hops == 1 && e.max_hops == Some(1) && e.path_alias.is_none()
+    }
+
     /// (2026-11-23, obrain#189) Réécrit le sous-motif d'un EXISTS en sous-requête
     /// CORRÉLÉE, quand son point de départ est déjà lié par le scope externe.
     ///
@@ -979,6 +984,21 @@ impl super::Planner {
         let depart = loop {
             match courant {
                 LogicalOperator::Expand(e) => {
+                    // (obrain#360) Deux sauts simples CONSÉCUTIFS que rien ne sépare
+                    // sont planifiés en chaîne factorisée (`count_expand_chain`), dont
+                    // `LazyFactorizedChainOperator::reset` ne sait pas se rejouer : la
+                    // source est consommée à la première ligne externe, les suivantes
+                    // ne rendent rien. Mesuré : `EXISTS { (n)<-[]-(m)<-[]-(p) }` réécrit
+                    // rendait {} au lieu des fonctions du projet. Repli. (Un nœud
+                    // étiqueté ou filtré entre les deux sauts pose un `Filter` qui
+                    // casse la chaîne : c'est la forme que l'issue vise.)
+                    if let LogicalOperator::Expand(interieur) = e.input.as_ref()
+                        && Self::saut_simple(e)
+                        && Self::saut_simple(interieur)
+                        && Self::continues_chain(e, interieur)
+                    {
+                        return None;
+                    }
                     pile.push(courant);
                     courant = &e.input;
                 }
@@ -1020,6 +1040,14 @@ impl super::Planner {
                     extremites.push(e.to_variable.clone());
                 }
                 produites.insert(e.to_variable.clone());
+                // (obrain#360) Les variables d'arête sont produites elles aussi : le
+                // traducteur pose l'unicité des relations (#182) en `Filter(_anon_0 <>
+                // _anon_1)` dès que le motif a deux sauts simples ou plus. Sans elles,
+                // ce filtre « lisait une variable étrangère » et toute chaîne à
+                // intermédiaire étiqueté retombait sur la semi-jointure.
+                if let Some(ev) = &e.edge_variable {
+                    produites.insert(ev.clone());
+                }
             }
         }
         for op in &pile {
@@ -4272,6 +4300,44 @@ mod tests_exists_correle {
             super::super::Planner::reecrire_exists_correle(&sous_plan, &externes(&["n", "x"]))
                 .expect("forme couverte");
         assert!(matches!(plan, LogicalOperator::Filter(_)));
+    }
+
+    fn difference(a: &str, b: &str) -> LogicalExpression {
+        LogicalExpression::Binary {
+            left: Box::new(LogicalExpression::Variable(a.to_string())),
+            op: BinaryOp::Ne,
+            right: Box::new(LogicalExpression::Variable(b.to_string())),
+        }
+    }
+
+    #[test]
+    fn l_unicite_des_relations_lit_des_variables_d_arete_produites_par_le_motif() {
+        // (n)<-[e0]-(x:File)<-[e1]-(p) : le traducteur pose `Filter(e0 <> e1)` au
+        // sommet (obrain#360). Les variables d'arête sont produites par le motif.
+        let sous_plan = filtre(
+            difference("e0", "e1"),
+            expand(
+                "x",
+                "p",
+                Some("e1"),
+                filtre(a_label("x"), expand("n", "x", Some("e0"), scan("n"))),
+            ),
+        );
+        let (plan, params) =
+            super::super::Planner::reecrire_exists_correle(&sous_plan, &externes(&["n", "p"]))
+                .expect("forme couverte");
+        assert_eq!(params, vec!["n".to_string(), "p".to_string()]);
+        let rendu = format!("{plan:?}");
+        assert!(rendu.contains("e0") && rendu.contains("e1"), "{rendu}");
+    }
+
+    #[test]
+    fn repli_si_le_filtre_lit_une_variable_etrangere_au_motif() {
+        let sous_plan = filtre(
+            difference("e0", "inconnue"),
+            expand("n", "p", Some("e0"), scan("n")),
+        );
+        refuse(&sous_plan, &["n", "p"]);
     }
 
     fn refuse(sous_plan: &LogicalOperator, externes_: &[&str]) {
