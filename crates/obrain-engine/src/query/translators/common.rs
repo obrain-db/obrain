@@ -423,6 +423,14 @@ pub(crate) fn collect_operator_variables(op: &LogicalOperator, vars: &mut HashSe
             collect_operator_variables(&lj.left, vars);
             collect_operator_variables(&lj.right, vars);
         }
+        LogicalOperator::Apply(apply) => {
+            // Colonnes de l'entrée, plus celles que le sous-plan résume
+            // (alias d'agrégat) ; ses variables internes restent privées.
+            collect_operator_variables(&apply.input, vars);
+            if let LogicalOperator::Aggregate(agg) = apply.subplan.as_ref() {
+                vars.extend(agg.aggregates.iter().filter_map(|a| a.alias.clone()));
+            }
+        }
         LogicalOperator::Unwind(unwind) => {
             vars.insert(unwind.variable.clone());
             collect_operator_variables(&unwind.input, vars);
