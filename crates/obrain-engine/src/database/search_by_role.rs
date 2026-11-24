@@ -14,8 +14,21 @@
 //! composant »).
 //!
 //! Lecture pure : CSR + diffusions HKS en mémoire, aucune mutation, aucun
-//! refresh. Coût dominant = `compute_hks_descriptors` (CSR + 3 diffusions,
-//! ~112 ms / 10⁶ arêtes de référence — voir la doc de `geometric.rs`).
+//! refresh. Coût dominant = `compute_hks_descriptors` (CSR + 3 diffusions) :
+//! MESURÉ sur dgx, degré moyen ≈ 8, 661 ms à 10⁵ nœuds et 8,35 s à 10⁶ nœuds
+//! (voir `# Bench budget` dans `geometric.rs`) ; l'ancien « ~112 ms » décrivait
+//! l'opérateur d'avant #305.
+//!
+//! ## Opérateur et conséquence sur le rôle (#346, décision : VOULU)
+//!
+//! La diffusion utilise le laplacien normalisé `L_sym = I − D^{-1/2} A D^{-1/2}`
+//! (et non `L = D − A`) : son spectre est dans [0, 2] quel que soit le degré, ce
+//! qui rend le développement de Tchebychev stable sans connaître `d_max`.
+//! Contrepartie : le descripteur est invariant d'échelle en degré. Sur une
+//! étoile, `HKS(hub, t) = (1 + e^{-2t}) / 2` pour tout degré (0,5 à `t = 10`
+//! avec 8 comme avec 200 feuilles) : `search_by_role` ne sépare PAS un hub de 8
+//! feuilles d'un hub de 200. Le degré brut n'est pas encodé ; les valeurs ne
+//! sont pas comparables à celles d'avant #305 (sidecar `HKS2`).
 //!
 //! # Surfaces
 //!
