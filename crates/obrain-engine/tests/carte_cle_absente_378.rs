@@ -92,7 +92,7 @@ fn valeur_presente_et_litteral_inchanges() {
 fn carte_vide() {
     let db = base();
     let m = une_valeur(&db, "MATCH (m:File) RETURN {} AS m");
-    assert!(cles(&m).is_empty());
+    assert_eq!(cles(&m), Vec::<String>::new());
 }
 
 #[test]
