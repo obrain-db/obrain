@@ -1,9 +1,10 @@
 //! (2026-08-31) SynapseIncidence — l'index cognitif PERSISTANT.
 //!
 //! Répertoire plat 16 B par slot de nœud → postings de `EdgeId` (u64) dans
-//! un side-car de pages 4 KiB. Même architecture que
-//! [`crate::simplex_incidence::SimplexIncidenceZone`] (le pattern répertoire
-//! + postings, lecture O(degré)) — réutilisée pour le layer cognitif.
+//! un side-car de blocs 32 B. Même pattern répertoire + postings que
+//! [`crate::simplex_incidence::SimplexIncidenceZone`] (lecture O(degré)) —
+//! réutilisée pour le layer cognitif, mais SANS le CRC32 ni les pages 4 KiB
+//! du simplicial (voir « Crash-safety » ci-dessous).
 //!
 //! POURQUOI (ADR `docs/rfc/synapse-incidence.md`). Le spread lisait les
 //! synapses via `node_to_keys` (DashMap en mémoire) rechargée au boot par un
@@ -11,16 +12,35 @@
 //! `for_each_synapse(node)` = marche du postings du nœud → EdgeId → poids
 //! colonne. La DashMap sort du chemin de lecture ; la persistance est native.
 //!
-//! Format on-disk (fidèle au simplicial) :
+//! Format on-disk (répertoire + side-car, SANS CRC32) :
 //! - `substrate.synapse_incidence` — répertoire : en-tête 64 B, puis
 //!   `INCIDENCE_ENTRY_SIZE` (16 B) par slot de nœud (head U48, tail U48,
 //!   count u32).
-//! - `substrate.synapse_postings` — side-car : pages 4 KiB à CRC32, blocs de
-//!   32 B, `EdgeId` u64 par entrée (bloc = 3 entrées de 8 B + en-tête 8 B).
+//! - `substrate.synapse_postings` — side-car : en-tête 64 B (magic `SYNP`,
+//!   version, `next_block_off`), puis des BLOCS de 32 B chaînés par `next`
+//!   (en-tête de bloc 8 B : `next U48` + `used u8` + réservé ; 3 entrées
+//!   `EdgeId` u64 par bloc). AUCUN CRC32 : une corruption de bloc n'est pas
+//!   détectée à la lecture.
 //!
-//! Crash-safety : les écritures passent par le WAL du writer (l'appelant
-//! journalise avant d'appeler append), et chaque page porte un CRC32 vérifié
-//! à la lecture.
+//! ## Crash-safety
+//!
+//! Les écritures d'incidence N'ONT AUCUN enregistrement WAL : [`append`] écrit
+//! les deux side-cars en mmap DIRECT (cf. `SubstrateStore::create_synapse_slot`),
+//! tandis que seule l'arête SYNAPSE (`write_edge`) passe par le WAL. C'est la
+//! raison pour laquelle [`crate::checkpoint`] msync+fsync ces deux side-cars
+//! AVANT de tronquer le WAL — sans cela, un checkpoint + coupure de courant
+//! perdrait l'index alors que les arêtes, elles, seraient rejouées depuis le
+//! WAL (`for_each_synapse` rendrait 0 pendant que `len()` rendrait N).
+//!
+//! ## Garanties testées vs hors banc
+//!
+//! Le banc SIGKILL (`abort()`) préserve le cache de pages : il couvre la
+//! fenêtre « une écriture mmap faite mais pas encore durable », pas la perte
+//! du cache de pages. La perte des écritures NON DURABLES (coupure de courant)
+//! n'est PAS simulée par SIGKILL ; elle peut être MODÉLISÉE par un VFS en
+//! mémoire (à la SQLite) qui ne restitue que les pages explicitement fsyncées.
+//! Hors banc aujourd'hui : la perte d'une écriture mmap non fsyncée, et la
+//! corruption de page (aucun CRC32 dans ce side-car).
 
 use crate::error::{SubstrateError, SubstrateResult};
 use crate::file::ZoneFile;
@@ -197,8 +217,9 @@ impl SynapseIncidenceZone {
         Ok((used.min(POSTINGS_PER_BLOCK), U48(n).to_u64()))
     }
 
-    /// Ajoute `eid` aux postings du nœud. O(1) amorti. L'appelant journalise
-    /// dans le WAL AVANT d'appeler (crash-safety du writer).
+    /// Ajoute `eid` aux postings du nœud. O(1) amorti. Écriture mmap DIRECTE
+    /// des deux side-cars, SANS enregistrement WAL : la durabilité est confiée
+    /// au checkpoint (qui les fsync avant de tronquer le WAL), pas au writer.
     pub fn append(
         inc: &mut ZoneFile,
         posts: &mut ZoneFile,
