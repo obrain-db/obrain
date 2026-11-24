@@ -3481,6 +3481,37 @@ impl Writer {
         f(zones.edges.as_ref().unwrap())
     }
 
+    /// (MP-3c) Reprojette la zone de NŒUDS si un autre processus l'a agrandie
+    /// depuis notre projection. Rend `true` si la projection a grandi. Sous le
+    /// verrou d'écriture de `zones` ; aucun `set_len` (la reprojection ne
+    /// tronque jamais — voir [`ZoneFile::rafraichir`]).
+    pub(crate) fn rafraichir_zone_noeuds(&self) -> SubstrateResult<bool> {
+        let mut zones = self.zones.write();
+        if zones.nodes.is_none() {
+            let sub = self.substrate.lock();
+            zones.nodes = Some(sub.open_zone(Zone::Nodes)?);
+        }
+        zones
+            .nodes
+            .as_mut()
+            .expect("zone nœuds ouverte")
+            .rafraichir()
+    }
+
+    /// Pendant de [`Self::rafraichir_zone_noeuds`] pour la zone d'ARÊTES.
+    pub(crate) fn rafraichir_zone_aretes(&self) -> SubstrateResult<bool> {
+        let mut zones = self.zones.write();
+        if zones.edges.is_none() {
+            let sub = self.substrate.lock();
+            zones.edges = Some(sub.open_zone(Zone::Edges)?);
+        }
+        zones
+            .edges
+            .as_mut()
+            .expect("zone arêtes ouverte")
+            .rafraichir()
+    }
+
     fn with_engram_zone<R>(
         &self,
         f: impl FnOnce(&mut ZoneFile) -> SubstrateResult<R>,

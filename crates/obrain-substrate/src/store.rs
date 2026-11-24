@@ -17586,9 +17586,46 @@ impl SubstrateStore {
         Ok(bitset)
     }
 
+    /// (MP-3c) Un PAIR a-t-il réservé le slot `id`, au-delà de notre miroir ?
+    /// Relit la borne partagée (`borne_allocation.noeud()`) : si elle n'a pas
+    /// dépassé `id`, le slot est réellement inalloué (ou nous sommes en mémoire,
+    /// sans pair). Sinon, on reprojette la zone des nœuds (remap, jamais de
+    /// `set_len`) avant que l'appelant relise le record.
+    ///
+    /// On ne fait PAS avancer le miroir `next_node_id` ici : la borne est un
+    /// compteur de RÉSERVATION qui peut courir en avant de la longueur du
+    /// fichier (des slots réservés mais pas encore écrits). Avancer le miroir
+    /// à la borne ferait passer des écritures futures du pair sur le chemin
+    /// chaud (`id < miroir`) sans reprojection, et on les manquerait.
+    fn rafraichir_noeuds_si_pair_a_grandi(&self, id: u64) -> bool {
+        let Some(b) = self.borne_allocation.as_ref() else {
+            return false;
+        };
+        if b.noeud() <= id {
+            return false;
+        }
+        match self.writer.rafraichir_zone_noeuds() {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(erreur = %e, "reprojection de la zone des nœuds impossible");
+                false
+            }
+        }
+    }
+
     fn is_live_on_disk(&self, id: NodeId) -> bool {
         // Slot 0 is reserved; ids above the high-water mark are unallocated.
-        if id.0 == 0 || id.0 as u32 >= self.next_node_id.load(Ordering::Acquire) {
+        if id.0 == 0 {
+            return false;
+        }
+        // (MP-3c) `id` au-delà de NOTRE miroir : soit réellement inalloué, soit
+        // réservé par un PAIR depuis notre ouverture (notre projection de zone
+        // est alors en retard). On relit la borne partagée ; si elle a dépassé
+        // `id`, on reprojette la zone des nœuds avant de conclure « absent ».
+        // Jamais sur le chemin chaud : `id < miroir` lit la zone directement.
+        if id.0 >= u64::from(self.next_node_id.load(Ordering::Acquire))
+            && !self.rafraichir_noeuds_si_pair_a_grandi(id.0)
+        {
             return false;
         }
         // (jalon 3) « Vivant » au sens des chemins de LECTURE = vivant ET
@@ -18504,10 +18541,40 @@ impl SubstrateStore {
         self.fin_arete.store(fin, Ordering::Release);
     }
 
+    /// (MP-3c) Pendant arêtes de [`Self::rafraichir_noeuds_si_pair_a_grandi`] :
+    /// relit la borne partagée des arêtes et, si elle a dépassé `id`, reprojette
+    /// la zone des arêtes. Même règle : on n'avance pas `next_edge_id` (la borne
+    /// de réservation peut courir en avant de la longueur du fichier).
+    fn rafraichir_aretes_si_pair_a_grandi(&self, id: u64) -> bool {
+        let Some(b) = self.borne_allocation.as_ref() else {
+            return false;
+        };
+        if b.arete() <= id {
+            return false;
+        }
+        match self.writer.rafraichir_zone_aretes() {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(erreur = %e, "reprojection de la zone des arêtes impossible");
+                false
+            }
+        }
+    }
+
     /// Is the edge slot live (allocated, within high-water mark, not
     /// tombstoned on disk, and has the in-memory side-car)?
     fn is_live_edge_on_disk(&self, id: EdgeId) -> bool {
-        if id.0 == 0 || id.0 >= self.next_edge_id.load(Ordering::Acquire) {
+        if id.0 == 0 {
+            return false;
+        }
+        // (MP-3c) Pendant arêtes de `is_live_on_disk` : un id au-delà de notre
+        // miroir peut avoir été réservé par un pair depuis notre ouverture. On
+        // relit la borne partagée et, si elle a dépassé `id`, on reprojette la
+        // zone des arêtes avant de conclure « absent ». Jamais sur le chemin
+        // chaud (`id < miroir`).
+        if id.0 >= self.next_edge_id.load(Ordering::Acquire)
+            && !self.rafraichir_aretes_si_pair_a_grandi(id.0)
+        {
             return false;
         }
         match self.writer.read_edge(id.0) {
@@ -28094,6 +28161,45 @@ impl Drop for SubstrateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (MP-3c) Les gardes du chemin `is_live_on_disk` : un slot réellement
+    /// inalloué (borne partagée non dépassée) reste « absent », et la
+    /// sentinelle (id 0) n'est jamais vivante — ce sont les deux retours
+    /// `false` du nouveau chemin, sans reprojection.
+    #[test]
+    fn is_live_on_disk_absent_hors_borne() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+        let a = s.create_node(&["N"]);
+        assert!(s.is_live_on_disk(a));
+        // id 0 = sentinelle, jamais vivant.
+        assert!(!s.is_live_on_disk(NodeId(0)));
+        // id très au-delà de la borne partagée : réellement inalloué.
+        assert!(!s.is_live_on_disk(NodeId(1_000_000)));
+    }
+
+    /// (MP-3c) Pendant arêtes : mêmes gardes que
+    /// [`is_live_on_disk_absent_hors_borne`].
+    #[test]
+    fn is_live_edge_on_disk_absent_hors_borne() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+        let a = s.create_node(&["N"]);
+        let b = s.create_node(&["N"]);
+        let e = s.create_edge(a, b, "R");
+        assert!(s.is_live_edge_on_disk(e));
+        assert!(!s.is_live_edge_on_disk(EdgeId(0)));
+        assert!(!s.is_live_edge_on_disk(EdgeId(1_000_000)));
+    }
+
+    /// (MP-3c) En mémoire (`borne_allocation == None`, donc aucun pair
+    /// possible), un id au-delà du miroir est réellement absent : la garde
+    /// rend faux SANS reprojection.
+    #[test]
+    fn is_live_on_disk_absent_en_memoire() {
+        let s = SubstrateStore::open_memory().unwrap();
+        assert!(!s.is_live_on_disk(NodeId(42)));
+    }
 
     /// #292 — LE test qui protège le cache. Un CSR périmé fausserait
     /// SILENCIEUSEMENT HKS, Ricci, le pas de chaleur, la résistance effective
