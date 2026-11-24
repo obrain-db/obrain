@@ -329,7 +329,11 @@ impl EnergyStore {
     /// Le high-water mark DE SESSION borne les reculs d'horloge (NTP,
     /// changement d'heure) au sein d'un même processus : une lecture à 24 h
     /// suivie d'un recul à 12 h rend toujours 0,5, jamais 0,7071. Le `t_hi`
-    /// persisté dans l'ancre assure la même borne à travers un redémarrage.
+    /// persisté dans l'ancre n'est écrit que par `reinforce` / `advance_all` :
+    /// à travers un redémarrage, une lecture seule d'un instant plus grand
+    /// n'étant pas persistée, un crash suivi d'un recul d'horloge peut
+    /// remonter l'énergie vers la valeur qu'implique le dernier `t_hi` durable
+    /// (limitation documentée, pas une corruption).
     fn now_eff(&self) -> i64 {
         let now = self.now_micros();
         self.session_hi.fetch_max(now, Ordering::Relaxed).max(now)

@@ -173,3 +173,68 @@ fn le_balayage_borne_n_affame_aucun_noeud() {
         "2 avancées × 3 appels = 6, mesuré {avance_total}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Limite du contrat — lecture pure puis redémarrage : la remontée est RÉELLE
+// ---------------------------------------------------------------------------
+
+/// Le scénario DISCRIMINANT, figé et documenté (pas caché) :
+///
+/// 1. ancre durable à `t0` via `EnergyStore::boost` (ancre composite
+///    `t_hi = t0`) ;
+/// 2. LECTURE SEULE à `t0 + H` → 0,5 : le `session_hi` monte EN MÉMOIRE,
+///    mais RIEN n'est persisté — une lecture n'écrit pas l'ancre ;
+/// 3. arrêt sans persister ce maximum (`close()` du store, qui ne persiste
+///    pas `session_hi`, puis réouverture) ;
+/// 4. réouverture avec l'horloge revenue à `t0 + H/2`.
+///
+/// L'énergie vaut alors ≈ 0,7071 : elle REMONTE, parce que le maximum de
+/// lecture n'a PAS été persisté. C'est la limite du contrat : la monotonie
+/// n'est garantie qu'au sein d'une session (via `session_hi`) et, à travers un
+/// redémarrage, que par le dernier `t_hi` DURABLE (écrit seulement par
+/// `reinforce` / `advance_all`).
+#[test]
+fn apres_redemarrage_sans_materialisation_la_remontee_est_reelle() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("kb");
+    let (clock, clock_fn) = horloge();
+    let node;
+    {
+        let sub = Arc::new(SubstrateStore::create(&chemin).unwrap());
+        node = sub.create_node(&["n"]);
+        sub.flush().unwrap();
+        let store =
+            EnergyStore::with_substrate(config_h24(), sub.clone()).with_clock(clock_fn.clone());
+        // 1. Ancre durable à t0 (E=1, t_ref=BASE, t_hi=BASE, H=24 h).
+        store.boost(node, 1.0);
+
+        // 2. LECTURE SEULE à +24 h : 0,5. `session_hi` monte en mémoire,
+        //    mais AUCUNE écriture d'ancre n'a lieu (lecture paresseuse).
+        clock.store(BASE + JOUR, Ordering::Relaxed);
+        let a_24h = store.get_energy(node);
+        assert!((a_24h - 0.5).abs() < 1e-9, "à +24 h : {a_24h}");
+
+        // 3. Arrêt sans persister ce maximum : `close()` ne persiste pas
+        //    `session_hi`. Le `t_hi` durable vaut toujours t0 (BASE).
+        sub.flush().unwrap();
+        sub.close().unwrap();
+    }
+
+    // 4. Réouverture, horloge revenue à +12 h : `session_hi` repart de 0, le
+    //    `t_hi` durable est resté BASE. L'énergie REMONTE à ≈ 0,7071.
+    clock.store(BASE + JOUR / 2, Ordering::Relaxed);
+    let sub = Arc::new(SubstrateStore::open(&chemin).unwrap());
+    let store =
+        EnergyStore::with_substrate(config_h24(), sub.clone()).with_clock(clock_fn.clone());
+    let e = store.get_energy(node);
+    // Assertion qui FIGE la limite (pas qui la cache) : le maximum de lecture
+    // n'a pas été persisté, donc la remontée est réelle et vaut 2^(-12/24).
+    assert!(
+        (e - 0.7071).abs() < 1e-3,
+        "remontée après redémarrage sans matérialisation : {e}, attendu ≈ 0,7071"
+    );
+    assert!(
+        (e - 0.5).abs() > 0.05,
+        "sans t_hi durable au-delà de t0, la lecture ne peut pas rester 0,5 : {e}"
+    );
+}
