@@ -1291,16 +1291,70 @@ impl SynapseStore {
     /// inverse le flux : l'appelant fournit un callback, le store itère les
     /// voisins synapse (substrate : scan direct des arêtes SYNAPSE ;
     /// DashMap : scan du cache) et invoque `f(neighbor, weight)` — zéro
-    /// allocation par nœud, l'ordre n'est pas garanti (le spread s'en
-    /// moque : la propagation est additive).
+    /// allocation tas tant que le degré tient en ligne (16), l'ordre n'est
+    /// pas garanti (le spread s'en moque : la propagation est additive).
+    ///
+    /// **Contrat (2026-11-23) : une émission par arête, jamais deux.** En mode
+    /// substrat, l'itération est l'union dédupliquée du cache chaud et de
+    /// l'index d'incidence — le cache a la préséance (poids décru, métadonnées
+    /// réelles). Les appelants peuvent donc ADDITIONNER sans facteur correctif :
+    /// c'est ce que fait le spread (`activation.rs`), et le doublon d'émission
+    /// y doublait l'énergie sur toute base rouverte depuis le substrat.
     pub fn for_each_synapse(&self, node_id: NodeId, mut f: impl FnMut(NodeId, f64)) {
         #[cfg(feature = "substrate")]
         if let Some(sub) = self.substrate.as_ref() {
-            // (2026-08-31) T2 — INDEX D'INCIDENCE PERSISTANT (ADR
-            // synapse-incidence) : le spread lit `synapse_edges_of(node)`
-            // (O(degré) via `substrate.synapse_incidence`), plus la DashMap.
-            // L'incidence est la source ; la DashMap sert de cache chaud
-            // optionnel (parité conservée, décommission en T3).
+            // (2026-11-23) UNE ÉMISSION PAR ARÊTE, PAS DEUX.
+            //
+            // L'itération est l'UNION de deux sources, dédupliquée par
+            // `SynapseKey` canonique : d'abord la sur-couche chaude
+            // (`node_to_keys` + DashMap — fraîche : poids décru,
+            // `reinforcement_count` réel), puis l'index d'incidence persistant
+            // (`synapse_edges_of` + `read_edge`, O(degré), autoritaire) pour
+            // tout ce que le cache ne porte pas.
+            //
+            // POURQUOI LA DÉDUPLICATION EST OBLIGATOIRE. `create_synapse_slot`
+            // indexe l'incidence pour src ET dst, et `load_from_substrate_column`
+            // hydrate le DashMap ET `node_to_keys` au boot : sur une base
+            // rouverte, les deux sources couvrent exactement le même ensemble.
+            // Sans dédup, le callback était invoqué 2× par voisin, et le spread
+            // (`activation.rs`, `*activation.entry(neighbor).or_insert(0.0) +=
+            // propagated`) ADDITIONNE — l'énergie propagée doublait sur toute
+            // base rechargée, jamais sur une base en mémoire. Mesuré :
+            // `for_each_synapse` sur un voisinage de degré 2 rendait {1: 2, 3: 2}
+            // après réouverture contre {1: 1, 3: 1} en mémoire
+            // (tests/synapse_double_count_test.rs).
+            //
+            // PRÉSÉANCE DU CACHE : même contrat que `list_synapses` (« cached
+            // entries are fresher … they win on key collision ») et que la
+            // branche sans substrat ci-dessous, qui émet aussi `current_weight()`.
+            //
+            // Bornes : `vus` reste sur la pile tant que le degré ≤ 16 (capacité
+            // inline, comme `node_to_keys`), et la recherche linéaire est la même
+            // que celle d'`index_insert` — la normalisation compétitive borne le
+            // degré bien avant que ça compte.
+            let mut vus: smallvec::SmallVec<[SynapseKey; 16]> = smallvec::SmallVec::new();
+
+            // 1. Sur-couche chaude — snapshot des clés AVANT d'appeler `f`
+            // (l'ancien code tenait le garde de `node_to_keys` pendant le
+            // callback, qui peut réentrer dans le store).
+            let cles: smallvec::SmallVec<[SynapseKey; 16]> = match self.node_to_keys.get(&node_id) {
+                Some(entry) => entry.iter().copied().collect(),
+                None => smallvec::SmallVec::new(),
+            };
+            for k in cles.iter() {
+                let Some(w) = self.synapses.get(k).map(|s| s.value().current_weight()) else {
+                    continue;
+                };
+                if vus.contains(k) {
+                    continue;
+                }
+                vus.push(*k);
+                let neighbor = if k.0 == node_id { k.1 } else { k.0 };
+                f(neighbor, w);
+            }
+
+            // 2. Index d'incidence persistant — le reste (et la seule source
+            // quand le cache est froid).
             if let Ok(edges) = sub.synapse_edges_of(node_id) {
                 for eid in edges {
                     let rec = sub.writer().read_edge(eid.0).ok().flatten();
@@ -1308,6 +1362,13 @@ impl SynapseStore {
                         if r.flags & obrain_substrate::record::edge_flags::TOMBSTONED != 0 {
                             continue;
                         }
+                        // Une arête déjà émise depuis le cache (ou un posting
+                        // dupliqué) ne repasse pas : c'est le correctif.
+                        let key = SynapseKey::new(NodeId(r.src as u64), NodeId(r.dst as u64));
+                        if vus.contains(&key) {
+                            continue;
+                        }
+                        vus.push(key);
                         let neighbor = if r.src as u64 == node_id.0 {
                             NodeId(r.dst as u64)
                         } else {
@@ -1320,18 +1381,10 @@ impl SynapseStore {
                     }
                 }
             }
-            // Sur-couche chaude : les synapses récemment renforcées pas
-            // encore visibles sur la colonne (fenêtre de flush).
-            if let Some(keys) = self.node_to_keys.get(&node_id) {
-                for k in keys.iter() {
-                    let neighbor = if k.0 == node_id { k.1 } else { k.0 };
-                    if let Some(s) = self.synapses.get(k) {
-                        f(neighbor, s.value().current_weight());
-                    }
-                }
-            }
             return;
         }
+
+        // Branche historique, sans substrat : le DashMap est la seule source.
         for entry in &self.synapses {
             let k = entry.key();
             let neighbor = if k.0 == node_id {
