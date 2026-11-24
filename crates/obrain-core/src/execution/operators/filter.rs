@@ -1989,15 +1989,16 @@ impl ExpressionPredicate {
             FilterExpression::Map(pairs) => {
                 let mut map = BTreeMap::new();
                 for (k, v) in pairs {
-                    if let Some(val) = self.eval_expr(v, chunk, row) {
-                        if k == "*" {
-                            // AllProperties marker: flatten the inner map into the result
-                            if let Value::Map(inner) = val {
-                                map.extend(inner.iter().map(|(pk, pv)| (pk.clone(), pv.clone())));
-                            }
-                        } else {
-                            map.insert(PropertyKey::new(k.as_str()), val);
+                    let val = self.eval_expr(v, chunk, row);
+                    if k == "*" {
+                        // AllProperties marker: flatten the inner map into the result
+                        if let Some(Value::Map(inner)) = val {
+                            map.extend(inner.iter().map(|(pk, pv)| (pk.clone(), pv.clone())));
                         }
+                    } else {
+                        // #378 : une valeur ABSENTE (`m.id` non posée) garde sa
+                        // clé avec NULL, comme `{a: null}` et comme Neo4j.
+                        map.insert(PropertyKey::new(k.as_str()), val.unwrap_or(Value::Null));
                     }
                 }
                 Some(Value::Map(Arc::new(map)))
