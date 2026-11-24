@@ -82,6 +82,27 @@ jobs:
         if: steps.artefact.outputs.present == 'true'
         with:
           path: site
+      # deploy-pages lit l'artefact `github-pages` que `upload-pages-artifact`
+      # vient de déposer via l'API des artefacts, à consistance éventuelle :
+      # dans ~5/6 des runs (issue #362), la lecture immédiate rend
+      # « Found 0 artifacts ». On attend qu'il soit visible, délai borné,
+      # avant de déployer. Pure défense : ne casse jamais un déploiement sain.
+      - name: Attendre que l'artefact github-pages soit visible
+        if: steps.artefact.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 12); do
+            n=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+                  --jq '[.artifacts[] | select(.name == "github-pages")] | length')
+            if [ "${n:-0}" -ge 1 ]; then
+              echo "artefact github-pages visible (tentative $i)"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::artefact github-pages toujours invisible après 12 tentatives (~36 s)"
+          exit 1
       - name: Déployer
         id: deploiement
         if: steps.artefact.outputs.present == 'true'
