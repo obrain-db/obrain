@@ -154,3 +154,52 @@ fn la_forme_deja_couverte_ne_regresse_pas() {
     );
     assert_eq!(lignes, vec![vec![s("c1")]]);
 }
+
+/// Couverture (#357, porte de couverture de la CI) : le `CASE` À OPÉRANDE,
+/// `CASE size([…]) WHEN 1 THEN … END`. Mesuré non couvert par la CI sur edf7ccc8.
+#[test]
+fn case_a_operande_contenant_une_comprehension() {
+    let lignes = jouer(
+        &base(),
+        "MATCH (c:CS {id: 'c1'}) \
+         RETURN CASE size([(c)-[:SP]->(p:CS) | p]) WHEN 1 THEN 'un' ELSE 'autre' END AS a",
+    );
+    assert_eq!(lignes, vec![vec![s("un")]]);
+}
+
+/// Couverture : une map littérale qui contient une compréhension.
+/// Mesurée non couverte par la CI sur edf7ccc8.
+#[test]
+fn map_litterale_contenant_une_comprehension() {
+    let lignes = jouer(
+        &base(),
+        "MATCH (c:CS {id: 'c1'}) RETURN {n: size([(c)-[:SP]->(p:CS) | p])} AS m",
+    );
+    let attendu = Value::Map(std::sync::Arc::new(
+        [(obrain_common::types::PropertyKey::new("n"), Value::Int64(1))]
+            .into_iter()
+            .collect(),
+    ));
+    assert_eq!(lignes, vec![vec![attendu]]);
+}
+
+/// Couverture : tranches OUVERTES. `[..1]` (pas de début) et `[0..]` (pas de
+/// fin) ne prennent pas les branches `if let Some(start)` / `if let Some(end)`.
+/// Mesurées non couvertes par la CI sur edf7ccc8 (lignes 3582 et 3588).
+#[test]
+fn tranche_ouverte_sans_debut_ni_fin() {
+    let db = base();
+    let debut_ouvert = jouer(
+        &db,
+        "MATCH (c:CS {id: 'c1'}) RETURN [(c)-[:D]->(x:X) | x.id][..1] AS a",
+    );
+    assert_eq!(debut_ouvert.len(), 1);
+    let fin_ouverte = jouer(
+        &db,
+        "MATCH (c:CS {id: 'c1'}) RETURN [(c)-[:SP]->(p:CS) | p.id][0..] AS a",
+    );
+    assert_eq!(
+        fin_ouverte,
+        vec![vec![Value::List(vec![s("parent")].into())]]
+    );
+}
