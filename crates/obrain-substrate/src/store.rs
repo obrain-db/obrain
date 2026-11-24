@@ -2075,6 +2075,17 @@ pub struct SubstrateStore {
     /// Sert au moteur à vérifier qu'un index vectoriel en mémoire a vu
     /// chaque écriture avant de le persister à la fermeture.
     ecritures_vectorielles_noeuds: AtomicU64,
+    /// (obrain#386) Nombre d'ENTITÉS dont `bulk_import_node_props` a trouvé la
+    /// tête de chaîne de propriétés DÉJÀ POSÉE, et dont les valeurs sont donc
+    /// passées par le chemin unitaire (qui chaîne sur cette tête) au lieu d'être
+    /// posées en lot. Ce n'est pas une erreur : c'est le cas « la base n'était
+    /// pas neuve pour cette entité ». Zéro sur un import d'index.
+    props_lot_chainees_sur_existant: AtomicU64,
+    /// (obrain#386) Nombre de têtes de chaîne que le lot n'a PAS posées parce
+    /// qu'une écriture unitaire est arrivée entre la répartition et la pose
+    /// (course constatée sous verrou d'entité, dans le même processus). Ces
+    /// entités repartent au chemin unitaire ; leurs pages restent orphelines.
+    props_lot_poses_perdues: AtomicU64,
     /// Next engram id to allocate. Id 0 is the null-engram sentinel
     /// (see [`crate::engram::MAX_ENGRAM_ID`]); allocation starts at 1.
     /// Persisted via `substrate.dict` v2.
@@ -3644,6 +3655,66 @@ impl SubstrateStore {
         self.borne_allocation
             .as_ref()
             .map(|b| b.verrouiller_entite(cle))
+    }
+
+    /// (obrain#386) Pose les têtes de chaîne de propriétés d'un lot SOUS le
+    /// verrou d'écriture du nœud — la tranche de 256 que `set_node_property`
+    /// prend pour tenir ensemble « relire la tête, écrire la valeur, poser la
+    /// nouvelle tête ». C'est le seul verrou d'entité qui existe : il est
+    /// INTERNE au processus (aucun verrou OS par entité n'existe dans le
+    /// substrat), et il n'est pas réentrant.
+    ///
+    /// Les têtes sont groupées PAR TRANCHE et chaque tranche est prise une fois,
+    /// puis relâchée : le verrou n'est jamais tenu sur deux tranches à la fois,
+    /// donc aucun ordre d'acquisition n'est imposé à un écrivain unitaire (qui
+    /// n'en tient qu'une) et aucun interblocage n'est possible. Coût : une
+    /// acquisition de tranche et un verrou de zone par tranche (≤ 256 par lot),
+    /// contre un par entité si l'on posait slot par slot.
+    ///
+    /// Sous le verrou, la tête est RELUE. Un slot dont la tête n'est plus nulle
+    /// — une écriture unitaire est arrivée entre la répartition et la pose — est
+    /// rendu à l'appelant : il ne reçoit PAS la tête du lot (ce serait
+    /// l'écrasement de #386) et repart au chemin unitaire.
+    fn poser_tetes_props_en_lot_sous_verrou(
+        &self,
+        tetes: &[(u32, crate::record::U48)],
+    ) -> SubstrateResult<Vec<u32>> {
+        if tetes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let n_tranches = self.verrous_ecriture_noeud.len();
+        let mut par_tranche: Vec<Vec<(u32, crate::record::U48)>> =
+            (0..n_tranches).map(|_| Vec::new()).collect();
+        for &(slot, tete) in tetes {
+            par_tranche[slot as usize % n_tranches].push((slot, tete));
+        }
+        let mut perdues = Vec::new();
+        for (tranche, groupe) in par_tranche.into_iter().enumerate() {
+            if groupe.is_empty() {
+                continue;
+            }
+            let mut a_poser: Vec<(u32, crate::record::U48)> = Vec::with_capacity(groupe.len());
+            {
+                let _un_ecrivain = self.verrous_ecriture_noeud[tranche].lock();
+                let vues = self.writer.with_node_zone_records(|lire| {
+                    groupe
+                        .iter()
+                        .map(|&(slot, _)| lire(slot).map_or(0, |r| r.first_prop_off.to_u64()))
+                        .collect::<Vec<u64>>()
+                })?;
+                for (&(slot, tete), vue) in groupe.iter().zip(vues) {
+                    if vue != 0 {
+                        perdues.push(slot);
+                    } else {
+                        a_poser.push((slot, tete));
+                    }
+                }
+                if !a_poser.is_empty() {
+                    self.writer.poser_tetes_props_en_lot(&a_poser)?;
+                }
+            }
+        }
+        Ok(perdues)
     }
 
     /// Le geste « compléter l'index AVANT de le croire », pour UNE recherche
@@ -8524,6 +8595,8 @@ impl SubstrateStore {
             dernier_offset_flush: AtomicU64::new(0),
             borne_fenetre_rejeu: AtomicU64::new(0),
             ecritures_vectorielles_noeuds: AtomicU64::new(0),
+            props_lot_chainees_sur_existant: AtomicU64::new(0),
+            props_lot_poses_perdues: AtomicU64::new(0),
             external_edges: DashMap::new(),
             external_inbound: DashMap::new(),
             external_by_id: DashMap::new(),
@@ -13851,6 +13924,25 @@ impl SubstrateStore {
         self.ecritures_vectorielles_noeuds.load(Ordering::Acquire)
     }
 
+    /// (obrain#386) Combien d'entités `bulk_import_node_props` a trouvées avec
+    /// une tête de chaîne de propriétés DÉJÀ posée, et qu'il a donc laissées au
+    /// chemin unitaire (le lot ne détache pas une chaîne existante). Compteur
+    /// du processus, jamais remis à zéro : voir la différence avant/après un
+    /// import. Vaut 0 sur le cas normal (base neuve).
+    pub fn nb_props_lot_chainees_sur_existant(&self) -> u64 {
+        self.props_lot_chainees_sur_existant.load(Ordering::Acquire)
+    }
+
+    /// (obrain#386) Combien de têtes de chaîne le lot n'a PAS posées parce
+    /// qu'une écriture unitaire du même processus est arrivée pendant la
+    /// construction de ses pages (course constatée sous verrou d'entité). Ces
+    /// entités ont été réécrites par le chemin unitaire ; leurs pages du lot
+    /// restent orphelines (espace perdu dans la zone de propriétés, jamais
+    /// lues). Doit rester à 0 hors course.
+    pub fn nb_props_lot_poses_perdues(&self) -> u64 {
+        self.props_lot_poses_perdues.load(Ordering::Acquire)
+    }
+
     /// Chantier SlotRemappable — SEUL point d'entrée supporté pour une
     /// repermutation Hilbert.
     ///
@@ -14133,7 +14225,7 @@ impl SubstrateStore {
         &self,
         pz_lock: &parking_lot::RwLock<crate::props_zone::PropsZone>,
         premier_slot: u32,
-        props: &'v [Vec<(&'v str, Value)>],
+        props: &[&'v [(&'v str, Value)]],
         cles: &std::collections::HashMap<&str, u16>,
         proprietaire: crate::page::OwnerKind,
     ) -> SubstrateResult<(
@@ -14176,7 +14268,7 @@ impl SubstrateStore {
 
         let fils = rayon::current_num_threads().max(1);
         let taille_sp = props.len().div_ceil(fils * 4).max(1);
-        let sous: Vec<&[Vec<(&str, Value)>]> = props.chunks(taille_sp).collect();
+        let sous: Vec<&[&[(&str, Value)]]> = props.chunks(taille_sp).collect();
 
         // ── Passe A : compter ─────────────────────────────────────────────
         let comptes: Vec<(u32, u32)> = sous
@@ -14184,7 +14276,7 @@ impl SubstrateStore {
             .map(|sp| {
                 let (mut pages, mut tas) = (0u32, 0u32);
                 let mut curseur_tas: Option<usize> = None;
-                for liste in sp.iter() {
+                for liste in sp.iter().copied() {
                     let (mut libre, mut vide) = (0usize, true);
                     for (_, v) in liste {
                         let g = genre(v);
@@ -14260,7 +14352,7 @@ impl SubstrateStore {
                 let mut ecrites = 0u64;
                 let (mut n_pages, mut n_tas) = (0u32, 0u32);
                 let mut page_tas: Option<(u32, crate::heap::HeapPage)> = None;
-                for (j, liste) in sp.iter().enumerate() {
+                for (j, liste) in sp.iter().copied().enumerate() {
                     let slot = slot0 + j as u32;
                     let mut page = P::with_owner(slot, proprietaire);
                     let (mut vide, mut precedente) = (true, None::<u32>);
@@ -14419,10 +14511,10 @@ impl SubstrateStore {
     /// Les autres valeurs qui ne passent pas par une page (entrées plus grandes
     /// qu'une page) prennent le chemin unitaire `set_node_property`, qui les
     /// route exactement comme d'habitude. Rend le nombre de propriétés écrites.
-    pub fn bulk_import_node_props(
+    pub fn bulk_import_node_props<'v>(
         &self,
         premier_slot: u32,
-        props: &[Vec<(&str, Value)>],
+        props: &'v [Vec<(&'v str, Value)>],
     ) -> SubstrateResult<u64> {
         self.refuser_mutation_en_lecture_seule("bulk_import_node_props");
         let Some(pz_lock) = self.props_zone.as_ref() else {
@@ -14433,11 +14525,59 @@ impl SubstrateStore {
         let prof = std::env::var("OBRAIN_INDEX_PROF").is_ok();
         let t0 = web_time::Instant::now();
         let cpu0 = crate::compteurs::temps_cpu("thread-self");
+        // ── (obrain#386) LE LOT NE DÉTACHE PAS UNE CHAÎNE DÉJÀ ÉCRITE ──────
+        //
+        // `poser_tetes_props_en_lot` POSE `first_prop_off` ; il ne le chaîne
+        // pas. Sur une entité qui portait DÉJÀ des propriétés — écrites par un
+        // appel unitaire, par un autre processus, ou par un lot antérieur — la
+        // nouvelle tête recouvrait l'ancienne et rendait la CHAÎNE ENTIÈRE
+        // inatteignable, sans erreur (mesuré : 400 propriétés sur 400, voir
+        // `tests/lot_ne_detache_pas_386.rs`).
+        //
+        // Ces entités-là prennent donc le CHEMIN UNITAIRE, entité par entité,
+        // exactement comme le jumeau arête (`bulk_import_edge_props`) — et non
+        // un « chaînage » de la série du lot sur l'ancienne tête, pour deux
+        // raisons :
+        //   1. la disposition des pages n'est pas le seul contrat : une valeur
+        //      longue déjà écrite vit dans une colonne BLOB, qui PRIME sur la
+        //      zone v2 à la lecture (ordre vec → blob → v2 → DashMap) ; une
+        //      page chaînée dessous ne serait pas lue ;
+        //   2. le chemin unitaire fait aussi l'ombre blob, le miroir DashMap et
+        //      les notifications d'index ; les refaire en lot serait recopier
+        //      `set_node_property`.
+        // Compromis assumé : ces entités paient le WAL par propriété (le lot
+        // n'en émet aucune). Sur le cas NORMAL — base neuve, import d'index —
+        // la répartition est vide et rien ne change, ni le coût ni la sortie.
+        //
+        // La lecture des têtes se fait sous UN verrou de zone pour tout le lot
+        // (`with_node_zone_records`), pas un par entité.
+        let tetes_existantes = self.writer.with_node_zone_records(|lire| {
+            (0..props.len())
+                .map(|i| {
+                    let slot = premier_slot + i as u32;
+                    lire(slot).is_some_and(|r| r.first_prop_off.to_u64() != 0)
+                })
+                .collect::<Vec<bool>>()
+        })?;
+        let mut retenues: Vec<&'v [(&'v str, Value)]> = Vec::with_capacity(props.len());
+        let mut unitaires: Vec<(u32, &'v [(&'v str, Value)])> = Vec::new();
+        for (i, liste) in props.iter().enumerate() {
+            if tetes_existantes[i] && !liste.is_empty() {
+                unitaires.push((premier_slot + i as u32, liste.as_slice()));
+                retenues.push(&[]);
+            } else {
+                retenues.push(liste.as_slice());
+            }
+        }
+        if !unitaires.is_empty() {
+            self.props_lot_chainees_sur_existant
+                .fetch_add(unitaires.len() as u64, Ordering::AcqRel);
+        }
         let mut cles: std::collections::HashMap<&str, u16> = std::collections::HashMap::new();
-        for liste in props {
-            for (k, _) in liste {
-                if !cles.contains_key(k) {
-                    cles.insert(k, self.interner_cle_journalisee(k)?);
+        for liste in &retenues {
+            for (k, _) in liste.iter() {
+                if !cles.contains_key(*k) {
+                    cles.insert(*k, self.interner_cle_journalisee(k)?);
                 }
             }
         }
@@ -14469,14 +14609,22 @@ impl SubstrateStore {
         // des sommes préfixes donnent les bases, et la passe B construit.
         // `OBRAIN_LOT_SEQUENTIEL=1` garde le chemin séquentiel (banc A/B).
         let sequentiel = std::env::var("OBRAIN_LOT_SEQUENTIEL").is_ok_and(|v| v == "1");
-        let (mut tetes, differees, ecrites) = if sequentiel {
-            let mut tetes: Vec<(u32, crate::record::U48)> = Vec::with_capacity(props.len());
-            let mut differees: Vec<(u32, &str, &Value)> = Vec::new();
+        let rien_a_construire = retenues.iter().all(|l| l.is_empty());
+        let (mut tetes, differees, mut ecrites) = if rien_a_construire {
+            // Tout le lot est reparti au chemin unitaire (#386).
+            (
+                Vec::<(u32, crate::record::U48)>::new(),
+                Vec::<(u32, &'v str, &'v Value)>::new(),
+                0u64,
+            )
+        } else if sequentiel {
+            let mut tetes: Vec<(u32, crate::record::U48)> = Vec::with_capacity(retenues.len());
+            let mut differees: Vec<(u32, &'v str, &'v Value)> = Vec::new();
             let mut ecrites: u64 = 0;
             // Estimation de la place : ~1 page par nœud (+ débordement des gros
             // porteurs), et les octets de chaînes pour le tas.
             let (mut pages_props, mut octets_tas) = (0u64, 0u64);
-            for liste in props {
+            for liste in retenues.iter().copied() {
                 pages_props += 1 + (liste.len() as u64) / 150;
                 for (_, v) in liste {
                     if let Value::String(t) = v
@@ -14498,7 +14646,7 @@ impl SubstrateStore {
                 )?;
                 let mut tas = crate::props_zone::TasEnLot::default();
                 let mut tampon = crate::props_zone::TamponPages::default();
-                for (i, liste) in props.iter().enumerate() {
+                for (i, liste) in retenues.iter().copied().enumerate() {
                     let slot = premier_slot + i as u32;
                     let mut page =
                         crate::page::PropertyPage::with_owner(slot, crate::page::OwnerKind::Node);
@@ -14561,7 +14709,7 @@ impl SubstrateStore {
             self.construire_pages_en_parallele(
                 pz_lock,
                 premier_slot,
-                props,
+                &retenues,
                 &cles,
                 crate::page::OwnerKind::Node,
             )?
@@ -14575,7 +14723,56 @@ impl SubstrateStore {
                 f(self);
             }
         });
-        self.writer.poser_tetes_props_en_lot(&tetes)?;
+        // (obrain#386) LA POSE SE FAIT SOUS LE VERROU D'ÉCRITURE DU NŒUD, et
+        // la tête est RELUE juste avant : une écriture unitaire a pu poser une
+        // chaîne entre la répartition ci-dessus (ou pendant la construction des
+        // pages, qui dure des secondes) et cette pose. L'écrasement est alors
+        // constaté au lieu d'être commis, et l'entité repart au chemin unitaire.
+        let tetes_perdues = self.poser_tetes_props_en_lot_sous_verrou(&tetes)?;
+        if !tetes_perdues.is_empty() {
+            self.props_lot_poses_perdues
+                .fetch_add(tetes_perdues.len() as u64, Ordering::AcqRel);
+            for slot in tetes_perdues {
+                let i = (slot - premier_slot) as usize;
+                // Les valeurs de ce slot ÉTAIENT en page : ces pages restent
+                // orphelines, et la valeur va être réécrite par le chemin
+                // unitaire. On ne la compte donc pas deux fois (celles qui
+                // étaient différées n'ont jamais été en page : elles sont
+                // déjà hors du compte de la construction).
+                let en_page =
+                    props[i].len() - differees.iter().filter(|(sl, _, _)| *sl == slot).count();
+                ecrites -= en_page as u64;
+                unitaires.push((slot, props[i].as_slice()));
+            }
+        }
+        // ── L'OMBRE BLOB, QUE LE LOT NE LEVAIT PAS (mesuré pendant #386) ─────
+        //
+        // Une clé qui a une colonne blob est lue AVANT la zone v2 (ordre
+        // vec → blob → v2 → DashMap) : la valeur longue qu'un écrivain
+        // antérieur y a laissée MASQUE entièrement celle que le lot vient
+        // d'écrire en page. Mesuré : une chaîne de 700 octets déjà écrite, puis
+        // un lot écrivant `"court"` sur la même clé → la lecture rend les 700
+        // octets, sans erreur. Le chemin unitaire lève l'ombre ; le lot le fait
+        // ici, comme le jumeau arête (`bulk_import_edge_props`), et SEULEMENT
+        // pour les valeurs qu'il a mises en page : celles qui sont parties au
+        // chemin unitaire (blob, vecteur, hors page) gèrent leur propre ombre.
+        let cles_ombrees: Vec<&str> = cles
+            .keys()
+            .copied()
+            .filter(|k| self.cle_a_colonne_blob(&PropertyKey::new(*k)))
+            .collect();
+        if !cles_ombrees.is_empty() {
+            let differees_du_slot: std::collections::HashSet<(u32, &str)> =
+                differees.iter().map(|(sl, k, _)| (*sl, *k)).collect();
+            for (i, liste) in retenues.iter().copied().enumerate() {
+                let slot = premier_slot + i as u32;
+                for (k, _) in liste {
+                    if cles_ombrees.contains(k) && !differees_du_slot.contains(&(slot, *k)) {
+                        self.effacer_ombre_blob(EntityKind::Node, slot, k);
+                    }
+                }
+            }
+        }
         // ── UN INDEX ENREGISTRÉ PENDANT L'IMPORT (revue 3, B2) ──
         //
         // L'import dure des secondes ; un `create_property_index` ou la
@@ -14623,6 +14820,26 @@ impl SubstrateStore {
         //   `bulk_import_edge_props`).
         // Les valeurs hors page (entrée plus grande qu'une page) gardent le chemin
         // unitaire ; les blobs : voir `etat_cles_blob` plus bas.
+        // ── (obrain#386) LES ENTITÉS QUI PORTAIENT DÉJÀ UNE CHAÎNE ──────────
+        // Réparties avant construction (tête non nulle) ou rattrapées à la pose
+        // (course perdue sous verrou), elles passent par `set_node_property`,
+        // APRÈS la pose des têtes du lot : le chemin unitaire relit la tête et
+        // chaîne sa nouvelle page dessus, exactement comme n'importe quel
+        // écrivain. Aucune valeur n'est écrite deux fois : les pages d'un slot
+        // rattrapé ne portent aucune de ses valeurs (elles ne sont jamais
+        // référencées), et les valeurs différées n'ont jamais été en page.
+        let mut nb_unitaires = 0u64;
+        for (slot, liste) in &unitaires {
+            for (k, v) in liste.iter() {
+                <Self as GraphStoreMut>::set_node_property(
+                    self,
+                    NodeId(u64::from(*slot)),
+                    k,
+                    (*v).clone(),
+                );
+                nb_unitaires += 1;
+            }
+        }
         let vecteurs_en_lot = self.tx_avec_valeur_avant.lock().is_empty();
         let mut ids_cles_vecteur: std::collections::HashMap<&str, Option<u16>> =
             std::collections::HashMap::new();
@@ -14758,7 +14975,7 @@ impl SubstrateStore {
         // `candidats_bruts` porte ici : `Some(..)` est une affirmation de complétude.
         self.index_batis_depuis_v2.clear();
         self.egalite_couverte.clear();
-        Ok(ecrites)
+        Ok(ecrites + nb_unitaires)
     }
 
     /// INGESTION NATIVE DES PROPRIÉTÉS D'ARÊTES — jumeau de
@@ -14851,10 +15068,11 @@ impl SubstrateStore {
 
         // Pages et têtes : même construction parallèle que pour les nœuds, sur
         // le genre de propriétaire « arête ».
+        let tranches: Vec<&[(&str, Value)]> = retenues.iter().map(|v| v.as_slice()).collect();
         let (mut tetes, differees, ecrites) = self.construire_pages_en_parallele(
             pz_lock,
             premier_slot,
-            &retenues,
+            &tranches,
             &cles,
             crate::page::OwnerKind::Edge,
         )?;
@@ -33071,6 +33289,63 @@ mod tests {
             (hits, relus),
             (vec![n], 1),
             "après réouverture, reconstruit"
+        );
+    }
+
+    /// (obrain#386) LA COURSE, DÉTERMINISTE — le hook `PENDANT_IMPORT_EN_LOT`
+    /// tourne après la construction des pages et AVANT la pose des têtes :
+    /// exactement la fenêtre où le lot écrasait une chaîne écrite par un
+    /// écrivain unitaire. Ici l'écrivain unitaire arrive APRÈS la répartition
+    /// (qui a vu la tête nulle), donc seule la relecture sous verrou peut
+    /// constater la course.
+    #[test]
+    #[allow(unsafe_code)]
+    fn a386_une_ecriture_unitaire_pendant_le_lot_ne_perd_aucune_chaine() {
+        let _guard = props_v2_env_lock();
+        // SAFETY: serialise par `props_v2_env_lock`.
+        fixer_props_v2(Some("1"));
+        let (_td, s) = store();
+        let labels: Vec<&str> = (0..50).map(|_| "L").collect();
+        s.bulk_import_labels_edges(&labels, &[]).unwrap();
+        let props: Vec<Vec<(&str, Value)>> = (0..50u32)
+            .map(|i| vec![("lot", Value::Int64(i64::from(i)))])
+            .collect();
+        // L'écrivain unitaire vise le nœud 7, pendant la construction du lot.
+        let une_fois = std::cell::Cell::new(true);
+        PENDANT_IMPORT_EN_LOT.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |s: &SubstrateStore| {
+                if une_fois.replace(false) {
+                    for j in 0..40i64 {
+                        s.set_node_property(NodeId(7), &format!("avant_{j}"), Value::Int64(j));
+                    }
+                }
+            }));
+        });
+        let ecrites = s.bulk_import_node_props(1, &props).unwrap();
+        PENDANT_IMPORT_EN_LOT.with(|h| *h.borrow_mut() = None);
+        assert_eq!(ecrites, 50, "50 valeurs du lot, comptées une fois chacune");
+        assert_eq!(
+            s.nb_props_lot_poses_perdues(),
+            1,
+            "la course est CONSTATÉE (une tête non posée), pas commise"
+        );
+        for j in 0..40i64 {
+            assert_eq!(
+                s.get_node_property(NodeId(7), &PropertyKey::new(format!("avant_{j}"))),
+                Some(Value::Int64(j)),
+                "la chaîne de l'écrivain unitaire survit au lot"
+            );
+        }
+        assert_eq!(
+            s.get_node_property(NodeId(7), &PropertyKey::new("lot")),
+            Some(Value::Int64(6)),
+            "et la valeur du lot est écrite, par le chemin unitaire"
+        );
+        // Les voisins du slot 7 ne sont pas passés par le chemin unitaire.
+        assert_eq!(s.nb_props_lot_chainees_sur_existant(), 0);
+        assert_eq!(
+            s.get_node_property(NodeId(8), &PropertyKey::new("lot")),
+            Some(Value::Int64(7))
         );
     }
 
