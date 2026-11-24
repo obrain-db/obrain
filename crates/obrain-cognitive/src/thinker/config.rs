@@ -194,9 +194,18 @@ pub struct ConsolidatorTomlCfg {
     /// Maximum duration of a single tick, in milliseconds.
     #[serde(default)]
     pub max_tick_ms: Option<u64>,
-    /// Multiplicative synapse decay factor applied each tick.
+    /// DÉPRÉCIÉ, IGNORÉ. Le facteur multiplicatif fixe appliqué à chaque
+    /// tique est le défaut qu'on corrige : `0.99` toutes les 60 s implique une
+    /// demi-vie de 69 min au lieu de 24 h (20,9× trop rapide). La décroissance
+    /// est désormais dérivée de `half_life_secs`. Le champ reste accepté pour
+    /// qu'une configuration existante continue de se charger ; sa valeur est
+    /// signalée puis ignorée.
     #[serde(default)]
     pub decay_factor: Option<f32>,
+    /// Demi-vie de l'énergie, en secondes. La cadence de tique en est dérivée
+    /// (`half_life / 64`) et le facteur par tique vaut `2^(-1/64)`.
+    #[serde(default)]
+    pub half_life_secs: Option<u64>,
     /// u16-scaled weight below which synapses are pruned.
     #[serde(default)]
     pub synapse_prune_threshold_u16: Option<u16>,
@@ -211,6 +220,7 @@ impl Default for ConsolidatorTomlCfg {
             cpu_fraction: None,
             max_tick_ms: None,
             decay_factor: None,
+            half_life_secs: None,
             synapse_prune_threshold_u16: None,
             engram_reinforce_delta_u16: None,
         }
@@ -396,17 +406,36 @@ impl ThinkerFleetConfig<ConsolidatorTomlCfg> {
     pub fn inner(&self) -> ConsolidatorConfig {
         let defaults = ConsolidatorConfig::default();
         let t = &self.inner_toml;
+        // Un `decay_factor` configuré n'est plus appliqué : il est signalé, et
+        // la loi reprend la main. Sans ce cri, une configuration existante
+        // croirait piloter une décroissance qu'elle ne pilote plus.
+        if let Some(f) = t.decay_factor {
+            tracing::warn!(
+                decay_factor = f,
+                "thinkers.consolidator.decay_factor est DÉPRÉCIÉ et IGNORÉ : la                  décroissance est dérivée de half_life_secs (un facteur fixe de                  0,99/60 s donnerait une demi-vie de 69 min au lieu de 24 h)"
+            );
+        }
+        // La cadence se dérive de la demi-vie ; `interval_secs` reste une
+        // avance explicite (utile aux tests et aux déploiements qui veulent
+        // matérialiser plus ou moins souvent) — et ne change RIEN à la loi,
+        // qui est ancrée par nœud.
+        let half_life = t
+            .half_life_secs
+            .map_or(defaults.half_life, Duration::from_secs);
+        let interval = t.interval_secs.map_or_else(
+            || crate::decay_law::DecayLaw::new(half_life).tick_interval(),
+            Duration::from_secs,
+        );
         ConsolidatorConfig {
-            decay_factor: t.decay_factor.unwrap_or(defaults.decay_factor),
+            half_life,
+            max_nodes_per_tick: defaults.max_nodes_per_tick,
             synapse_prune_threshold_u16: t
                 .synapse_prune_threshold_u16
                 .unwrap_or(defaults.synapse_prune_threshold_u16),
             engram_reinforce_delta_u16: t
                 .engram_reinforce_delta_u16
                 .unwrap_or(defaults.engram_reinforce_delta_u16),
-            interval: t
-                .interval_secs
-                .map_or(defaults.interval, Duration::from_secs),
+            interval,
             budget: resolve_budget(t.cpu_fraction, t.max_tick_ms, defaults.budget),
         }
     }
@@ -562,7 +591,22 @@ mod tests {
         assert!(!cfg.consolidator.enabled);
         let c = cfg.consolidator.inner();
         assert_eq!(c.interval, Duration::from_secs(120));
-        assert!((c.decay_factor - 0.95).abs() < 1e-6);
+        // CONTRAT CHANGÉ (2026-11-24). L'assertion précédente était
+        // `assert!((c.decay_factor - 0.95).abs() < 1e-6)` : un facteur
+        // multiplicatif CONSTANT était le seul pilotage de la décroissance, et
+        // c'est précisément le défaut (0,99 toutes les 60 s = demi-vie de
+        // 69 min au lieu de 24 h, 20,9× trop rapide). Le champ n'existe plus.
+        // La ligne `decay_factor = 0.95` ci-dessus reste ACCEPTÉE au parsing
+        // (une configuration déployée ne doit pas casser) mais sa valeur est
+        // IGNORÉE ; ce qui pilote la loi, c'est `half_life_secs`.
+        assert_eq!(c.half_life, Duration::from_secs(24 * 3600));
+        assert!(
+            (c.tick_factor()
+                - crate::decay_law::DecayLaw::new(Duration::from_secs(24 * 3600)).tick_factor())
+            .abs()
+                < 1e-12,
+            "la tique vaut 2^(-1/64) quelle que soit la valeur de decay_factor"
+        );
 
         let w = cfg.warden.inner();
         assert!((w.fragmentation_trigger - 1.5).abs() < 1e-6);
@@ -573,6 +617,23 @@ mod tests {
         assert!(!cfg.dreamer.enabled);
         assert_eq!(cfg.runtime.max_total_cpu_fraction, 0.5);
         assert_eq!(cfg.runtime.shutdown_timeout, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn half_life_secs_pilote_la_cadence_derivee() {
+        let text = r#"
+            [consolidator]
+            enabled = true
+            half_life_secs = 3600
+        "#;
+        let mut cfg: ThinkersConfig = toml::from_str(text).expect("parse");
+        cfg.recompute_runtime();
+        let c = cfg.consolidator.inner();
+        assert_eq!(c.half_life, Duration::from_secs(3600));
+        assert_eq!(
+            c.interval,
+            crate::decay_law::DecayLaw::new(Duration::from_secs(3600)).tick_interval()
+        );
     }
 
     #[test]
