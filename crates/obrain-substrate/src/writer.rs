@@ -4836,6 +4836,33 @@ mod tests {
         assert_eq!(got1, vec![1u32, 2, 3, 4, 5]);
     }
 
+    #[test]
+    fn engram_weights_wal_rebuild_after_zone_wipe() {
+        // Crash-safety : efface la zone des poids, le rejeu la reconstruit.
+        let td = tempfile::tempdir().unwrap();
+        let sub_path = td.path().join("kb");
+        let weights: Vec<f32> = vec![0.2, 0.8, 0.5, 0.75];
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            w.set_engram_weights(1234, weights.clone()).unwrap();
+            w.commit().unwrap();
+            w.wal().fsync().unwrap();
+            // Pas de msync_zones : les mmap n'atteignent pas le disque.
+        }
+        std::fs::write(
+            sub_path.join(crate::file::zone::ENGRAM_WEIGHTS),
+            Vec::<u8>::new(),
+        )
+        .unwrap();
+        let sub2 = SubstrateFile::open(&sub_path).unwrap();
+        let stats = crate::replay::replay_from(&sub2, 0).unwrap();
+        assert_eq!(stats.decode_errors, 0);
+        let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
+        let got = w2.engram_weights(1234).unwrap().unwrap();
+        assert_eq!(got, weights);
+    }
+
     // =====================================================================
     // T7 Step 1 — Engram bitset column
     // =====================================================================
