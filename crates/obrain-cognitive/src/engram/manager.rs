@@ -104,6 +104,7 @@ pub struct EngramRevision {
 pub enum RevisionError {
     EngramAbsent(EngramId),
     InvalidObservation(String),
+    ValidationFailed(String),
     PersistenceFailed(String),
 }
 
@@ -346,6 +347,7 @@ impl EngramManager {
             })
             .map_err(|e| match e {
                 StoreError::EngramAbsent(id) => RevisionError::EngramAbsent(id),
+                StoreError::ValidationFailed(m) => RevisionError::ValidationFailed(m),
                 StoreError::PersistenceFailed(m) => RevisionError::PersistenceFailed(m),
             })?;
         let engram = self
