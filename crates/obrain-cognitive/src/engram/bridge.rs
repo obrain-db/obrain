@@ -8,9 +8,10 @@
 //! vraie donnée (les mutations) mais ne la transmettait jamais au sous-système
 //! engramme. La formation d'engrams était donc morte en production.
 //!
-//! Ce listener ferme la chaîne : chaque **lot de mutations** dispatché par le
-//! `Scheduler` est traité comme **un épisode de co-activation** — l'ensemble
-//! des nœuds distincts touchés dans le lot est passé à `record_activation`.
+//! Ce listener ferme la chaîne : chaque **événement de mutation** est une
+//! co-activation **atomique** — une arête co-active {src,dst}, un nœud seul est
+//! une activation (filtrée). Un LOT n'est JAMAIS fusionné en un épisode : deux
+//! opérations indépendantes regroupées par le `Scheduler` restent distinctes.
 //! Au bout de `min_episodes` co-occurrences du même ensemble (défaut 3), le
 //! détecteur hebbien forme l'engramme et le persiste (substrate si attaché).
 //!
@@ -121,16 +122,16 @@ impl MutationListener for EngramObservationBridge {
     }
 
     async fn on_batch(&self, events: &[MutationEvent]) {
-        if events.is_empty() {
-            return;
-        }
-        // Un lot = un épisode de co-activation : tous les nœuds distincts du
-        // lot sont « activés ensemble ».
-        let mut nodes = Vec::with_capacity(events.len() * 2);
+        // CORRECTION (25/11) : un LOT technique de mutations n'est PAS un
+        // épisode cognitif. Deux opérations indépendantes dans un même lot ne
+        // doivent pas créer d'association artificielle. Chaque événement est
+        // donc traité comme SA PROPRE co-activation (arête = {src,dst}, nœud
+        // seul = singleton filtré par `record`).
         for event in events {
+            let mut nodes = Vec::with_capacity(2);
             Self::affected_nodes(event, &mut nodes);
+            self.record(nodes);
         }
-        self.record(nodes);
     }
 }
 
@@ -170,21 +171,20 @@ mod tests {
         let mgr = manager();
         let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
 
-        // Trois épisodes distincts du même trio {1, 2, 3} → min_episodes=3.
+        // Trois épisodes du triangle {1,2,3} : chaque arête est SA propre
+        // co-activation {src,dst}. Les paires (1,2),(2,3),(1,3) co-occurrent
+        // 3 fois → composante connexe {1,2,3}.
         for _ in 0..3 {
             bridge
                 .on_batch(&[
-                    MutationEvent::NodeUpdated {
-                        before: noeud(1),
-                        after: noeud(1),
+                    MutationEvent::EdgeCreated {
+                        edge: arete(1, 1, 2),
                     },
-                    MutationEvent::NodeUpdated {
-                        before: noeud(2),
-                        after: noeud(2),
+                    MutationEvent::EdgeCreated {
+                        edge: arete(2, 2, 3),
                     },
-                    MutationEvent::NodeUpdated {
-                        before: noeud(3),
-                        after: noeud(3),
+                    MutationEvent::EdgeCreated {
+                        edge: arete(3, 1, 3),
                     },
                 ])
                 .await;
@@ -218,6 +218,37 @@ mod tests {
             mgr.store().list().is_empty(),
             "un singleton ne forme pas d'engramme"
         );
+    }
+
+    #[tokio::test]
+    async fn deux_operations_independantes_dans_un_lot_ne_se_contaminent_pas() {
+        let mgr = manager();
+        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+
+        // {1,2} (ex. physique) et {3,4} (ex. compta) : deux arêtes INDÉPENDANTES
+        // dans le MÊME lot. Elles ne doivent PAS fusionner en un ensemble de 4.
+        for _ in 0..3 {
+            bridge
+                .on_batch(&[
+                    MutationEvent::EdgeCreated {
+                        edge: arete(1, 1, 2),
+                    },
+                    MutationEvent::EdgeCreated {
+                        edge: arete(2, 3, 4),
+                    },
+                ])
+                .await;
+        }
+
+        for e in mgr.store().list() {
+            let ids: Vec<u64> = e.node_ids().iter().map(|n| n.0).collect();
+            let a = ids.contains(&1) || ids.contains(&2);
+            let b = ids.contains(&3) || ids.contains(&4);
+            assert!(
+                !(a && b),
+                "contamination : l'engramme {ids:?} mélange deux opérations indépendantes"
+            );
+        }
     }
 
     #[tokio::test]
