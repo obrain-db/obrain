@@ -56,7 +56,7 @@ pub use admin::{
     ValidationResult, ValidationWarning, WalStatus,
 };
 pub use catalog::{Catalog, CatalogError, IndexDefinition, IndexType};
-pub use composition::{Composition, KnowledgeSpec};
+pub use composition::{Composition, KnowledgeSpec, Relation, ResolveError};
 pub use config::{AccessMode, Config, ConfigError, DurabilityMode, GraphModel};
 pub use database::ObrainDB;
 pub use database::verification_contraintes::{RapportContraintes, ViolationContrainte};
