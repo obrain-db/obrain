@@ -2804,6 +2804,31 @@ impl Writer {
         })
     }
 
+    /// Ensure `engram_id`'s bit is set in `node_id`'s bitset, WITHOUT any WAL
+    /// nor zone write when the bit is already present. The check-and-set is
+    /// atomic under the zone lock. Returns `Ok(true)` when a write happened,
+    /// `Ok(false)` when the bit was already present.
+    pub fn ensure_engram_bit(&self, node_id: u32, engram_id: u16) -> SubstrateResult<bool> {
+        crate::engram_bitset::check_nonzero_engram_id(engram_id)?;
+        let mask = crate::engram_bitset::engram_bit_mask(engram_id);
+        self.with_engram_bitset_zone(|zf| {
+            let current = crate::engram_bitset::EngramBitsetColumn::get(zf, node_id);
+            if current & mask != 0 {
+                return Ok(false); // déjà présent : aucune écriture
+            }
+            let new_bits = current | mask;
+            let rec = WalRecord {
+                lsn: 0,
+                timestamp: unix_micros(),
+                flags: 0,
+                payload: WalPayload::EngramBitsetSet { node_id, bitset: new_bits },
+            };
+            self.wal.append(rec)?;
+            crate::engram_bitset::EngramBitsetColumn::set_raw(zf, node_id, new_bits)?;
+            Ok(true)
+        })
+    }
+
     /// Read the 64-bit engram signature for `node_id`.
     pub fn engram_bitset(&self, node_id: u32) -> SubstrateResult<u64> {
         self.with_engram_bitset_zone(|zf| {
