@@ -31,7 +31,7 @@ fn liste_fichiers(dir: &Path) -> Vec<(String, u64)> {
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
-            let len = e.metadata().map(|m| m.len()).unwrap_or(0);
+            let len = e.metadata().map_or(0, |m| m.len());
             v.push((name, len));
         }
     }
@@ -61,14 +61,14 @@ fn trois_colonnes(chemin: &Path, hub: NodeId) {
         let col = substrate.scan_typed_edge_weights("SYNAPSE");
         let inc = substrate.synapse_edges_of(hub);
         (
-            col.map(|v| v.len()).unwrap_or_else(|e| {
+            col.map_or_else(|e| {
                 println!("  (a) ERREUR colonne: {e}");
                 999_999
-            }),
-            inc.map(|v| v.len()).unwrap_or_else(|e| {
+            }, |v| v.len()),
+            inc.map_or_else(|e| {
                 println!("  (b) ERREUR incidence: {e}");
                 999_999
-            }),
+            }, |v| v.len()),
         )
     };
     let gs: Arc<dyn obrain_core::graph::GraphStoreMut> = substrate.clone();
@@ -99,18 +99,18 @@ fn wal_tronque_vs_colonne_vs_incidence() {
 
     // ── Scénario WAL TRONQUÉ : on vide substrate.wal avant réouverture ─
     let wal: PathBuf = chemin.join("substrate.wal");
-    let avant = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+    let avant = std::fs::metadata(&wal).map_or(0, |m| m.len());
     std::fs::write(&wal, b"").expect("tronquer wal");
-    let apres = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+    let apres = std::fs::metadata(&wal).map_or(0, |m| m.len());
     println!("== WAL TRONQUÉ : substrate.wal {avant} -> {apres} octets ==");
     trois_colonnes(&chemin, hub);
 
     // ── Scénario INCIDENCE TRONQUÉE : on vide les deux zones nommées ──
     for f in ["substrate.synapse_incidence", "substrate.synapse_postings"] {
         let p: PathBuf = chemin.join(f);
-        let av = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+        let av = std::fs::metadata(&p).map_or(0, |m| m.len());
         std::fs::write(&p, b"").expect("tronquer incidence");
-        let ap = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+        let ap = std::fs::metadata(&p).map_or(0, |m| m.len());
         println!("== INCIDENCE TRONQUÉE : {f} {av} -> {ap} octets ==");
     }
     trois_colonnes(&chemin, hub);

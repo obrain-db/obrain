@@ -317,11 +317,11 @@ mod tests {
             .filter(|e| e.ensemble.len() == 3)
             .map(|e| {
                 let mut v: Vec<(u64, f64)> = e.ensemble.iter().map(|(n, w)| (n.0, *w)).collect();
-                v.sort_by(|a, b| a.0.cmp(&b.0));
+                v.sort_by_key(|a| a.0);
                 v
             })
             .collect();
-        assert!(abc.len() >= 1, "au moins un engramme ABC : {abc:?}");
+        assert!(!abc.is_empty(), "au moins un engramme ABC : {abc:?}");
         if abc.len() < 2 {
             return; // pas de doublon : rien à caractériser (comportement corrigé)
         }

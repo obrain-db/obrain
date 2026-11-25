@@ -282,21 +282,21 @@ fn parite_etat_cognitif_memoire_substrate_reouverture() {
             .iter()
             .map(|e| {
                 let mut ens: Vec<(u64, f64)> = e.ensemble.iter().map(|(n, w)| (n.0, *w)).collect();
-                ens.sort_by(|a, b| a.0.cmp(&b.0));
+                ens.sort_by_key(|a| a.0);
                 (e.id.0, ens, e.spectral_signature.clone())
             })
             .collect();
-        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v.sort_by_key(|a| a.0);
         v
     };
-    let avant = capture(&mgr);
+    let avant = capture(mgr);
     db.close().expect("close");
     drop(db);
 
     let db2 = ObrainDB::open_substrate_observed(&chemin).expect("reopen");
     let engine2 = db2.cognitive_engine().expect("moteur2");
     let mgr2 = engine2.engram_manager().expect("mgr2");
-    let apres = capture(&mgr2);
+    let apres = capture(mgr2);
 
     // Invariant #1 : parité COMPLÈTE (présence, nombre, membres, poids,
     // signatures) — pas seulement les poids avec zip.
@@ -390,7 +390,7 @@ fn identifiant_legacy_non_realloue() {
     );
     for &id in &ids {
         assert!(
-            id == 999 || id > 999,
+            id >= 999,
             "aucun nouvel engramme ne réutilise l'id legacy 999 : {ids:?}"
         );
     }

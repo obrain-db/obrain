@@ -69,7 +69,7 @@ fn sous_le_seuil_l_energie_continue_de_decroitre_et_ne_devient_jamais_negative()
         "une demi-vie divise par 2 : {e_apres_1h}"
     );
     assert!(
-        e_apres_1000h >= 0.0 && e_apres_1000h < 1e-9,
+        (0.0..1e-9).contains(&e_apres_1000h),
         "jamais négatif : {e_apres_1000h}"
     );
     // Sous le seuil = candidat à l'archivage, et il le reste.
@@ -127,7 +127,7 @@ fn au_dessus_du_seuil_le_temps_de_bascule_est_predit_par_la_loi() {
     let e0 = es.get_energy(id);
     // 0.5 -> 0.01 : log2(50) demi-vies = 5,6438…
     let bascule = law.elapsed_to_reach(e0, seuil);
-    let e_juste_avant = law.energy_at(e0, bascule - Duration::from_secs(1));
+    let e_juste_avant = law.energy_at(e0, bascule.checked_sub(Duration::from_secs(1)).unwrap());
     let e_juste_apres = law.energy_at(e0, bascule + Duration::from_secs(1));
 
     ancre_il_y_a(&sub, id, bascule.as_secs_f64() / H.as_secs_f64());

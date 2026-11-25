@@ -53,7 +53,7 @@ fn le_nom_synapse_survit_a_la_troncature_du_wal_avant_flush() {
     // incidence) restent, mais `substrate.wal` — donc l'EdgeTypeIntern qui
     // journalisait le nom « SYNAPSE » — disparaît.
     let wal: PathBuf = chemin.join("substrate.wal");
-    let avant = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+    let avant = std::fs::metadata(&wal).map_or(0, |m| m.len());
     assert!(
         avant > 0,
         "le WAL doit porter des écritures avant la troncature"

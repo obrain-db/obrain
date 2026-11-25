@@ -56,7 +56,7 @@ fn etoile_rouverte(deg: usize) -> (tempfile::TempDir, NodeId, Vec<NodeId>) {
 fn echelle_dedup_500_2000_5000() {
     for deg in [500usize, 2000usize, 5000usize] {
         let (td, hub, _leaves) = etoile_rouverte(deg);
-        let substrate = Arc::new(SubstrateStore::open(&td.path().join("kb")).expect("open"));
+        let substrate = Arc::new(SubstrateStore::open(td.path().join("kb")).expect("open"));
         let gs: Arc<dyn obrain_core::graph::GraphStoreMut> = substrate.clone();
         let store = SynapseStore::with_substrate(SynapseConfig::default(), gs, substrate);
 
@@ -81,8 +81,8 @@ fn echelle_dedup_500_2000_5000() {
         }
         // INVARIANT poids : chaque arête émise porte le poids de la colonne
         // (1.0 ± tolérance Q0.16).
-        let min_w = poids.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max_w = poids.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let min_w = poids.iter().copied().fold(f64::INFINITY, f64::min);
+        let max_w = poids.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         assert!(
             (min_w - 1.0).abs() < 1e-3 && (max_w - 1.0).abs() < 1e-3,
             "poids attendu 1.0 ± 1e-3, mesuré min={min_w} max={max_w}"
