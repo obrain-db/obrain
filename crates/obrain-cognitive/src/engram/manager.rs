@@ -159,6 +159,11 @@ impl EngramManager {
             .resource_revision(&engram_id.0.to_be_bytes())
     }
 
+    /// Accès (crate) à la primitive d'observation, pour le pont.
+    pub(crate) fn observation_ledger_arc(&self) -> Arc<dyn AtomicEventLedger> {
+        self.observation_ledger.clone()
+    }
+
     /// Returns a reference to the shared engram store.
     pub fn store(&self) -> &Arc<EngramStore> {
         &self.store
@@ -232,7 +237,8 @@ impl EngramManager {
     /// creates new engrams, encodes spectral signatures, and indexes
     /// them in the vector index.
     #[instrument(skip(self), fields(nodes = nodes.len(), prediction_error))]
-    pub fn record_activation(&self, nodes: &[NodeId], prediction_error: f64) {
+    pub fn record_activation(&self, nodes: &[NodeId], prediction_error: f64) -> Vec<EngramId> {
+        let mut formed: Vec<EngramId> = Vec::new();
         let mut formation = self.formation.lock();
         formation.record_activation(nodes, prediction_error);
 
@@ -256,6 +262,7 @@ impl EngramManager {
                         self.store.insert(e);
                         self.vector_index.upsert(&id.to_string(), &sig);
                         self.metrics.record_formation();
+                        formed.push(id);
                         debug!(%id, "engram formed (memory fallback)");
                         continue;
                     }
@@ -275,6 +282,7 @@ impl EngramManager {
             self.vector_index.upsert(&id.to_string(), &signature);
 
             self.metrics.record_formation();
+            formed.push(id);
             debug!(%id, "engram formed");
         }
 
@@ -284,6 +292,7 @@ impl EngramManager {
         // d'enregistrement. Chaque activation met à jour le modèle prédictif
         // des engrams rappelés au lieu de laisser le champ mort.
         self.update_predictive_models(nodes);
+        formed
     }
 
     /// JEPA — met à jour les modèles prédictifs des engrams correspondant aux
@@ -433,7 +442,7 @@ impl EngramManager {
             return Err(RevisionError::InvalidObservation("observation vide".into()));
         }
         // Définition canonique versionnée (refuse non-fini / canonise).
-        let definition = ObservationDefinition::new(engram_id, new_nodes, prediction_error)
+        let definition = ObservationDefinition::new(new_nodes, prediction_error)
             .map_err(RevisionError::InvalidObservation)?;
         // La transformation reçoit les nœuds CANONISÉS : définition et effet
         // coïncident exactement.
@@ -465,6 +474,7 @@ impl EngramManager {
         let outcome = adapter
             .apply(
                 observation_id,
+                &engram_id.0.to_be_bytes(),
                 &definition,
                 source_revision,
                 &resulting_state,
@@ -554,6 +564,12 @@ impl EngramManager {
                 ObservationOutcome::RevisionConflict { current_revision },
                 None,
             )),
+            ObservationOutcome::AlreadyFormed => {
+                // L'identité a été enregistrée comme FORMATION : ne pas la
+                // transformer rétroactivement en révision.
+                Ok((ObservationOutcome::AlreadyFormed, None))
+            }
+            ObservationOutcome::Formed => Ok((ObservationOutcome::Formed, None)),
             ObservationOutcome::Abandoned => Ok((ObservationOutcome::Abandoned, None)),
             ObservationOutcome::Indeterminate => {
                 match adapter
@@ -572,8 +588,17 @@ impl EngramManager {
                                 "définition enregistrée différente de la définition tentée".into(),
                             ));
                         }
-                        let recorded = ResultingState::from_canonical_bytes(&rec_state)
-                            .map_err(RevisionError::PersistenceFailed)?;
+                        // L'effet enregistré porte un préfixe : 0x01 révision
+                        // (suit l'état sérialisé) ou 0x02 formation.
+                        let recorded = match rec_state.first() {
+                            Some(&1) => ResultingState::from_canonical_bytes(&rec_state[1..])
+                                .map_err(RevisionError::PersistenceFailed)?,
+                            _ => {
+                                return Err(RevisionError::PersistenceFailed(
+                                    "effet enregistré non-révision (formation)".into(),
+                                ));
+                            }
+                        };
                         let live = self
                             .store
                             .get(engram_id)

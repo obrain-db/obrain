@@ -107,42 +107,33 @@ impl std::fmt::Display for ObservationId {
 pub struct ObservationDefinition {
     /// Version de la représentation canonique.
     version: u32,
-    /// Cible logique (la connaissance visée).
-    engram_id: EngramId,
     /// Nœuds de l'observation, CANONISÉS : triés par id, doublons retirés.
+    ///
+    /// C'est le CONTENU de l'observation, INDÉPENDANT de la transformation
+    /// sélectionnée (révision d'un engramme ou formation) : la cible appartient
+    /// à la transformation, pas à l'observation.
     new_nodes: Vec<NodeId>,
     /// Les bits EXACTS du f64 de l'erreur de prédiction (comparaison exacte).
     prediction_error_bits: u64,
 }
 
 impl ObservationDefinition {
-    /// Construit une définition canonique. Refuse une erreur non finie (NaN,
-    /// infini) : une observation invalide ne devient jamais un état persistant.
-    pub fn new(
-        engram_id: EngramId,
-        new_nodes: &[NodeId],
-        prediction_error: f64,
-    ) -> Result<Self, String> {
+    /// Construit une définition canonique du CONTENU de l'observation.
+    /// Refuse une erreur non finie (NaN, infini).
+    pub fn new(new_nodes: &[NodeId], prediction_error: f64) -> Result<Self, String> {
         if !prediction_error.is_finite() {
             return Err(format!(
                 "erreur de prédiction non finie : {prediction_error}"
             ));
         }
         let mut nodes: Vec<NodeId> = new_nodes.to_vec();
-        // Canonisation : ordre significatif retiré, doublons retirés.
         nodes.sort_unstable_by_key(|n| n.0);
         nodes.dedup();
         Ok(Self {
             version: OBSERVATION_DEFINITION_VERSION,
-            engram_id,
             new_nodes: nodes,
             prediction_error_bits: prediction_error.to_bits(),
         })
-    }
-
-    /// La cible logique.
-    pub fn engram_id(&self) -> EngramId {
-        self.engram_id
     }
 
     /// La version de la représentation.
@@ -151,21 +142,16 @@ impl ObservationDefinition {
     }
 
     /// Les nœuds CANONISÉS (triés, dédupliqués). La transformation DOIT
-    /// recevoir exactement ces nœuds, pour que la définitions et l'effet
-    /// appliqué coïncident.
+    /// recevoir exactement ces nœuds.
     pub fn canonical_nodes(&self) -> &[NodeId] {
         &self.new_nodes
     }
 
-    /// Sérialisation canonique (big-endian, déterministe). C'est l'identité de
-    /// CONTENU sur laquelle porte l'égalité.
-    ///
-    /// Format : version u32 | engram_id u64 | len u64 | (node u64)* |
-    /// prediction_error_bits u64.
+    /// Sérialisation canonique (big-endian, déterministe).
+    /// Format : version u32 | len u64 | (node u64)* | prediction_error_bits u64.
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(4 + 8 + 8 + 8 * self.new_nodes.len() + 8);
+        let mut out = Vec::with_capacity(4 + 8 + 8 * self.new_nodes.len() + 8);
         out.extend_from_slice(&self.version.to_be_bytes());
-        out.extend_from_slice(&self.engram_id.0.to_be_bytes());
         out.extend_from_slice(&(self.new_nodes.len() as u64).to_be_bytes());
         for n in &self.new_nodes {
             out.extend_from_slice(&n.0.to_be_bytes());
@@ -175,8 +161,7 @@ impl ObservationDefinition {
     }
 
     /// ACCÉLÉRATEUR de recherche (FNV-1a 64 bits) — JAMAIS une preuve
-    /// d'égalité (une collision ne vaut pas égalité : comparer
-    /// [`canonical_bytes`](Self::canonical_bytes)).
+    /// d'égalité (comparer [`canonical_bytes`](Self::canonical_bytes)).
     pub fn fingerprint(&self) -> u64 {
         const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
         const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -267,6 +252,12 @@ pub enum ObservationOutcome {
     /// Révision attendue dépassée : recalculer depuis l'état COURANT, avec la
     /// MÊME identité logique (ne pas en inventer une nouvelle).
     RevisionConflict { current_revision: u64 },
+    /// Identité enregistrée comme FORMATION (aucune connaissance visée) : un
+    /// rejeu ne réactive pas, et une apparition ultérieure de connaissance ne
+    /// transforme PAS rétroactivement cette observation en révision.
+    Formed,
+    /// Identité déjà enregistrée comme FORMATION : rien à refaire.
+    AlreadyFormed,
     /// Identité explicitement abandonnée (jamais appliquée, ne le sera pas).
     Abandoned,
     /// État transactionnel indéterminé : APPELER [`CognitiveObservationAdapter::resolve`],
@@ -412,9 +403,46 @@ pub struct CognitiveObservationAdapter<L: AtomicEventLedger> {
     ledger: L,
 }
 
+/// Préfixe d'effet : révision (suit un `ResultingState` sérialisé).
+const EFFECT_REVISION: u8 = 0x01;
+/// Préfixe d'effet : formation (aucun état d'engramme).
+const EFFECT_FORMATION: u8 = 0x02;
+
 impl<L: AtomicEventLedger> CognitiveObservationAdapter<L> {
     pub fn new(ledger: L) -> Self {
         Self { ledger }
+    }
+
+    /// Enregistre une observation de FORMATION (identité seule, aucun état).
+    /// Un rejeu rend `AlreadyFormed` sans réactiver.
+    pub fn apply_formation(
+        &self,
+        observation_id: ObservationId,
+        resource: &[u8],
+        definition: &ObservationDefinition,
+    ) -> Result<ObservationOutcome, String> {
+        let outcome = self.ledger.apply_event(
+            &observation_id.0,
+            resource,
+            &definition.canonical_bytes(),
+            0,
+            &[EFFECT_FORMATION],
+            1,
+        )?;
+        Ok(match outcome {
+            LedgerOutcome::Applied => ObservationOutcome::Formed,
+            LedgerOutcome::AlreadyApplied { .. } => ObservationOutcome::AlreadyFormed,
+            LedgerOutcome::Abandoned => ObservationOutcome::Abandoned,
+            LedgerOutcome::Indeterminate => ObservationOutcome::Indeterminate,
+            LedgerOutcome::IdentityConflict { recorded_definition } => {
+                ObservationOutcome::IdentityConflict {
+                    recorded: decode_definition(&recorded_definition)?,
+                }
+            }
+            LedgerOutcome::PreconditionFailed { current_revision } => {
+                ObservationOutcome::RevisionConflict { current_revision }
+            }
+        })
     }
 
     /// Accès à la primitive sous-jacente (tests, diagnostics).
@@ -427,18 +455,21 @@ impl<L: AtomicEventLedger> CognitiveObservationAdapter<L> {
     pub fn apply(
         &self,
         observation_id: ObservationId,
+        resource: &[u8],
         definition: &ObservationDefinition,
         source_revision: SourceRevision,
         resulting_state: &ResultingState,
         resulting_revision: u64,
     ) -> Result<ObservationOutcome, String> {
-        let resource = definition.engram_id.0.to_be_bytes();
+        let mut effect = Vec::with_capacity(1 + 16 * resulting_state.ensemble.len() + 13);
+        effect.push(EFFECT_REVISION);
+        effect.extend_from_slice(&resulting_state.canonical_bytes());
         let outcome = self.ledger.apply_event(
             &observation_id.0,
-            &resource,
+            resource,
             &definition.canonical_bytes(),
             source_revision.0,
-            &resulting_state.canonical_bytes(),
+            &effect,
             resulting_revision,
         )?;
         Ok(match outcome {
@@ -446,12 +477,14 @@ impl<L: AtomicEventLedger> CognitiveObservationAdapter<L> {
                 state: resulting_state.clone(),
                 revision: resulting_revision,
             },
-            LedgerOutcome::AlreadyApplied { state, revision } => {
-                ObservationOutcome::Replayed {
-                    state: ResultingState::from_canonical_bytes(&state)?,
+            LedgerOutcome::AlreadyApplied { state, revision } => match state.first() {
+                Some(&EFFECT_REVISION) => ObservationOutcome::Replayed {
+                    state: ResultingState::from_canonical_bytes(&state[1..])?,
                     revision,
-                }
-            }
+                },
+                Some(&EFFECT_FORMATION) => ObservationOutcome::AlreadyFormed,
+                _ => return Err("effet enregistré invalide (préfixe inconnu)".into()),
+            },
             LedgerOutcome::IdentityConflict {
                 recorded_definition,
             } => {
@@ -493,7 +526,6 @@ fn decode_definition(bytes: &[u8]) -> Result<ObservationDefinition, String> {
     if version != OBSERVATION_DEFINITION_VERSION {
         return Err(format!("version de définition inconnue : {version}"));
     }
-    let engram_id = EngramId(u64::from_be_bytes(take(&mut cur, 8)?.try_into().unwrap()));
     let n = u64::from_be_bytes(take(&mut cur, 8)?.try_into().unwrap());
     let mut new_nodes = Vec::with_capacity(n as usize);
     for _ in 0..n {
@@ -507,7 +539,6 @@ fn decode_definition(bytes: &[u8]) -> Result<ObservationDefinition, String> {
     // re-canoniser (new() refuserait un NaN déjà refusé à la source).
     Ok(ObservationDefinition {
         version,
-        engram_id,
         new_nodes,
         prediction_error_bits,
     })
@@ -719,9 +750,9 @@ mod tests {
         ObservationId::from_u128(n)
     }
 
-    fn def(engram: u64, nodes: &[u64], err: f64) -> ObservationDefinition {
+    fn def(_engram: u64, nodes: &[u64], err: f64) -> ObservationDefinition {
         let nids: Vec<NodeId> = nodes.iter().map(|n| NodeId(*n)).collect();
-        ObservationDefinition::new(EngramId(engram), &nids, err).unwrap()
+        ObservationDefinition::new(&nids, err).unwrap()
     }
 
     fn state(nodes: &[(u64, f64)], strength: f64, rc: u32) -> ResultingState {
@@ -743,7 +774,7 @@ mod tests {
         let d = def(10, &[1, 2], 0.5);
         let s = state(&[(1, 0.5), (2, 0.25)], 0.6, 1);
         let first = a
-            .apply(oid(1), &d, SourceRevision(0), &s, 1)
+            .apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1)
             .unwrap();
         assert_eq!(
             first,
@@ -753,7 +784,7 @@ mod tests {
             }
         );
         let replay = a
-            .apply(oid(1), &d, SourceRevision(0), &s, 1)
+            .apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1)
             .unwrap();
         assert_eq!(
             replay,
@@ -772,10 +803,10 @@ mod tests {
         let a = adapter();
         let d1 = def(10, &[1], 0.5);
         let d2 = def(10, &[2], 0.5);
-        a.apply(oid(1), &d1, SourceRevision(0), &state(&[(1, 0.5)], 0.5, 1), 1)
+        a.apply(oid(1), &10u64.to_be_bytes(), &d1, SourceRevision(0), &state(&[(1, 0.5)], 0.5, 1), 1)
             .unwrap();
         let out = a
-            .apply(oid(1), &d2, SourceRevision(0), &state(&[(2, 0.5)], 0.5, 1), 1)
+            .apply(oid(1), &10u64.to_be_bytes(), &d2, SourceRevision(0), &state(&[(2, 0.5)], 0.5, 1), 1)
             .unwrap();
         match out {
             ObservationOutcome::IdentityConflict { recorded } => {
@@ -791,10 +822,10 @@ mod tests {
         let a = adapter();
         let d = def(10, &[7], 0.5);
         let s = state(&[(7, 0.25)], 0.6, 1);
-        let o1 = a.apply(oid(1), &d, SourceRevision(0), &s, 1).unwrap();
+        let o1 = a.apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1).unwrap();
         // La seconde est calculée depuis la révision COURANTE (1), sinon elle
         // serait en conflit de révision.
-        let o2 = a.apply(oid(2), &d, SourceRevision(1), &s, 2).unwrap();
+        let o2 = a.apply(oid(2), &10u64.to_be_bytes(), &d, SourceRevision(1), &s, 2).unwrap();
         assert!(matches!(o1, ObservationOutcome::Applied { .. }));
         assert!(
             matches!(o2, ObservationOutcome::Applied { .. }),
@@ -811,10 +842,10 @@ mod tests {
         let s1 = state(&[(1, 0.5)], 0.6, 1);
         let s2 = state(&[(2, 0.5)], 0.6, 1);
         let o1 = a
-            .apply(oid(1), &def(10, &[1], 0.5), SourceRevision(0), &s1, 1)
+            .apply(oid(1), &10u64.to_be_bytes(), &def(10, &[1], 0.5), SourceRevision(0), &s1, 1)
             .unwrap();
         let o2 = a
-            .apply(oid(2), &def(10, &[2], 0.5), SourceRevision(0), &s2, 1)
+            .apply(oid(2), &10u64.to_be_bytes(), &def(10, &[2], 0.5), SourceRevision(0), &s2, 1)
             .unwrap();
         assert!(matches!(o1, ObservationOutcome::Applied { .. }));
         assert_eq!(
@@ -828,9 +859,7 @@ mod tests {
     #[test]
     fn conflit_de_revision_puis_recalcul() {
         let a = adapter();
-        a.apply(
-            oid(1),
-            &def(10, &[1], 0.5),
+        a.apply(oid(1), &10u64.to_be_bytes(), &def(10, &[1], 0.5),
             SourceRevision(0),
             &state(&[(1, 0.5)], 0.6, 1),
             1,
@@ -838,7 +867,7 @@ mod tests {
         .unwrap();
         let d2 = def(10, &[2], 0.5);
         let conflict = a
-            .apply(oid(2), &d2, SourceRevision(0), &state(&[(2, 0.5)], 0.6, 1), 1)
+            .apply(oid(2), &10u64.to_be_bytes(), &d2, SourceRevision(0), &state(&[(2, 0.5)], 0.6, 1), 1)
             .unwrap();
         assert_eq!(
             conflict,
@@ -847,7 +876,7 @@ mod tests {
         // Recalcul depuis la révision courante (1) : même identité logique,
         // candidat légitimement différent.
         let recomputed = a
-            .apply(oid(2), &d2, SourceRevision(1), &state(&[(2, 0.25)], 0.7, 1), 2)
+            .apply(oid(2), &10u64.to_be_bytes(), &d2, SourceRevision(1), &state(&[(2, 0.25)], 0.7, 1), 2)
             .unwrap();
         assert!(
             matches!(recomputed, ObservationOutcome::Applied { .. }),
@@ -863,17 +892,15 @@ mod tests {
         let a = adapter();
         let d1 = def(10, &[1], 0.5);
         let s1 = state(&[(1, 0.5)], 0.6, 1);
-        a.apply(oid(1), &d1, SourceRevision(0), &s1, 1).unwrap();
-        a.apply(
-            oid(2),
-            &def(10, &[2], 0.5),
+        a.apply(oid(1), &10u64.to_be_bytes(), &d1, SourceRevision(0), &s1, 1).unwrap();
+        a.apply(oid(2), &10u64.to_be_bytes(), &def(10, &[2], 0.5),
             SourceRevision(1),
             &state(&[(1, 0.25), (2, 0.25)], 0.7, 2),
             2,
         )
         .unwrap();
         // Rejeu de l'observation ancienne.
-        let replay = a.apply(oid(1), &d1, SourceRevision(0), &s1, 1).unwrap();
+        let replay = a.apply(oid(1), &10u64.to_be_bytes(), &d1, SourceRevision(0), &s1, 1).unwrap();
         match replay {
             ObservationOutcome::Replayed { revision, .. } => {
                 assert_eq!(revision, 1, "l'issue rend la révision ENREGISTRÉE (informationnelle)");
@@ -892,9 +919,7 @@ mod tests {
     #[test]
     fn abandon_d_une_appliquee_refuse() {
         let a = adapter();
-        a.apply(
-            oid(1),
-            &def(10, &[1], 0.5),
+        a.apply(oid(1), &10u64.to_be_bytes(), &def(10, &[1], 0.5),
             SourceRevision(0),
             &state(&[(1, 0.5)], 0.6, 1),
             1,
@@ -915,10 +940,10 @@ mod tests {
     fn injection_faute_lors_du_rejeu_preserve_l_appliquee() {
         let a = adapter();
         let d = def(10, &[1], 0.5);
-        a.apply(oid(1), &d, SourceRevision(0), &state(&[(1, 0.5)], 0.6, 1), 1)
+        a.apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &state(&[(1, 0.5)], 0.6, 1), 1)
             .unwrap();
         a.ledger().set_fail_partial_write(true);
-        let crashed = a.apply(oid(1), &d, SourceRevision(0), &state(&[(1, 0.5)], 0.6, 1), 1);
+        let crashed = a.apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &state(&[(1, 0.5)], 0.6, 1), 1);
         assert!(crashed.is_err(), "le crash simulé rend une erreur");
         // L'application existante est intacte.
         match a.resolve(oid(1)).unwrap() {
@@ -935,12 +960,12 @@ mod tests {
         let d = def(10, &[1], 0.5);
         let s = state(&[(1, 0.5)], 0.6, 1);
         a.ledger().set_fail_partial_write(true);
-        let crashed = a.apply(oid(1), &d, SourceRevision(0), &s, 1);
+        let crashed = a.apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1);
         assert!(crashed.is_err(), "transaction interrompue");
         // Résolution : la transaction n'a pas abouti → aucune application.
         assert_eq!(a.resolve(oid(1)).unwrap(), ResolvedState::NotApplied);
         // Le rejeu peut alors appliquer proprement.
-        let retry = a.apply(oid(1), &d, SourceRevision(0), &s, 1).unwrap();
+        let retry = a.apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1).unwrap();
         assert!(matches!(retry, ObservationOutcome::Applied { .. }));
     }
 
@@ -950,7 +975,7 @@ mod tests {
         let a = adapter();
         let d = def(10, &[1, 2], 0.5);
         let s = state(&[(1, 0.5), (2, 0.25)], 0.6, 1);
-        a.apply(oid(1), &d, SourceRevision(0), &s, 1).unwrap();
+        a.apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1).unwrap();
         match a.resolve(oid(1)).unwrap() {
             ResolvedState::Applied {
                 definition,
@@ -958,8 +983,9 @@ mod tests {
                 revision,
             } => {
                 assert_eq!(definition, d.canonical_bytes(), "définition conservée");
+                assert_eq!(state.first(), Some(&EFFECT_REVISION), "préfixe d'effet révision");
                 assert_eq!(
-                    ResultingState::from_canonical_bytes(&state).unwrap(),
+                    ResultingState::from_canonical_bytes(&state[1..]).unwrap(),
                     s,
                     "état résultant conservé"
                 );
@@ -982,8 +1008,8 @@ mod tests {
     #[test]
     fn definition_refuse_non_fini() {
         let nids = [NodeId(1)];
-        assert!(ObservationDefinition::new(EngramId(10), &nids, f64::NAN).is_err());
-        assert!(ObservationDefinition::new(EngramId(10), &nids, f64::INFINITY).is_err());
+        assert!(ObservationDefinition::new(&nids, f64::NAN).is_err());
+        assert!(ObservationDefinition::new(&nids, f64::INFINITY).is_err());
     }
 
     // La version fait partie de la définition (une version différente n'est pas
