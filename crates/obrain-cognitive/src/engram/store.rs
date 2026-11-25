@@ -30,7 +30,7 @@
 //! and continues to work without substrate: the substrate writer is strictly
 //! optional and additive.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -603,6 +603,12 @@ impl EngramStore {
         // ÉTAT CANDIDAT : clone, applique, valide — SANS muter l'état publié.
         let mut candidate = entry.value().clone();
         f(&mut candidate);
+        // Invariance de l'identité logique : une révision ne change pas l'id.
+        if candidate.id != id {
+            return Err(StoreError::ValidationFailed(
+                "la révision ne doit pas changer l'identité logique".into(),
+            ));
+        }
         self.validate_candidate(&candidate)?;
         // Persister le candidat AVANT de committer : une erreur laisse le cache
         // inchangé. Le substrat peut être en écriture partielle/indéterminée.
@@ -628,15 +634,16 @@ impl EngramStore {
     /// Validation d'un candidat AVANT mutation : représentabilité u16/u32 et
     /// poids finis. Aucun chemin silencieux.
     fn validate_candidate(&self, e: &Engram) -> Result<(), StoreError> {
-        if Self::engram_id_to_u16(e.id).is_none() {
-            return Err(StoreError::ValidationFailed("EngramId non-u16".into()));
-        }
+        // Validation GÉNÉRIQUE (indépendante du backend) : unicité des membres
+        // et poids f64 finis. La représentabilité u16/u32/f32 est vérifiée par
+        // mirror_substrate_insert (sous feature substrate), pas ici.
+        let mut seen = HashSet::new();
         for (n, w) in &e.ensemble {
-            if Self::node_id_to_u32(*n).is_none() {
-                return Err(StoreError::ValidationFailed(format!("NodeId non-u32: {n:?}")));
-            }
             if !w.is_finite() {
                 return Err(StoreError::ValidationFailed(format!("poids non fini: {w}")));
+            }
+            if !seen.insert(*n) {
+                return Err(StoreError::ValidationFailed(format!("membre dupliqué: {n:?}")));
             }
         }
         Ok(())
@@ -659,8 +666,14 @@ impl EngramStore {
             let Some(nu32) = Self::node_id_to_u32(*n) else {
                 return Err(StoreError::ValidationFailed(format!("NodeId non-u32: {n:?}")));
             };
+            let wf32 = *w as f32;
+            if !wf32.is_finite() {
+                return Err(StoreError::ValidationFailed(format!(
+                    "poids non représentable en f32: {w}"
+                )));
+            }
             members.push(nu32);
-            weights.push(*w as f32);
+            weights.push(wf32);
         }
         // Écriture ATOMIQUE membres+poids (même verrou), puis bitset par nœud
         // (aucune correspondance d'ordre) — pas de réécriture des membres.
