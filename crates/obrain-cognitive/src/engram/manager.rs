@@ -155,7 +155,7 @@ impl EngramManager {
                 // réécriture durable (update() miroir le substrate).
                 self.store.rehydrate_signature(engram.id, sig);
             }
-            tracing::info!(coherent = report.coherent, degraded = report.degraded.len(), rejected = report.rejected, "cognitive: engrams rechargés depuis le substrate");
+            tracing::info!(coherent = report.coherent, degraded = report.degraded.len(), rejected = report.rejected.len(), "cognitive: engrams rechargés depuis le substrate");
         }
         report
     }
