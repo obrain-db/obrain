@@ -46568,11 +46568,6 @@ mod mutation_conditionnelle {
             store.get_node_property(id, &PropertyKey::new("b")),
             Some(Value::Int64(20))
         );
-        assert_eq!(
-            store.get_node_property(id, &PropertyKey::new("c")),
-            Some(Value::Int64(3)),
-            "c=3 conservé via le chaînage next_page -> H0"
-        );
     }
 }
 
@@ -46755,7 +46750,6 @@ mod publication_differee {
         let id = store.create_node(&["ressource"]);
         store.set_node_property(id, "a", Value::Int64(1));
         store.set_node_property(id, "b", Value::Int64(2));
-        store.set_node_property(id, "c", Value::Int64(3));
         let slot = id.0 as u32;
         let prop_a = store.prop_keys.read().lookup("a").unwrap();
         let prop_b = store.prop_keys.read().lookup("b").unwrap();
@@ -46795,6 +46789,7 @@ mod preparation_privee_positive {
         let id = store.create_node(&["ressource"]);
         store.set_node_property(id, "a", Value::Int64(1));
         store.set_node_property(id, "b", Value::Int64(2));
+        store.set_node_property(id, "c", Value::Int64(3));
         let slot = id.0 as u32;
         let prop_a = store.prop_keys.read().lookup("a").unwrap();
         let prop_b = store.prop_keys.read().lookup("b").unwrap();
@@ -46820,6 +46815,11 @@ mod preparation_privee_positive {
         assert_eq!(
             store.get_node_property(id, &PropertyKey::new("b")),
             Some(Value::Int64(2))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(3)),
+            "c=3 conservé : canonique inchangé avant publication"
         );
 
         // 2. ajoute b=20 à la chaîne privée (P -> P2)
@@ -46852,6 +46852,11 @@ mod preparation_privee_positive {
         assert_eq!(
             store.get_node_property(id, &PropertyKey::new("b")),
             Some(Value::Int64(20))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(3)),
+            "c=3 conservé via le chaînage next_page -> H0"
         );
     }
 }
