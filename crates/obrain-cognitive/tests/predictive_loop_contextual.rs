@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use obrain_common::types::NodeId;
-use obrain_cognitive::engram::{EngramManager, EngramManagerConfig, PredictiveAction};
+use obrain_cognitive::engram::{EngramManager, EngramManagerConfig, PredictiveAction, PredictivePolicy};
 use obrain_cognitive::InMemoryVectorIndex;
 
 type Ep = Vec<NodeId>;
@@ -285,56 +285,256 @@ fn b_sequence_non_monotone_et_changement_de_regime() {
 }
 
 // ---------------------------------------------------------------------------
-// C — Observations contradictoires (même contexte, deux issues irréductibles).
+// C — Régimes de prédiction temporelle ET probabiliste, à information ÉGALE.
+//     Témoins : contexte (dernière / fréquence), TEMPOREL ordre-1, PROBABILISTE
+//     marginal. Aucune supériorité d'Obrain n'est supposée : on rapporte le
+//     classement réel par régime. (Correction : une alternance stricte est
+//     PRÉVISIBLE par l'ordre-1, donc le témoin « dernière » n'est pas le bon
+//     adversaire.)
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
+struct Witnesses {
+    ctx_history: HashMap<NodeId, Vec<Ep>>,
+    transitions: HashMap<Ep, HashMap<Ep, usize>>,
+    global: HashMap<Ep, usize>,
+    prev: Option<Ep>,
+}
+
+impl Witnesses {
+    fn observe(&mut self, ctx: NodeId, outcome: &Ep) {
+        self.ctx_history.entry(ctx).or_default().push(outcome.clone());
+        if let Some(p) = &self.prev {
+            *self
+                .transitions
+                .entry(p.clone())
+                .or_default()
+                .entry(outcome.clone())
+                .or_insert(0) += 1;
+        }
+        *self.global.entry(outcome.clone()).or_insert(0) += 1;
+        self.prev = Some(outcome.clone());
+    }
+    fn ctx_last(&self, ctx: NodeId) -> Ep {
+        self.ctx_history
+            .get(&ctx)
+            .and_then(|v| v.last().cloned())
+            .unwrap_or_default()
+    }
+    fn ctx_freq(&self, ctx: NodeId) -> Ep {
+        let Some(v) = self.ctx_history.get(&ctx) else {
+            return Ep::new();
+        };
+        let mut counts: Vec<(Ep, usize)> = Vec::new();
+        for e in v {
+            if let Some(x) = counts.iter_mut().find(|(k, _)| k == e) {
+                x.1 += 1;
+            } else {
+                counts.push((e.clone(), 1));
+            }
+        }
+        counts
+            .into_iter()
+            .max_by_key(|(_, c)| *c)
+            .map(|(e, _)| e)
+            .unwrap_or_default()
+    }
+    /// TEMPOREL ordre-1 : issue la plus fréquente APRÈS l'issue précédente.
+    fn temporal(&self) -> Ep {
+        self.prev
+            .as_ref()
+            .and_then(|p| self.transitions.get(p))
+            .and_then(|m| m.iter().max_by_key(|(_, c)| **c))
+            .map(|(e, _)| e.clone())
+            .unwrap_or_default()
+    }
+    /// PROBABILISTE marginal (sans contexte).
+    fn marginal(&self) -> Ep {
+        self.global
+            .iter()
+            .max_by_key(|(_, c)| **c)
+            .map(|(e, _)| e.clone())
+            .unwrap_or_default()
+    }
+}
+
+struct CaseResult {
+    obrain: f64,
+    ctx_last: f64,
+    ctx_freq: f64,
+    temporal: f64,
+    marginal: f64,
+}
+
+fn run_case(
+    m: &EngramManager,
+    stream: &[(NodeId, Ep)],
+    warmup: usize,
+    k: usize,
+) -> (Vec<f64>, CaseResult) {
+    let mut w = Witnesses::default();
+    let mut ob = Vec::new();
+    let mut cl = Vec::new();
+    let mut cf = Vec::new();
+    let mut tp = Vec::new();
+    let mut mg = Vec::new();
+    for (ctx, obs) in stream {
+        let step = m.predictive_step(&[*ctx], obs, k).expect("pas");
+        cl.push(set_error(m, &w.ctx_last(*ctx), obs));
+        cf.push(set_error(m, &w.ctx_freq(*ctx), obs));
+        tp.push(set_error(m, &w.temporal(), obs));
+        mg.push(set_error(m, &w.marginal(), obs));
+        ob.push(step.error);
+        w.observe(*ctx, obs);
+    }
+    let tail = |v: &Vec<f64>| mean(&v[warmup.min(v.len())..]);
+    (
+        ob.clone(),
+        CaseResult {
+            obrain: tail(&ob),
+            ctx_last: tail(&cl),
+            ctx_freq: tail(&cf),
+            temporal: tail(&tp),
+            marginal: tail(&mg),
+        },
+    )
+}
+
+fn lcg(seed: &mut u64) -> u64 {
+    *seed = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    *seed >> 33
+}
+
 #[test]
-fn c_observations_contradictoires() {
-    let m = manager();
-    let mut w = ConditionalWitness::default();
-    let ctx = NodeId(300);
+fn c_regimes_temporels_et_probabilistes() {
     let (a, b, c, d) = (NodeId(1), NodeId(2), NodeId(3), NodeId(4));
+    let ctx = NodeId(300);
+    let ctx_a = NodeId(301);
+    let ctx_b = NodeId(302);
     let ab: Ep = vec![ctx, a, b];
     let cd: Ep = vec![ctx, c, d];
+    let ab_a: Ep = vec![ctx_a, a, b];
+    let cd_a: Ep = vec![ctx_a, c, d];
+    let ab_b: Ep = vec![ctx_b, a, b];
+    let cd_b: Ep = vec![ctx_b, c, d];
 
-    // Alternance stricte : aucune prédiction déterministe n'est possible.
-    let mut stream = Vec::new();
-    for _ in 0..6 {
-        stream.push((ctx, ab.clone()));
-        stream.push((ctx, cd.clone()));
+    // 1. Alternance DÉTERMINISTE (prévisible par l'ordre-1).
+    let mut alternance = Vec::new();
+    for i in 0..12 {
+        alternance.push((ctx, if i % 2 == 0 { ab.clone() } else { cd.clone() }));
     }
-    let mut res = Vec::new();
-    run_stream(&m, &mut w, &stream, 8, &mut res);
+    // 2. Changement de RÉGIME.
+    let mut regime = Vec::new();
+    for _ in 0..3 {
+        regime.push((ctx, ab.clone()));
+    }
+    for _ in 0..3 {
+        regime.push((ctx, cd.clone()));
+    }
+    for _ in 0..3 {
+        regime.push((ctx, ab.clone()));
+    }
+    // 3. VRAIMENT aléatoire (graine fixe).
+    let mut seed = 42u64;
+    let mut aleatoire = Vec::new();
+    for _ in 0..14 {
+        aleatoire.push((ctx, if lcg(&mut seed) % 2 == 0 { ab.clone() } else { cd.clone() }));
+    }
+    // 4. Distribution CONDITIONNELLE : ctx_a -> AB 80 %, ctx_b -> CD 80 %.
+    let mut seed2 = 7u64;
+    let mut conditionnelle = Vec::new();
+    for i in 0..20 {
+        let use_a = i % 2 == 0;
+        let c2 = if use_a { ctx_a } else { ctx_b };
+        let r = lcg(&mut seed2) % 10;
+        let obs = if use_a {
+            if r < 8 { ab_a.clone() } else { cd_a.clone() }
+        } else if r < 8 {
+            cd_b.clone()
+        } else {
+            ab_b.clone()
+        };
+        conditionnelle.push((c2, obs));
+    }
+    // 5. Contexte PARTIELLEMENT observable : signal faible (60 / 40).
+    let mut seed3 = 99u64;
+    let mut partiel = Vec::new();
+    for i in 0..20 {
+        let use_a = i % 2 == 0;
+        let c2 = if use_a { ctx_a } else { ctx_b };
+        let r = lcg(&mut seed3) % 10;
+        let obs = if use_a {
+            if r < 6 { ab_a.clone() } else { cd_a.clone() }
+        } else if r < 6 {
+            ab_b.clone()
+        } else {
+            cd_b.clone()
+        };
+        partiel.push((c2, obs));
+    }
 
-    let ob: Vec<f64> = res.iter().map(|r| r.obrain).collect();
-    let last: Vec<f64> = res.iter().map(|r| r.last).collect();
-    let freq: Vec<f64> = res.iter().map(|r| r.freq).collect();
+    let cases: Vec<(&str, &Vec<(NodeId, Ep)>, usize)> = vec![
+        ("alternance_deterministe", &alternance, 3),
+        ("changement_de_regime", &regime, 6),
+        ("vraiment_aleatoire", &aleatoire, 2),
+        ("distribution_conditionnelle", &conditionnelle, 4),
+        ("contexte_partiellement_observable", &partiel, 4),
+    ];
 
-    let ob_tail = mean(&ob[ob.len().saturating_sub(6)..]);
-    let last_tail = mean(&last[last.len().saturating_sub(6)..]);
-    let freq_tail = mean(&freq[freq.len().saturating_sub(6)..]);
+    for (name, stream, warmup) in &cases {
+        let m = manager();
+        let (ob, r) = run_case(&m, stream, *warmup, 8);
+        eprintln!("[C:{}] erreurs Obrain = {:.3?}", name, ob);
+        eprintln!(
+            "[C:{}] moyenne après warmup — Obrain={:.3} ctx_last={:.3} ctx_freq={:.3} temporal={:.3} marginal={:.3}",
+            name, r.obrain, r.ctx_last, r.ctx_freq, r.temporal, r.marginal
+        );
 
-    eprintln!("[C] Obrain = {:.4?}", ob);
-    eprintln!("[C] last   = {:.4?}", last);
-    eprintln!("[C] freq   = {:.4?}", freq);
-    eprintln!(
-        "[C] résiduel (irréductible) — Obrain={:.4} last={:.4} freq={:.4}",
-        ob_tail, last_tail, freq_tail
-    );
-
-    // Aucune stratégie ne peut être exacte : le témoin « dernière » se trompe
-    // une fois sur deux (erreur forte), le fréquentiel choisit un camp fixe.
-    assert!(
-        last_tail > 0.5,
-        "contradiction irréductible : last se trompe une fois sur deux ({last_tail})"
-    );
-    // Obrain, en mélangeant les deux issues, n'est pas plus mauvais que last.
-    assert!(
-        ob_tail <= last_tail + 0.2,
-        "Obrain (mélange) ne s'effondre pas face à la contradiction ({} vs {})",
-        ob_tail,
-        last_tail
-    );
+        // On RAPPORTE le classement réel ; on n'invente pas de supériorité.
+        if *name == "alternance_deterministe" {
+            assert!(
+                r.temporal < 0.05,
+                "l'alternance déterministe est prévisible par l'ordre-1 (temporal={})",
+                r.temporal
+            );
+            assert!(
+                r.obrain > r.temporal,
+                "Obrain ({}) ne bat pas l'ordre-1 ({}) sur l'alternance",
+                r.obrain,
+                r.temporal
+            );
+        }
+        if *name == "vraiment_aleatoire" {
+            // Sur le hasard, AUCUNE méthode n'est quasi-parfaite (pas de signal).
+            assert!(
+                r.temporal > 0.05
+                    && r.ctx_freq > 0.05
+                    && r.marginal > 0.05
+                    && r.obrain > 0.05,
+                "aucune méthode n'est quasi-parfaite sur le hasard"
+            );
+        }
+        if *name == "distribution_conditionnelle" {
+            assert!(
+                r.ctx_freq < r.marginal,
+                "le conditionnel ({}) bat le marginal ({})",
+                r.ctx_freq,
+                r.marginal
+            );
+        }
+        if *name == "contexte_partiellement_observable" {
+            // Signal faible : le conditionnel reste meilleur que le marginal,
+            // mais l'écart se resserre — on le vérifie sans le magnifier.
+            assert!(
+                r.ctx_freq <= r.marginal,
+                "signal faible : conditionnel ({}) <= marginal ({})",
+                r.ctx_freq,
+                r.marginal
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -455,4 +655,100 @@ fn e_sensibilite_du_seuil_de_reconsolidation() {
         size_after2 >= size_after,
         "pas de retrait (reconsolidation additive)"
     );
+}
+
+// ---------------------------------------------------------------------------
+// F — PLASTICITÉ : révision NON MONOTONE (régime qui rétrécit) et
+//     DIFFÉRENCIATION contextuelle (formation épisodique).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn f_plasticite_revision_non_monotone_et_differenciation() {
+    let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
+    let ctx = NodeId(500);
+    let ab: Ep = vec![ctx, a, b];
+    let abc: Ep = vec![ctx, a, b, c];
+
+    // (1) RÉVISION NON MONOTONE : régime qui croît puis rétrécit.
+    let mut stream = Vec::new();
+    for _ in 0..3 {
+        stream.push((ctx, abc.clone()));
+    }
+    for _ in 0..8 {
+        stream.push((ctx, ab.clone()));
+    }
+
+    let run = |policy: PredictivePolicy| -> Vec<f64> {
+        let m = manager();
+        stream
+            .iter()
+            .map(|(ctx_, obs)| {
+                m.predictive_step_with_policy(&[*ctx_], obs, 8, policy)
+                    .expect("pas")
+                    .error
+            })
+            .collect()
+    };
+
+    let cons = run(PredictivePolicy::Consolidating);
+    let ada = run(PredictivePolicy::Adaptive);
+    let tail_cons = mean(&cons[cons.len().saturating_sub(2)..]);
+    let tail_ada = mean(&ada[ada.len().saturating_sub(2)..]);
+    eprintln!("[F] rétrécissement — résiduel consolidating={:.4} adaptive={:.4}", tail_cons, tail_ada);
+    assert!(
+        tail_ada < tail_cons,
+        "la révision NON MONOTONE réduit le résidu ({} < {})",
+        tail_ada,
+        tail_cons
+    );
+
+    // (2) DIFFÉRENCIATION : deux contextes partageant un participant.
+    let (ctx1, ctx2) = (NodeId(501), NodeId(502));
+    let o1: Ep = vec![ctx1, a, b];
+    let o2: Ep = vec![ctx2, b, c];
+
+    let learn = |policy: PredictivePolicy| -> EngramManager {
+        let m = manager();
+        for _ in 0..3 {
+            let _ = m
+                .predictive_step_with_policy(&[ctx1], &o1, 8, policy)
+                .expect("pas o1");
+            let _ = m
+                .predictive_step_with_policy(&[ctx2], &o2, 8, policy)
+                .expect("pas o2");
+        }
+        m
+    };
+
+    let m_epi = learn(PredictivePolicy::Episodic);
+    let m_cons = learn(PredictivePolicy::Consolidating);
+    let epi_count = m_epi.store().count();
+    let cons_count = m_cons.store().count();
+    let fused = m_cons.store().list().iter().any(|e| {
+        let ids: std::collections::BTreeSet<u64> = e.node_ids().iter().map(|n| n.0).collect();
+        ids.contains(&ctx1.0) && ids.contains(&ctx2.0)
+    });
+    eprintln!(
+        "[F] différenciation — engrams episodic={} consolidating={} (fusion={})",
+        epi_count, cons_count, fused
+    );
+    assert!(
+        epi_count >= 2,
+        "la formation ÉPISODIQUE garde deux contextes distincts (count={})",
+        epi_count
+    );
+    assert!(fused, "la formation HEBBIENNE fusionne les contextes partagés");
+
+    // (3) L'historique est PRÉSERVÉ : les engrams touchés ont un recall_count > 0.
+    let mut touched = 0;
+    for e in m_epi.store().list() {
+        if e.recall_count > 0 || e.strength > 0.5 {
+            touched += 1;
+        }
+    }
+    assert!(
+        touched >= 1,
+        "l'historique (recall_count/strength) est conservé après révision"
+    );
+    eprintln!("[F] historique conservé sur {touched} engram(s)");
 }
