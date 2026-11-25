@@ -353,6 +353,8 @@ impl MutationListener for EngramObservationBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engram::manager::EngramManagerConfig;
+    use crate::engram::observation::InMemoryAtomicEventLedger;
     use crate::engram::traits::InMemoryVectorIndex;
     use obrain_reactive::NodeSnapshot;
 
@@ -861,6 +863,76 @@ mod tests {
             mgr.observation_revision(eid).unwrap(),
             0,
             "la connaissance apparue n'a pas été révisée rétroactivement"
+        );
+    }
+
+    /// A. Trois occurrences IDENTIFIÉES de même contenu RENFORCENT réellement :
+    /// chacune incrémente la formation (pas de déduplication par contenu).
+    #[tokio::test]
+    async fn trois_occurrences_identifiees_de_meme_contenu_forment() {
+        let mgr = manager();
+        let bridge =
+            EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
+        for i in 0..3u64 {
+            let out = bridge.observe(
+                &edge_event(i, 1, 2),
+                Some(ObservationId::from_u128(i as u128 + 1)),
+            );
+            assert!(
+                matches!(
+                    out,
+                    BridgeObservation::ActivationRecorded
+                        | BridgeObservation::FormationSucceeded(_)
+                ),
+                "occurrence {i} a renforcé, reçu {out:?}"
+            );
+        }
+        // Trois co-activations indépendantes → l'engramme {1,2} se forme.
+        assert!(
+            mgr.store().count() >= 1,
+            "les trois occurrences ont toutes renforcé (formation atteinte)"
+        );
+    }
+
+    /// B. La fenêtre PENDING→activation→DONE est MESURÉE : une interruption de
+    /// la confirmation après activation effective double l'activation au rejeu.
+    #[tokio::test]
+    async fn interruption_avant_confirmation_double_l_activation() {
+        let ledger = Arc::new(InMemoryAtomicEventLedger::new());
+        let mgr = Arc::new(
+            EngramManager::new(
+                EngramManagerConfig::default(),
+                Arc::new(InMemoryVectorIndex::new()),
+            )
+            .with_observation_ledger(ledger.clone()),
+        );
+        let bridge =
+            EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
+        // Confirmation SABOTÉE : l'activation a lieu, la confirmation échoue.
+        ledger.set_fail_complete_formation(true);
+        let out1 = bridge.observe(&edge_event(1, 1, 2), Some(ObservationId::from_u128(1)));
+        assert!(
+            matches!(out1, BridgeObservation::Failed(_)),
+            "confirmation échouée"
+        );
+        // Rejeu : la formation est PENDING → RÉACTIVATION (2e), confirmation échoue.
+        let out2 = bridge.observe(&edge_event(1, 1, 2), Some(ObservationId::from_u128(1)));
+        assert!(
+            matches!(out2, BridgeObservation::Failed(_)),
+            "confirmation échouée au rejeu"
+        );
+        // Une 3e occurrence (autre identité) : 3e activation.
+        ledger.set_fail_complete_formation(false);
+        let out3 = bridge.observe(&edge_event(2, 1, 2), Some(ObservationId::from_u128(2)));
+        assert!(matches!(
+            out3,
+            BridgeObservation::ActivationRecorded | BridgeObservation::FormationSucceeded(_)
+        ));
+        // Preuve de DOUBLE application : obs1 a compté DEUX fois (1 obs logique +
+        // son rejeu = 2 activations) + obs2 (1) = 3 → formation atteinte.
+        assert!(
+            mgr.store().count() >= 1,
+            "la double application de obs1 a franchi le seuil de formation (3 activations)"
         );
     }
 }
