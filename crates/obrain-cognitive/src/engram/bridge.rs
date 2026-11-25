@@ -44,6 +44,8 @@ use obrain_common::types::NodeId;
 use obrain_reactive::{MutationEvent, MutationListener};
 
 use super::manager::EngramManager;
+use super::observation::{ObservationId, ObservationOutcome, SourceRevision};
+use super::types::EngramId;
 
 /// Surprise (erreur de prédiction) attribuée à chaque épisode de co-activation.
 ///
@@ -107,6 +109,90 @@ impl EngramObservationBridge {
                 .record_activation(&nodes, self.prediction_error);
         }
     }
+
+    /// Engramme CIBLE d'une révision : celui qui recouvre le plus de nœuds de
+    /// l'événement (au moins 2, pour qu'une révision ait un sens).
+    ///
+    /// C'est un choix de routage : sans recouvrement suffisant, l'événement
+    /// reste une FORMATION, jamais une révision forcée.
+    fn target_engram(&self, nodes: &[NodeId]) -> Option<EngramId> {
+        let mut best: Option<(EngramId, usize)> = None;
+        self.manager.store().for_each(|e| {
+            let overlap = e
+                .ensemble
+                .iter()
+                .filter(|(n, _)| nodes.contains(n))
+                .count();
+            if overlap >= 2 {
+                let better = match best {
+                    Some((_, b)) => overlap > b,
+                    None => true,
+                };
+                if better {
+                    best = Some((e.id, overlap));
+                }
+            }
+        });
+        best.map(|(id, _)| id)
+    }
+
+    /// Traite un événement de mutation, en distinguant FORMATION et RÉVISION.
+    ///
+    /// * `observation_id = None` → **FORMATION** (`record_activation`) : une
+    ///   co-activation simple ne porte PAS d'identité d'observation. Aucune
+    ///   identité n'est forcée sur une formation.
+    /// * `observation_id = Some(id)` → **RÉVISION** identifiée : si un engramme
+    ///   existant recouvre l'événement, `revise_with_id` l'applique (rejeu
+    ///   idempotent, conflit de révision qualifié). Sans engramme cible, on
+    ///   retombe sur la FORMATION (une formation n'est pas une révision).
+    ///
+    /// NOTE : le registre d'observation est le mock VOLATIL par défaut ; cette
+    /// voie n'est donc PAS durable tant que `with_observation_ledger(primitive)`
+    /// n'a pas injecté la primitive substrat.
+    pub fn observe(
+        &self,
+        event: &MutationEvent,
+        observation_id: Option<ObservationId>,
+    ) -> BridgeObservation {
+        let mut nodes = Vec::with_capacity(2);
+        Self::affected_nodes(event, &mut nodes);
+        nodes.sort_unstable();
+        nodes.dedup();
+        if nodes.len() < 2 {
+            return BridgeObservation::Ignored;
+        }
+        if let Some(id) = observation_id
+            && let Some(target) = self.target_engram(&nodes)
+        {
+            let revision = self.manager.observation_revision(target).unwrap_or(0);
+            return match self.manager.revise_with_id(
+                id,
+                target,
+                &nodes,
+                self.prediction_error,
+                SourceRevision(revision),
+            ) {
+                Ok((outcome, _)) => BridgeObservation::Revised(outcome),
+                Err(e) => BridgeObservation::Failed(format!("{e:?}")),
+            };
+        }
+        self.manager
+            .record_activation(&nodes, self.prediction_error);
+        BridgeObservation::Formed
+    }
+}
+
+/// Issue d'un événement traité par le pont.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeObservation {
+    /// FORMATION : co-activation simple, sans identité d'observation.
+    Formed,
+    /// RÉVISION identifiée : porte une identité d'observation.
+    Revised(ObservationOutcome),
+    /// Échec de la révision (formation NON forcée).
+    Failed(String),
+    /// Moins de 2 nœuds distincts : rien à faire.
+    Ignored,
 }
 
 #[async_trait]
@@ -116,9 +202,9 @@ impl MutationListener for EngramObservationBridge {
     }
 
     async fn on_event(&self, event: &MutationEvent) {
-        let mut nodes = Vec::with_capacity(2);
-        Self::affected_nodes(event, &mut nodes);
-        self.record(nodes);
+        // Le flux de mutations est une FORMATION : aucune identité
+        // d'observation n'est forcée.
+        let _ = self.observe(event, None);
     }
 
     async fn on_batch(&self, events: &[MutationEvent]) {
@@ -128,9 +214,7 @@ impl MutationListener for EngramObservationBridge {
         // donc traité comme SA PROPRE co-activation (arête = {src,dst}, nœud
         // seul = singleton filtré par `record`).
         for event in events {
-            let mut nodes = Vec::with_capacity(2);
-            Self::affected_nodes(event, &mut nodes);
-            self.record(nodes);
+            let _ = self.observe(event, None);
         }
     }
 }
@@ -401,6 +485,94 @@ mod tests {
                 .iter()
                 .any(|e| e.node_ids().iter().map(|n| n.0).collect::<Vec<_>>().len() >= 3),
             "une seule occurrence de chaque paire ne doit pas former de trio"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Formation vs révision identifiée (contrat RFC d59af717)
+    // -----------------------------------------------------------------
+
+    fn edge_event(id: u64, src: u64, dst: u64) -> MutationEvent {
+        MutationEvent::EdgeCreated {
+            edge: arete(id, src, dst),
+        }
+    }
+
+    /// FORMATION : sans identité d'observation, le pont forme et n'écrit AUCUNE
+    /// identité dans le registre (une formation n'est pas une révision).
+    #[tokio::test]
+    async fn formation_sans_identite_ne_porte_pas_d_identite() {
+        let mgr = manager();
+        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+        for _ in 0..3 {
+            let out = bridge.observe(&edge_event(1, 1, 2), None);
+            assert_eq!(out, BridgeObservation::Formed);
+        }
+        assert!(mgr.store().count() >= 1, "un engramme a été formé");
+        let eid = mgr.store().list()[0].id;
+        assert_eq!(
+            mgr.observation_revision(eid).unwrap(),
+            0,
+            "aucune identité d'observation forcée sur une formation"
+        );
+    }
+
+    /// RÉVISION : un événement IDENTIFIÉ qui recouvre un engramme existant passe
+    /// par revise_with_id (révision appliquée au registre).
+    #[tokio::test]
+    async fn revision_identifiee_sur_engramme_existant() {
+        let mgr = manager();
+        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+        // Formation de {1,2}.
+        for _ in 0..3 {
+            bridge.observe(&edge_event(1, 1, 2), None);
+        }
+        let eid = mgr.store().list()[0].id;
+        assert_eq!(mgr.observation_revision(eid).unwrap(), 0);
+
+        let out = bridge.observe(&edge_event(2, 1, 2), Some(ObservationId::from_u128(1)));
+        assert!(
+            matches!(out, BridgeObservation::Revised(ObservationOutcome::Applied { .. })),
+            "révision identifiée appliquée, reçu {out:?}"
+        );
+        assert_eq!(
+            mgr.observation_revision(eid).unwrap(),
+            1,
+            "révision portée par le registre"
+        );
+    }
+
+    /// REJEU : le même événement identifié deux fois n'est appliqué qu'une fois.
+    #[tokio::test]
+    async fn rejeu_de_l_evenement_identifie_ne_reapplique_pas() {
+        let mgr = manager();
+        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+        for _ in 0..3 {
+            bridge.observe(&edge_event(1, 1, 2), None);
+        }
+        let eid = mgr.store().list()[0].id;
+
+        let first = bridge.observe(&edge_event(2, 1, 2), Some(ObservationId::from_u128(7)));
+        assert!(matches!(first, BridgeObservation::Revised(ObservationOutcome::Applied { .. })));
+        let replay = bridge.observe(&edge_event(2, 1, 2), Some(ObservationId::from_u128(7)));
+        assert!(
+            matches!(replay, BridgeObservation::Revised(ObservationOutcome::Replayed { .. })),
+            "le rejeu ne réapplique pas, reçu {replay:?}"
+        );
+        assert_eq!(mgr.observation_revision(eid).unwrap(), 1, "révision inchangée au rejeu");
+    }
+
+    /// Événement IDENTIFIÉ sans engramme cible : FORMATION (jamais révision
+    /// forcée).
+    #[tokio::test]
+    async fn evenement_identifie_sans_cible_forme() {
+        let mgr = manager();
+        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+        let out = bridge.observe(&edge_event(1, 10, 11), Some(ObservationId::from_u128(5)));
+        assert_eq!(
+            out,
+            BridgeObservation::Formed,
+            "sans engramme cible, l'événement reste une formation"
         );
     }
 }
