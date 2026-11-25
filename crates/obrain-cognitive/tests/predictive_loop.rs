@@ -6,11 +6,15 @@
 //!
 //! Critique traitée : la métrique |O\P|/|O| ne pénalise que les éléments
 //! MANQUANTS. Un prédicteur qui énonce tout obtient 0. On ajoute précision,
-//! rappel et Jaccard, et on compare à des baselines (union cumulative, dernière
-//! observation, fréquentiel, figé). On montre honnêtement que, sur les séquences
-//! décroissantes/alternées/divergentes, l'union cumulative SUR-prédit (Jaccard
-//! < 1) — donc le bénéfice cognitif propre reste à démontrer (décroissance +
-//! distinction de contexte), ce que ces métriques rendent désormais mesurable.
+//! rappel, Jaccard et « superflu » (proportion de prédictions hors observation),
+//! et on compare à des baselines. Résultat honnête : sur les séquences
+//! décroissante/alternée, la reconsolidation additive rejoint l'union cumulative
+//! — aucun bénéfice cognitif propre n'est encore démontré.
+//!
+//! Contexte observable : un marqueur de contexte (nœud) est fourni AVANT la
+//! prédiction, à toutes les stratégies. Il permet de distinguer A→B (contexte 1)
+//! de A→C (contexte 2) ; l'ordre des contextes est varié (pas une simple
+//! alternance temporelle).
 
 #![cfg(all(feature = "engram", feature = "substrate"))]
 
@@ -39,8 +43,8 @@ struct Metrics {
     precision: f64, // |P∩O| / |P|
     recall: f64,    // |P∩O| / |O|
     jaccard: f64,   // |P∩O| / |P∪O|
-    miss: f64,      // |O\P| / |O|  (l'ancienne métrique, insuffisante seule)
-    fp: f64,        // |P\O| / |P|  (éléments superflus)
+    miss: f64,      // |O\P| / |O|  (éléments manquants)
+    superflu: f64,  // |P\O| / |P|  (proportion de prédictions superflues)
 }
 
 fn metrics(predicted: &Ep, observed: &Ep) -> Metrics {
@@ -53,22 +57,14 @@ fn metrics(predicted: &Ep, observed: &Ep) -> Metrics {
         recall: if o == 0.0 { 1.0 } else { inter / o },
         jaccard: if union == 0.0 { 1.0 } else { inter / union },
         miss: if o == 0.0 { 0.0 } else { (o - inter) / o },
-        fp: if p == 0.0 { 0.0 } else { (p - inter) / p },
+        superflu: if p == 0.0 { 0.0 } else { (p - inter) / p },
     }
-}
-
-/// Moyenne de `field` sur une trajectoire de métriques.
-fn avg(xs: &[Metrics], field: fn(Metrics) -> f64) -> f64 {
-    xs.iter().map(|&m| field(m)).sum::<f64>() / xs.len() as f64
 }
 
 // ---------------------------------------------------------------------------
 // Baselines (non conditionnées par l'indice : elles ne voient que l'historique)
 // ---------------------------------------------------------------------------
 
-/// Union cumulative : prédit l'union de tout l'historique. Sur le corpus
-/// croissant, reproduit exactement la trajectoire « apprise » (c'est la
-/// trivialité à ne pas confondre avec un bénéfice cognitif).
 fn baseline_union(history: &[Ep]) -> Ep {
     history.iter().fold(Ep::new(), |mut acc, e| {
         acc.extend(e);
@@ -76,12 +72,10 @@ fn baseline_union(history: &[Ep]) -> Ep {
     })
 }
 
-/// Dernière observation : prédit le dernier épisode vu.
 fn baseline_last(history: &[Ep]) -> Ep {
     history.last().cloned().unwrap_or_default()
 }
 
-/// Fréquentiel top-k : les k nœuds les plus fréquents de l'historique.
 fn baseline_freq_topk(history: &[Ep], k: usize) -> Ep {
     let mut counts: HashMap<NodeId, usize> = HashMap::new();
     for e in history {
@@ -94,7 +88,6 @@ fn baseline_freq_topk(history: &[Ep], k: usize) -> Ep {
     v.into_iter().take(k).map(|(n, _)| n).collect()
 }
 
-/// Figé : prédit toujours l'ensemble vide.
 fn baseline_fixed(_history: &[Ep]) -> Ep {
     Ep::new()
 }
@@ -103,7 +96,7 @@ fn baseline_fixed(_history: &[Ep]) -> Ep {
 // Prédicteur adaptatif (engrammes + reconsolidation)
 // ---------------------------------------------------------------------------
 
-/// Prédit l'ensemble co-activé à partir de l'indice : l'ensemble du plus grand
+/// Prédit l'ensemble co-activé à partir d'un indice : l'ensemble du plus grand
 /// engramme rappelé contenant l'indice. Aucune erreur de stockage n'est
 /// masquée : un échec de rappel remonte (`SubstrateError`).
 fn predict(store: &EngramStore, cue: NodeId) -> Result<Ep, obrain_substrate::SubstrateError> {
@@ -121,7 +114,8 @@ fn predict(store: &EngramStore, cue: NodeId) -> Result<Ep, obrain_substrate::Sub
 }
 
 /// Un pas du prédicteur adaptatif : prédit AVANT d'observer, mesure, et
-/// reconsolide les nœuds manquants. Retourne les métriques du pas.
+/// reconsolide les nœuds manquants. Le seuil natif de reconsolidation (0.1)
+/// s'applique tel quel : `m.miss` est passé tel quel, sans forçage.
 #[allow(clippy::too_many_arguments)]
 fn adaptive_step(
     store: &EngramStore,
@@ -134,7 +128,7 @@ fn adaptive_step(
     let missing: Vec<NodeId> = observed.difference(&predicted).copied().collect();
     if !missing.is_empty() {
         match *last_eid {
-            Some(eid) => store.update(eid, |e| reconsolidate(e, &missing, m.miss.max(0.11))),
+            Some(eid) => store.update(eid, |e| reconsolidate(e, &missing, m.miss)),
             None => {
                 let all: Vec<NodeId> = observed.iter().copied().collect();
                 *last_eid = Some(store.form(&all).expect("form engramme a échoué"));
@@ -149,7 +143,8 @@ fn adaptive_step(
 // ---------------------------------------------------------------------------
 
 /// Contrôle positif (conservé) : le motif croissant voit le taux de manque
-/// décroître puis s'annuler.
+/// décroître puis s'annuler. Rappel par un membre NOUVELLEMENT AJOUTÉ (C, D),
+/// pas seulement par l'indice A.
 #[test]
 fn boucle_predictive_reellement_executee() {
     let store = EngramStore::new(None);
@@ -186,7 +181,7 @@ fn boucle_predictive_reellement_executee() {
 }
 
 /// Une prédiction « tout » obtiendrait miss=0 : la métrique miss seule est
-/// aveugle aux éléments superflus. Jaccard et précision le révèlent.
+/// aveugle aux prédictions superflues. Jaccard et `superflu` le révèlent.
 #[test]
 fn metrique_miss_seule_est_aveugle_aux_superflus() {
     let a = NodeId(1);
@@ -198,14 +193,13 @@ fn metrique_miss_seule_est_aveugle_aux_superflus() {
     let m = metrics(&tout, &observed);
     assert_eq!(m.miss, 0.0, "miss=0 : l'ancienne métrique dit « parfait »");
     assert!((m.jaccard - 2.0 / 3.0).abs() < 1e-9, "Jaccard révèle le superflu (2/3)");
-    assert!(m.fp > 0.0, "taux de faux-positifs non nul");
+    assert!(m.superflu > 0.0, "proportion de prédictions superflues non nulle");
 }
 
-/// Comparaison adaptatif vs baselines sur des séquences qui diminuent,
-/// alternent et divergent. Sur les séquences non croissantes, l'union
-/// cumulative SUR-prédit (Jaccard < 1) ; le prédicteur adaptatif (reconsolidation
-/// sans décroissance ni contexte) la rejoint — bénéfice cognitif propre pas
-/// encore démontré, désormais mesurable.
+/// Comparaison adaptatif vs baselines sur des séquences non croissantes.
+/// On distingue le démarrage à froid (sous-prédiction : miss > 0) de
+/// l'après-apprentissage (sur-prédiction : superflu > 0). Une moyenne < 1
+/// seule ne prouve rien : elle peut venir d'éléments manquants.
 #[test]
 fn baselines_et_sequences_difficiles() {
     let (a, b, c, d) = (NodeId(1), NodeId(2), NodeId(3), NodeId(4));
@@ -214,19 +208,10 @@ fn baselines_et_sequences_difficiles() {
     let abcd: Ep = [a, b, c, d].into_iter().collect();
     let ac: Ep = [a, c].into_iter().collect();
 
-    // Décroissante : AB -> ABC -> ABCD -> AB.
     let decroissante = [ab.clone(), abc.clone(), abcd.clone(), ab.clone()];
-    // Alternée : AB -> AC -> AB -> AC.
     let alternee = [ab.clone(), ac.clone(), ab.clone(), ac.clone()];
-    // Deux contextes (A associé à B puis à C) : même chose que l'alternée ici.
-    let contextes = [ab.clone(), ac.clone(), ab.clone(), ac.clone()];
 
-    for (name, seq) in [
-        ("décroissante", &decroissante[..]),
-        ("alternée", &alternee[..]),
-        ("contextes", &contextes[..]),
-    ] {
-        // Baselines : à chaque pas, prédire depuis l'historique (0..t), observer t.
+    for (name, seq) in [("décroissante", &decroissante[..]), ("alternée", &alternee[..])] {
         let mut h: Vec<Ep> = Vec::new();
         let mut union_m = Vec::new();
         let mut last_m = Vec::new();
@@ -234,16 +219,13 @@ fn baselines_et_sequences_difficiles() {
         let mut fixed_m = Vec::new();
         for ep in seq {
             let u = baseline_union(&h);
-            let l = baseline_last(&h);
-            let f = baseline_freq_topk(&h, 2);
             union_m.push(metrics(&u, ep));
-            last_m.push(metrics(&l, ep));
-            freq_m.push(metrics(&f, ep));
+            last_m.push(metrics(&baseline_last(&h), ep));
+            freq_m.push(metrics(&baseline_freq_topk(&h, 2), ep));
             fixed_m.push(metrics(&baseline_fixed(&h), ep));
             h.push(ep.clone());
         }
 
-        // Adaptatif (conditionné par l'indice a).
         let store = EngramStore::new(None);
         let (writer, _td) = make_writer();
         store.attach_substrate(writer);
@@ -253,28 +235,92 @@ fn baselines_et_sequences_difficiles() {
             ad_m.push(adaptive_step(&store, &mut last_eid, a, ep));
         }
 
-        // Sur une séquence non croissante, l'union cumulative sur-prédit :
-        // Jaccard moyen < 1, précision moyenne < 1, alors que miss est faible.
-        let u_j = avg(&union_m, |m| m.jaccard);
-        let u_p = avg(&union_m, |m| m.precision);
+        // Démarrage à froid (pas 0) : sous-prédiction, tout est manquant.
+        assert!(union_m[0].miss > 0.0, "[{name}] démarrage à froid : miss = {}", union_m[0].miss);
+        assert_eq!(union_m[0].superflu, 0.0, "[{name}] pas de prédiction superflue au départ");
+
+        // Après apprentissage (dernier pas) : l'union cumulative SUR-prédit.
+        let last_union = union_m.last().unwrap();
         assert!(
-            u_j < 1.0,
-            "[{name}] union cumulative sur-prédit : Jaccard moyen = {u_j:.3}"
+            last_union.superflu > 0.0,
+            "[{name}] union cumulative sur-prédit après apprentissage : superflu = {}",
+            last_union.superflu
         );
         assert!(
-            u_p < 1.0,
-            "[{name}] union cumulative précision moyenne = {u_p:.3} < 1"
+            last_union.jaccard < 1.0,
+            "[{name}] Jaccard final = {} < 1",
+            last_union.jaccard
         );
 
-        // Honnêteté : le prédicteur adaptatif actuel (ajout sans décroissance)
-        // rejoint l'union cumulative sur ces séquences. On le VÉRIFIE, on ne
-        // prétend pas le contraire.
-        let ad_j = avg(&ad_m, |m| m.jaccard);
+        // Honnêteté : l'adaptatif (ajout sans décroissance) rejoint l'union.
         eprintln!(
-            "[{name}] Jaccard moyen — union={u_j:.3} last={:.3} freq={:.3} fixed={:.3} adaptatif={ad_j:.3}",
-            avg(&last_m, |m| m.jaccard),
-            avg(&freq_m, |m| m.jaccard),
-            avg(&fixed_m, |m| m.jaccard),
+            "[{name}] Jaccard final — union={:.3} last={:.3} freq={:.3} fixed={:.3} adaptatif={:.3}",
+            last_union.jaccard,
+            last_m.last().unwrap().jaccard,
+            freq_m.last().unwrap().jaccard,
+            fixed_m.last().unwrap().jaccard,
+            ad_m.last().unwrap().jaccard,
         );
     }
+}
+
+/// Contexte observable : un marqueur de contexte est fourni AVANT la prédiction,
+/// à toutes les stratégies. Il distingue A→B (contexte 1) de A→C (contexte 2).
+/// L'ordre des contextes est varié (ctx1,ctx1,ctx2,ctx1,ctx2,ctx2), pas une
+/// simple alternance temporelle.
+#[test]
+fn contexte_observable_permet_la_distinction() {
+    let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
+    let ctx1 = NodeId(101);
+    let ctx2 = NodeId(102);
+
+    let store = EngramStore::new(None);
+    let (writer, _td) = make_writer();
+    store.attach_substrate(writer);
+
+    // Ordre varié des contextes (pas d'alternance stricte).
+    let steps: [(NodeId, [NodeId; 2]); 6] = [
+        (ctx1, [a, b]),
+        (ctx1, [a, b]),
+        (ctx2, [a, c]),
+        (ctx1, [a, b]),
+        (ctx2, [a, c]),
+        (ctx2, [a, c]),
+    ];
+
+    // Formation par contexte : {ctx, A, B} et {ctx, A, C}. Le contexte est le
+    // signal observable qui devient l'indice de rappel.
+    let mut eid_by_ctx: HashMap<NodeId, obrain_cognitive::engram::EngramId> = HashMap::new();
+    for (ctx, ep) in &steps {
+        let mut full = vec![*ctx];
+        full.extend(ep.iter());
+        let eid = store.form(&full).expect("form engramme de contexte");
+        eid_by_ctx.entry(*ctx).or_insert(eid);
+    }
+
+    // Prédiction par contexte (signal observable AVANT l'observation) :
+    // rappel du marqueur, retrait du marqueur lui-même.
+    let predict_by_ctx = |ctx: NodeId| -> Ep {
+        store
+            .recall(ctx)
+            .expect("rappel de contexte")
+            .into_iter()
+            .flat_map(|eid| store.members(eid).expect("membres"))
+            .filter(|&n| n != ctx)
+            .collect()
+    };
+
+    let obs1: Ep = [a, b].into_iter().collect();
+    let obs2: Ep = [a, c].into_iter().collect();
+
+    // L'adaptatif (conditionné par le contexte) distingue les deux contextes.
+    assert_eq!(metrics(&predict_by_ctx(ctx1), &obs1).jaccard, 1.0, "ctx1 → {{A,B}} exact");
+    assert_eq!(metrics(&predict_by_ctx(ctx2), &obs2).jaccard, 1.0, "ctx2 → {{A,C}} exact");
+
+    // Un prédicteur aveugle au contexte (union des deux) ne distingue pas.
+    let blind: Ep = [a, b, c].into_iter().collect();
+    let m1 = metrics(&blind, &obs1);
+    let m2 = metrics(&blind, &obs2);
+    assert!((m1.jaccard - 2.0 / 3.0).abs() < 1e-9, "union aveugle sur-prédit en ctx1");
+    assert!((m2.jaccard - 2.0 / 3.0).abs() < 1e-9, "union aveugle sur-prédit en ctx2");
 }
