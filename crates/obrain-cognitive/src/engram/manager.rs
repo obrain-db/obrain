@@ -3,6 +3,7 @@
 //! Owns all subsystems (formation, decay, recall, homeostasis, metrics)
 //! and provides a unified API for the rest of obrain-cognitive.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use web_time::SystemTime;
 
@@ -80,6 +81,10 @@ pub struct EngramManager {
     metrics: Arc<EngramMetricsCollector>,
     /// Vector index for spectral similarity search.
     vector_index: Arc<dyn VectorIndex>,
+    /// PROTECTION PROVISOIRE par engramme : sérialise mutate+lecture+upsert de la
+    /// projection dérivée. À retirer quand la discipline native du store couvrira
+    /// aussi la publication des projections (voir note de reprise).
+    revise_locks: Mutex<HashMap<EngramId, Arc<Mutex<()>>>>,
 }
 
 /// Résultat d'une révision cohérente : identifie le nouvel état (révision,
@@ -121,6 +126,7 @@ impl EngramManager {
             homeostasis: HomeostasisEngine::new(config.homeostasis),
             metrics,
             vector_index,
+            revise_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -320,8 +326,17 @@ impl EngramManager {
         if new_nodes.is_empty() {
             return Err(RevisionError::InvalidObservation("observation vide".into()));
         }
-        // Discipline COMMUNE du store : `mutate` sérialise par engramme
-        // (verrou d'entrée du cache) et PROPAGE les erreurs de persistance.
+        // PROTECTION PROVISOIRE : sérialise mutate + lecture + upsert de la
+        // projection, jusqu'à ce que la discipline native couvre la publication.
+        // Sans elle, A peut lire sigma1 puis publier sigma1 APRÈS que B a publié
+        // sigma2 (projection obsolète réintroduite).
+        let lock = {
+            let mut m = self.revise_locks.lock();
+            m.entry(engram_id)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock();
         self.store
             .mutate(engram_id, |e| {
                 reconsolidate(e, new_nodes, prediction_error);
