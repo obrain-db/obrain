@@ -3050,7 +3050,8 @@ pub enum IssueReception {
     Ancienne,
     /// Même estampille (auteur+horloge) que l'état courant : non départageable
     /// par le temps ; l'appelant doit trancher (rejeu identique ou conflit).
-    EgaliteEstampille,
+    RejeuIdentique,
+    Conflit,
 }
 
 impl SubstrateStore {
@@ -13557,29 +13558,48 @@ impl SubstrateStore {
         let tete_brute = (node_rec.first_prop_off.to_u64() != 0)
             .then(|| node_rec.first_prop_off.to_u64());
 
-        // 1. Compare avec l'état courant (lecture LWW), sans réécrire.
-        let decision = {
-            let pz = pz_lock.read();
+        // 1. Décision + application ATOMIQUES sous un seul verrou d'écriture.
+        let mut decision = IssueReception::Ancienne;
+        {
+            let mut pz = pz_lock.write();
             let courante = match tete_brute {
                 None => None,
-                Some(t) => pz
-                    .get_latest_for_key_unite(Some(t), prop_key_id)?
-                    .map(|e| (e.auteur, e.horloge)),
+                Some(t) => pz.get_latest_for_key_unite(Some(t), prop_key_id)?,
             };
-            match courante {
-                None => IssueReception::Appliquee,
-                Some((Some(ca), Some(ch))) => {
-                    if (auteur, horloge) == (ca, ch) {
-                        IssueReception::EgaliteEstampille
-                    } else if (horloge, auteur) > (ch, ca) {
-                        IssueReception::Appliquee
-                    } else {
-                        IssueReception::Ancienne
+            let a_appliquer = match &courante {
+                None => true,
+                Some(c) => match (c.auteur, c.horloge) {
+                    (Some(ca), Some(ch)) if (auteur, horloge) == (ca, ch) => {
+                        // même estampille : comparer le contenu canonique
+                        let pv = encode_value(&mut pz, value)?;
+                        decision = if pv == c.value {
+                            IssueReception::RejeuIdentique
+                        } else {
+                            IssueReception::Conflit
+                        };
+                        false
                     }
+                    (Some(ca), Some(ch)) if (horloge, auteur) > (ch, ca) => true,
+                    (Some(_), Some(_)) => false,
+                    _ => true,
+                },
+            };
+            if a_appliquer {
+                let pv = encode_value(&mut pz, value)?;
+                let entry = PropertyEntry::new_stamped(prop_key_id, pv, auteur, horloge);
+                let nouvelle_tete = pz.append_entree_sur_chainee(
+                    slot,
+                    crate::page::OwnerKind::Node,
+                    tete_brute,
+                    &entry,
+                )?;
+                let nouvelle_tete_u48 = crate::record::U48::from_u64(nouvelle_tete);
+                if nouvelle_tete_u48 != node_rec.first_prop_off {
+                    self.writer.update_node_first_prop_off(slot, nouvelle_tete_u48)?;
                 }
-                Some(_) => IssueReception::Appliquee,
+                decision = IssueReception::Appliquee;
             }
-        };
+        }
 
         // 2. Avance l'horloge locale (observer), toujours — sans réestampiller.
         {
@@ -13588,23 +13608,8 @@ impl SubstrateStore {
             self.horloge.lock().observer(distant, millis);
         }
 
-        // 3. Applique seulement si plus récent.
+        // 3. Index de recherche, seulement après application effective.
         if decision == IssueReception::Appliquee {
-            let nouvelle_tete: u64 = {
-                let mut pz = pz_lock.write();
-                let pv = encode_value(&mut pz, value)?;
-                let entry = PropertyEntry::new_stamped(prop_key_id, pv, auteur, horloge);
-                pz.append_entree_sur_chainee(
-                    slot,
-                    crate::page::OwnerKind::Node,
-                    tete_brute,
-                    &entry,
-                )?
-            };
-            let nouvelle_tete_u48 = crate::record::U48::from_u64(nouvelle_tete);
-            if nouvelle_tete_u48 != node_rec.first_prop_off {
-                self.writer.update_node_first_prop_off(slot, nouvelle_tete_u48)?;
-            }
             self.noter_index_ordonne(prop_key_id, key, slot, value);
             self.noter_trigrammes(key, slot, value);
         }
@@ -46263,12 +46268,19 @@ mod reception_versionnee {
                 .unwrap(),
             Ancienne
         );
-        // même estampille : égalité (ni appliquée ni ancienne)
+        // même estampille, contenu incompatible : conflit
         assert_eq!(
             store
                 .recevoir_propriete_versionnee(id, "k", &obrain_common::types::Value::Int64(9), 10, 100)
                 .unwrap(),
-            EgaliteEstampille
+            Conflit
+        );
+        // même estampille, même contenu : rejeu identique
+        assert_eq!(
+            store
+                .recevoir_propriete_versionnee(id, "k", &obrain_common::types::Value::Int64(1), 10, 100)
+                .unwrap(),
+            RejeuIdentique
         );
         // plus récent : appliquée (horloge 200 > 100, auteur 3 < 10)
         assert_eq!(
