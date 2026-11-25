@@ -1928,6 +1928,10 @@ fn apply(
         | WalPayload::Tier0Update { .. }
         | WalPayload::Tier1Update { .. }
         | WalPayload::Tier2Update { .. } => Ok(Applied::Skipped),
+        // TODO(engram_weights) : reconstruction après crash-WAL à câbler —
+        // les poids survivent au close/réouverture via la zone mmap, mais le
+        // rejeu WAL (panne) ne les restaure pas encore.
+        WalPayload::EngramWeightsSet { .. } => Ok(Applied::Skipped),
     }
 }
 
