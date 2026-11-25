@@ -46886,3 +46886,33 @@ mod revision_canonique {
         assert_eq!(valeur, Some(Value::Int64(30)), "mais la valeur a changé");
     }
 }
+
+
+#[cfg(test)]
+mod autorite_revision {
+    use super::*;
+
+    /// EXPÉRIENCE DISCRIMINANTE : candidats de révision.
+    /// 1. Horloge HLC du store : avance sur mutation in-place, mais GLOBALE.
+    /// 2. first_prop_off : ne change PAS sur mutation in-place (déjà démontré).
+    #[test]
+    fn horloge_store_avance_mais_globale_pas_par_ressource() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id_a = store.create_node(&["ressource"]);
+        let id_b = store.create_node(&["ressource"]);
+        store.set_node_property(id_a, "x", Value::Int64(1));
+        let r0 = store.horloge.lock().derniere().pack();
+        // mutation in-place sur A (first_prop_off inchangé)
+        store.set_node_property(id_a, "x", Value::Int64(2));
+        let r1 = store.horloge.lock().derniere().pack();
+        // écriture sur l'AUTRE ressource B : l'horloge avance aussi
+        store.set_node_property(id_b, "y", Value::Int64(9));
+        let r2 = store.horloge.lock().derniere().pack();
+        eprintln!("HLC r0={r0} r1={r1} r2={r2}");
+        assert!(r1 > r0, "l'horloge avance sur la mutation in-place");
+        assert!(r2 > r1, "l'horloge avance aussi sur une AUTRE ressource (globale)");
+        // l'horloge est GLOBALE : r1 (mutation sur A) ne distingue pas A de B.
+        eprintln!("HLC_GLOBALE : la même horloge sert toutes les ressources");
+    }
+}
