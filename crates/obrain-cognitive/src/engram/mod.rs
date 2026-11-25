@@ -59,6 +59,7 @@ mod recall;
 #[cfg(feature = "engram")]
 pub use recall::{
     ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig, WarmupSelector,
+    reconsolidate, reconsolidate_adaptive,
 };
 
 #[cfg(feature = "engram")]
@@ -96,8 +97,8 @@ pub use crystallization::{
 mod manager;
 #[cfg(feature = "engram")]
 pub use manager::{
-    EngramManager, EngramManagerConfig, EngramRevision, PredictiveAction, PredictiveStep,
-    PredictiveStepError, RevisionError,
+    EngramManager, EngramManagerConfig, EngramRevision, PredictiveAction, PredictivePolicy,
+    PredictiveStep, PredictiveStepError, RevisionError,
 };
 
 #[cfg(feature = "engram")]

@@ -665,6 +665,40 @@ pub fn reconsolidate(engram: &mut Engram, new_nodes: &[NodeId], prediction_error
     engram.recall_count += 1;
 }
 
+/// Revision NON MONOTONE d un engramme a partir d une observation independante.
+///
+/// Contrairement a `reconsolidate` (purement ADDITIVE), cette revision ALIGNE
+/// l ensemble sur l observation : les noeuds ABSENTS sont decroisses (puis
+/// RETIRES sous un plancher), les noeuds observes sont renforces. La vitesse
+/// d alignement suit l erreur de prediction (erreur forte = adaptation forte).
+/// L historique (strength, recall_count) est preserve ; aucune categorie fixe.
+#[allow(dead_code)]
+pub fn reconsolidate_adaptive(engram: &mut Engram, observed: &[NodeId], prediction_error: f64) {
+    if !prediction_error.is_finite() || prediction_error < 0.0 {
+        return;
+    }
+    // Taux d alignement borne : [0.3, 0.8]. Un noeud absent perd au moins 30 %
+    // de son poids a chaque pas, donc l ensemble peut reellement se resserrer.
+    let lr = (0.3 + prediction_error * 0.5).clamp(0.0, 0.8);
+    // 1. Decroissance des noeuds ABSENTS de l observation.
+    for (nid, w) in engram.ensemble.iter_mut() {
+        if !observed.contains(nid) {
+            *w *= 1.0 - lr;
+        }
+    }
+    // 2. Renforcement / ajout des noeuds OBSERVES.
+    for &nid in observed {
+        match engram.ensemble.iter_mut().find(|(n, _)| *n == nid) {
+            Some((_, w)) => *w = (*w * (1.0 - lr) + lr).min(1.0),
+            None => engram.ensemble.push((nid, lr.max(0.1))),
+        }
+    }
+    // 3. RETRAIT des noeuds decroisses sous le plancher (revision non monotone).
+    engram.ensemble.retain(|(_, w)| *w >= 0.05);
+    engram.strength = (engram.strength + 0.05).min(1.0);
+    engram.recall_count += 1;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
