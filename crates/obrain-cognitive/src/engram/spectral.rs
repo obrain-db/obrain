@@ -241,3 +241,41 @@ mod tests {
         assert_eq!(sig.len(), 128);
     }
 }
+
+#[cfg(test)]
+mod dimension_comparison {
+    use super::*;
+
+    fn l2(x: &[f64], y: &[f64]) -> f64 {
+        x.iter().zip(y).map(|(u, v)| (u - v).powi(2)).sum::<f64>().sqrt()
+    }
+
+    /// Comparaison 32/64/128/256 dims sur le même corpus (nombre de paires
+    /// CONSTANT = 200, ensembles disjoints de taille 2).
+    #[test]
+    fn discrimination_par_dimension() {
+        let n_pairs = 200usize;
+        for dims in [32usize, 64, 128, 256] {
+            let enc = DefaultSpectralEncoder::new(dims);
+            let mut min_d = f64::INFINITY;
+            let mut sum = 0.0f64;
+            for p in 0..n_pairs {
+                let base = (p * 4) as u64 + 1;
+                let e1 = [(NodeId(base), 1.0), (NodeId(base + 1), 1.0)];
+                let e2 = [(NodeId(base + 2), 1.0), (NodeId(base + 3), 1.0)];
+                let d = l2(&enc.encode(&e1), &enc.encode(&e2));
+                if d < min_d {
+                    min_d = d;
+                }
+                sum += d;
+            }
+            println!(
+                "dims={}: L2 min={:.6} moyenne={:.6} ({} paires disjointes taille 2)",
+                dims,
+                min_d,
+                sum / n_pairs as f64,
+                n_pairs
+            );
+        }
+    }
+}
