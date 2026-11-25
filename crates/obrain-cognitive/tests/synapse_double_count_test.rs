@@ -3,7 +3,7 @@
 //!
 //! LE DÉFAUT. `SynapseStore::for_each_synapse` itère deux sources :
 //!   Deux sources : l'index d'incidence persistant (`substrate.synapse_edges_of`
-//!   + `read_edge`), alimenté par `create_synapse_slot(..)` pour **src ET dst**,
+//!   plus `read_edge`), alimenté par `create_synapse_slot(..)` pour **src ET dst**,
 //!   et la sur-couche chaude `node_to_keys` + DashMap `synapses`.
 //! Sur une base fraîchement ouverte, `load_from_substrate_column()` hydrate la
 //! DashMap ET `node_to_keys` : les deux sources couvrent alors exactement le
