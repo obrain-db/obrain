@@ -2844,7 +2844,10 @@ impl Writer {
                 lsn: 0,
                 timestamp: unix_micros(),
                 flags: 0,
-                payload: WalPayload::EngramBitsetSet { node_id, bitset: new_bits },
+                payload: WalPayload::EngramBitsetSet {
+                    node_id,
+                    bitset: new_bits,
+                },
             };
             self.wal.append(rec)?;
             crate::engram_bitset::EngramBitsetColumn::set_raw(zf, node_id, new_bits)?;

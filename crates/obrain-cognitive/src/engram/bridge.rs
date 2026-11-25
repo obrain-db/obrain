@@ -44,7 +44,9 @@ use obrain_common::types::NodeId;
 use obrain_reactive::{MutationEvent, MutationListener};
 
 use super::manager::EngramManager;
-use super::observation::{ObservationDefinition, ObservationId, ObservationOutcome, SourceRevision};
+use super::observation::{
+    ObservationDefinition, ObservationId, ObservationOutcome, SourceRevision,
+};
 use super::types::EngramId;
 
 /// Surprise (erreur de prédiction) attribuée à chaque épisode de co-activation.
@@ -114,17 +116,6 @@ impl EngramObservationBridge {
         }
     }
 
-    /// Enregistre une co-activation si l'ensemble compte au moins 2 nœuds
-    /// distincts (un singleton ne peut pas former d'engramme).
-    fn record(&self, mut nodes: Vec<NodeId>) {
-        nodes.sort_unstable();
-        nodes.dedup();
-        if nodes.len() >= 2 {
-            self.manager
-                .record_activation(&nodes, self.prediction_error);
-        }
-    }
-
     /// Engramme CIBLE d'une révision : celui qui recouvre le plus de nœuds de
     /// l'événement (au moins 2, pour qu'une révision ait un sens).
     ///
@@ -142,11 +133,7 @@ impl EngramObservationBridge {
         let mut best: Option<(EngramId, usize)> = None;
         let mut ambiguous = false;
         self.manager.store().for_each(|e| {
-            let overlap = e
-                .ensemble
-                .iter()
-                .filter(|(n, _)| nodes.contains(n))
-                .count();
+            let overlap = e.ensemble.iter().filter(|(n, _)| nodes.contains(n)).count();
             if overlap >= 2 {
                 match best {
                     Some((_, b)) if overlap > b => {
@@ -233,11 +220,14 @@ impl EngramObservationBridge {
             // Ressource SYNTHÉTIQUE de la formation (aucune connaissance visée).
             let mut resource = b"F".to_vec();
             resource.extend_from_slice(&definition.fingerprint().to_be_bytes());
-            let adapter =
-                super::observation::CognitiveObservationAdapter::new(self.manager.observation_ledger_arc());
+            let adapter = super::observation::CognitiveObservationAdapter::new(
+                self.manager.observation_ledger_arc(),
+            );
             match adapter.apply_formation(id, &resource, &definition) {
                 Ok(ObservationOutcome::Formed) => {
-                    let formed = self.manager.record_activation(&nodes, self.prediction_error);
+                    let formed = self
+                        .manager
+                        .record_activation(&nodes, self.prediction_error);
                     if formed.is_empty() {
                         BridgeObservation::ActivationRecorded
                     } else {
@@ -254,7 +244,9 @@ impl EngramObservationBridge {
             }
         } else {
             // FORMATION simple, SANS identité d'observation.
-            let formed = self.manager.record_activation(&nodes, self.prediction_error);
+            let formed = self
+                .manager
+                .record_activation(&nodes, self.prediction_error);
             if formed.is_empty() {
                 BridgeObservation::ActivationRecorded
             } else {
@@ -627,7 +619,10 @@ mod tests {
 
         let out = bridge.observe(&edge_event(2, 1, 2), Some(ObservationId::from_u128(1)));
         assert!(
-            matches!(out, BridgeObservation::Revised(ObservationOutcome::Applied { .. })),
+            matches!(
+                out,
+                BridgeObservation::Revised(ObservationOutcome::Applied { .. })
+            ),
             "révision identifiée appliquée, reçu {out:?}"
         );
         assert!(
@@ -648,11 +643,17 @@ mod tests {
         let eid = mgr.store().list()[0].id;
 
         let first = bridge.observe(&edge_event(2, 1, 2), Some(ObservationId::from_u128(7)));
-        assert!(matches!(first, BridgeObservation::Revised(ObservationOutcome::Applied { .. })));
+        assert!(matches!(
+            first,
+            BridgeObservation::Revised(ObservationOutcome::Applied { .. })
+        ));
         let rev_after_first = mgr.observation_revision(eid).unwrap();
         let replay = bridge.observe(&edge_event(2, 1, 2), Some(ObservationId::from_u128(7)));
         assert!(
-            matches!(replay, BridgeObservation::Revised(ObservationOutcome::Replayed { .. })),
+            matches!(
+                replay,
+                BridgeObservation::Revised(ObservationOutcome::Replayed { .. })
+            ),
             "le rejeu ne réapplique pas, reçu {replay:?}"
         );
         assert_eq!(
@@ -673,8 +674,7 @@ mod tests {
         assert!(
             matches!(
                 out,
-                BridgeObservation::ActivationRecorded
-                    | BridgeObservation::FormationSucceeded(_)
+                BridgeObservation::ActivationRecorded | BridgeObservation::FormationSucceeded(_)
             ),
             "sans engramme cible, l'événement reste une formation, reçu {out:?}"
         );
@@ -683,7 +683,8 @@ mod tests {
     fn insert_engram(mgr: &Arc<EngramManager>, nodes: &[u64]) -> EngramId {
         let id = mgr.store().next_id();
         let ensemble: Vec<(NodeId, f64)> = nodes.iter().map(|n| (NodeId(*n), 1.0)).collect();
-        mgr.store().insert(crate::engram::types::Engram::new(id, ensemble));
+        mgr.store()
+            .insert(crate::engram::types::Engram::new(id, ensemble));
         id
     }
 
@@ -694,7 +695,8 @@ mod tests {
         let mgr = manager();
         let e1 = insert_engram(&mgr, &[1, 2, 3]);
         let e2 = insert_engram(&mgr, &[1, 2, 4]);
-        let bridge = EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
+        let bridge =
+            EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
         // L'événement {1,2} recouvre les DEUX au mieux (2 nœuds) : ambigu.
         let out = bridge.observe(&edge_event(9, 1, 2), Some(ObservationId::from_u128(1)));
         assert!(
@@ -749,11 +751,15 @@ mod tests {
             .with_observation_ledger(Arc::new(RevisionReadFails)),
         );
         insert_engram(&mgr, &[1, 2]);
-        let bridge = EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
+        let bridge =
+            EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
         let out = bridge.observe(&edge_event(9, 1, 2), Some(ObservationId::from_u128(1)));
         match out {
             BridgeObservation::Failed(msg) => {
-                assert!(msg.contains("revision read error"), "erreur propagée : {msg}")
+                assert!(
+                    msg.contains("revision read error"),
+                    "erreur propagée : {msg}"
+                )
             }
             other => panic!("attendu Failed (lecture de révision), reçu {other:?}"),
         }
@@ -765,14 +771,14 @@ mod tests {
     #[tokio::test]
     async fn identite_de_formation_survit_a_l_apparition_d_une_connaissance() {
         let mgr = manager();
-        let bridge = EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
+        let bridge =
+            EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
         // 1. Observation identifiée SANS cible → formation identifiée.
         let first = bridge.observe(&edge_event(1, 5, 6), Some(ObservationId::from_u128(3)));
         assert!(
             matches!(
                 first,
-                BridgeObservation::ActivationRecorded
-                    | BridgeObservation::FormationSucceeded(_)
+                BridgeObservation::ActivationRecorded | BridgeObservation::FormationSucceeded(_)
             ),
             "formation identifiée, reçu {first:?}"
         );
@@ -786,7 +792,11 @@ mod tests {
             BridgeObservation::Replayed,
             "le rejeu ne produit pas une nouvelle activation/révision"
         );
-        assert_eq!(mgr.store().count(), count_before, "aucune formation supplémentaire");
+        assert_eq!(
+            mgr.store().count(),
+            count_before,
+            "aucune formation supplémentaire"
+        );
         assert_eq!(
             mgr.observation_revision(eid).unwrap(),
             0,

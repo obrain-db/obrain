@@ -19,13 +19,14 @@ use super::hopfield::{
     Prediction, PredictionErrorCalculator, PredictiveModel, bayesian_update,
     compute_prediction_error,
 };
-use super::observe::EngramMetricsCollector;
-use super::recall::{reconsolidate, RecallEngine, RecallResult, WarmupConfig, WarmupSelector};
-use super::spectral::SpectralEncoder;
 use super::observation::{
-    AtomicEventLedger, CognitiveObservationAdapter, InMemoryAtomicEventLedger, ObservationDefinition,
-    ObservationId, ObservationOutcome, ResolvedState, ResultingState, SourceRevision,
+    AtomicEventLedger, CognitiveObservationAdapter, InMemoryAtomicEventLedger,
+    ObservationDefinition, ObservationId, ObservationOutcome, ResolvedState, ResultingState,
+    SourceRevision,
 };
+use super::observe::EngramMetricsCollector;
+use super::recall::{RecallEngine, RecallResult, WarmupConfig, WarmupSelector, reconsolidate};
+use super::spectral::SpectralEncoder;
 use super::store::{EngramStore, LoadReport, MaterializeOutcome, StoreError};
 use super::traits::VectorIndex;
 use super::types::{Engram, EngramHorizon, EngramId, RecallEvent, RecallFeedback};
@@ -99,20 +100,27 @@ pub struct EngramManager {
 /// membres pondérés, signature) pour vérification et comparaison.
 #[derive(Debug, Clone)]
 pub struct EngramRevision {
+    /// Identifiant de l'engramme révisé.
     pub engram_id: EngramId,
     /// Révision GLOBALE du store (borne inférieure) — n'identifie pas à elle
     /// seule le snapshot ; l'état réellement publié est `members`+`signature`.
     pub revision: u64,
+    /// Membres pondérés effectivement publiés.
     pub members: Vec<(NodeId, f64)>,
+    /// Signature spectrale effectivement publiée.
     pub signature: Vec<f64>,
 }
 
 /// Erreurs de révision, distinguées (pas un simple Option).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RevisionError {
+    /// L'engramme ciblé n'existe pas.
     EngramAbsent(EngramId),
+    /// Observation invalide (erreur non finie, ensemble vide…).
     InvalidObservation(String),
+    /// Le candidat a échoué la validation canonique.
     ValidationFailed(String),
+    /// Échec de persistance ou de la primitive d'observation.
     PersistenceFailed(String),
     /// Recalculs de révision épuisés (conflit de révision persistant) : l'appel
     /// peut être rejoué avec la même identité une fois l'état stabilisé.
@@ -188,7 +196,12 @@ impl EngramManager {
                 // réécriture durable (update() miroir le substrate).
                 self.store.rehydrate_signature(engram.id, sig);
             }
-            tracing::info!(coherent = report.coherent, degraded = report.degraded.len(), rejected = report.rejected.len(), "cognitive: engrams rechargés depuis le substrate");
+            tracing::info!(
+                coherent = report.coherent,
+                degraded = report.degraded.len(),
+                rejected = report.rejected.len(),
+                "cognitive: engrams rechargés depuis le substrate"
+            );
         }
         report
     }
@@ -453,8 +466,8 @@ impl EngramManager {
                 ));
             }
         };
-        let recorded = ResultingState::from_canonical_bytes(body)
-            .map_err(RevisionError::PersistenceFailed)?;
+        let recorded =
+            ResultingState::from_canonical_bytes(body).map_err(RevisionError::PersistenceFailed)?;
         let sig = self.spectral.encode(&recorded.ensemble);
         self.store
             .repair_state(
@@ -474,6 +487,13 @@ impl EngramManager {
         Ok(())
     }
 
+    /// Applique une observation IDENTIFIÉE (rejeu idempotent, conflit qualifié).
+    ///
+    /// `source_revision` est la révision d'OBSERVATION vue par l'appelant (voir
+    /// [`Self::observation_revision`]) ; elle sert de précondition au registre.
+    /// Sur `RevisionConflict`, l'appelant recalcule depuis l'état courant avec
+    /// la MÊME identité logique. Un rejeu rend `Replayed` ET répare une
+    /// matérialisation manquante.
     pub fn revise_with_id(
         &self,
         observation_id: ObservationId,
@@ -576,8 +596,7 @@ impl EngramManager {
                         ));
                     }
                 }
-                self.vector_index
-                    .upsert(&engram_id.to_string(), &signature);
+                self.vector_index.upsert(&engram_id.to_string(), &signature);
                 let engram = self
                     .store
                     .get(engram_id)
@@ -700,7 +719,6 @@ impl EngramManager {
             }
         }
     }
-
 
     // -----------------------------------------------------------------
     // Recall
