@@ -14254,7 +14254,6 @@ impl SubstrateStore {
         premier_slot: u32,
         props: &[&'v [(&'v str, Value)]],
         cles: &std::collections::HashMap<&str, u16>,
-        auteur: u64,
         horloge: u64,
         proprietaire: crate::page::OwnerKind,
     ) -> SubstrateResult<(
@@ -14427,7 +14426,7 @@ impl SubstrateStore {
                                 })
                             }
                         };
-                        let entree = E::new_stamped(cles[k], pv, auteur, horloge);
+                        let entree = E::new_stamped(cles[k], pv, self.writer_id, horloge);
                         if page.append_entry(&entree).is_err() {
                             // Page pleine : on la clôt, chaînée sur la précédente.
                             let idx = base_pages + n_pages;
@@ -14755,7 +14754,6 @@ impl SubstrateStore {
                 premier_slot,
                 &retenues,
                 &cles,
-                self.writer_id,
                 estampille.pack(),
                 crate::page::OwnerKind::Node,
             )?
@@ -15124,7 +15122,6 @@ impl SubstrateStore {
             premier_slot,
             &tranches,
             &cles,
-            self.writer_id,
             estampille.pack(),
             crate::page::OwnerKind::Edge,
         )?;
