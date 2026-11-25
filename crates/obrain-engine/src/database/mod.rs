@@ -396,6 +396,13 @@ pub struct ObrainDB {
     /// événements à l'import (canal de 16 384 lots). Annulée à `close()`.
     #[cfg(feature = "cognitive")]
     cognitive_flusher: parking_lot::Mutex<Option<FlusherCognitif>>,
+    /// Flotte de thinkers (T13) — OPT-IN via `open_substrate_with_thinkers`.
+    /// `None` pour toute ouverture ordinaire : aucune tâche de fond ambiante.
+    /// `Mutex` (et non `Option` nu) : `shutdown` consomme le runtime, et
+    /// `close(&self)` doit pouvoir l'extraire. Arrêté AVANT le flush du
+    /// substrat dans `close()` (les tiques lisent/écrivent le store).
+    #[cfg(feature = "thinker")]
+    thinker_runtime: parking_lot::Mutex<Option<obrain_cognitive::thinker::ThinkerRuntime>>,
 }
 
 /// Poignée de la tâche de vidage (native) — rien sous wasm.
@@ -696,6 +703,64 @@ impl ObrainDB {
     /// OBSERVÉE (voir [`new_in_memory_observed`](Self::new_in_memory_observed)).
     pub fn open_substrate_observed(path: impl AsRef<std::path::Path>) -> Result<Self> {
         Self::open_substrate_inner(path, false, true)
+    }
+
+    /// Ouvre une base substrat ET démarre la flotte de thinkers (T13) en
+    /// OPT-IN explicite : c'est la SEULE voie qui lance des tâches de fond.
+    ///
+    /// `open_substrate` / `open` / `new_in_memory` ne démarrent RIEN : la
+    /// maintenance d'arrière-plan (décroissance d'énergie, élagage,
+    /// prédiction, propositions de rêve) ne s'active que si l'appelant le
+    /// demande ici.
+    ///
+    /// `thinkers_config` pilote quels thinkers sont lancés
+    /// ([`ThinkersConfig::default()`](obrain_cognitive::thinker::ThinkersConfig::default)
+    /// active Consolidator + Warden + Predictor + Dreamer). Le capteur de
+    /// pression est `NeverOverloadedSensor` (toujours « pas surchargé ») ;
+    /// câbler un vrai capteur reste un suivi (T13 S8).
+    ///
+    /// # Errors
+    ///
+    /// Comme [`open_substrate`](Self::open_substrate) : échoue si le store ne
+    /// peut être ouvert/créé à `path`.
+    #[cfg(feature = "thinker")]
+    pub fn open_substrate_with_thinkers(
+        path: impl AsRef<std::path::Path>,
+        thinkers_config: obrain_cognitive::thinker::ThinkersConfig,
+    ) -> Result<Self> {
+        let db = Self::open_substrate(path)?;
+        // Les tiques s'appliquent au store SUBSTRAT typé ; toute base ouverte
+        // par `open_substrate` en possède un. Garde-fou : sans store, on ne
+        // démarre rien (ne devrait pas arriver ici).
+        let Some(store) = db.substrate_store.clone() else {
+            return Ok(db);
+        };
+        let sensor: Arc<dyn obrain_cognitive::thinker::PressureSensor> =
+            Arc::new(obrain_cognitive::thinker::NeverOverloadedSensor);
+        let runtime =
+            obrain_cognitive::thinker::spawn_standard_fleet(store, &thinkers_config, sensor);
+        *db.thinker_runtime.lock() = Some(runtime);
+        Ok(db)
+    }
+
+    /// Statistiques agrégées de la flotte de thinkers (opt-in). `None` si la
+    /// base a été ouverte sans thinkers.
+    #[cfg(feature = "thinker")]
+    #[must_use]
+    pub fn thinker_stats(&self) -> Option<obrain_cognitive::thinker::ThinkerRuntimeStats> {
+        self.thinker_runtime.lock().as_ref().map(|rt| rt.stats())
+    }
+
+    /// Les kinds des thinkers vivants, dans l'ordre d'enregistrement. `None`
+    /// (rendu `[]`) si la base a été ouverte sans thinkers.
+    #[cfg(feature = "thinker")]
+    #[must_use]
+    pub fn thinker_kinds(&self) -> Vec<obrain_cognitive::thinker::ThinkerKind> {
+        self.thinker_runtime
+            .lock()
+            .as_ref()
+            .map(|rt| rt.handles().iter().map(|h| h.kind).collect())
+            .unwrap_or_default()
     }
 
     /// Ouvre le store en READ-ONLY (verrou partagé) quand `read_only=true`.
@@ -1713,6 +1778,8 @@ impl ObrainDB {
             cognitive_observer,
             #[cfg(feature = "cognitive")]
             cognitive_flusher,
+            #[cfg(feature = "thinker")]
+            thinker_runtime: parking_lot::Mutex::new(None),
         };
         // (T5) Meme observateur d'index vectoriels que le chemin fichier : une base en
         // memoire doit entretenir ses index pour TOUT chemin d'ecriture (GQL compris).
@@ -1866,6 +1933,8 @@ impl ObrainDB {
             cognitive_observer: None,
             #[cfg(feature = "cognitive")]
             cognitive_flusher: parking_lot::Mutex::new(None),
+            #[cfg(feature = "thinker")]
+            thinker_runtime: parking_lot::Mutex::new(None),
         })
     }
 
@@ -2454,6 +2523,13 @@ impl ObrainDB {
                 substrat.annuler_preparation_index();
             }
             let _ = fil.join();
+        }
+        // (2026-11-25) Thinkers : arrêt AVANT toute fermeture du substrat.
+        // Les tiques lisent/écrivent le store ; on les joint avant le flush /
+        // la désinscription, pour qu'aucune tâche ne survive à la fermeture.
+        #[cfg(feature = "thinker")]
+        if let Some(rt) = self.thinker_runtime.lock().take() {
+            rt.shutdown();
         }
         // Une base fermée cesse d'être « vivante » pour l'ouvreur (voir
         // `open_substrate_inner`) : la rouvrir après `close()` est permis.
