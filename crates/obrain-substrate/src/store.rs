@@ -3041,6 +3041,18 @@ pub fn noeuds_hydrates() -> u64 {
     NOEUDS_HYDRATES.with(std::cell::Cell::get)
 }
 
+/// Issue d'une réception de propriété versionnée (#334).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum IssueReception {
+    /// L'événement reçu est plus récent que l'état courant : appliqué.
+    Appliquee,
+    /// L'événement reçu est plus ancien : ignoré (l'état courant prime).
+    Ancienne,
+    /// Même estampille (auteur+horloge) que l'état courant : non départageable
+    /// par le temps ; l'appelant doit trancher (rejeu identique ou conflit).
+    EgaliteEstampille,
+}
+
 impl SubstrateStore {
     /// Chemin du catalogue d'index.
     fn chemin_catalogue(&self) -> std::path::PathBuf {
@@ -13515,6 +13527,91 @@ impl SubstrateStore {
     ///
     /// Caller (`set_edge_property`) MUST check `self.props_zone.is_some()`
     /// before invoking — otherwise this function panics on `unwrap`.
+    /// Réception d'une propriété versionnée (convergence #334) : applique une
+    /// opération portant son auteur et son estampille HLC D'ORIGINE, sans les
+    /// régénérer. L'horloge locale est avancée via `observer` (sans réestampiller
+    /// l'événement reçu) pour que les écritures locales suivantes restent
+    /// causalement postérieures.
+    pub fn recevoir_propriete_versionnee(
+        &self,
+        id: NodeId,
+        key: &str,
+        value: &Value,
+        auteur: u64,
+        horloge: u64,
+    ) -> SubstrateResult<IssueReception> {
+        let pz_lock = self
+            .props_zone
+            .as_ref()
+            .expect("recevoir_propriete_versionnee appelée sans PropsZone v2");
+        let prop_key_id = self.interner_cle_journalisee(key)?;
+        let slot = id.0 as u32;
+        let node_rec = match self.writer.read_node(slot)? {
+            Some(r) => r,
+            None => {
+                return Err(SubstrateError::Internal(format!(
+                    "recevoir_propriete_versionnee : nœud {slot} absent"
+                )))
+            }
+        };
+        let tete_brute = (node_rec.first_prop_off.to_u64() != 0)
+            .then(|| node_rec.first_prop_off.to_u64());
+
+        // 1. Compare avec l'état courant (lecture LWW), sans réécrire.
+        let decision = {
+            let pz = pz_lock.read();
+            let courante = match tete_brute {
+                None => None,
+                Some(t) => pz
+                    .get_latest_for_key_unite(Some(t), prop_key_id)?
+                    .map(|e| (e.auteur, e.horloge)),
+            };
+            match courante {
+                None => IssueReception::Appliquee,
+                Some((Some(ca), Some(ch))) => {
+                    if (auteur, horloge) == (ca, ch) {
+                        IssueReception::EgaliteEstampille
+                    } else if (horloge, auteur) > (ch, ca) {
+                        IssueReception::Appliquee
+                    } else {
+                        IssueReception::Ancienne
+                    }
+                }
+                Some(_) => IssueReception::Appliquee,
+            }
+        };
+
+        // 2. Avance l'horloge locale (observer), toujours — sans réestampiller.
+        {
+            let distant = crate::horloge_hybride::Estampille::depaqueter(horloge);
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().observer(distant, millis);
+        }
+
+        // 3. Applique seulement si plus récent.
+        if decision == IssueReception::Appliquee {
+            let nouvelle_tete: u64 = {
+                let mut pz = pz_lock.write();
+                let pv = encode_value(&mut pz, value)?;
+                let entry = PropertyEntry::new_stamped(prop_key_id, pv, auteur, horloge);
+                pz.append_entree_sur_chainee(
+                    slot,
+                    crate::page::OwnerKind::Node,
+                    tete_brute,
+                    &entry,
+                )?
+            };
+            let nouvelle_tete_u48 = crate::record::U48::from_u64(nouvelle_tete);
+            if nouvelle_tete_u48 != node_rec.first_prop_off {
+                self.writer.update_node_first_prop_off(slot, nouvelle_tete_u48)?;
+            }
+            self.noter_index_ordonne(prop_key_id, key, slot, value);
+            self.noter_trigrammes(key, slot, value);
+        }
+
+        Ok(decision)
+    }
+
     fn append_scalar_to_props_zone_v2_edge(
         &self,
         id: EdgeId,
@@ -46103,5 +46200,86 @@ mod fenetre_remplacement_blob {
                 .read_value(&cle, EntityKind::Node, a.0 as u32)
                 .is_none()
         );
+    }
+}
+
+
+#[cfg(test)]
+mod reception_versionnee {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// Les mêmes événements versionnés (estampilles préservées), appliqués dans
+    /// les six permutations sur six nœuds distincts, convergent vers la même
+    /// valeur finale : (auteur 3, horloge 200) — l'horloge prime sur l'auteur.
+    #[test]
+    fn six_permutations_convergent() {
+        let evts = [
+            (10u64, 100u64, obrain_common::types::Value::Int64(1)),
+            (3u64, 200u64, obrain_common::types::Value::Int64(2)),
+            (5u64, 150u64, obrain_common::types::Value::Int64(3)),
+        ];
+        let perms: [[usize; 3]; 6] =
+            [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let mut finales = BTreeSet::new();
+        for p in perms {
+            let id = store.create_node(&["fn"]);
+            for &i in &p {
+                let (a, h, v) = &evts[i];
+                store
+                    .recevoir_propriete_versionnee(id, "k", v, *a, *h)
+                    .unwrap();
+            }
+            let finale = store
+                .get_node_property(id, &obrain_common::types::PropertyKey::new("k"))
+                .unwrap();
+            finales.insert(format!("{finale:?}"));
+        }
+        assert_eq!(finales.len(), 1, "convergence attendue : {finales:?}");
+        assert!(finales.contains("Int64(2)"), "le gagnant est horloge 200 (auteur 3) : {finales:?}");
+    }
+
+    /// La réception distingue application, version ancienne, égalité d'estampille
+    /// et rejeu identique — et avance l'horloge locale sans réestampiller.
+    #[test]
+    fn distingue_les_issues() {
+        use super::IssueReception::*;
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["fn"]);
+        // première réception : appliquée
+        assert_eq!(
+            store
+                .recevoir_propriete_versionnee(id, "k", &obrain_common::types::Value::Int64(1), 10, 100)
+                .unwrap(),
+            Appliquee
+        );
+        // événement plus ancien : ignoré
+        assert_eq!(
+            store
+                .recevoir_propriete_versionnee(id, "k", &obrain_common::types::Value::Int64(9), 10, 50)
+                .unwrap(),
+            Ancienne
+        );
+        // même estampille : égalité (ni appliquée ni ancienne)
+        assert_eq!(
+            store
+                .recevoir_propriete_versionnee(id, "k", &obrain_common::types::Value::Int64(9), 10, 100)
+                .unwrap(),
+            EgaliteEstampille
+        );
+        // plus récent : appliquée (horloge 200 > 100, auteur 3 < 10)
+        assert_eq!(
+            store
+                .recevoir_propriete_versionnee(id, "k", &obrain_common::types::Value::Int64(2), 3, 200)
+                .unwrap(),
+            Appliquee
+        );
+        let finale = store
+            .get_node_property(id, &obrain_common::types::PropertyKey::new("k"))
+            .unwrap();
+        assert_eq!(finale, obrain_common::types::Value::Int64(2));
     }
 }
