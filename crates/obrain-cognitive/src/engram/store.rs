@@ -105,6 +105,7 @@ impl std::fmt::Debug for EngramStore {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     EngramAbsent(EngramId),
+    ValidationFailed(String),
     PersistenceFailed(String),
 }
 
@@ -599,9 +600,16 @@ impl EngramStore {
         let Some(mut entry) = self.cache.get_mut(&id) else {
             return Err(StoreError::EngramAbsent(id));
         };
-        f(entry.value_mut());
+        // ÉTAT CANDIDAT : clone, applique, valide — SANS muter l'état publié.
+        let mut candidate = entry.value().clone();
+        f(&mut candidate);
+        self.validate_candidate(&candidate)?;
+        // Persister le candidat AVANT de committer : une erreur laisse le cache
+        // inchangé. Le substrat peut être en écriture partielle/indéterminée.
+        #[cfg(feature = "substrate")]
+        self.mirror_substrate_insert(&candidate)?;
         if let Some(storage) = &self.storage {
-            let props = Self::engram_properties(entry.value());
+            let props = Self::engram_properties(&candidate);
             if let Some(nid) = self.node_ids.get(&id).map(|e| *e.value()) {
                 storage.update_node(nid, &props);
             } else {
@@ -609,13 +617,28 @@ impl EngramStore {
                 self.node_ids.insert(id, nid);
             }
         }
-        #[cfg(feature = "substrate")]
-        let mirror = self.mirror_substrate_insert(entry.value());
+        // COMMIT du candidat dans l'entrée (sous le verrou).
+        *entry.value_mut() = candidate;
         drop(entry);
         // Révision incrémentée APRÈS modification + persistance effectives.
         self.revision.fetch_add(1, Ordering::Relaxed);
-        #[cfg(feature = "substrate")]
-        mirror?;
+        Ok(())
+    }
+
+    /// Validation d'un candidat AVANT mutation : représentabilité u16/u32 et
+    /// poids finis. Aucun chemin silencieux.
+    fn validate_candidate(&self, e: &Engram) -> Result<(), StoreError> {
+        if Self::engram_id_to_u16(e.id).is_none() {
+            return Err(StoreError::ValidationFailed("EngramId non-u16".into()));
+        }
+        for (n, w) in &e.ensemble {
+            if Self::node_id_to_u32(*n).is_none() {
+                return Err(StoreError::ValidationFailed(format!("NodeId non-u32: {n:?}")));
+            }
+            if !w.is_finite() {
+                return Err(StoreError::ValidationFailed(format!("poids non fini: {w}")));
+            }
+        }
         Ok(())
     }
 
@@ -624,18 +647,21 @@ impl EngramStore {
         if self.substrate.read().is_none() {
             return Ok(());
         }
-        let nids: Vec<NodeId> = engram.ensemble.iter().map(|(n, _)| *n).collect();
         let Some(writer) = self.substrate_writer() else {
             return Ok(());
         };
         let Some(eid_u16) = Self::engram_id_to_u16(engram.id) else {
-            return Ok(());
+            return Err(StoreError::ValidationFailed("EngramId non-u16".into()));
         };
-        let members: Vec<u32> = nids
-            .iter()
-            .filter_map(|n| Self::node_id_to_u32(*n))
-            .collect();
-        let weights: Vec<f32> = engram.ensemble.iter().map(|(_, w)| *w as f32).collect();
+        let mut members = Vec::with_capacity(engram.ensemble.len());
+        let mut weights = Vec::with_capacity(engram.ensemble.len());
+        for (n, w) in &engram.ensemble {
+            let Some(nu32) = Self::node_id_to_u32(*n) else {
+                return Err(StoreError::ValidationFailed(format!("NodeId non-u32: {n:?}")));
+            };
+            members.push(nu32);
+            weights.push(*w as f32);
+        }
         // Écriture ATOMIQUE membres+poids (même verrou), puis bitset par nœud
         // (aucune correspondance d'ordre) — pas de réécriture des membres.
         writer
