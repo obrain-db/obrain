@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use obrain_common::types::NodeId;
 use obrain_cognitive::engram::traits::{InMemoryVectorIndex, VectorIndex};
-use obrain_cognitive::engram::{EngramManager, EngramManagerConfig, RevisionError, StoreError};
+use obrain_cognitive::engram::{EngramId, EngramManager, EngramManagerConfig, RejectCause, RevisionError, StoreError};
 use obrain_substrate::{SubstrateFile, SyncMode, Writer as SubstrateWriter};
 
 fn weight_of(ens: &[(NodeId, f64)], n: NodeId) -> f64 {
@@ -487,4 +487,356 @@ fn chargement_sain_sans_amplification_wal() {
     assert_eq!(offset_before, offset_after, "offset WAL inchangé (aucune écriture)");
     assert_eq!(ecrits_before, ecrits_after, "records_ecrits inchangé");
     assert_eq!(tampon_before, tampon_after, "records_en_tampon inchangé");
+}
+
+// ===================================================================
+// LoadReport — causes, identifiants, défaillance globale
+// ===================================================================
+
+/// Base vide : aucun engramme, zone jamais initialisée (absente) → chargement
+/// sain, aucun rejet, aucune défaillance globale.
+#[test]
+fn base_vide_charge_sainement() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    {
+        let manager =
+            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+        manager.attach_substrate(Arc::new(writer));
+        // aucun engramme formé
+    }
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+    let report = manager.attach_substrate(Arc::new(writer));
+    assert_eq!(report.coherent, 0, "aucun engramme cohérent");
+    assert!(report.degraded.is_empty(), "aucun dégradé");
+    assert!(report.rejected.is_empty(), "aucun rejet");
+    assert!(report.global_failure.is_none(), "pas de défaillance globale : zone absente = légitime");
+    assert_eq!(manager.store().count(), 0, "cache vide");
+}
+
+/// Zone structurellement invalide (magic corrompu) : défaillance GLOBALE, pas
+/// un balayage de 65 535 rejets. Le chargement refuse SANS réserver aucun
+/// identifiant, et n'est jamais présenté comme sain.
+#[test]
+fn zone_inaccessible_est_une_defaillance_globale() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let (a, b) = (NodeId(1), NodeId(2));
+    {
+        let manager =
+            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+        manager.attach_substrate(Arc::new(writer));
+        manager.store().form(&[a, b]).unwrap();
+    }
+    // Corrompt le magic de la zone members : la zone devient structurellement
+    // invalide (défaillance globale, pas un engramme corrompu).
+    let zone = path.join("substrate.engram_members");
+    {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new().write(true).open(&zone).unwrap();
+        f.seek(SeekFrom::Start(0)).unwrap();
+        f.write_all(&[0xFF, 0xFF, 0xFF, 0xFF]).unwrap();
+        f.flush().unwrap();
+    }
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+    let report = manager.attach_substrate(Arc::new(writer));
+
+    assert!(report.global_failure.is_some(), "défaillance globale détectée");
+    assert!(report.rejected.is_empty(), "aucun rejet individuel (pas de balayage des 65 535 identifiants)");
+    assert_eq!(report.coherent, 0, "aucun chargé");
+    assert!(report.degraded.is_empty(), "aucun dégradé");
+    assert_eq!(manager.store().count(), 0, "cache vide (jamais présenté sain)");
+    // L'espace d'identifiants n'a PAS été épuisé : aucun identifiant réservé.
+    assert_eq!(manager.store().next_id().0, 1, "aucun identifiant réservé");
+}
+
+/// État canonique invalide (membre dupliqué) : rejeté AVEC l'identifiant et la
+/// cause, identifiant réservé (jamais réalloué), aucune réparation ni
+/// publication.
+#[test]
+fn engramme_invalide_rejete_avec_identifiant_et_cause() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    {
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+        // Membre DUPLIQUÉ écrit directement via le substrat (form refuserait).
+        writer.set_engram_state(1, vec![7, 7], vec![1.0, 1.0]).unwrap();
+    }
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+    let report = manager.attach_substrate(Arc::new(writer));
+
+    assert!(report.global_failure.is_none(), "zone saine");
+    assert_eq!(report.rejected.len(), 1, "un seul rejet");
+    let (id, cause) = &report.rejected[0];
+    assert_eq!(id.0, 1, "identifiant rejeté = 1");
+    assert!(matches!(cause, RejectCause::Validation(_)), "cause = validation (doublon), reçu : {cause:?}");
+    assert_eq!(manager.store().count(), 0, "aucun engramme publié");
+    // Identifiant réservé : next_id repart à 2 (le 1 n'est pas réalloué).
+    assert_eq!(manager.store().next_id().0, 2, "identifiant 1 réservé");
+}
+
+/// Incohérence de longueur membres/poids : rejetée avec sa cause dédiée, sans
+/// fabriquer de poids.
+#[test]
+fn incoherence_membres_poids_rejetee() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    {
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+        // 1 membre, 2 poids : écrit via les setters séparés (set_engram_state
+        // refuse la longueur incohérente).
+        writer.set_engram_members(1, vec![7]).unwrap();
+        writer.set_engram_weights(1, vec![1.0, 2.0]).unwrap();
+    }
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+    let report = manager.attach_substrate(Arc::new(writer));
+
+    assert!(report.global_failure.is_none(), "zone saine");
+    assert_eq!(report.rejected.len(), 1, "un rejet");
+    let (id, cause) = &report.rejected[0];
+    assert_eq!(id.0, 1, "identifiant rejeté = 1");
+    assert!(matches!(cause, RejectCause::InconsistentWeights { members: 1, weights: 2 }), "cause = incohérence 1 membre / 2 poids, reçu : {cause:?}");
+    assert_eq!(manager.store().count(), 0, "aucun engramme publié");
+}
+
+// ===================================================================
+// Rappel dégradé — repli sur l'état canonique (bitset incomplet)
+// ===================================================================
+
+/// Rappel dégradé : un engramme dont le bitset est INCOMPLET (bit manquant,
+/// réparation échouée) reste rappelé par l'état canonique, même si le bitset
+/// du nœud vaut 0 (retour anticipé du chemin rapide).
+#[cfg(feature = "fault-injection")]
+#[test]
+fn rappel_degrade_replie_sur_etat_canonique_bitset_zero() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let a = NodeId(42);
+    {
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+        // Membres persistés SANS poser le bit (set_engram_state ne touche pas
+        // le bitset) : projection bitset incomplète.
+        writer.set_engram_state(1, vec![a.0 as u32], vec![1.0]).unwrap();
+    }
+    // Réouverture : la réparation du bit ÉCHOUE (injection) → dégradé.
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    manager.store().set_fail_repair_bit(true);
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
+    let report = manager.attach_substrate(writer.clone());
+
+    assert!(report.global_failure.is_none(), "zone saine");
+    assert_eq!(report.coherent, 0, "aucun cohérent");
+    assert_eq!(report.degraded.len(), 1, "un dégradé");
+    assert_eq!(manager.store().degraded_engrams(), vec![EngramId(1)], "registre dégradé contient l'engramme");
+
+    // Le bit n'est PAS posé (réparation échouée) : bitset du nœud == 0.
+    let bitset = writer.engram_bitset(a.0 as u32).unwrap();
+    assert_eq!(bitset, 0, "bitset nul (bit jamais réparé)");
+
+    // Le rappel NATIF doit quand même retrouver l'engramme (repli canonique),
+    // y compris via le retour anticipé bitset==0.
+    let native = manager.store().recall(a).unwrap();
+    assert!(native.contains(&EngramId(1)), "repli dégradé retrouve l'engramme malgré bitset==0 : {native:?}");
+}
+
+/// Cycle de vie du registre dégradé : une mutation réussie (qui ré-écrit le
+/// bitset complet) efface la dégradation ; une suppression aussi. Pas de
+/// registre périmé.
+#[cfg(feature = "fault-injection")]
+#[test]
+fn cycle_de_vie_du_registre_degrade() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let a = NodeId(42);
+    let b = NodeId(43);
+    {
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+        writer.set_engram_state(1, vec![a.0 as u32], vec![1.0]).unwrap();
+    }
+    // Réouverture dégradée (réparation échouée).
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    manager.store().set_fail_repair_bit(true);
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
+    let report = manager.attach_substrate(writer.clone());
+    assert_eq!(report.degraded.len(), 1, "dégradé au chargement");
+    assert_eq!(manager.store().degraded_engrams(), vec![EngramId(1)]);
+
+    // Désarme l'injection puis mute (ré-écrit membres + bitset) → dégradation
+    // effacée.
+    manager.store().set_fail_repair_bit(false);
+    manager.store().mutate(EngramId(1), |e| {
+        e.ensemble.push((b, 0.5));
+    }).expect("mutation réussie");
+    assert!(manager.store().degraded_engrams().is_empty(), "mutation réussie efface la dégradation (bitset ré-écrit complet)");
+
+    // Re-marque dégradé puis supprime → effacé.
+    manager.store().set_fail_repair_bit(true);
+    let _ = manager.store().load_from_substrate();
+    assert!(!manager.store().degraded_engrams().is_empty(), "re-dégradé");
+    manager.store().remove(EngramId(1));
+    assert!(manager.store().degraded_engrams().is_empty(), "suppression efface la dégradation");
+}
+
+// ===================================================================
+// Qualification WAL — réparation, réouverture suivante, échec contrôlé
+// ===================================================================
+
+/// Qualification WAL de la RÉPARATION d'un bit manquant : une réouverture qui
+/// répare produit exactement les écritures de réparation (offset et records
+/// augmentent), puis vérifie couples membres/poids, rappels et index.
+#[test]
+fn reparation_bit_manquant_mesuree_wal() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let a = NodeId(10);
+    {
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+        // Membres persistés SANS le bit (projection incomplète).
+        writer.set_engram_state(1, vec![a.0 as u32], vec![0.75]).unwrap();
+    }
+
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
+    let offset_before = writer.wal().offset();
+    let ecrits_before = writer.wal().records_ecrits();
+
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let report = manager.attach_substrate(writer.clone());
+
+    let offset_after = writer.wal().offset();
+    let ecrits_after = writer.wal().records_ecrits();
+
+    assert!(report.global_failure.is_none(), "zone saine");
+    assert_eq!(report.coherent, 1, "réparé → cohérent");
+    assert!(report.degraded.is_empty(), "aucun dégradé");
+    assert!(offset_after > offset_before, "offset WAL a avancé (réparation)");
+    assert!(ecrits_after > ecrits_before, "records_ecrits a augmenté (réparation)");
+
+    // Couple membre/poids exact (f32 → f64).
+    let e = manager.store().get(EngramId(1)).unwrap();
+    assert_eq!(e.ensemble.len(), 1, "un membre");
+    assert_eq!(e.ensemble[0].0, a, "membre exact");
+    assert!((e.ensemble[0].1 - 0.75).abs() < 1e-6, "poids exact 0.75");
+
+    // Signature re-dérivée + index (rappel spectral opérationnel).
+    assert!(!e.spectral_signature.is_empty(), "signature re-dérivée");
+    let mgr = manager.recall(&[a], 5);
+    assert!(mgr.iter().any(|r| r.engram_id == EngramId(1)), "rappel manager/spectral retrouve l'engramme");
+
+    // Rappel natif (bitset réparé).
+    let native = manager.store().recall(a).unwrap();
+    assert!(native.contains(&EngramId(1)), "rappel natif retrouve l'engramme");
+
+    // Le bit est maintenant posé.
+    let bitset = writer.engram_bitset(a.0 as u32).unwrap();
+    assert_ne!(bitset, 0, "bit réparé posé");
+}
+
+/// Réouverture SUIVANTE (après réparation) : les bits sont présents, aucune
+/// écriture supplémentaire (offset et records inchangés).
+#[test]
+fn reouverture_suivante_apres_reparation_saine() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let a = NodeId(10);
+    {
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+        writer.set_engram_state(1, vec![a.0 as u32], vec![0.75]).unwrap();
+    }
+    // Première réouverture : réparation du bit manquant.
+    {
+        let manager =
+            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let sub = SubstrateFile::open(&path).unwrap();
+        let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+        let report = manager.attach_substrate(Arc::new(writer));
+        assert_eq!(report.coherent, 1, "réparé à la première réouverture");
+    }
+
+    // Seconde réouverture : bit déjà présent → aucune écriture.
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
+    let offset_before = writer.wal().offset();
+    let ecrits_before = writer.wal().records_ecrits();
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let report = manager.attach_substrate(writer.clone());
+    let offset_after = writer.wal().offset();
+    let ecrits_after = writer.wal().records_ecrits();
+
+    assert_eq!(report.coherent, 1, "chargé cohérent");
+    assert!(report.degraded.is_empty(), "aucun dégradé");
+    assert_eq!(offset_before, offset_after, "offset inchangé (aucune réécriture)");
+    assert_eq!(ecrits_before, ecrits_after, "records_ecrits inchangé");
+}
+
+/// Échec contrôlé PENDANT la réparation : l'engramme est dégradé (bit manquant),
+/// l'état canonique est publié, AUCUNE écriture de réparation n'a eu lieu et
+/// AUCUN apprentissage (poids inchangés, pas de reconsolidation).
+#[cfg(feature = "fault-injection")]
+#[test]
+fn echec_pendant_reparation_ne_reecrit_pas_et_n_apprend_pas() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let a = NodeId(10);
+    {
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+        writer.set_engram_state(1, vec![a.0 as u32], vec![0.75]).unwrap();
+    }
+
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
+    let offset_before = writer.wal().offset();
+    let ecrits_before = writer.wal().records_ecrits();
+
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    manager.store().set_fail_repair_bit(true);
+    let report = manager.attach_substrate(writer.clone());
+
+    let offset_after = writer.wal().offset();
+    let ecrits_after = writer.wal().records_ecrits();
+
+    assert!(report.global_failure.is_none(), "zone saine (pas globale)");
+    assert_eq!(report.degraded.len(), 1, "dégradé (échec de réparation)");
+    // Aucune écriture de réparation n'a été émise (l'injection court-circuite
+    // l'appel réel à ensure_engram_bit) : offset et records inchangés.
+    assert_eq!(offset_before, offset_after, "offset inchangé (aucune réparation écrite)");
+    assert_eq!(ecrits_before, ecrits_after, "records_ecrits inchangé");
+
+    // État canonique PUBLIÉ (membres+poids exacts), poids NON modifiés.
+    let e = manager.store().get(EngramId(1)).unwrap();
+    assert_eq!(e.ensemble, vec![(a, 0.75)], "état canonique publié, poids inchangés (aucun apprentissage)");
+
+    // Rappel natif : repli dégradé opérationnel malgré l'échec de réparation.
+    let native = manager.store().recall(a).unwrap();
+    assert!(native.contains(&EngramId(1)), "repli dégradé après échec de réparation");
 }
