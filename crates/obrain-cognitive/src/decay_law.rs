@@ -64,8 +64,7 @@ pub const TICKS_PER_HALF_LIFE: u32 = 64;
 pub fn unix_micros() -> i64 {
     web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_micros() as i64)
 }
 
 /// Convertit une ancre (secondes epoch `f64`, telle que persistée) en micros.
@@ -152,7 +151,11 @@ impl DecayLaw {
     /// `H = Δt · ln2 / −ln(factor)`.
     pub fn implied_half_life(factor: f64, elapsed: Duration) -> Duration {
         let dt = elapsed.as_secs_f64();
-        if !(factor > 0.0 && factor < 1.0) || !(dt > 0.0) {
+        // partial_cmp : préserve la sémantique NaN (None ≠ Some → invalide).
+        if factor.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+            || factor.partial_cmp(&1.0) != Some(std::cmp::Ordering::Less)
+            || dt.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+        {
             return Duration::from_secs(0);
         }
         let h = dt * std::f64::consts::LN_2 / -factor.ln();
@@ -337,7 +340,7 @@ mod tests {
         let h = Duration::from_secs(3600);
         let ancre = EnergyAnchor::new(0.5, 1_000_000, h);
         assert_eq!(ancre.energy_at(900_000), 0.5);
-        assert!(ancre.energy_at(1_000_000) == 0.5);
+        assert_eq!(ancre.energy_at(1_000_000), 0.5);
     }
 
     /// Conversion d'unités : secondes epoch `f64` ↔ micros, sans perte

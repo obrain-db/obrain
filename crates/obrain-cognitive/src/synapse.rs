@@ -1370,7 +1370,7 @@ impl SynapseStore {
                 Some(entry) => entry.iter().copied().collect(),
                 None => smallvec::SmallVec::new(),
             };
-            for k in cles.iter() {
+            for k in &cles {
                 let Some(w) = self.synapses.get(k).map(|s| s.value().current_weight()) else {
                     continue;
                 };

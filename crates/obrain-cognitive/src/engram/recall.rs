@@ -696,6 +696,8 @@ impl RecallEngine {
 }
 
 mod tests {
+    // Module de test : import global idiomatique.
+    #[allow(clippy::wildcard_imports)]
     use super::*;
     use crate::engram::traits::InMemoryVectorIndex;
 
@@ -715,7 +717,7 @@ mod tests {
 
             // Index the spectral signature.
             let sig = spectral.encode(&nodes);
-            engram.spectral_signature = sig.clone();
+            engram.spectral_signature.clone_from(&sig);
             index.upsert(&id.0.to_string(), &sig);
 
             store.insert(engram);
@@ -1063,8 +1065,7 @@ mod tests {
             .iter()
             .enumerate()
             .find(|(_, r)| r.engram_id.0 == top_id)
-            .map(|(i, r)| (i, r.confidence))
-            .unwrap_or((usize::MAX, 0.0));
+            .map_or((usize::MAX, 0.0), |(i, r)| (i, r.confidence));
         eprintln!(
             "E4 top_id={top_id} conf_base={top_conf_base:.6} conf_apres={conf_after:.6} rang={pos}"
         );

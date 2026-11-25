@@ -144,7 +144,7 @@ fn l_ancre_composite_reste_coherente_sous_sigkill() {
 }
 
 /// Enfant : ouvre une base neuve, pose un état initial DURABLE A (énergie 0,5
-/// + ancre composite, puis `flush()`), vérifie que A se relit, marque `pret`,
+/// plus ancre composite, puis `flush()`), vérifie que A se relit, marque `pret`,
 /// arme l'arrêt entre ancre et miroir, puis renforce 0,25 → 0,75. Il meurt sur
 /// le point d'injection (abort), sans jamais écrire le miroir. Ce qui le
 /// distingue de [`enfant_renforce_et_meurt_entre_ancre_et_miroir`] : A est ICI
