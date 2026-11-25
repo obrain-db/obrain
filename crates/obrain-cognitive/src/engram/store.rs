@@ -375,20 +375,6 @@ impl EngramStore {
             if members.is_empty() {
                 continue;
             }
-            // RÉPARATION des projections : reconstruire le bitset Bloom depuis
-            // les membres persistés, SANS toucher aux poids ni à l'ensemble.
-            // Idempotent (OR d'un bit déjà posé = no-op) ; ne crée aucune
-            // observation ni transformation de l'état cognitif appris.
-            for nid in &members {
-                if let Err(e) = writer.add_engram_bit(*nid, eid_u16) {
-                    tracing::warn!(
-                        engram_id = eid_u16,
-                        node_id = *nid,
-                        error = %e,
-                        "réparation du bitset échouée"
-                    );
-                }
-            }
             // Slot occupé : réserve l'identifiant quoi qu'il arrive (même si
             // les poids sont incohérents ou absents).
             max_id = max_id.max(eid_u16 as u64);
@@ -418,6 +404,22 @@ impl EngramStore {
                 }
             };
             let mut engram = Engram::new(eid, ensemble);
+            // RÉPARATION des projections APRÈS validation de l'état canonique :
+            // reconstruire le bitset depuis les membres validés, sans écriture
+            // inutile (ensure_engram_bit est no-op si le bit est déjà posé).
+            for (nid, _) in &engram.ensemble {
+                match writer.ensure_engram_bit(nid.0 as u32, eid_u16) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(
+                            engram_id = eid_u16,
+                            node_id = nid.0,
+                            error = %e,
+                            "projection bitset dégradée"
+                        );
+                    }
+                }
+            }
             // Signature spectrale : re-encodée paresseusement par le manager
             // (le rappel spectral l'utilise ; ici on la laisse vide, le
             // vecteur index sera ré-upserté au prochain `recall`).

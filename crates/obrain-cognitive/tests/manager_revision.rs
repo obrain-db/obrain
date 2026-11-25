@@ -411,3 +411,37 @@ fn reouverture_apres_ecriture_partielle() {
     let cs: Vec<NodeId> = rev.members.iter().filter(|(n, _)| *n == c).map(|(n, _)| *n).collect();
     assert_eq!(cs.len(), 1, "C présent une seule fois");
 }
+
+/// Idempotence de la réparation : `ensure_engram_bit` ne produit AUCUNE écriture
+/// quand le bit est déjà présent (retourne Ok(false)). Une réouverture saine ne
+/// réécrit donc pas les bitsets.
+#[test]
+fn reouverture_saine_ne_reecrit_pas_les_bitsets() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let (a, b) = (NodeId(1), NodeId(2));
+
+    let id;
+    {
+        let manager =
+            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
+        manager.attach_substrate(writer.clone());
+        id = manager.store().form(&[a, b]).unwrap();
+        // après form, les bits A/B sont posés.
+    }
+    // Réouverture saine : les bits sont déjà présents → ensure renvoie false.
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+    assert_eq!(
+        writer.ensure_engram_bit(a.0 as u32, id.0 as u16).unwrap(),
+        false,
+        "bit A déjà présent : aucune écriture"
+    );
+    assert_eq!(
+        writer.ensure_engram_bit(b.0 as u32, id.0 as u16).unwrap(),
+        false,
+        "bit B déjà présent : aucune écriture"
+    );
+}
