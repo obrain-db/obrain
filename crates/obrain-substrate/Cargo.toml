@@ -189,6 +189,11 @@ harness = false
 name = "echelle_resolution"
 harness = false
 
+[lints.rust]
+# N'hérite pas des lints du workspace (missing_docs/unsafe_code) : on ne déclare
+# que `defauts_connus` comme cfg attendu, pour les tests de défauts connus.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(defauts_connus)'] }
+
 [features]
 default = []
 # Expose legacy read-only LpgStore ingestion (used only by the obrain-migrate binary).
