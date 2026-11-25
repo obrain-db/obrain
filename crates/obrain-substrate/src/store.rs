@@ -26142,10 +26142,14 @@ impl SubstrateStore {
         key: &str,
         value: Value,
         strict: bool,
+        vivant_exige: bool,
     ) -> SubstrateResult<()> {
         self.refuser_mutation_en_lecture_seule("set_node_property");
         let _marqueur = self.marquer_ecriture_hors_transaction(EntityKind::Node, id.0, key);
-        if !self.is_live_on_disk(id) {
+        // `vivant_exige = false` : la construction atomique écrit les propriétés
+        // d'un nœud « en vol » (sans ALLOCATED) — le slot existe, la chaîne v2
+        // s'y accroche, la vivacité n'est pas requise.
+        if vivant_exige && !self.is_live_on_disk(id) {
             // LpgStore silently no-ops on missing nodes; match that contract.
             return Ok(());
         }
@@ -27602,7 +27606,7 @@ impl GraphStoreMut for SubstrateStore {
 
     fn set_node_property(&self, id: NodeId, key: &str, value: Value) {
         // Contrat best-effort du trait : un refus v2 retombe sur la DashMap.
-        let _ = self.poser_propriete_noeud(id, key, value, false);
+        let _ = self.poser_propriete_noeud(id, key, value, false, true);
     }
 
     fn set_edge_property(&self, id: EdgeId, key: &str, value: Value) {
@@ -45475,7 +45479,6 @@ impl SubstrateStore {
         // de moins qu'une déclaration séparée.
         let tx = match en_vol {
             DeclarationEnVol::Aucune => None,
-            DeclarationEnVol::CreationAuto => Some(Self::tx_creation_auto(id)),
             DeclarationEnVol::Transaction(tx) => Some(tx),
         };
         match tx {
@@ -45595,6 +45598,43 @@ impl SubstrateStore {
     /// reste celle des autres écritures). Le rejeu existant écarte (`NodeDelete`)
     /// toute déclaration jamais scellée : le nœud existe entier ou pas du tout.
     /// Sans propriétés il n'y a rien à lier : chemin inchangé.
+    /// Écrit un nœud « en vol » (naissance différée) pour la construction
+    /// atomique : `TxNoeudEnAttente` + `NodeInsert` SANS `ALLOCATED` — invisible
+    /// aux chemins de lecture jusqu'à [`Self::finaliser_noeud_atomique`].
+    fn creer_noeud_en_vol(&self, labels: &[&str]) -> SubstrateResult<(NodeId, u64)> {
+        self.refuser_mutation_en_lecture_seule("create_node");
+        let id = self.allocate_node_id();
+        let bitset = self
+            .intern_labels_to_bitset(labels)
+            .expect("label registry overflow (>64 labels); step 3 lifts this");
+        let rec = NodeRecord {
+            label_bitset: bitset,
+            ..Default::default()
+        };
+        let tx = Self::tx_creation_auto(id);
+        self.writer.write_node_precede_pending(
+            id.0 as u32,
+            rec,
+            WalPayload::TxNoeudEnAttente {
+                tx,
+                node_id: id.0 as u32,
+            },
+        )?;
+        Ok((id, bitset))
+    }
+
+    /// Pose la naissance (bit `ALLOCATED`) + compteurs + observateurs, APRÈS le
+    /// scellement : le nœud ne devient visible qu'une fois complet.
+    fn finaliser_noeud_atomique(&self, id: NodeId, bitset: u64) -> SubstrateResult<()> {
+        self.writer.finaliser_noeud_allocated(id.0 as u32)?;
+        self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
+        self.incr_label_counts(bitset, 1);
+        self.incr_first_label_count(bitset, 1);
+        self.note_naissance_noeud(id);
+        self.notify_node_created(id);
+        Ok(())
+    }
+
     fn creer_noeud_atomique(
         &self,
         labels: &[&str],
@@ -45603,11 +45643,15 @@ impl SubstrateStore {
         if properties.is_empty() {
             return Ok(self.creer_noeud(labels, DeclarationEnVol::Aucune));
         }
-        let id = self.creer_noeud(labels, DeclarationEnVol::CreationAuto);
+        // Naissance DIFFÉRÉE : le nœud est écrit « en vol » (sans ALLOCATED) et
+        // ne devient visible qu'après le scellement. Un échec intermédiaire ou
+        // de scellement laisse un nœud invisible, écarté au rejeu (pas de
+        // `TxCommit`) — jamais un nœud partiel présenté comme valide.
+        let (id, bitset) = self.creer_noeud_en_vol(labels)?;
         obrain_common::utils::panne::point_creation_noeud(0);
         // Sonde de test : suspendre la construction après la création du nœud,
-        // AVANT toute propriété (le marqueur de réservation n'est pas encore
-        // posé) — un lecteur indépendant doit ne rien observer de réservé.
+        // AVANT toute propriété — le nœud est encore « en vol » (invisible) et
+        // le marqueur de réservation n'est pas posé.
         #[cfg(test)]
         if let Some(cell) = APRES_CREATION_NOEUD_ATOMIQUE.get()
             && let Some(f) = cell.lock().unwrap().as_ref()
@@ -45615,11 +45659,11 @@ impl SubstrateStore {
             f(id.0 as u32);
         }
         for (rang, (k, v)) in properties.iter().enumerate() {
-            // STRICT : un échec de durabilité d'une propriété (repli DashMap non
-            // persisté) doit empêcher le scellement — la réservation ne serait
-            // pas durable. `?` propage, le nœud reste en vol et est écarté au
-            // rejeu (aucun TxCommit n'est écrit).
-            self.poser_propriete_noeud(id, k.as_str(), v.clone(), true)?;
+            // STRICT + « en vol accepté » : un échec de durabilité d'une
+            // propriété empêche le scellement — la réservation ne serait pas
+            // durable. `?` propage : le nœud reste « en vol » (invisible) et est
+            // écarté au rejeu (aucun `TxCommit`).
+            self.poser_propriete_noeud(id, k.as_str(), v.clone(), true, false)?;
             obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
         }
         let rec = WalRecord {
@@ -45630,16 +45674,9 @@ impl SubstrateStore {
                 tx: Self::tx_creation_auto(id),
             },
         };
-        // L'échec du SCELLEMENT est propagé, pas avalé (défaut relevé en revue,
-        // note 54279ac0) : un nœud déclaré en vol (`TxNoeudEnAttente`) dont le
-        // `TxCommit` n'est pas journalisé est ÉCARTÉ au rejeu. L'acquitter comme
-        // durable serait faux. Le record garde `flags: 0` — pas de fsync par
-        // réservation : la durabilité du scellement reste celle des écritures
-        // auto-commit, acquise au prochain `flush`/`close`. Un `Err` signifie
-        // « état indéterminé » : l'appelant ne doit pas traiter l'identité
-        // comme réservée. Les échecs AVANT écriture (`write_node`) continuent
-        // de paniquer (contrat pré-existant), les écritures de propriétés
-        // restent best-effort (`set_node_property` avale ses erreurs).
+        // L'échec du SCELLEMENT est propagé (pas avalé) : sans `TxCommit`, le
+        // nœud en vol est écarté au rejeu. `flags: 0` — pas de fsync par
+        // réservation (durabilité = celle des écritures auto-commit).
         #[cfg(test)]
         if ECHEC_SCELLEMENT_ATOMIQUE.with(|c| c.replace(false)) {
             return Err(SubstrateError::Internal(
@@ -45647,6 +45684,8 @@ impl SubstrateStore {
             ));
         }
         self.writer.wal().append_encoded(&rec)?;
+        // Naissance différée : le nœud ne devient visible qu'ici, complet.
+        self.finaliser_noeud_atomique(id, bitset)?;
         Ok(id)
     }
 }
@@ -45657,9 +45696,6 @@ impl SubstrateStore {
 enum DeclarationEnVol {
     /// Auto-commit sans propriétés : rien à lier.
     Aucune,
-    /// Auto-commit avec propriétés : transaction privée (`tx_creation_auto`),
-    /// scellée par `creer_noeud_atomique` (obrain#120 pt 4).
-    CreationAuto,
     /// Transaction explicite : le nœud reste en vol jusqu'à son `TxCommit`.
     Transaction(u64),
 }
@@ -45869,13 +45905,12 @@ mod reservation_tests {
         );
         drop(garde);
 
-        // Le nœud en vol ne porte AUCUNE propriété (échec sur la première).
-        let vivants = s.node_ids();
-        assert_eq!(vivants.len(), 1, "un nœud en vol (non scellé)");
+        // Le nœud en vol (naissance différée) est INVISIBLE aux chemins de
+        // lecture : aucun nœud partiel n'est présenté comme valide.
         assert_eq!(
-            s.get_node_property(vivants[0], &PropertyKey::new("payload")),
-            None,
-            "aucune propriété posée avant l'échec"
+            s.node_ids(),
+            Vec::<NodeId>::new(),
+            "aucun nœud en vol visible après l'échec"
         );
     }
 
@@ -45904,20 +45939,18 @@ mod reservation_tests {
         );
         drop(garde);
 
-        // AVANT toute retentative : nœud en vol, construction PARTIELLE
-        // ("payload" posée, clé absente — l'échec a eu lieu au MILIEU).
-        let vivants = s.node_ids();
-        assert_eq!(vivants.len(), 1, "un nœud en vol (non scellé)");
-        let nid = vivants[0];
+        // AVANT toute retentative : le nœud en vol (naissance différée) est
+        // INVISIBLE — aucun nœud partiel (même une propriété déjà posée) n'est
+        // exposé par les chemins de lecture.
         assert_eq!(
-            s.get_node_property(nid, &PropertyKey::new("payload")),
-            Some(Value::Int64(1)),
-            "la propriété de construction a été posée"
+            s.node_ids(),
+            Vec::<NodeId>::new(),
+            "aucun nœud en vol visible (échec au milieu)"
         );
         assert_eq!(
-            s.get_node_property(nid, &PropertyKey::new(crate::reservation::PROP_CLE)),
+            s.get_node_property(NodeId(1), &PropertyKey::new("payload")),
             None,
-            "la clé réservée n'a pas été posée (échec au milieu)"
+            "aucune propriété d'un nœud partiel n'est lisible"
         );
 
         // close + open IMMÉDIAT, sans retentative : le nœud non scellé est
@@ -45953,6 +45986,62 @@ mod reservation_tests {
             s2.node_ids().len(),
             1,
             "un seul nœud vivant, pas de doublon"
+        );
+    }
+
+    /// Isolation RÉELLE après un échec (résultat indéterminé) : un LECTEUR
+    /// INDÉPENDANT (le fil courant, B) ne doit pas voir le nœud partiellement
+    /// matérialisé comme un nœud valide. Le fil A rend son `Err` puis B
+    /// interroge les chemins de lecture PUBLICS.
+    #[test]
+    fn lecteur_independant_ne_voit_pas_le_noeud_partiel_apres_echec() {
+        let td = tempfile::tempdir().unwrap();
+        let s = Arc::new(SubstrateStore::create(td.path()).unwrap());
+
+        let (tx_result, rx_result) =
+            std::sync::mpsc::channel::<SubstrateResult<crate::reservation::IssueReservation>>();
+        let s2 = Arc::clone(&s);
+        let fil = std::thread::spawn(move || {
+            // Arme l'injection SUR CE fil (thread-local), puis construit.
+            ECHEC_APPEND_V2_CLE.with(|c| c.set(Some(crate::reservation::PROP_CLE)));
+            let r = s2.reserver_identite(KIND, CLE, DEFINITION, construction);
+            ECHEC_APPEND_V2_CLE.with(|c| c.set(None));
+            let _ = tx_result.send(r);
+        });
+
+        // A signale son résultat ; la construction est terminée (mutex relâché).
+        let r = rx_result
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("le fil A rend son résultat");
+        assert!(r.is_err(), "le fil A doit rendre Err (indéterminé) : {r:?}");
+        fil.join().unwrap();
+
+        // Lecteur INDÉPENDANT (B) : le nœud en vol (résultat indéterminé) ne
+        // doit pas être présenté comme un nœud valide par les chemins publics.
+        let ids = s.node_ids();
+        assert_eq!(
+            ids,
+            Vec::<NodeId>::new(),
+            "node_ids ne doit exposer aucun nœud partiel (vu : {ids:?})"
+        );
+        assert_eq!(
+            s.nodes_by_label("structure"),
+            Vec::<NodeId>::new(),
+            "recherche par label : aucun nœud partiel"
+        );
+        assert_eq!(
+            s.find_nodes_by_property("payload", &Value::Int64(1)),
+            Vec::<NodeId>::new(),
+            "recherche par propriété : aucun nœud partiel"
+        );
+        assert!(
+            s.get_node(NodeId(1)).is_none(),
+            "get_node ne doit pas rendre le nœud partiel"
+        );
+        assert_eq!(
+            s.get_node_property(NodeId(1), &PropertyKey::new("payload")),
+            None,
+            "get_node_property ne doit pas rendre une propriété du nœud partiel"
         );
     }
 }

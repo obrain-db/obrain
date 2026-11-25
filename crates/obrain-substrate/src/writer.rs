@@ -396,7 +396,7 @@ impl Writer {
 
     #[tracing::instrument(level = "trace", skip(self, node))]
     pub fn write_node(&self, idx: u32, node: NodeRecord) -> SubstrateResult<()> {
-        self.ecrire_node(idx, node, None)
+        self.ecrire_node(idx, node, None, true)
     }
 
     /// Comme [`Writer::write_node`], mais la déclaration `precede` (un record
@@ -409,7 +409,45 @@ impl Writer {
         node: NodeRecord,
         precede: WalPayload,
     ) -> SubstrateResult<()> {
-        self.ecrire_node(idx, node, Some(precede))
+        self.ecrire_node(idx, node, Some(precede), true)
+    }
+
+    /// Comme [`Writer::write_node_precede`], mais SANS poser `ALLOCATED` : le
+    /// nœud est écrit « en vol », invisible aux chemins de lecture (naissance
+    /// différée), jusqu'à [`Writer::finaliser_noeud_allocated`]. Réservé à la
+    /// construction atomique de nœud+propriétés (`creer_noeud_atomique`), qui
+    /// ne veut pas exposer un nœud partiellement matérialisé à un lecteur
+    /// concurrent.
+    pub fn write_node_precede_pending(
+        &self,
+        idx: u32,
+        node: NodeRecord,
+        precede: WalPayload,
+    ) -> SubstrateResult<()> {
+        self.ecrire_node(idx, node, Some(precede), false)
+    }
+
+    /// Pose `ALLOCATED` sur un nœud écrit « en vol » (naissance différée), en
+    /// MÉMOIRE SEULEMENT (aucun record WAL : le rejeu pose déjà `ALLOCATED` via
+    /// `NodeInsertV3`, et publie le nœud via son `TxCommit`). Rend le nœud
+    /// visible aux chemins de lecture.
+    pub fn finaliser_noeud_allocated(&self, idx: u32) -> SubstrateResult<()> {
+        let mut rec = match self.read_node(idx)? {
+            Some(rec) => rec,
+            None => {
+                return Err(crate::error::SubstrateError::Internal(format!(
+                    "finaliser_noeud_allocated : slot {idx} absent de la zone"
+                )));
+            }
+        };
+        rec.flags |= crate::record::node_flags::ALLOCATED;
+        self.with_node_zone(|zf| {
+            let offset = idx as usize * NodeRecord::SIZE;
+            ensure_room(zf, offset + NodeRecord::SIZE, self.min_headroom)?;
+            let bytes = bytemuck::bytes_of(&rec);
+            zf.as_slice_mut()[offset..offset + NodeRecord::SIZE].copy_from_slice(bytes);
+            Ok(())
+        })
     }
 
     fn ecrire_node(
@@ -417,11 +455,18 @@ impl Writer {
         idx: u32,
         node: NodeRecord,
         precede: Option<WalPayload>,
+        allocated: bool,
     ) -> SubstrateResult<()> {
         // (jalon 1) TOUT record reellement ecrit porte ALLOCATED — pose ici,
         // au seul point d'ecriture, jamais laisse au choix de l'appelant.
+        // Exception : la construction atomique écrit « en vol » (allocated=false)
+        // pour ne pas exposer un nœud partiel ; la finalisation pose le bit.
         let node = NodeRecord {
-            flags: node.flags | crate::record::node_flags::ALLOCATED,
+            flags: if allocated {
+                node.flags | crate::record::node_flags::ALLOCATED
+            } else {
+                node.flags
+            },
             ..node
         };
         self.note_feature_mutation();
