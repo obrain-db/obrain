@@ -154,6 +154,12 @@ cognitive-gap-detection = ["cognitive-fabric", "obrain-cognitive/gap-detection"]
 cognitive-synthesis = ["cognitive-fabric", "obrain-cognitive/synthesis"]  # + CALL obrain.cognitive.synthesize
 cognitive-full = ["cognitive", "kernel", "obrain-cognitive/cognitive-full", "cognitive-gap-detection", "cognitive-synthesis", "decision", "algos"]  # All cognitive subsystems (algos requis : le dispatch générique des procédures CALL passe par plan_call_procedure, gardé derrière cfg(feature="algos"))
 cognitive-engram = ["cognitive", "obrain-cognitive/engram"]  # Engram subsystem (Layer 0: Hebbian + FSRS)
+# Thinkers - self-maintaining background agents (T13): OPT-IN explicite.
+# `obrain-cognitive/thinker` pulls `substrate`; the engine wiring
+# (`thinker_runtime`, `open_substrate_with_thinkers`) exists only under this
+# feature. Deliberately NOT in `cognitive-full`: an ordinary base must start
+# NOTHING in the background.
+thinker = ["dep:obrain-cognitive", "obrain-cognitive/thinker"]
 # ── IAM, EN OPT-IN EXPRÈS ────────────────────────────────────────────────────
 # `obrain-iam` existait déjà comme dépendance optionnelle de `obrain-cognitive`,
 # mais AUCUNE feature du moteur ne la relayait : la chaîne était complète dans le
