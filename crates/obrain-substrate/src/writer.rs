@@ -2697,25 +2697,28 @@ impl Writer {
             )));
         }
         let bits: Vec<u32> = weights.iter().map(|w| w.to_bits()).collect();
-        self.wal.append(WalRecord {
-            lsn: 0,
-            timestamp: unix_micros(),
-            flags: 0,
-            payload: WalPayload::EngramMembersSet {
-                engram_id,
-                members: members.clone(),
-            },
-        })?;
-        self.wal.append(WalRecord {
-            lsn: 0,
-            timestamp: unix_micros(),
-            flags: 0,
-            payload: WalPayload::EngramWeightsSet {
-                engram_id,
-                weights: bits,
-            },
-        })?;
+        // WAL-first SOUS le même verrou que l'application des zones : l'ordre
+        // du WAL suit l'ordre d'application, donc le rejeu reproduit le même
+        // état final que la mémoire, même sous écritures concurrentes.
         self.with_engram_state_zones(|mz, wz| {
+            self.wal.append(WalRecord {
+                lsn: 0,
+                timestamp: unix_micros(),
+                flags: 0,
+                payload: WalPayload::EngramMembersSet {
+                    engram_id,
+                    members: members.clone(),
+                },
+            })?;
+            self.wal.append(WalRecord {
+                lsn: 0,
+                timestamp: unix_micros(),
+                flags: 0,
+                payload: WalPayload::EngramWeightsSet {
+                    engram_id,
+                    weights: bits.clone(),
+                },
+            })?;
             crate::engram::EngramZone::set_members_raw(mz, engram_id, &members)?;
             crate::engram::EngramZone::set_weights_raw(wz, engram_id, &weights)
         })
@@ -3399,6 +3402,9 @@ impl Writer {
         }
         if let Some(z) = zones.engram_bitset.as_ref() {
             msync_zone_si_etendu(z, &zones.engram_bitset_fsync_rc)?;
+        }
+        if let Some(z) = zones.engram_weights.as_ref() {
+            msync_zone_si_etendu(z, &zones.engram_weights_fsync_rc)?;
         }
         for (z, last_rc) in [
             (zones.simplex_dir.as_ref(), &zones.simplex_dir_fsync_rc),
