@@ -310,10 +310,31 @@ pub enum ResolvedState {
 
 /// Primitive ATOMIQUE GÉNÉRIQUE attendue du substrat (point F).
 ///
-/// Le substrat ne connaît AUCUN type cognitif : tout est octets opaques. Il
-/// conserve atomiquement, dans une même transaction durable :
-/// (identité logique de l'événement, définition, précondition sur l'état
-/// source, état résultant, révision résultante).
+/// Le substrat ne connaît AUCUN type cognitif : tout est octets opaques.
+///
+/// ── CE QUI EST EXIGÉ (architectural), PAS COMMENT (implémentation) ─────────
+///
+/// Le besoin est : appliquer ATOMIQUEMENT un événement identifiable, avec une
+/// PRÉCONDITION de révision, et CONSERVER son effet. Le substrat est LIBRE de
+/// réutiliser ou d'enrichir GÉNÉRIQUEMENT ses mécanismes existants (WAL-first,
+/// FLAG_COMMIT, mutation multi-zones sous un verrou). Aucune colonne physique
+/// « observations appliquées » ni trame WAL particulière n'est exigée : ce sont
+/// des OPTIONS d'implémentation, pas des exigences.
+///
+/// Cinq propriétés à vérifier SÉPARÉMENT (elles ne s'impliquent pas l'une
+/// l'autre) :
+/// 1. ATOMICITÉ — l'application (identité + effet) est tout-ou-rien.
+/// 2. ISOLATION — des événements concurrents ne s'entrelacent pas partiellement.
+/// 3. VISIBILITÉ — l'effet est visible après le retour `Applied`, et jamais
+///    avant en cas d'échec.
+/// 4. DURABILITÉ — après `Applied`, l'effet survit à un crash.
+/// 5. RÉCUPÉRATION — après un crash, l'état est le préfixe COMMITÉ (aucun
+///    événement déchiré) ; [`AtomicEventLedger::resolve`] tranche un état
+///    indéterminé.
+///
+/// Une RÉSERVATION d'identité seule ne suffit PAS : réserver puis transformer
+/// indépendamment laisse, après crash, une identité prise sans effet — état que
+/// `resolve` doit QUALIFIER, jamais deviner.
 pub trait AtomicEventLedger: Send + Sync {
     /// Révision COURANTE d'une ressource (la connaissance visée).
     fn resource_revision(&self, resource_id: &[u8]) -> Result<u64, String>;
@@ -503,9 +524,12 @@ enum EventEntry {
 
 /// Registre d'événements de RÉFÉRENCE, en mémoire.
 ///
-/// Sert de spécification exécutable du contrat ET de mock de test. N'EST PAS
-/// durable : ce n'est PAS une implémentation de production (aucune réservation
-/// en mémoire présentée comme durable).
+/// Sert de spécification exécutable du contrat ET de mock de test.
+///
+/// Propriétés fournies : ATOMICITÉ et ISOLATION (un mutex par registre),
+/// VISIBILITÉ immédiate. Propriétés ABSENTES : DURABILITÉ et RÉCUPÉRATION
+/// réelles (état volatil) — ce n'est PAS une implémentation de production. Le
+/// chemin `Claimed` modélise seulement l'état qu'un crash laisserait.
 pub struct InMemoryAtomicEventLedger {
     events: Mutex<HashMap<[u8; 16], EventEntry>>,
     resources: Mutex<HashMap<Vec<u8>, u64>>,
