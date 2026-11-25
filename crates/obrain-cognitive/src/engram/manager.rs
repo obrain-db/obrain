@@ -22,7 +22,7 @@ use super::hopfield::{
 use super::observe::EngramMetricsCollector;
 use super::recall::{reconsolidate, RecallEngine, RecallResult, WarmupConfig, WarmupSelector};
 use super::spectral::SpectralEncoder;
-use super::store::{EngramStore, StoreError};
+use super::store::{EngramStore, LoadReport, StoreError};
 use super::traits::VectorIndex;
 use super::types::{Engram, EngramHorizon, EngramId, RecallEvent, RecallFeedback};
 
@@ -141,7 +141,7 @@ impl EngramManager {
     /// `engram_members`/`engram_bitset` (survivent au redémarrage —
     /// prod-readiness §9.5 point 2). Au boot, recharge les engrams persistés.
     #[cfg(feature = "substrate")]
-    pub fn attach_substrate(&self, writer: Arc<obrain_substrate::Writer>) {
+    pub fn attach_substrate(&self, writer: Arc<obrain_substrate::Writer>) -> LoadReport {
         self.store.attach_substrate(writer);
         let report = self.store.load_from_substrate();
         if report.coherent > 0 || !report.degraded.is_empty() {
@@ -157,6 +157,7 @@ impl EngramManager {
             }
             tracing::info!(coherent = report.coherent, degraded = report.degraded.len(), rejected = report.rejected, "cognitive: engrams rechargés depuis le substrate");
         }
+        report
     }
 
     /// Returns a reference to the metrics collector.
