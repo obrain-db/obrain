@@ -310,7 +310,7 @@ mod tests {
                     .await;
             }
         }
-        let mut abc: Vec<Vec<(u64, f64)>> = mgr
+        let abc: Vec<Vec<(u64, f64)>> = mgr
             .store()
             .list()
             .iter()

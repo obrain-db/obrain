@@ -227,6 +227,8 @@ impl EngramStore {
         }
     }
 
+    /// Applique `f` à l'engramme `id` (modification en place + write-through),
+    /// puis incrémente la révision.
     pub fn update(&self, id: EngramId, f: impl FnOnce(&mut Engram)) {
         self.revision.fetch_add(1, Ordering::Relaxed);
         if let Some(mut entry) = self.cache.get_mut(&id) {
@@ -565,6 +567,7 @@ impl EngramStore {
     /// Persist the (id, members) pair + per-node bit for an engram whose id
     /// was allocated externally (used by `form` and by the insert mirror).
     #[cfg(feature = "substrate")]
+    #[allow(dead_code)]
     fn form_with_id(&self, eid: EngramId, nids: &[NodeId]) -> SubstrateResult<()> {
         let writer = self
             .substrate_writer()

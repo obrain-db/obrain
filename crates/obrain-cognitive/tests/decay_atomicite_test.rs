@@ -39,7 +39,7 @@ fn les_quatre_combinaisons_n_exposent_que_des_etats_valides() {
     let t_h = t0 + H.as_micros() as i64;
 
     let mut vus = Vec::new();
-    let mut combinaison = |col: f32, e_ref: f64, t_ref: i64| -> f64 {
+    let combinaison = |col: f32, e_ref: f64, t_ref: i64| -> f64 {
         sub.set_node_energy_f32(id, col).unwrap();
         decay_clock::persist_anchor_explicit(&sub, id, e_ref, t_ref, H);
         decay_clock::energy_at(&sub, id, &law(), t_h).unwrap()
