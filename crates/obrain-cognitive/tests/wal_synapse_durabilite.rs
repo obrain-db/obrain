@@ -61,14 +61,20 @@ fn trois_colonnes(chemin: &Path, hub: NodeId) {
         let col = substrate.scan_typed_edge_weights("SYNAPSE");
         let inc = substrate.synapse_edges_of(hub);
         (
-            col.map_or_else(|e| {
-                println!("  (a) ERREUR colonne: {e}");
-                999_999
-            }, |v| v.len()),
-            inc.map_or_else(|e| {
-                println!("  (b) ERREUR incidence: {e}");
-                999_999
-            }, |v| v.len()),
+            col.map_or_else(
+                |e| {
+                    println!("  (a) ERREUR colonne: {e}");
+                    999_999
+                },
+                |v| v.len(),
+            ),
+            inc.map_or_else(
+                |e| {
+                    println!("  (b) ERREUR incidence: {e}");
+                    999_999
+                },
+                |v| v.len(),
+            ),
         )
     };
     let gs: Arc<dyn obrain_core::graph::GraphStoreMut> = substrate.clone();
