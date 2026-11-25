@@ -6872,6 +6872,45 @@ impl SubstrateStore {
         Ok(())
     }
 
+    /// Mutation conditionnelle atomique minimale de DEUX propriétés d'une
+    /// ressource existante : préparation stricte (journal des valeurs d'avant)
+    /// AVANT toute écriture, puis mutation, puis scellement. Un échec de
+    /// préparation laisse les deux propriétés intactes.
+    pub fn muter_deux_proprietes(
+        &self,
+        cible: NodeId,
+        cle1: &str,
+        valeur1: Value,
+        cle2: &str,
+        valeur2: Value,
+        tx: TransactionId,
+    ) -> SubstrateResult<()> {
+        // 1. Préparation COMPLÈTE (stricte) avant toute mutation.
+        let avant1 = self.get_node_property(cible, &PropertyKey::new(cle1));
+        let avant2 = self.get_node_property(cible, &PropertyKey::new(cle2));
+        self.journaliser_valeur_avant_strict(
+            tx,
+            EntityKind::Node,
+            cible.0 as u64,
+            cle1,
+            avant1.as_ref(),
+        )?;
+        self.journaliser_valeur_avant_strict(
+            tx,
+            EntityKind::Node,
+            cible.0 as u64,
+            cle2,
+            avant2.as_ref(),
+        )?;
+        // 2. Mutation.
+        self.set_node_property(cible, cle1, valeur1);
+        self.set_node_property(cible, cle2, valeur2);
+        // 3. Publication (scellement).
+        self.seal_commit(tx)
+            .map_err(|e| SubstrateError::Internal(format!("seal_commit : {e}")))?;
+        Ok(())
+    }
+
     fn clore_transaction_annulee(&self, tx: TransactionId) {
         if !self.tx_avec_valeur_avant.lock().remove(&tx.0) {
             return;
@@ -46417,5 +46456,71 @@ mod journalisation_stricte {
                 Some(&obrain_common::types::Value::Int64(1)),
             )
             .is_ok());
+    }
+}
+
+
+#[cfg(test)]
+mod mutation_conditionnelle {
+    use super::*;
+
+    fn ressource(store: &SubstrateStore) -> NodeId {
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        id
+    }
+
+    #[test]
+    fn echec_preparation_laisse_les_deux_proprietes_intactes() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = ressource(&store);
+        *ECHEC_APPEND_WAL.lock() = true;
+        let r = store.muter_deux_proprietes(
+            id,
+            "a",
+            Value::Int64(10),
+            "b",
+            Value::Int64(20),
+            obrain_common::types::TransactionId(42),
+        );
+        assert!(r.is_err(), "l'échec de préparation doit être propagé");
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(1)),
+            "a intacte"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(2)),
+            "b intacte"
+        );
+        *ECHEC_APPEND_WAL.lock() = false;
+    }
+
+    #[test]
+    fn mutation_reussie_publication_coherente() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = ressource(&store);
+        store
+            .muter_deux_proprietes(
+                id,
+                "a",
+                Value::Int64(10),
+                "b",
+                Value::Int64(20),
+                obrain_common::types::TransactionId(43),
+            )
+            .unwrap();
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20))
+        );
     }
 }
