@@ -267,24 +267,29 @@ fn mutate_refuse_invariants_invalides() {
     manager.attach_substrate(Arc::new(writer));
 
     let id = manager.store().form(&[a, b]).unwrap();
+    let before = manager.store().get(id).unwrap().clone();
 
     // Changement d'identité logique refusé.
     let r = manager.store().mutate(id, |e| { e.id = obrain_cognitive::engram::EngramId(999); });
     assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "identité refusée");
+    assert_eq!(manager.store().get(id).unwrap().ensemble, before.ensemble, "état intact (identité)");
 
     // Membre dupliqué refusé.
     let r = manager.store().mutate(id, |e| { e.ensemble.push((a, 1.0)); });
     assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "doublon refusé");
+    assert_eq!(manager.store().get(id).unwrap().ensemble, before.ensemble, "état intact (doublon)");
 
     // Poids non fini (f64) refusé.
     let r = manager.store().mutate(id, |e| { e.ensemble[0].1 = f64::NAN; });
     assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "NaN refusé");
+    assert_eq!(manager.store().get(id).unwrap().ensemble, before.ensemble, "état intact (NaN)");
 
     // Dépassement f32 refusé (substrate) : 1e300 est fini en f64 mais inf en f32.
     let r = manager.store().mutate(id, |e| { e.ensemble[0].1 = 1e300; });
     assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "dépassement f32 refusé");
 
-    // L'état canonique est resté {A,B} (aucun commit partiel).
+    // État COMPLET inchangé après chaque refus (pas seulement len()).
     let e = manager.store().get(id).unwrap();
-    assert_eq!(e.ensemble.len(), 2, "état canonique inchangé après refus");
+    assert_eq!(e.ensemble, before.ensemble, "état canonique complet inchangé après refus");
+    assert_eq!(e.id, before.id, "identité inchangée");
 }
