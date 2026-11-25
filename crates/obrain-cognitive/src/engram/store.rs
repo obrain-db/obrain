@@ -134,6 +134,18 @@ impl EngramStore {
         }
     }
 
+    /// Injection de faute (test) : TANT QUE ce drapeau est actif, le miroir
+    /// retourne une erreur APRÈS `set_engram_state` et AVANT le premier appel
+    /// réel à `add_engram_bit` — reproduit l'écriture partielle du substrat
+    /// (membres+poids persistés, bitset non posé). Feature DÉDIÉE, absente de
+    /// la production. Le drapeau reste actif jusqu'à désactivation explicite.
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn set_fail_bit_after_state(&self, fail: bool) {
+        self.fail_bit_after_state
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Attach a substrate writer. After this call every subsequent
     /// `insert` / `remove` / `load_from_graph` mutation is mirrored to the
     /// substrate engram side-column zones (members + bitset), and the
@@ -142,15 +154,6 @@ impl EngramStore {
     ///
     /// Pass `None`-wrapped to detach; re-attaching overwrites the previous
     /// writer.
-    /// Injection de faute (test) : fait échouer le prochain `add_engram_bit`
-    /// APRÈS un `set_engram_state` réussi. Feature DÉDIÉE, absente de la prod.
-    #[cfg(feature = "fault-injection")]
-    #[doc(hidden)]
-    pub fn set_fail_bit_after_state(&self, fail: bool) {
-        self.fail_bit_after_state
-            .store(fail, std::sync::atomic::Ordering::Relaxed);
-    }
-
     #[cfg(feature = "substrate")]
     pub fn attach_substrate(&self, writer: Arc<SubstrateWriter>) {
         *self.substrate.write() = Some(writer);

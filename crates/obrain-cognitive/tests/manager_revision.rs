@@ -323,7 +323,7 @@ fn injection_erreur_partielle_set_then_bit() {
 
     // Cache : candidat NON committé → état inchangé.
     let after = manager.store().get(id).unwrap();
-    assert_eq!(after.ensemble, before.ensemble, "cache inchangé (source de vérité)");
+    assert_eq!(after.ensemble, before.ensemble, "cache inchangé (candidat non committé)");
 
     // Substrat : set_engram_state a écrit les membres AVANT l'échec du bitset.
     let (members, _weights) = writer.read_engram_state(id.0 as u16).unwrap().unwrap();
@@ -332,12 +332,13 @@ fn injection_erreur_partielle_set_then_bit() {
         "substrat contient le membre partiel (r+1) : {members:?}"
     );
 
-    // Nouvelle tentative : sans ré-injection, elle doit réussir SANS réappliquer
-    // deux fois la même observation (le candidat n'a jamais été committé).
+    // Nouvelle tentative : le candidat échoué n'a jamais été committé, donc C
+    // n'existe pas encore → ajouté une fois. Ne prouve PAS l'idempotence
+    // d'observation (l'API n'a pas d'identité d'observation).
     manager.store().set_fail_bit_after_state(false);
     let retry = manager.revise(id, &[c], 0.5).expect("reprise réussie");
     let cs: Vec<NodeId> = retry.members.iter().filter(|(n, _)| *n == c).map(|(n, _)| *n).collect();
-    assert_eq!(cs.len(), 1, "C ajouté une seule fois (pas de double application)");
+    assert_eq!(cs.len(), 1, "C présent une seule fois");
 }
 
 /// Contre-épreuve ESSENTIELLE : fermeture immédiate après échec partiel, puis
@@ -371,21 +372,40 @@ fn reouverture_apres_ecriture_partielle() {
     let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
     manager.attach_substrate(writer.clone());
 
-    // Membres RESTAURÉS incluent C : set_engram_state a persisté C AVANT l'échec.
+    // Couples EXACTS membre/poids dans le SUBSTRAT (zip membres↔poids).
     let (members, weights) = writer.read_engram_state(id.0 as u16).unwrap().unwrap();
-    assert!(
-        members.contains(&(c.0 as u32)),
-        "membres restaurés incluent C (écriture partielle persistée) : {members:?}"
-    );
-    assert_eq!(members.len(), 3, "3 membres restaurés");
-
-    // Poids restaurés : C=0.25, A/B=0.95 (set_engram_state a écrit les poids aussi).
     let ws = weights.expect("poids présents");
-    // ordre = ordre des membres ; on ne présume pas l'ordre, on vérifie les valeurs.
-    assert!(ws.iter().any(|w| (w - 0.25).abs() < 1e-6), "poids C=0.25 présent");
+    assert_eq!(members.len(), 3, "3 membres restaurés");
+    let sw = |n: u32| -> f32 {
+        members.iter().zip(&ws).find(|(m, _)| **m == n).map(|(_, w)| *w).unwrap()
+    };
+    assert!((sw(a.0 as u32) - 0.95).abs() < 1e-6, "substrat A=0.95");
+    assert!((sw(b.0 as u32) - 0.95).abs() < 1e-6, "substrat B=0.95");
+    assert!((sw(c.0 as u32) - 0.25).abs() < 1e-6, "substrat C=0.25");
 
-    // Bitset de C : NON posé → l'état partiel EST détectable (incohérence
-    // membres/bitset). C'est le mécanisme de détection, pas un retry.
+    // CACHE restauré (manager.store().get) : mêmes couples exacts.
+    let restored = manager.store().get(id).unwrap();
+    assert!((weight_of(&restored.ensemble, a) - 0.95).abs() < 1e-6, "cache A=0.95");
+    assert!((weight_of(&restored.ensemble, b) - 0.95).abs() < 1e-6, "cache B=0.95");
+    assert!((weight_of(&restored.ensemble, c) - 0.25).abs() < 1e-6, "cache C=0.25");
+    assert!(!restored.spectral_signature.is_empty(), "signature restaurée");
+
+    // Bitset de C : NON posé → état partiel détectable (incohérence membres/bitset).
     let bitset_c = writer.engram_bitset(c.0 as u32).unwrap();
-    assert_eq!(bitset_c, 0, "bitset de C non posé : état partiel détectable via l'incohérence membres/bitset");
+    assert_eq!(bitset_c, 0, "bitset de C non posé");
+
+    // Deux chemins de rappel DIVERGENT après réouverture :
+    // natif (bitset) → vide ; manager (RecallEngine direct) → trouve C.
+    let native = manager.store().recall(c).unwrap_or_default();
+    assert!(native.is_empty(), "rappel natif vide (bit C absent)");
+    let mgr = manager.recall(&[c], 5);
+    assert!(mgr.iter().any(|r| r.engram_id == id), "rappel manager trouve C (chemin direct)");
+
+    // Nouvelle tentative APRÈS réouverture : reconsolidation décroît TOUT.
+    let rev = manager.revise(id, &[c], 0.5).expect("reprise réussie");
+    assert!((weight_of(&rev.members, a) - 0.9025).abs() < 1e-6, "A=0.9025 après retry");
+    assert!((weight_of(&rev.members, b) - 0.9025).abs() < 1e-6, "B=0.9025 après retry");
+    assert!((weight_of(&rev.members, c) - 0.2375).abs() < 1e-6, "C=0.2375 après retry");
+    let cs: Vec<NodeId> = rev.members.iter().filter(|(n, _)| *n == c).map(|(n, _)| *n).collect();
+    assert_eq!(cs.len(), 1, "C présent une seule fois");
 }
