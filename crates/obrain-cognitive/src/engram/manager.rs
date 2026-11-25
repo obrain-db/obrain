@@ -3,7 +3,6 @@
 //! Owns all subsystems (formation, decay, recall, homeostasis, metrics)
 //! and provides a unified API for the rest of obrain-cognitive.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use web_time::SystemTime;
 
@@ -22,7 +21,7 @@ use super::hopfield::{
 use super::observe::EngramMetricsCollector;
 use super::recall::{reconsolidate, RecallEngine, RecallResult, WarmupConfig, WarmupSelector};
 use super::spectral::SpectralEncoder;
-use super::store::EngramStore;
+use super::store::{EngramStore, StoreError};
 use super::traits::VectorIndex;
 use super::types::{Engram, EngramHorizon, EngramId, RecallEvent, RecallFeedback};
 
@@ -81,9 +80,6 @@ pub struct EngramManager {
     metrics: Arc<EngramMetricsCollector>,
     /// Vector index for spectral similarity search.
     vector_index: Arc<dyn VectorIndex>,
-    /// Verrous de révision PAR ENGRAMME (pas un verrou global) : sérialise
-    /// update+lecture+upsert d'un même engramme, laisse les autres parallèles.
-    revise_locks: Mutex<HashMap<EngramId, Arc<Mutex<()>>>>,
 }
 
 /// Résultat d'une révision cohérente : identifie le nouvel état (révision,
@@ -103,6 +99,7 @@ pub struct EngramRevision {
 pub enum RevisionError {
     EngramAbsent(EngramId),
     InvalidObservation(String),
+    PersistenceFailed(String),
 }
 
 impl EngramManager {
@@ -124,7 +121,6 @@ impl EngramManager {
             homeostasis: HomeostasisEngine::new(config.homeostasis),
             metrics,
             vector_index,
-            revise_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -324,24 +320,19 @@ impl EngramManager {
         if new_nodes.is_empty() {
             return Err(RevisionError::InvalidObservation("observation vide".into()));
         }
-        // Verrou PAR ENGRAMME : update + lecture + upsert sont sérialisés pour
-        // CET engramme (pas de retour de l'index à une projection antérieure).
-        let lock = {
-            let mut m = self.revise_locks.lock();
-            m.entry(engram_id)
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone()
-        };
-        let _guard = lock.lock();
-        if self.store.get(engram_id).is_none() {
-            return Err(RevisionError::EngramAbsent(engram_id));
-        }
-        self.store.update(engram_id, |e| {
-            reconsolidate(e, new_nodes, prediction_error);
-            // Projection dérivée : signature recalculée sur l'ensemble pondéré
-            // révisé, PAS conservée périmée.
-            e.spectral_signature = self.spectral.encode(&e.ensemble);
-        });
+        // Discipline COMMUNE du store : `mutate` sérialise par engramme
+        // (verrou d'entrée du cache) et PROPAGE les erreurs de persistance.
+        self.store
+            .mutate(engram_id, |e| {
+                reconsolidate(e, new_nodes, prediction_error);
+                // Projection dérivée : signature recalculée sur l'ensemble
+                // pondéré révisé, PAS conservée périmée.
+                e.spectral_signature = self.spectral.encode(&e.ensemble);
+            })
+            .map_err(|e| match e {
+                StoreError::EngramAbsent(id) => RevisionError::EngramAbsent(id),
+                StoreError::PersistenceFailed(m) => RevisionError::PersistenceFailed(m),
+            })?;
         let engram = self
             .store
             .get(engram_id)

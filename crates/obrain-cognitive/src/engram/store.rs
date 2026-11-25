@@ -100,6 +100,14 @@ impl std::fmt::Debug for EngramStore {
     }
 }
 
+/// Erreur de mutation du store : distingue absence et échec de persistance
+/// (au lieu d'un échec silencieux journalisé).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    EngramAbsent(EngramId),
+    PersistenceFailed(String),
+}
+
 impl EngramStore {
     /// Creates a new `EngramStore`.
     ///
@@ -206,7 +214,7 @@ impl EngramStore {
             }
         }
         #[cfg(feature = "substrate")]
-        self.mirror_substrate_insert(&engram);
+        let _ = self.mirror_substrate_insert(&engram);
         self.cache.insert(id, engram);
     }
 
@@ -230,29 +238,11 @@ impl EngramStore {
     /// Applique `f` à l'engramme `id` (modification en place + write-through),
     /// puis incrémente la révision.
     pub fn update(&self, id: EngramId, f: impl FnOnce(&mut Engram)) {
-        self.revision.fetch_add(1, Ordering::Relaxed);
-        if let Some(mut entry) = self.cache.get_mut(&id) {
-            f(entry.value_mut());
-            // Write-through: persist the updated state.
-            if let Some(storage) = &self.storage {
-                let props = Self::engram_properties(entry.value());
-                if let Some(nid) = self.node_ids.get(&id).map(|e| *e.value()) {
-                    storage.update_node(nid, &props);
-                } else {
-                    // No node yet — create one now.
-                    let nid = storage.create_node(ENGRAM_LABEL, &props);
-                    self.node_ids.insert(id, nid);
-                }
-            }
-            // Substrate mirror: refresh members snapshot (ensemble may have
-            // drifted). Bitset stays monotone — we only ever add bits here,
-            // matching the update's non-destructive semantics.
-            #[cfg(feature = "substrate")]
-            {
-                let engram_snapshot = entry.value().clone();
-                drop(entry); // release the cache entry before hitting substrate
-                self.mirror_substrate_insert(&engram_snapshot);
-            }
+        // Chemin infaillible historique : délègue à la discipline commune.
+        // Les erreurs de persistance sont journalisées (compatibilité) ; les
+        // chemins critiques utilisent `mutate` qui les propage.
+        if let Err(e) = self.mutate(id, f) {
+            tracing::warn!(engram_id = id.0, error = ?e, "engram update failed");
         }
     }
 
@@ -299,7 +289,7 @@ impl EngramStore {
                     max_id = max_id.max(eid.0);
                     self.node_ids.insert(eid, node.id);
                     #[cfg(feature = "substrate")]
-                    self.mirror_substrate_insert(&engram);
+                    let _ = self.mirror_substrate_insert(&engram);
                     self.cache.insert(eid, engram);
                     loaded += 1;
                 }
@@ -600,17 +590,49 @@ impl EngramStore {
     /// OR-s membership bits. Failures are logged but not propagated — the
     /// cognitive layer treats substrate as a derived view, not the source
     /// of truth.
+    /// Discipline COMMUNE de mutation d'un engramme : applique `f` sous le
+    /// verrou d'entrée du cache, persiste membres+poids (substrate) et
+    /// write-through DANS la même section critique, puis n'incrémente la
+    /// révision qu'APRÈS. Propage les erreurs de persistance.
+    pub fn mutate(
+        &self,
+        id: EngramId,
+        f: impl FnOnce(&mut Engram),
+    ) -> Result<(), StoreError> {
+        let Some(mut entry) = self.cache.get_mut(&id) else {
+            return Err(StoreError::EngramAbsent(id));
+        };
+        f(entry.value_mut());
+        if let Some(storage) = &self.storage {
+            let props = Self::engram_properties(entry.value());
+            if let Some(nid) = self.node_ids.get(&id).map(|e| *e.value()) {
+                storage.update_node(nid, &props);
+            } else {
+                let nid = storage.create_node(ENGRAM_LABEL, &props);
+                self.node_ids.insert(id, nid);
+            }
+        }
+        #[cfg(feature = "substrate")]
+        let mirror = self.mirror_substrate_insert(entry.value());
+        drop(entry);
+        // Révision incrémentée APRÈS modification + persistance effectives.
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "substrate")]
+        mirror?;
+        Ok(())
+    }
+
     #[cfg(feature = "substrate")]
-    fn mirror_substrate_insert(&self, engram: &Engram) {
+    fn mirror_substrate_insert(&self, engram: &Engram) -> Result<(), StoreError> {
         if self.substrate.read().is_none() {
-            return;
+            return Ok(());
         }
         let nids: Vec<NodeId> = engram.ensemble.iter().map(|(n, _)| *n).collect();
         let Some(writer) = self.substrate_writer() else {
-            return;
+            return Ok(());
         };
         let Some(eid_u16) = Self::engram_id_to_u16(engram.id) else {
-            return;
+            return Ok(());
         };
         let members: Vec<u32> = nids
             .iter()
@@ -619,24 +641,15 @@ impl EngramStore {
         let weights: Vec<f32> = engram.ensemble.iter().map(|(_, w)| *w as f32).collect();
         // Écriture ATOMIQUE membres+poids (même verrou), puis bitset par nœud
         // (aucune correspondance d'ordre) — pas de réécriture des membres.
-        if let Err(e) = writer.set_engram_state(eid_u16, members.clone(), weights) {
-            tracing::warn!(
-                engram_id = engram.id.0,
-                error = %e,
-                "substrate engram state mirror failed"
-            );
-            return;
-        }
+        writer
+            .set_engram_state(eid_u16, members.clone(), weights)
+            .map_err(|e| StoreError::PersistenceFailed(e.to_string()))?;
         for nid in &members {
-            if let Err(e) = writer.add_engram_bit(*nid, eid_u16) {
-                tracing::warn!(
-                    engram_id = engram.id.0,
-                    node_id = *nid,
-                    error = %e,
-                    "substrate engram bitset mirror failed"
-                );
-            }
+            writer
+                .add_engram_bit(*nid, eid_u16)
+                .map_err(|e| StoreError::PersistenceFailed(e.to_string()))?;
         }
+        Ok(())
     }
 
     /// Best-effort remove mirror: clears the members directory entry.
