@@ -13,7 +13,7 @@ use obrain_common::types::NodeId;
 use obrain_cognitive::engram::traits::InMemoryVectorIndex;
 use obrain_cognitive::engram::{
     AtomicEventLedger, Engram, EngramManager, EngramManagerConfig, InMemoryAtomicEventLedger,
-    ObservationId, ObservationOutcome, SourceRevision,
+    ObservationId, ObservationOutcome, ResultingState, SourceRevision,
 };
 
 fn manager() -> EngramManager {
@@ -273,4 +273,88 @@ fn resolution_restitue_l_etat_enregistre() {
         e.ensemble.iter().any(|(n, _)| *n == b),
         "l'état EFFECTIVEMENT enregistré a été matérialisé"
     );
+}
+
+/// Point C : une NOUVELLE observation arrive AVANT la réparation. Elle ne doit
+/// pas partir d'un état obsolète ; le rattrapage répare l'échec antérieur et
+/// les DEUX apprentissages sont conservés.
+#[cfg(feature = "fault-injection")]
+#[test]
+fn nouvelle_observation_avant_reparation_ne_part_pas_d_un_etat_obsolete() {
+    let m = manager();
+    let id = make_engram(&m, &[1]);
+    let b = NodeId(2);
+    let c = NodeId(3);
+    // A : acceptée par le registre, matérialisation échouée.
+    m.store().set_fail_materialise(true);
+    let failed = m.revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0));
+    assert!(failed.is_err());
+    assert!(
+        !m.store().get(id).unwrap().ensemble.iter().any(|(n, _)| *n == b),
+        "store en retard (A non matérialisée)"
+    );
+    assert_eq!(m.observation_revision(id).unwrap(), 1, "registre a accepté A");
+
+    // B arrive AVANT toute réparation.
+    let src = SourceRevision(m.observation_revision(id).unwrap());
+    let (out_b, _) = m.revise_with_id(obs(2), id, &[c], 0.5, src).unwrap();
+    assert!(matches!(out_b, ObservationOutcome::Applied { .. }), "reçu {out_b:?}");
+
+    let e = m.store().get(id).unwrap();
+    assert!(e.ensemble.iter().any(|(n, _)| *n == b), "A (réparée) conservée");
+    assert!(e.ensemble.iter().any(|(n, _)| *n == c), "B conservée");
+}
+
+/// Point C bis : une mutation SANS identité entre l'échec et la réparation.
+#[cfg(feature = "fault-injection")]
+#[test]
+fn mutation_sans_identite_entre_echec_et_reparation() {
+    let m = manager();
+    let id = make_engram(&m, &[1]);
+    let b = NodeId(2);
+    let d = NodeId(4);
+    m.store().set_fail_materialise(true);
+    assert!(m.revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0)).is_err());
+    // Mutation sans identité : avance la connaissance (et la révision du store).
+    m.revise(id, &[d], 0.5).expect("revise sans identité");
+    assert!(m.store().get(id).unwrap().ensemble.iter().any(|(n, _)| *n == d));
+    // Le rejeu de A ne doit PAS écraser la mutation plus récente.
+    let src = SourceRevision(m.observation_revision(id).unwrap());
+    let (out, _) = m.revise_with_id(obs(1), id, &[b], 0.5, src).unwrap();
+    assert!(matches!(out, ObservationOutcome::Replayed { .. }), "reçu {out:?}");
+    let e = m.store().get(id).unwrap();
+    assert!(e.ensemble.iter().any(|(n, _)| *n == d), "mutation récente préservée");
+}
+
+/// Point D : la résolution restitue l'état EFFECTIVEMENT ENREGISTRÉ, même s'il
+/// DIFFÈRE du candidat local (fixture qui enregistre un autre état).
+#[cfg(feature = "fault-injection")]
+#[test]
+fn resolution_discrimine_etat_enregistre_du_candidat_local() {
+    let ledger = Arc::new(InMemoryAtomicEventLedger::new());
+    let m = manager_with(Arc::clone(&ledger));
+    let id = make_engram(&m, &[1]);
+    let b = NodeId(2);
+    // Application normale : révision 1, état enregistré = candidat (1,2).
+    m.revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0)).unwrap();
+    // On REMPLACE l'effet enregistré par un état DIFFÉRENT (révision 5).
+    let recorded = ResultingState {
+        ensemble: vec![(NodeId(1), 0.9), (NodeId(9), 0.9)],
+        strength: 0.99,
+        recall_count: 7,
+    };
+    let mut effect = vec![1u8];
+    effect.extend_from_slice(&recorded.canonical_bytes());
+    ledger.set_recorded_effect(obs(1), effect, 5);
+    // Rejeu : la réparation doit matérialiser l'ÉTAT ENREGISTRÉ (nœud 9,
+    // révision 5), pas le candidat local (nœud 2).
+    let src = SourceRevision(m.observation_revision(id).unwrap());
+    let (out, _) = m.revise_with_id(obs(1), id, &[b], 0.5, src).unwrap();
+    assert!(matches!(out, ObservationOutcome::Replayed { .. }), "reçu {out:?}");
+    let e = m.store().get(id).unwrap();
+    assert!(
+        e.ensemble.iter().any(|(n, _)| *n == NodeId(9)),
+        "l'état ENREGISTRÉ (nœud 9) a été matérialisé"
+    );
+    assert_eq!(e.revision, 5, "révision enregistrée");
 }

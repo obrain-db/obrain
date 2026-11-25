@@ -146,6 +146,15 @@ pub struct LoadReport {
     pub global_failure: Option<String>,
 }
 
+/// Issue d'une matérialisation d'observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterializeOutcome {
+    /// Contenu + révision écrits ensemble.
+    Applied,
+    /// La connaissance a avancé : conflit qualifié, rien n'est écrit.
+    Conflict { current_revision: u64 },
+}
+
 /// Erreur de mutation du store : distingue absence et échec de persistance
 /// (au lieu d'un échec silencieux journalisé).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -813,30 +822,77 @@ impl EngramStore {
         Ok(())
     }
 
-    /// MATÉRIALISE l'état canonique d'une observation dans le cache, en
-    /// positionnant la révision à `max(révision_courante, révision_demandée)`
-    /// (jamais de régression). Utilisé par le chemin d'application ET par la
-    /// RÉPARATION d'une matérialisation manquante.
+    /// MATÉRIALISE l'état canonique d'une observation, sous le verrou qui
+    /// protège la mutation, avec CONTRÔLE ATOMIQUE de la précondition :
+    /// `expected_revision` doit être la révision COURANTE, sinon la connaissance
+    /// a avancé et l'on rend `Conflict` (jamais d'écrasement d'un état plus
+    /// récent par un candidat calculé sur une révision périmée).
     ///
-    /// La garde « ne jamais restaurer un ancien candidat sur une connaissance
-    /// plus récente » appartient à l'APPELANT (comparer `revision` avant), pas à
-    /// ce point qui matérialise ce qu'on lui donne.
+    /// Le contenu ET la révision avancent ENSEMBLE ; la signature spectrale est
+    /// remplacée (plus de projection périmée).
     pub fn materialize_state(
         &self,
         id: EngramId,
+        expected_revision: u64,
         ensemble: Vec<(NodeId, f64)>,
         strength: f64,
         recall_count: u32,
-        revision: u64,
-    ) -> Result<bool, StoreError> {
+        spectral_signature: Vec<f64>,
+        new_revision: u64,
+    ) -> Result<MaterializeOutcome, StoreError> {
         let Some(mut entry) = self.cache.get_mut(&id) else {
             return Err(StoreError::EngramAbsent(id));
         };
+        let live = entry.value().revision;
+        if live != expected_revision {
+            return Ok(MaterializeOutcome::Conflict {
+                current_revision: live,
+            });
+        }
+        if new_revision <= expected_revision {
+            return Err(StoreError::ValidationFailed(format!(
+                "révision non croissante : {new_revision} ≤ {expected_revision}"
+            )));
+        }
         let mut candidate = entry.value().clone();
         candidate.ensemble = ensemble;
         candidate.strength = strength;
         candidate.recall_count = recall_count;
-        candidate.revision = candidate.revision.max(revision);
+        candidate.spectral_signature = spectral_signature;
+        candidate.revision = new_revision;
+        self.validate_candidate(&candidate)?;
+        #[cfg(feature = "substrate")]
+        self.mirror_substrate_insert(&candidate)?;
+        *entry.value_mut() = candidate;
+        drop(entry);
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        Ok(MaterializeOutcome::Applied)
+    }
+
+    /// RÉPARATION : n'écrit que si la connaissance est EN RETARD sur la révision
+    /// enregistrée. Ne régresse jamais et n'écrase jamais un état plus récent.
+    /// Rend `true` si une réparation a eu lieu.
+    pub fn repair_state(
+        &self,
+        id: EngramId,
+        recorded_revision: u64,
+        ensemble: Vec<(NodeId, f64)>,
+        strength: f64,
+        recall_count: u32,
+        spectral_signature: Vec<f64>,
+    ) -> Result<bool, StoreError> {
+        let Some(mut entry) = self.cache.get_mut(&id) else {
+            return Err(StoreError::EngramAbsent(id));
+        };
+        if entry.value().revision >= recorded_revision {
+            return Ok(false);
+        }
+        let mut candidate = entry.value().clone();
+        candidate.ensemble = ensemble;
+        candidate.strength = strength;
+        candidate.recall_count = recall_count;
+        candidate.spectral_signature = spectral_signature;
+        candidate.revision = recorded_revision;
         self.validate_candidate(&candidate)?;
         #[cfg(feature = "substrate")]
         self.mirror_substrate_insert(&candidate)?;
