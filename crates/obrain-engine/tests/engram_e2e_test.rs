@@ -274,43 +274,70 @@ fn parite_etat_cognitif_memoire_substrate_reouverture() {
     }
     let engine = db.cognitive_engine().expect("moteur");
     let mgr = engine.engram_manager().expect("mgr");
-    let avant: Vec<(u64, Vec<f64>, usize)> = mgr
-        .store()
-        .list()
-        .iter()
-        .map(|e| {
-            let w: Vec<f64> = e.ensemble.iter().map(|(_, x)| *x).collect();
-            (e.id.0, w, e.spectral_signature.len())
-        })
-        .collect();
+    // (id, membres triés (node,poids), signature spectrale) — état complet.
+    let capture = |mgr: &obrain_cognitive::engram::EngramManager| {
+        let mut v: Vec<(u64, Vec<(u64, f64)>, Vec<f64>)> = mgr
+            .store()
+            .list()
+            .iter()
+            .map(|e| {
+                let mut ens: Vec<(u64, f64)> = e.ensemble.iter().map(|(n, w)| (n.0, *w)).collect();
+                ens.sort_by(|a, b| a.0.cmp(&b.0));
+                (e.id.0, ens, e.spectral_signature.clone())
+            })
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    };
+    let avant = capture(&mgr);
     db.close().expect("close");
     drop(db);
 
     let db2 = ObrainDB::open_substrate_observed(&chemin).expect("reopen");
     let engine2 = db2.cognitive_engine().expect("moteur2");
     let mgr2 = engine2.engram_manager().expect("mgr2");
-    let apres: Vec<(u64, Vec<f64>, usize)> = mgr2
-        .store()
-        .list()
-        .iter()
-        .map(|e| {
-            let w: Vec<f64> = e.ensemble.iter().map(|(_, x)| *x).collect();
-            (e.id.0, w, e.spectral_signature.len())
-        })
-        .collect();
-    eprintln!("PARITE avant={avant:?}");
-    eprintln!("PARITE apres={apres:?}");
-    // Invariant #1 : les poids appris survivent à la réouverture (aux arrondis
-    // f32 de la zone près, tolérance 1e-6).
-    for (id_avant, poids_avant, _) in &avant {
-        let (_, poids_apres, _) = apres
+    let apres = capture(&mgr2);
+
+    // Invariant #1 : parité COMPLÈTE (présence, nombre, membres, poids,
+    // signatures) — pas seulement les poids avec zip.
+    assert!(
+        !avant.is_empty(),
+        "des engrammes doivent être formés avant fermeture"
+    );
+    assert_eq!(
+        avant.len(),
+        apres.len(),
+        "même nombre d'engrammes après réouverture (avant={} après={})",
+        avant.len(),
+        apres.len()
+    );
+    for (id_a, ens_a, sig_a) in &avant {
+        let (_, ens_b, sig_b) = apres
             .iter()
-            .find(|(id2, _, _)| id2 == id_avant)
-            .expect("engramme présent après réouverture");
-        for (a, b) in poids_avant.iter().zip(poids_apres) {
+            .find(|(id, _, _)| id == id_a)
+            .unwrap_or_else(|| panic!("engramme {id_a} absent après réouverture"));
+        assert_eq!(
+            ens_a.len(),
+            ens_b.len(),
+            "même nombre de membres pour {id_a}"
+        );
+        for ((n1, w1), (n2, w2)) in ens_a.iter().zip(ens_b) {
+            assert_eq!(n1, n2, "mêmes membres pour {id_a}");
             assert!(
-                (a - b).abs() < 1e-6,
-                "poids non restaurés pour l'engramme {id_avant} : avant={poids_avant:?} après={poids_apres:?}"
+                (w1 - w2).abs() < 1e-6,
+                "poids restaurés pour {id_a} : {w1} vs {w2}"
+            );
+        }
+        assert_eq!(
+            sig_a.len(),
+            sig_b.len(),
+            "même dimension de signature pour {id_a}"
+        );
+        for (x, y) in sig_a.iter().zip(sig_b) {
+            assert!(
+                (x - y).abs() < 1e-5,
+                "signature restaurée pour {id_a} (écart {})",
+                (x - y).abs()
             );
         }
     }
