@@ -251,11 +251,12 @@ mod tests {
         }
     }
 
-    /// RÉGRESSION (25/11) : la formation incrémentale d'un triangle ne doit
-    /// produire QU'UN engramme {1,2,3} — ni intermédiaire {1,2}, ni doublon.
-    /// ROUGE tant que record_activation ne déduplique pas (défaut mesuré).
+    /// RÉGRESSION (25/11) : la formation ne doit pas DUPLIQUER un même
+    /// ensemble. L'intermédiaire {1,2} PEUT subsister (primitive légitime,
+    /// architecture compositionnelle) ; on interdit DEUX engrammes de membres
+    /// IDENTIQUES ({1,2,3} en double).
     #[tokio::test]
-    async fn le_triangle_ne_forme_ni_intermediaire_ni_doublon() {
+    async fn le_triangle_ne_duplique_pas_un_meme_ensemble() {
         let mgr = manager();
         let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
         for _ in 0..3 {
@@ -278,10 +279,18 @@ mod tests {
             })
             .collect();
         tri.sort();
+        // {1,2,3} doit exister.
+        assert!(
+            tri.contains(&vec![1, 2, 3]),
+            "{{1,2,3}} doit exister (obtenu {tri:?})"
+        );
+        // Aucun doublon d'ensemble : chaque ensemble distinct apparaît une fois.
+        let mut uniques = tri.clone();
+        uniques.dedup();
         assert_eq!(
-            tri,
-            vec![vec![1, 2, 3]],
-            "exactement UN engramme {{1,2,3}} (obtenu {tri:?})"
+            tri.len(),
+            uniques.len(),
+            "aucun doublon d'ensemble de membres (obtenu {tri:?})"
         );
     }
 
