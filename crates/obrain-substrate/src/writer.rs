@@ -2680,6 +2680,47 @@ impl Writer {
         self.with_engram_zone(|zf| crate::engram::EngramZone::members(zf, engram_id))
     }
 
+    /// Écriture atomique (logique) de l'état d'un engramme : membres ET poids
+    /// sous le même verrou. Deux records WAL (historiques, non modifiés), mais
+    /// publiés ensemble pour les lecteurs.
+    pub fn set_engram_state(
+        &self,
+        engram_id: u16,
+        members: Vec<u32>,
+        weights: Vec<f32>,
+    ) -> SubstrateResult<()> {
+        if members.len() != weights.len() {
+            return Err(crate::SubstrateError::Internal(format!(
+                "engram {engram_id}: membres({}) != poids({})",
+                members.len(),
+                weights.len()
+            )));
+        }
+        let bits: Vec<u32> = weights.iter().map(|w| w.to_bits()).collect();
+        self.wal.append(WalRecord {
+            lsn: 0,
+            timestamp: unix_micros(),
+            flags: 0,
+            payload: WalPayload::EngramMembersSet {
+                engram_id,
+                members: members.clone(),
+            },
+        })?;
+        self.wal.append(WalRecord {
+            lsn: 0,
+            timestamp: unix_micros(),
+            flags: 0,
+            payload: WalPayload::EngramWeightsSet {
+                engram_id,
+                weights: bits,
+            },
+        })?;
+        self.with_engram_state_zones(|mz, wz| {
+            crate::engram::EngramZone::set_members_raw(mz, engram_id, &members)?;
+            crate::engram::EngramZone::set_weights_raw(wz, engram_id, &weights)
+        })
+    }
+
     /// Écrire les poids d'engramme (f32) — WAL-first, idempotent, même ordre
     /// que les membres. Les f32 sont stockés en bits u32 dans le payload WAL.
     pub fn set_engram_weights(&self, engram_id: u16, weights: Vec<f32>) -> SubstrateResult<()> {
@@ -3571,6 +3612,32 @@ impl Writer {
             zones.engram_weights = Some(sub.open_zone(Zone::EngramWeights)?);
         }
         f(zones.engram_weights.as_mut().unwrap())
+    }
+
+    /// Atomicité LOGIQUE membres+poids : les deux zones sont acquises sous le
+    /// MÊME verrou `zones.write()` (motif `with_simplex_zones`, tout-ou-rien) —
+    /// un lecteur concurrent ne peut jamais observer les membres mis à jour
+    /// avec des poids périmés. Le stockage physique reste deux zones séparées.
+    fn with_engram_state_zones<R>(
+        &self,
+        f: impl FnOnce(&mut ZoneFile, &mut ZoneFile) -> SubstrateResult<R>,
+    ) -> SubstrateResult<R> {
+        let mut zones = self.zones.write();
+        // Tout-ou-rien : on n'ouvre les deux zones en locales et on ne les
+        // publie qu'une fois les deux obtenues (obrain#238 appliqué au cas
+        // engramme : sinon une ouverture partielle laisse un état incohérent).
+        if zones.engram_members.is_none() {
+            let zone = self.substrate.lock().open_zone(Zone::EngramMembers)?;
+            zones.engram_members = Some(zone);
+        }
+        if zones.engram_weights.is_none() {
+            let zone = self.substrate.lock().open_zone(Zone::EngramWeights)?;
+            zones.engram_weights = Some(zone);
+        }
+        let cache = &mut *zones;
+        let mz = cache.engram_members.as_mut().unwrap();
+        let wz = cache.engram_weights.as_mut().unwrap();
+        f(mz, wz)
     }
 
     /// Emprunte les QUATRE zones simpliciales sous le verrou d'écriture —
