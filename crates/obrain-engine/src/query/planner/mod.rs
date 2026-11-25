@@ -388,7 +388,7 @@ pub(crate) fn value_to_logical_type(value: &obrain_common::types::Value) -> Logi
 ///
 /// Only handles literals, unary minus on numeric literals, and simple expressions.
 /// Returns an error for runtime-dependent expressions (variables, property accesses, etc.).
-#[cfg(feature = "algos")]
+#[cfg(any(feature = "algos", feature = "vector-index"))]
 pub(crate) fn eval_constant_expression(
     expr: &crate::query::plan::LogicalExpression,
 ) -> Result<obrain_common::types::Value> {
