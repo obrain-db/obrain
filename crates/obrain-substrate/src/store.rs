@@ -14254,6 +14254,8 @@ impl SubstrateStore {
         premier_slot: u32,
         props: &[&'v [(&'v str, Value)]],
         cles: &std::collections::HashMap<&str, u16>,
+        auteur: u64,
+        horloge: u64,
         proprietaire: crate::page::OwnerKind,
     ) -> SubstrateResult<(
         Vec<(u32, crate::record::U48)>,
@@ -14287,8 +14289,14 @@ impl SubstrateStore {
         }
         let taille_entree = |g: &Genre<'_>| -> usize {
             match g {
-                Genre::Chaine(_) => crate::page::ENTRY_HEADER_SIZE + 8,
-                Genre::Scalaire(pv) => crate::page::ENTRY_HEADER_SIZE + pv.encoded_len(),
+                Genre::Chaine(_) => {
+                    crate::page::ENTRY_HEADER_SIZE + 8 + crate::page::ENTRY_STAMP_BYTES
+                }
+                Genre::Scalaire(pv) => {
+                    crate::page::ENTRY_HEADER_SIZE
+                        + pv.encoded_len()
+                        + crate::page::ENTRY_STAMP_BYTES
+                }
                 Genre::Differee => 0,
             }
         };
@@ -14419,7 +14427,7 @@ impl SubstrateStore {
                                 })
                             }
                         };
-                        let entree = E::new(cles[k], pv);
+                        let entree = E::new_stamped(cles[k], pv, auteur, horloge);
                         if page.append_entry(&entree).is_err() {
                             // Page pleine : on la clôt, chaînée sur la précédente.
                             let idx = base_pages + n_pages;
@@ -14637,6 +14645,10 @@ impl SubstrateStore {
         // `OBRAIN_LOT_SEQUENTIEL=1` garde le chemin séquentiel (banc A/B).
         let sequentiel = std::env::var("OBRAIN_LOT_SEQUENTIEL").is_ok_and(|v| v == "1");
         let rien_a_construire = retenues.iter().all(|l| l.is_empty());
+        let estampille = {
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().maintenant(millis)
+        };
         let (mut tetes, differees, mut ecrites) = if rien_a_construire {
             // Tout le lot est reparti au chemin unitaire (#386).
             (
@@ -14701,7 +14713,12 @@ impl SubstrateStore {
                                 encode_value(&mut pz, v)?
                             }
                         };
-                        let entree = PropertyEntry::new(cles[k], pv);
+                        let entree = PropertyEntry::new_stamped(
+                            cles[k],
+                            pv,
+                            self.writer_id,
+                            estampille.pack(),
+                        );
                         match page.append_entry(&entree) {
                             Ok(_) => vide = false,
                             Err(crate::page::PropertyCodecError::PageFull { .. }) if !vide => {
@@ -14738,6 +14755,8 @@ impl SubstrateStore {
                 premier_slot,
                 &retenues,
                 &cles,
+                self.writer_id,
+                estampille.pack(),
                 crate::page::OwnerKind::Node,
             )?
         };
@@ -15096,11 +15115,17 @@ impl SubstrateStore {
         // Pages et têtes : même construction parallèle que pour les nœuds, sur
         // le genre de propriétaire « arête ».
         let tranches: Vec<&[(&str, Value)]> = retenues.iter().map(|v| v.as_slice()).collect();
+        let estampille = {
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().maintenant(millis)
+        };
         let (mut tetes, differees, ecrites) = self.construire_pages_en_parallele(
             pz_lock,
             premier_slot,
             &tranches,
             &cles,
+            self.writer_id,
+            estampille.pack(),
             crate::page::OwnerKind::Edge,
         )?;
         tetes.sort_unstable_by_key(|t| t.0);

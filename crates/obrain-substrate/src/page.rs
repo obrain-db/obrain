@@ -257,6 +257,9 @@ pub const ENTRY_FLAG_STAMPED: u8 = 0x02;
 
 /// Fixed prefix size before the per-tag payload: flags (1) + key (2) + tag (1).
 pub const ENTRY_HEADER_SIZE: usize = 4;
+/// Bytes of the HLC stamp appended when `ENTRY_FLAG_STAMPED` is set: auteur (8)
+/// + horloge (8).
+pub const ENTRY_STAMP_BYTES: usize = 16;
 
 /// Logical representation of a property entry's value, parameterised by
 /// the 9 [`ValueTag`] variants the substrate supports on-disk. Heap-typed
@@ -374,7 +377,13 @@ impl PropertyEntry {
 
     /// Total bytes this entry will occupy (header + value payload).
     pub fn encoded_len(&self) -> usize {
-        ENTRY_HEADER_SIZE + self.value.encoded_len() + if self.is_stamped() { 16 } else { 0 }
+        ENTRY_HEADER_SIZE
+            + self.value.encoded_len()
+            + if self.is_stamped() {
+                ENTRY_STAMP_BYTES
+            } else {
+                0
+            }
     }
 }
 
