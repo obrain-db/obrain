@@ -337,6 +337,11 @@ pub trait AtomicEventLedger: Send + Sync {
     /// Révision COURANTE d'une ressource (la connaissance visée).
     fn resource_revision(&self, resource_id: &[u8]) -> Result<u64, String>;
 
+    /// État COURANT d'une ressource tel qu'ENREGISTRÉ (dernier effet appliqué :
+    /// octets de l'effet, révision). Sert à rattraper un store en retard sans
+    /// perdre l'effet déjà accepté par le registre.
+    fn resource_state(&self, resource_id: &[u8]) -> Result<Option<(Vec<u8>, u64)>, String>;
+
     /// Check-and-set atomique sur (identité, précondition de révision), puis
     /// application de l'état résultant — le tout dans une MÊME unité.
     fn apply_event(
@@ -366,6 +371,10 @@ pub trait AtomicEventLedger: Send + Sync {
 impl<T: AtomicEventLedger + ?Sized> AtomicEventLedger for std::sync::Arc<T> {
     fn resource_revision(&self, resource_id: &[u8]) -> Result<u64, String> {
         (**self).resource_revision(resource_id)
+    }
+
+    fn resource_state(&self, resource_id: &[u8]) -> Result<Option<(Vec<u8>, u64)>, String> {
+        (**self).resource_state(resource_id)
     }
 
     fn apply_event(
@@ -570,7 +579,7 @@ enum EventEntry {
 /// chemin `Claimed` modélise seulement l'état qu'un crash laisserait.
 pub struct InMemoryAtomicEventLedger {
     events: Mutex<HashMap<[u8; 16], EventEntry>>,
-    resources: Mutex<HashMap<Vec<u8>, u64>>,
+    resources: Mutex<HashMap<Vec<u8>, (Vec<u8>, u64)>>,
     fail_partial_write: std::sync::atomic::AtomicBool,
     /// Injection (test) : la prochaine application RÉUSSIT réellement mais
     /// rapporte `Indeterminate` — exerce la résolution qui doit restituer
@@ -601,6 +610,29 @@ impl InMemoryAtomicEventLedger {
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Test : REMPLACE l'effet enregistré d'une observation déjà appliquée par
+    /// un état DIFFÉRENT — permet de distinguer « autorité transactionnelle »
+    /// de « candidat local » dans la résolution.
+    pub fn set_recorded_effect(
+        &self,
+        observation_id: ObservationId,
+        effect: Vec<u8>,
+        revision: u64,
+    ) {
+        let mut events = self.events.lock().unwrap();
+        if let Some(EventEntry::Applied { definition, .. }) = events.get(&observation_id.0) {
+            let definition = definition.clone();
+            events.insert(
+                observation_id.0,
+                EventEntry::Applied {
+                    definition,
+                    state: effect,
+                    revision,
+                },
+            );
+        }
+    }
+
     /// Injection de faute (test) : la PROCHAINE application simule un crash
     /// AU DÉBUT de la transaction. Si l'identité est ABSENTE, elle est laissée
     /// `Claimed` (réservée non remplie) ; si elle est DÉJÀ APPLIQUÉE, elle n'est
@@ -613,12 +645,17 @@ impl InMemoryAtomicEventLedger {
 
 impl AtomicEventLedger for InMemoryAtomicEventLedger {
     fn resource_revision(&self, resource_id: &[u8]) -> Result<u64, String> {
-        Ok(*self
+        Ok(self
             .resources
             .lock()
             .unwrap()
             .get(resource_id)
-            .unwrap_or(&0))
+            .map(|(_, r)| *r)
+            .unwrap_or(0))
+    }
+
+    fn resource_state(&self, resource_id: &[u8]) -> Result<Option<(Vec<u8>, u64)>, String> {
+        Ok(self.resources.lock().unwrap().get(resource_id).cloned())
     }
 
     fn apply_event(
@@ -672,7 +709,7 @@ impl AtomicEventLedger for InMemoryAtomicEventLedger {
         // 2) Précondition de révision (point A) : l'observation a été calculée
         //    depuis `precondition_revision`. Si la ressource a avancé, c'est un
         //    conflit de révision (recalculer, même identité).
-        let current = *resources.get(resource_id).unwrap_or(&0);
+        let current = resources.get(resource_id).map(|(_, r)| *r).unwrap_or(0);
         if precondition_revision != current {
             return Ok(LedgerOutcome::PreconditionFailed {
                 current_revision: current,
@@ -688,7 +725,10 @@ impl AtomicEventLedger for InMemoryAtomicEventLedger {
                 revision: resulting_revision,
             },
         );
-        resources.insert(resource_id.to_vec(), resulting_revision);
+        resources.insert(
+            resource_id.to_vec(),
+            (resulting_state.to_vec(), resulting_revision),
+        );
         // Mode test : l'effet est enregistré, mais la confirmation est
         // indéterminée — resolve() devra restituer l'état ENREGISTRÉ.
         if self

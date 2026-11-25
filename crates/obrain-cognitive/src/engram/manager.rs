@@ -26,7 +26,7 @@ use super::observation::{
     AtomicEventLedger, CognitiveObservationAdapter, InMemoryAtomicEventLedger, ObservationDefinition,
     ObservationId, ObservationOutcome, ResolvedState, ResultingState, SourceRevision,
 };
-use super::store::{EngramStore, LoadReport, StoreError};
+use super::store::{EngramStore, LoadReport, MaterializeOutcome, StoreError};
 use super::traits::VectorIndex;
 use super::types::{Engram, EngramHorizon, EngramId, RecallEvent, RecallFeedback};
 
@@ -425,6 +425,55 @@ impl EngramManager {
     /// NOTE : le registre par défaut est le mock VOLATIL ; la primitive durable
     /// du substrat portera l'atomicité. La transformation reçoit EXACTEMENT les
     /// nœuds canonisés de la définition.
+    /// RATTRAPAGE : si le store est EN RETARD sur l'état enregistré au registre
+    /// (échec de matérialisation antérieur), on le répare AVANT tout nouveau
+    /// calcul. Sans cela, une nouvelle observation partirait d'un état obsolète
+    /// et l'apprentissage déjà accepté serait perdu.
+    fn catch_up_store(&self, engram_id: EngramId) -> Result<(), RevisionError> {
+        let resource = engram_id.0.to_be_bytes();
+        let Some((effect, rec_rev)) = self
+            .observation_ledger
+            .resource_state(&resource)
+            .map_err(RevisionError::PersistenceFailed)?
+        else {
+            return Ok(());
+        };
+        let live = self
+            .store
+            .get(engram_id)
+            .ok_or(RevisionError::EngramAbsent(engram_id))?;
+        if live.revision >= rec_rev {
+            return Ok(());
+        }
+        let body = match effect.first() {
+            Some(&1) => &effect[1..],
+            _ => {
+                return Err(RevisionError::PersistenceFailed(
+                    "effet de ressource non-révision (formation)".into(),
+                ));
+            }
+        };
+        let recorded = ResultingState::from_canonical_bytes(body)
+            .map_err(RevisionError::PersistenceFailed)?;
+        let sig = self.spectral.encode(&recorded.ensemble);
+        self.store
+            .repair_state(
+                engram_id,
+                rec_rev,
+                recorded.ensemble.clone(),
+                recorded.strength,
+                recorded.recall_count,
+                sig.clone(),
+            )
+            .map_err(|e| match e {
+                StoreError::EngramAbsent(id) => RevisionError::EngramAbsent(id),
+                StoreError::ValidationFailed(m) => RevisionError::ValidationFailed(m),
+                StoreError::PersistenceFailed(m) => RevisionError::PersistenceFailed(m),
+            })?;
+        self.vector_index.upsert(&engram_id.to_string(), &sig);
+        Ok(())
+    }
+
     pub fn revise_with_id(
         &self,
         observation_id: ObservationId,
@@ -457,10 +506,17 @@ impl EngramManager {
         let _guard = lock.lock();
 
         let adapter = CognitiveObservationAdapter::new(self.observation_ledger.clone());
+        // RATTRAPAGE avant tout calcul : une nouvelle observation ne doit
+        // JAMAIS partir d'un état obsolète.
+        self.catch_up_store(engram_id)?;
         let current = self
             .store
             .get(engram_id)
             .ok_or(RevisionError::EngramAbsent(engram_id))?;
+        // La révision de la CONNAISSANCE (store) est l'autorité pour la
+        // matérialisation ; `source_revision` (registre) sert de précondition
+        // d'OBSERVATION.
+        let live_revision = current.revision;
         let mut candidate = current;
         reconsolidate(&mut candidate, &canonical_nodes, prediction_error);
         let signature = self.spectral.encode(&candidate.ensemble);
@@ -469,7 +525,7 @@ impl EngramManager {
             strength: candidate.strength,
             recall_count: candidate.recall_count,
         };
-        let resulting_revision = source_revision.0.saturating_add(1);
+        let resulting_revision = live_revision.saturating_add(1);
 
         let outcome = adapter
             .apply(
@@ -498,15 +554,28 @@ impl EngramManager {
                         "injected materialisation failure".into(),
                     ));
                 }
-                self.store
+                match self
+                    .store
                     .materialize_state(
                         engram_id,
+                        live_revision,
                         resulting_state.ensemble.clone(),
                         resulting_state.strength,
                         resulting_state.recall_count,
+                        signature.clone(),
                         resulting_revision,
                     )
-                    .map_err(map_store)?;
+                    .map_err(map_store)?
+                {
+                    MaterializeOutcome::Applied => {}
+                    MaterializeOutcome::Conflict { current_revision } => {
+                        // La connaissance a avancé sous le verrou : conflit.
+                        return Ok((
+                            ObservationOutcome::RevisionConflict { current_revision },
+                            None,
+                        ));
+                    }
+                }
                 self.vector_index
                     .upsert(&engram_id.to_string(), &signature);
                 let engram = self
@@ -537,16 +606,17 @@ impl EngramManager {
                     .get(engram_id)
                     .ok_or(RevisionError::EngramAbsent(engram_id))?;
                 if live.revision < rec_rev {
+                    let sig = self.spectral.encode(&recorded.ensemble);
                     self.store
-                        .materialize_state(
+                        .repair_state(
                             engram_id,
+                            rec_rev,
                             recorded.ensemble.clone(),
                             recorded.strength,
                             recorded.recall_count,
-                            rec_rev,
+                            sig.clone(),
                         )
                         .map_err(map_store)?;
-                    let sig = self.spectral.encode(&recorded.ensemble);
                     self.vector_index.upsert(&engram_id.to_string(), &sig);
                 }
                 Ok((
@@ -604,16 +674,17 @@ impl EngramManager {
                             .get(engram_id)
                             .ok_or(RevisionError::EngramAbsent(engram_id))?;
                         if live.revision < rec_rev {
+                            let sig = self.spectral.encode(&recorded.ensemble);
                             self.store
-                                .materialize_state(
+                                .repair_state(
                                     engram_id,
+                                    rec_rev,
                                     recorded.ensemble.clone(),
                                     recorded.strength,
                                     recorded.recall_count,
-                                    rec_rev,
+                                    sig.clone(),
                                 )
                                 .map_err(map_store)?;
-                            let sig = self.spectral.encode(&recorded.ensemble);
                             self.vector_index.upsert(&engram_id.to_string(), &sig);
                         }
                         Ok((
