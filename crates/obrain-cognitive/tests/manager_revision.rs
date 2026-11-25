@@ -445,3 +445,46 @@ fn reouverture_saine_ne_reecrit_pas_les_bitsets() {
         "bit B déjà présent : aucune écriture"
     );
 }
+
+/// Qualification WAL : une réouverture SAINE ne produit aucune écriture de
+/// bitset (ensure_engram_bit no-op sur bits présents). Mesure offset, records
+/// écrits et records en tampon autour du chargement réel (attach_substrate).
+#[test]
+fn chargement_sain_sans_amplification_wal() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let (a, b) = (NodeId(1), NodeId(2));
+
+    {
+        let manager =
+            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
+        manager.attach_substrate(writer.clone());
+        manager.store().form(&[a, b]).unwrap();
+        // fermeture propre
+    }
+
+    // Réouverture du writer, mesures AVANT le chargement cognitif.
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
+    let offset_before = writer.wal().offset();
+    let ecrits_before = writer.wal().records_ecrits();
+    let tampon_before = writer.wal().records_en_tampon();
+
+    // Chargement RÉEL : nouveau manager + attach_substrate.
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let report = manager.attach_substrate(writer.clone());
+
+    let offset_after = writer.wal().offset();
+    let ecrits_after = writer.wal().records_ecrits();
+    let tampon_after = writer.wal().records_en_tampon();
+
+    assert_eq!(report.coherent, 1, "un engramme cohérent chargé");
+    assert!(report.degraded.is_empty(), "aucun dégradé");
+    assert_eq!(report.rejected.len(), 0, "aucun rejet");
+    assert_eq!(offset_before, offset_after, "offset WAL inchangé (aucune écriture)");
+    assert_eq!(ecrits_before, ecrits_after, "records_ecrits inchangé");
+    assert_eq!(tampon_before, tampon_after, "records_en_tampon inchangé");
+}
