@@ -6936,6 +6936,8 @@ impl SubstrateStore {
     ) -> SubstrateResult<()> {
         let _g = verrou_publication(cible).write();
         self.set_node_property(cible, cle1, valeur1);
+        #[cfg(test)]
+        crate::store::suspension_evenement::suspendre_apres_preuve();
         self.set_node_property(cible, cle2, valeur2);
         Ok(())
     }
@@ -46633,5 +46635,102 @@ mod publication_atomique {
             (Some(Value::Int64(10)), Some(Value::Int64(20))),
             "V1 cohérent, jamais le mélange (a=10,b=2)"
         );
+    }
+}
+
+
+#[cfg(test)]
+mod contournement_publication {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    /// CONTRE-ÉPREUVE A : l'écrivain historique (set_node_property) contourne le
+    /// verrou de publication. Pendant que publier_deux_proprietes_atomiquement
+    /// tient le verrou (suspendu après la 1ère mutation), un set_node_property
+    /// direct écrit SANS attendre : le verrou de publication ne protège pas ce
+    /// chemin.
+    #[test]
+    fn ecrivain_historique_contourne_le_verrou_de_publication() {
+        crate::store::suspension_evenement::reinitialiser();
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let store2 = Arc::clone(&store);
+        let ecrivain = thread::spawn(move || {
+            store2
+                .publier_deux_proprietes_atomiquement(id, "a", Value::Int64(10), "b", Value::Int64(20))
+                .unwrap();
+        });
+        crate::store::suspension_evenement::attendre_suspension();
+        // l'écrivain historique écrit DANS la fenêtre (contourne)
+        store.set_node_property(id, "a", Value::Int64(99));
+        crate::store::suspension_evenement::relacher();
+        ecrivain.join().unwrap();
+        let a = store.get_node_property(id, &PropertyKey::new("a"));
+        eprintln!("APRES_CONTOURNEMENT a={a:?}");
+        // Le résultat démontre le contournement (l'écriture 99 a traversé).
+        assert_eq!(a, Some(Value::Int64(99)), "l'écrivain historique a écrit pendant la publication");
+    }
+}
+
+
+#[cfg(test)]
+mod contournement_lecture_magasin {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    /// CONTRE-ÉPREUVE B : le lecteur historique (get_node_property) n'attend pas
+    /// le verrou de publication → observe l'état partiel pendant la suspension.
+    #[test]
+    fn lecteur_historique_observe_l_etat_partiel() {
+        crate::store::suspension_evenement::reinitialiser();
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let store2 = Arc::clone(&store);
+        let ecrivain = thread::spawn(move || {
+            store2
+                .publier_deux_proprietes_atomiquement(id, "a", Value::Int64(10), "b", Value::Int64(20))
+                .unwrap();
+        });
+        crate::store::suspension_evenement::attendre_suspension();
+        // lecture historique : n'attend pas le verrou de publication
+        let a = store.get_node_property(id, &PropertyKey::new("a"));
+        let b = store.get_node_property(id, &PropertyKey::new("b"));
+        eprintln!("LECTEUR_HISTORIQUE a={a:?} b={b:?}");
+        assert_eq!((a, b), (Some(Value::Int64(10)), Some(Value::Int64(2))), "état partiel visible");
+        crate::store::suspension_evenement::relacher();
+        ecrivain.join().unwrap();
+    }
+
+    /// CONTRE-ÉPREUVE C : le tableau statique de verrous est global au processus
+    /// — deux magasins indépendants partagent le même verrou (même NodeId).
+    #[test]
+    fn verrou_publication_est_global_au_processus() {
+        let td1 = tempfile::tempdir().unwrap();
+        let td2 = tempfile::tempdir().unwrap();
+        let store1 = Arc::new(SubstrateStore::create(td1.path().join("kb")).unwrap());
+        let store2 = Arc::new(SubstrateStore::create(td2.path().join("kb")).unwrap());
+        let id = store1.create_node(&["ressource"]);
+        let _ = store2.create_node(&["ressource"]); // même NodeId(1)
+        let store1b = Arc::clone(&store1);
+        let ecrivain = thread::spawn(move || {
+            let _g = verrou_publication(id).write();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let debut = std::time::Instant::now();
+        // magasin 2 : opération indépendante, mais bloquée par le verrou global
+        let _g = verrou_publication(id).read();
+        let el = debut.elapsed();
+        eprintln!("MAGASIN2_ATTENTE={:?}", el);
+        assert!(el >= std::time::Duration::from_millis(50), "le verrou global bloque le magasin 2");
+        ecrivain.join().unwrap();
     }
 }
