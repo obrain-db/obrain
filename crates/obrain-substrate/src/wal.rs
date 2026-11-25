@@ -147,6 +147,8 @@ pub enum WalKind {
     /// (2026-08-30, T5 passes) Configuration des passes de matérialisation
     /// simpliciales — voir [`WalPayload::SimplexPassesConfig`].
     SimplexPassesConfig = 0x74,
+    /// Écriture de propriété versionnée (auteur + horloge HLC), #334.
+    PropSetVersioned = 0x75,
     CoactDecay = 0x46,
     /// (2026-08-23, chantier SlotRemappable) Repermutation Hilbert V2,
     /// porteuse d'un `remap_epoch` — les side-cars slot-indexés sont
@@ -251,6 +253,7 @@ impl WalKind {
             0x72 => SimplexSet,
             0x73 => SimplexTombstone,
             0x74 => SimplexPassesConfig,
+            0x75 => PropSetVersioned,
             0x46 => CoactDecay,
             0x54 => HilbertRepermuteV2,
             0x55 => CompactCommunityV2,
@@ -761,6 +764,16 @@ pub enum WalPayload {
     TxAnnulee {
         tx: u64,
     },
+    /// (2026-11-25, obrain#334) Écriture de propriété versionnée (auteur +
+    /// horloge HLC) pour la convergence CRDT. EN FIN D'ENUM (encodage par
+    /// indice : aucun record existant ne change d'octets).
+    PropSetVersioned {
+        node_id: u32,
+        key: String,
+        value_bincode: Vec<u8>,
+        auteur: u64,
+        horloge: u64,
+    },
 }
 
 impl WalPayload {
@@ -816,6 +829,7 @@ impl WalPayload {
             TxCommit { .. } => K::TxCommit,
             TxProprieteAvant { .. } => K::TxProprieteAvant,
             TxAnnulee { .. } => K::TxAnnulee,
+            PropSetVersioned { .. } => K::PropSetVersioned,
             VecColumnWrite { .. } => K::VecColumnWrite,
             BlobColumnWrite { .. } => K::BlobColumnWrite,
             BlobColumnClear { .. } => K::BlobColumnClear,
@@ -1652,6 +1666,13 @@ mod tests {
                 avant: None,
             },
             WalPayload::TxAnnulee { tx: 7 },
+            WalPayload::PropSetVersioned {
+                node_id: 1,
+                key: "nom".into(),
+                value_bincode: vec![0x0C, 1, 2, 3],
+                auteur: 7,
+                horloge: 9,
+            },
         ];
         for (i, p) in payloads.into_iter().enumerate() {
             let rec = WalRecord {
