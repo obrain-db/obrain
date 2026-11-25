@@ -342,6 +342,41 @@ pub trait AtomicEventLedger: Send + Sync {
 // Adaptateur cognitif
 // ===================================================================
 
+/// Délégation `Arc<T>` : permet de détenir `Arc<dyn AtomicEventLedger>` (le
+/// manager) et d'en construire un adaptateur sans connaître le type concret.
+impl<T: AtomicEventLedger + ?Sized> AtomicEventLedger for std::sync::Arc<T> {
+    fn resource_revision(&self, resource_id: &[u8]) -> Result<u64, String> {
+        (**self).resource_revision(resource_id)
+    }
+
+    fn apply_event(
+        &self,
+        event_id: &[u8; 16],
+        resource_id: &[u8],
+        definition: &[u8],
+        precondition_revision: u64,
+        resulting_state: &[u8],
+        resulting_revision: u64,
+    ) -> Result<LedgerOutcome, String> {
+        (**self).apply_event(
+            event_id,
+            resource_id,
+            definition,
+            precondition_revision,
+            resulting_state,
+            resulting_revision,
+        )
+    }
+
+    fn resolve(&self, event_id: &[u8; 16]) -> Result<ResolvedState, String> {
+        (**self).resolve(event_id)
+    }
+
+    fn abandon(&self, event_id: &[u8; 16]) -> Result<AbandonOutcome, String> {
+        (**self).abandon(event_id)
+    }
+}
+
 /// Adaptateur cognitif : sérialise les concepts (`ObservationId`,
 /// `ObservationDefinition`, `ResultingState`) vers la primitive générique et
 /// interprète les issues.
