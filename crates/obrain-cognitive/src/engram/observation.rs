@@ -667,6 +667,9 @@ pub struct InMemoryAtomicEventLedger {
     /// rapporte `Indeterminate` — exerce la résolution qui doit restituer
     /// l'état EFFECTIVEMENT enregistré.
     indeterminate_but_applied: std::sync::atomic::AtomicBool,
+    /// Injection (test) : `complete_formation` échoue (interruption avant
+    /// confirmation de l'activation).
+    fail_complete_formation: std::sync::atomic::AtomicBool,
 }
 
 impl Default for InMemoryAtomicEventLedger {
@@ -683,6 +686,7 @@ impl InMemoryAtomicEventLedger {
             resources: Mutex::new(HashMap::new()),
             fail_partial_write: std::sync::atomic::AtomicBool::new(false),
             indeterminate_but_applied: std::sync::atomic::AtomicBool::new(false),
+            fail_complete_formation: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -691,6 +695,14 @@ impl InMemoryAtomicEventLedger {
     pub fn set_indeterminate_but_applied(&self, enabled: bool) {
         self.indeterminate_but_applied
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Injection (test) : `complete_formation` ÉCHOUE — reproduit une
+    /// interruption entre l'activation effective et la confirmation, et permet
+    /// de MESURER la fenêtre de double application.
+    pub fn set_fail_complete_formation(&self, fail: bool) {
+        self.fail_complete_formation
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Test : REMPLACE l'effet enregistré d'une observation déjà appliquée par
@@ -847,6 +859,12 @@ impl AtomicEventLedger for InMemoryAtomicEventLedger {
     }
 
     fn complete_formation(&self, event_id: &[u8; 16]) -> Result<bool, String> {
+        if self
+            .fail_complete_formation
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err("injected complete_formation failure".into());
+        }
         let mut events = self.events.lock().unwrap();
         match events.get(event_id) {
             Some(EventEntry::Applied {
