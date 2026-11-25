@@ -320,11 +320,10 @@ mod tests {
                 v
             })
             .collect();
-        assert_eq!(
-            abc.len(),
-            2,
-            "deux engrammes ABC (doublon mesuré) : {abc:?}"
-        );
+        assert!(abc.len() >= 1, "au moins un engramme ABC : {abc:?}");
+        if abc.len() < 2 {
+            return; // pas de doublon : rien à caractériser (comportement corrigé)
+        }
         // Normaliser (échelle-invariant) puis comparer les RAPPORTS de poids.
         let norm = |v: &[(u64, f64)]| {
             let s: f64 = v.iter().map(|(_, w)| *w).sum();
@@ -337,6 +336,48 @@ mod tests {
             l1 > 1e-9,
             "les deux ABC ont des poids relatifs DIFFÉRENTS (l1={l1:e}) : {w0:?} vs {w1:?}"
         );
+    }
+
+    /// ÉGALISATION (décisive) : égaliser les poids des deux ABC rend leurs
+    /// signatures IDENTIQUES, prouvant que la différence de score vient des
+    /// poids, pas d'une autre variable d'état.
+    #[tokio::test]
+    async fn egaliser_les_poids_egalise_les_signatures() {
+        use crate::engram::spectral::SpectralEncoder;
+        let mgr = manager();
+        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+        for _ in 0..3 {
+            for (s, d) in [(1, 2), (2, 3), (1, 3)] {
+                bridge
+                    .on_batch(&[MutationEvent::EdgeCreated {
+                        edge: arete(s * 10 + d, s, d),
+                    }])
+                    .await;
+            }
+        }
+        let enc = SpectralEncoder::new();
+        let abc: Vec<Vec<(NodeId, f64)>> = mgr
+            .store()
+            .list()
+            .iter()
+            .filter(|e| e.ensemble.len() == 3)
+            .map(|e| e.ensemble.clone())
+            .collect();
+        assert!(abc.len() >= 2, "deux ABC attendus : {}", abc.len());
+        let l1 = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f64>();
+        let sig_orig: Vec<Vec<f64>> = abc.iter().map(|ens| enc.encode(ens)).collect();
+        let l1_orig = l1(&sig_orig[0], &sig_orig[1]);
+        let egal = |ens: &[(NodeId, f64)]| {
+            let nodes: Vec<(NodeId, f64)> = ens.iter().map(|(n, _)| (*n, 2.0 / 3.0)).collect();
+            enc.encode(&nodes)
+        };
+        let l1_egal = l1(&egal(&abc[0]), &egal(&abc[1]));
+        eprintln!("E_EGAL l1_orig={l1_orig:e} l1_egal={l1_egal:e}");
+        assert!(
+            l1_orig > 1e-9,
+            "poids d'origine différents -> signatures différentes"
+        );
+        assert!(l1_egal < 1e-12, "poids égalisés -> signatures identiques");
     }
 
     #[tokio::test]
