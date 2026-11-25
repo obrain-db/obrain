@@ -19,7 +19,7 @@ use super::hopfield::{
     compute_prediction_error,
 };
 use super::observe::EngramMetricsCollector;
-use super::recall::{RecallEngine, RecallResult, WarmupConfig, WarmupSelector};
+use super::recall::{reconsolidate, RecallEngine, RecallResult, WarmupConfig, WarmupSelector};
 use super::spectral::SpectralEncoder;
 use super::store::EngramStore;
 use super::traits::VectorIndex;
@@ -80,6 +80,16 @@ pub struct EngramManager {
     metrics: Arc<EngramMetricsCollector>,
     /// Vector index for spectral similarity search.
     vector_index: Arc<dyn VectorIndex>,
+}
+
+/// Résultat d'une révision cohérente : identifie le nouvel état (révision,
+/// membres pondérés, signature) pour vérification et comparaison.
+#[derive(Debug, Clone)]
+pub struct EngramRevision {
+    pub engram_id: EngramId,
+    pub revision: u64,
+    pub members: Vec<(NodeId, f64)>,
+    pub signature: Vec<f64>,
 }
 
 impl EngramManager {
@@ -276,6 +286,38 @@ impl EngramManager {
                 }
             });
         }
+    }
+
+    /// Révision COHÉRENTE d'un engramme : applique la reconsolidation native,
+    /// recompute la signature spectrale à partir du nouvel ensemble pondéré,
+    /// met à jour l'index vectoriel, puis retourne un `EngramRevision` identifiant
+    /// le nouvel état. Les membres+poids sont persistés atomiquement par
+    /// `set_engram_state` (via le miroir substrate de `update`).
+    ///
+    /// Distinct de `record_activation` (formation) : ici on révise un engramme
+    /// EXISTANT à partir d'une observation indépendante.
+    pub fn revise(
+        &self,
+        engram_id: EngramId,
+        new_nodes: &[NodeId],
+        prediction_error: f64,
+    ) -> Option<EngramRevision> {
+        self.store.update(engram_id, |e| {
+            reconsolidate(e, new_nodes, prediction_error);
+            // Projection dérivée : signature recalculée sur l'ensemble pondéré
+            // révisé, PAS conservée périmée.
+            e.spectral_signature = self.spectral.encode(&e.ensemble);
+        });
+        let engram = self.store.get(engram_id)?;
+        let signature = engram.spectral_signature.clone();
+        // Index vectoriel : le rappel spectral doit voir la nouvelle signature.
+        self.vector_index.upsert(&engram_id.to_string(), &signature);
+        Some(EngramRevision {
+            engram_id,
+            revision: self.store.revision(),
+            members: engram.ensemble.clone(),
+            signature,
+        })
     }
 
     // -----------------------------------------------------------------
