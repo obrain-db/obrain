@@ -129,3 +129,47 @@ fn observation_invalide_refusee() {
     let e = manager.store().get(id).unwrap();
     assert_eq!(e.ensemble.len(), 2, "état inchangé après observation invalide");
 }
+
+/// Contre-épreuve CONCURRENTE : deux révisions simultanées du même engramme.
+/// Sans le verrou par engramme, un read-modify-write entrelacé perdrait l'une
+/// des deux additions. La barrière force un départ simultané.
+#[test]
+fn deux_revisions_concurrentes_coherentes() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let (a, b, c, d) = (NodeId(1), NodeId(2), NodeId(3), NodeId(4));
+
+    let manager = Arc::new(EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    ));
+    let sub = SubstrateFile::create(&path).unwrap();
+    let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+    manager.attach_substrate(Arc::new(writer));
+
+    let id = manager.store().form(&[a, b]).unwrap();
+
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let (m1, m2) = (manager.clone(), manager.clone());
+    let (b1, b2) = (barrier.clone(), barrier.clone());
+    let t1 = std::thread::spawn(move || {
+        b1.wait();
+        m1.revise(id, &[c], 0.5).expect("révision C");
+    });
+    let t2 = std::thread::spawn(move || {
+        b2.wait();
+        m2.revise(id, &[d], 0.5).expect("révision D");
+    });
+    t1.join().unwrap();
+    t2.join().unwrap();
+
+    let e = manager.store().get(id).expect("engramme présent");
+    let members = members_of(&e.ensemble);
+    assert!(members.contains(&c) && members.contains(&d),
+        "les deux révisions sont appliquées (pas de mise à jour perdue) : {members:?}");
+    assert_eq!(members.len(), 4, "aucun doublon, aucune perte : {members:?}");
+    // Les poids sont décroissants mais cohérents (deux décroissances successives).
+    assert!((weight_of(&e.ensemble, a) - 0.9025).abs() < 1e-6
+        || (weight_of(&e.ensemble, a) - 0.95).abs() < 1e-6,
+        "poids A cohérent avec 1 ou 2 décroissances (sérialisé)");
+}
