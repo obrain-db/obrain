@@ -1880,7 +1880,8 @@ fn apply(
         WalPayload::PropSetInline { .. }
         | WalPayload::PropRemoveInline { .. }
         | WalPayload::EdgePropSetInline { .. }
-        | WalPayload::EdgePropRemoveInline { .. } => Ok(Applied::Skipped),
+        | WalPayload::EdgePropRemoveInline { .. }
+        | WalPayload::PropSetVersioned { .. } => Ok(Applied::Skipped),
 
         // Forme HERITEE des proprietes, adressee par `key_id`. Remplacee par
         // les variantes `*Inline`, qui portent le nom de la cle et ne
