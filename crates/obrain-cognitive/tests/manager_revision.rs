@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use obrain_common::types::NodeId;
 use obrain_cognitive::engram::traits::{InMemoryVectorIndex, VectorIndex};
-use obrain_cognitive::engram::{EngramManager, EngramManagerConfig, RevisionError};
+use obrain_cognitive::engram::{EngramManager, EngramManagerConfig, RevisionError, StoreError};
 use obrain_substrate::{SubstrateFile, SyncMode, Writer as SubstrateWriter};
 
 fn weight_of(ens: &[(NodeId, f64)], n: NodeId) -> f64 {
@@ -250,4 +250,41 @@ fn publication_des_projections_ordonnee() {
         &last.1, &final_sig,
         "dernière signature publiée = état final (aucune projection obsolète)"
     );
+}
+
+/// Tests DIRECTS de `mutate` (pas via revise) : les invariants de validation
+/// sont propres au store, pas au manager.
+#[test]
+fn mutate_refuse_invariants_invalides() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let (a, b) = (NodeId(1), NodeId(2));
+
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let sub = SubstrateFile::create(&path).unwrap();
+    let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+    manager.attach_substrate(Arc::new(writer));
+
+    let id = manager.store().form(&[a, b]).unwrap();
+
+    // Changement d'identité logique refusé.
+    let r = manager.store().mutate(id, |e| { e.id = obrain_cognitive::engram::EngramId(999); });
+    assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "identité refusée");
+
+    // Membre dupliqué refusé.
+    let r = manager.store().mutate(id, |e| { e.ensemble.push((a, 1.0)); });
+    assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "doublon refusé");
+
+    // Poids non fini (f64) refusé.
+    let r = manager.store().mutate(id, |e| { e.ensemble[0].1 = f64::NAN; });
+    assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "NaN refusé");
+
+    // Dépassement f32 refusé (substrate) : 1e300 est fini en f64 mais inf en f32.
+    let r = manager.store().mutate(id, |e| { e.ensemble[0].1 = 1e300; });
+    assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "dépassement f32 refusé");
+
+    // L'état canonique est resté {A,B} (aucun commit partiel).
+    let e = manager.store().get(id).unwrap();
+    assert_eq!(e.ensemble.len(), 2, "état canonique inchangé après refus");
 }
