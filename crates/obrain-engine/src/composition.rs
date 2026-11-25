@@ -46,6 +46,16 @@ pub const EDGE_CHILD: &str = "child";
 pub const KEY_CANONICAL: &str = "canonical_key";
 /// Clé de propriété stockant le rôle d'une relation.
 pub const KEY_ROLE: &str = "role";
+/// Label des nœuds d'occurrence relationnelle (réification).
+pub const LABEL_RELATION: &str = "relation_occurrence";
+/// Arête connaissance -> occurrence relationnelle (appartenance).
+pub const EDGE_RELATION: &str = "relation";
+/// Arête occurrence -> participant source.
+pub const EDGE_SRC: &str = "src";
+/// Arête occurrence -> participant destination.
+pub const EDGE_DST: &str = "dst";
+/// Clé de propriété stockant le type d'une relation.
+pub const KEY_REL_TYPE: &str = "rel_type";
 /// Profondeur maximale de résolution (garde anti-épuisement de pile).
 pub const MAX_RESOLVE_DEPTH: usize = 1024;
 
@@ -145,6 +155,8 @@ pub enum ResolveError {
     Cycle(Vec<NodeId>),
     /// Profondeur de résolution dépassée (garde anti-épuisement de pile).
     DepthExceeded,
+    /// Structure incohérente (occurrence mal formée, clé divergente...).
+    InvalidStructure(String),
 }
 
 /// Interface compositionnelle sur le graphe natif (construire, résoudre).
@@ -175,11 +187,16 @@ impl<'a> Composition<'a> {
             self.db.create_edge(id, *c, EDGE_CHILD);
         }
         for rel in &spec.relations {
-            let eid = self.db.create_edge(rel.src, rel.dst, &rel.rel_type);
+            let occ = self.db.create_node(&[LABEL_RELATION]);
+            self.db
+                .set_node_property(occ, KEY_REL_TYPE, Value::from(rel.rel_type.clone()));
             if let Some(role) = &rel.role {
                 self.db
-                    .set_edge_property(eid, KEY_ROLE, Value::from(role.clone()));
+                    .set_node_property(occ, KEY_ROLE, Value::from(role.clone()));
             }
+            self.db.create_edge(occ, rel.src, EDGE_SRC);
+            self.db.create_edge(occ, rel.dst, EDGE_DST);
+            self.db.create_edge(id, occ, EDGE_RELATION);
         }
         id
     }
@@ -208,6 +225,99 @@ impl<'a> Composition<'a> {
         node.properties
             .get(&PropertyKey::from(KEY_CANONICAL))
             .and_then(|v| v.as_str().map(|s| s.to_string()))
+    }
+
+    /// Reconstruction de la DÉFINITION STRUCTURELLE depuis le graphe persistant
+    /// (membres directs, enfants directs, occurrences relationnelles avec
+    /// direction/type/rôle). Ne réutilise pas les specs initiales. Vérifie que
+    /// la clé recalculée correspond à la clé persistée.
+    pub fn read_spec(&self, id: NodeId) -> Result<KnowledgeSpec, ResolveError> {
+        let root = self.db.get_node(id).ok_or(ResolveError::RootMissing(id))?;
+        if !root.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
+            return Err(ResolveError::RootNotKnowledge(id));
+        }
+        let mut members = BTreeSet::new();
+        let mut children = BTreeSet::new();
+        let mut relations = BTreeSet::new();
+        for (dst, eid) in self.outgoing(id) {
+            let edge = self
+                .db
+                .get_edge(eid)
+                .ok_or(ResolveError::MissingReference(dst))?;
+            match edge.edge_type.as_str() {
+                EDGE_MEMBER => {
+                    if self.db.get_node(dst).is_none() {
+                        return Err(ResolveError::MissingParticipant(dst));
+                    }
+                    members.insert(dst);
+                }
+                EDGE_CHILD => {
+                    let Some(child) = self.db.get_node(dst) else {
+                        return Err(ResolveError::MissingReference(dst));
+                    };
+                    if !child.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
+                        return Err(ResolveError::NotKnowledge(dst));
+                    }
+                    children.insert(dst);
+                }
+                EDGE_RELATION => {
+                    relations.insert(self.read_relation_occurrence(dst)?);
+                }
+                _ => {}
+            }
+        }
+        let spec = KnowledgeSpec {
+            members,
+            children,
+            relations,
+        };
+        let recomputed = spec.structural_key();
+        if self.structural_key_of(id).as_deref() != Some(recomputed.as_str()) {
+            return Err(ResolveError::InvalidStructure(
+                "divergence entre clé recalculée et clé persistée".into(),
+            ));
+        }
+        Ok(spec)
+    }
+
+    /// Lit une occurrence relationnelle : type, rôle, source, destination.
+    fn read_relation_occurrence(&self, occ: NodeId) -> Result<Relation, ResolveError> {
+        let node = self
+            .db
+            .get_node(occ)
+            .ok_or(ResolveError::MissingReference(occ))?;
+        let rel_type = node
+            .properties
+            .get(&PropertyKey::from(KEY_REL_TYPE))
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .ok_or_else(|| ResolveError::InvalidStructure("occurrence sans type".into()))?;
+        let role = node
+            .properties
+            .get(&PropertyKey::from(KEY_ROLE))
+            .and_then(|v| v.as_str().map(|s| s.to_string()));
+        let mut src = None;
+        let mut dst = None;
+        for (target, eid) in self.outgoing(occ) {
+            let edge = self
+                .db
+                .get_edge(eid)
+                .ok_or(ResolveError::MissingReference(target))?;
+            match edge.edge_type.as_str() {
+                EDGE_SRC => src = Some(target),
+                EDGE_DST => dst = Some(target),
+                _ => {}
+            }
+        }
+        let src =
+            src.ok_or_else(|| ResolveError::InvalidStructure("occurrence sans source".into()))?;
+        let dst = dst
+            .ok_or_else(|| ResolveError::InvalidStructure("occurrence sans destination".into()))?;
+        Ok(Relation {
+            rel_type,
+            src,
+            dst,
+            role,
+        })
     }
 
     fn resolve_dfs(
