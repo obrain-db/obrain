@@ -732,6 +732,13 @@ impl CognitiveEngineBuilder {
         let engram_manager = self.engram_config.map(|config| {
             let index = Arc::new(crate::engram::traits::InMemoryVectorIndex::new());
             let manager = Arc::new(EngramManager::new(config, index));
+            // (2026-11-25) Pont E2E « observation → engramme » : enregistre un
+            // listener qui traduit chaque lot de mutations en co-activation
+            // (record_activation). Avant ce correctif, record_activation n'avait
+            // AUCUN appelant hors tests — la formation d'engrams était morte.
+            scheduler.register_listener(Arc::new(crate::engram::EngramObservationBridge::new(
+                Arc::clone(&manager),
+            )));
             active_count += 1;
             tracing::info!("cognitive: engram subsystem activated");
             manager

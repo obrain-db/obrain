@@ -97,6 +97,11 @@ mod manager;
 #[cfg(feature = "engram")]
 pub use manager::{EngramManager, EngramManagerConfig};
 
+#[cfg(feature = "engram")]
+mod bridge;
+#[cfg(feature = "engram")]
+pub use bridge::EngramObservationBridge;
+
 #[cfg(feature = "substrate")]
 pub mod substrate_adapter;
 #[cfg(feature = "substrate")]
