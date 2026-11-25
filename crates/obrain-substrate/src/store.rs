@@ -46524,3 +46524,31 @@ mod mutation_conditionnelle {
         );
     }
 }
+
+
+#[cfg(test)]
+mod visibilite_transactionnelle {
+    use super::*;
+
+    /// EXPÉRIENCE DE VISIBILITÉ : le chemin versionné natif
+    /// (set_node_property_versioned) diffère-t-il la publication ? On mute a→10
+    /// sous transaction SANS commit, puis on lit a et b.
+    #[test]
+    fn mutation_versionnee_est_visible_avant_commit() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let tx = obrain_common::types::TransactionId(100);
+        store.set_node_property_versioned(id, "a", Value::Int64(10), tx);
+        // lecteur : lit a et b AVANT commit
+        let a = store.get_node_property(id, &PropertyKey::new("a"));
+        let b = store.get_node_property(id, &PropertyKey::new("b"));
+        eprintln!("APRES_A_SANS_COMMIT a={a:?} b={b:?}");
+        // Résultat observé (pas présumé) :
+        // - si a=10 : la mutation est visible avant commit → pas d'isolation.
+        assert_eq!(a, Some(Value::Int64(10)), "a est visible avant commit");
+        assert_eq!(b, Some(Value::Int64(2)), "b inchangé");
+    }
+}
