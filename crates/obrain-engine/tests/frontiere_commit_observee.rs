@@ -240,7 +240,7 @@ fn e_ecrivain_secondaire_controle_apres_commit_durable() {
     let db = ObrainDB::open_substrate(&d).expect("ouverture");
     let mut s = db.session();
     s.begin_transaction().expect("begin");
-    s.create_node(&["T"]);
+    let n = s.create_node(&["T"]);
     s.commit().expect("commit");
 
     let c = db
@@ -257,7 +257,7 @@ fn e_ecrivain_secondaire_controle_apres_commit_durable() {
     // Écriture secondaire par le VRAI writer du même store, même WAL.
     let sub = db.substrate_handle().expect("substrate");
     sub.writer()
-        .reinforce_energy(0, 1000)
+        .reinforce_energy(n.0 as u32, 1000)
         .expect("écriture secondaire d'énergie");
 
     let t_final = taille_wal(&d);
@@ -271,9 +271,15 @@ fn e_ecrivain_secondaire_controle_apres_commit_durable() {
         if d_final < t_final { "OUI (D' < T')" } else { "non (D' >= T')" }
     );
 
+    // L'invariant porte sur les MÊMES frontières finales : une synchronisation complète
+    // de l'écriture secondaire ferait disparaître le scénario sans faire échouer le test.
     assert!(t_final > t_apres_ack, "l'écriture secondaire doit étendre le WAL");
     assert!(
-        c <= d_apres_ack,
-        "l'oracle corrigé doit rester satisfait (C={c} <= D={d_apres_ack})"
+        c <= d_final,
+        "l'oracle corrigé doit rester satisfait sur les frontières finales (C={c} <= D'={d_final})"
+    );
+    assert!(
+        d_final < t_final,
+        "le scénario discriminant exige D' < T' (D'={d_final}, T'={t_final})"
     );
 }
