@@ -108,6 +108,46 @@ pub enum RevisionError {
     PersistenceFailed(String),
 }
 
+/// Erreur d un pas de boucle predictive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PredictiveStepError {
+    /// Dimension de l embedding predit differente de la dimension observee :
+    /// aucune distance L2 n est calculee entre deux espaces heterogenes.
+    DimensionMismatch { predicted: usize, observed: usize },
+    /// Observation vide : aucune erreur calculable.
+    EmptyObservation,
+}
+
+/// Action effectuee par un pas de boucle predictive.
+#[derive(Debug, Clone)]
+pub enum PredictiveAction {
+    /// Aucun engramme recoupe : l observation a nourri la formation.
+    FedFormation,
+    /// Revision appliquee avec succes.
+    Revised(EngramRevision),
+    /// Revision demandee mais refusee (erreur conservee, jamais masquee).
+    RevisionFailed(RevisionError),
+}
+
+/// Resultat d un pas de boucle predictive native.
+#[derive(Debug, Clone)]
+pub struct PredictiveStep {
+    /// Embedding predit AVANT l observation (vecteur nul si aucune prediction).
+    pub predicted: Vec<f64>,
+    /// Embedding de l observation, produit independamment de la prediction.
+    pub observed: Vec<f64>,
+    /// Erreur L2 reelle (dimensions verifiees).
+    pub error: f64,
+    /// `predict()` a-t-il rendu une prediction ?
+    pub had_prediction: bool,
+    /// Engramme dominant de l attention (si prediction).
+    pub dominant: Option<EngramId>,
+    /// Action effectuee et son resultat.
+    pub action: PredictiveAction,
+    /// Nombre d engrams presents apres le pas.
+    pub engram_count: usize,
+}
+
 impl EngramManager {
     /// Creates a new `EngramManager` from the given configuration.
     ///
@@ -362,6 +402,90 @@ impl EngramManager {
             revision: self.store.revision(),
             members: engram.ensemble.clone(),
             signature,
+        })
+    }
+
+    /// Encode une observation (ensemble de noeuds, poids uniformes) dans
+    /// l espace spectral du manager. Primitive generique : aucune logique
+    /// propre a une experience.
+    pub fn encode_observation(&self, nodes: &[NodeId]) -> Vec<f64> {
+        let weighted: Vec<(NodeId, f64)> = nodes.iter().map(|&n| (n, 1.0)).collect();
+        self.spectral.encode(&weighted)
+    }
+
+    /// Erreur L2 entre deux embeddings, DIMENSION VERIFIEE : jamais de distance
+    /// entre deux espaces de dimensions differentes (metriques non homogenes).
+    pub fn prediction_error(
+        &self,
+        predicted: &[f64],
+        observed: &[f64],
+    ) -> Result<f64, PredictiveStepError> {
+        if predicted.len() != observed.len() {
+            return Err(PredictiveStepError::DimensionMismatch {
+                predicted: predicted.len(),
+                observed: observed.len(),
+            });
+        }
+        Ok(predicted
+            .iter()
+            .zip(observed)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f64>()
+            .sqrt())
+    }
+
+    /// Un pas de boucle predictive NATIVE : predit AVANT d observer, encode
+    /// l observation independamment, calcule l erreur reelle, puis revise
+    /// l engramme recoupe (reconsolidation) ou nourrit la formation.
+    ///
+    /// Primitive GENERIQUE : le choix revise/former repose sur le seul
+    /// recoupement entre l observation et l engramme rappele, jamais sur une
+    /// regle propre a une experience. Le resultat de `revise` est CONSERVE
+    /// dans `PredictiveAction` (jamais ignore).
+    pub fn predictive_step(
+        &self,
+        cues: &[NodeId],
+        observed: &[NodeId],
+        k: usize,
+    ) -> Result<PredictiveStep, PredictiveStepError> {
+        if observed.is_empty() {
+            return Err(PredictiveStepError::EmptyObservation);
+        }
+        let dim = self.spectral.dimensions();
+        let prediction = self.predict(cues, k);
+        let (predicted, dominant) = match &prediction {
+            Some(p) => (p.predicted.clone(), p.attention.first().map(|(id, _)| *id)),
+            None => (vec![0.0; dim], None),
+        };
+        let observed_emb = self.encode_observation(observed);
+        let error = self.prediction_error(&predicted, &observed_emb)?;
+
+        // Garde generique : reviser un engramme SEULEMENT s il recoupe
+        // l observation (co-activation partagee). Sinon motif distinct : formation.
+        let revise_target = dominant.filter(|eid| {
+            self.store
+                .get(*eid)
+                .map(|e| e.node_ids().iter().any(|n| observed.contains(n)))
+                .unwrap_or(false)
+        });
+        let action = match revise_target {
+            Some(eid) => match self.revise(eid, observed, error) {
+                Ok(rev) => PredictiveAction::Revised(rev),
+                Err(err) => PredictiveAction::RevisionFailed(err),
+            },
+            None => {
+                self.record_activation(observed, error);
+                PredictiveAction::FedFormation
+            }
+        };
+        Ok(PredictiveStep {
+            predicted,
+            observed: observed_emb,
+            error,
+            had_prediction: prediction.is_some(),
+            dominant,
+            action,
+            engram_count: self.store.count(),
         })
     }
 
