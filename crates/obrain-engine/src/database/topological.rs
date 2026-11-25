@@ -216,3 +216,96 @@ impl super::ObrainDB {
         ))
     }
 }
+
+/// Tests de couverture des deux fonctions pures du tri topologique :
+/// `rerank_by_cluster_dominance` (pondération par dominance de cluster) et
+/// `cluster_components_by_edge_type` (composantes connexes d'un type d'arête).
+#[cfg(test)]
+mod tests_couverture_topological {
+    use super::super::ObrainDB;
+    use super::{cluster_components_by_edge_type, rerank_by_cluster_dominance};
+    use obrain_common::types::NodeId;
+
+    #[test]
+    fn boost_nul_trie_par_score_decroissant_et_tronque() {
+        let c = vec![(NodeId(1), 1.0), (NodeId(2), 3.0), (NodeId(3), 2.0)];
+        let r = rerank_by_cluster_dominance(c, 2, 0.0, |_| None);
+        assert_eq!(r, vec![(NodeId(2), 3.0), (NodeId(3), 2.0)]);
+    }
+
+    #[test]
+    fn k_nul_rend_vide() {
+        let c = vec![(NodeId(1), 1.0)];
+        assert_eq!(rerank_by_cluster_dominance(c, 0, 1.0, |_| None).len(), 0);
+    }
+
+    #[test]
+    fn candidats_vides_rend_vide() {
+        let c: Vec<(NodeId, f64)> = vec![];
+        assert_eq!(rerank_by_cluster_dominance(c, 5, 1.0, |_| None).len(), 0);
+    }
+
+    #[test]
+    fn cluster_dominant_reequilibre_par_dessus_le_score_brut() {
+        // Cluster 0 : 3 nœuds (dominance 3/4) ; cluster 1 : 1 nœud (1/4).
+        let cluster_of = |id: NodeId| match id.0 {
+            1..=3 => Some(0),
+            4 => Some(1),
+            _ => None,
+        };
+        let c = vec![
+            (NodeId(1), 9.0),
+            (NodeId(2), 8.0),
+            (NodeId(3), 7.0),
+            (NodeId(4), 10.0),
+        ];
+        let r = rerank_by_cluster_dominance(c, 2, 100.0, cluster_of);
+        // score(1) = 9 + 75 = 84, score(2) = 8 + 75 = 83, score(4) = 10 + 25 = 35.
+        assert_eq!(r[0].0, NodeId(1));
+        assert_eq!(r[1].0, NodeId(2));
+        assert!(!r.iter().any(|(id, _)| *id == NodeId(4)));
+    }
+
+    #[test]
+    fn cluster_inconnu_n_est_pas_booste() {
+        // Tous de cluster inconnu : dominance nulle, le score brut seul décide.
+        let c = vec![(NodeId(1), 5.0), (NodeId(2), 4.0)];
+        let r = rerank_by_cluster_dominance(c, 2, 100.0, |_| None);
+        assert_eq!(r[0], (NodeId(1), 5.0));
+        assert_eq!(r[1], (NodeId(2), 4.0));
+    }
+
+    #[test]
+    fn composantes_connexes_par_type_d_arete() {
+        let db = ObrainDB::new_in_memory();
+        let a = db.create_node(&["Person"]);
+        let b = db.create_node(&["Person"]);
+        let c = db.create_node(&["Person"]);
+        let d = db.create_node(&["Person"]);
+        db.create_edge(a, b, "KNOWS");
+        db.create_edge(c, d, "KNOWS");
+        let comp = cluster_components_by_edge_type(db.store().as_ref(), &[a, c], "KNOWS");
+        assert_eq!(comp.get(&a), comp.get(&b), "a et b dans la même composante");
+        assert_eq!(comp.get(&c), comp.get(&d), "c et d dans la même composante");
+        assert_ne!(comp.get(&a), comp.get(&c), "deux composantes distinctes");
+    }
+
+    #[test]
+    fn composantes_ignorent_les_autres_types_d_arete() {
+        let db = ObrainDB::new_in_memory();
+        let a = db.create_node(&["Person"]);
+        let b = db.create_node(&["Person"]);
+        db.create_edge(a, b, "LIKES");
+        let comp = cluster_components_by_edge_type(db.store().as_ref(), &[a], "KNOWS");
+        // L'arête LIKES n'est pas suivie : a reste seul dans sa composante.
+        assert_eq!(comp.get(&a), Some(&0));
+        assert!(!comp.contains_key(&b), "b n'est pas atteint via LIKES");
+    }
+
+    #[test]
+    fn composantes_candidats_vides_rend_vide() {
+        let db = ObrainDB::new_in_memory();
+        let comp = cluster_components_by_edge_type(db.store().as_ref(), &[], "KNOWS");
+        assert_eq!(comp.len(), 0);
+    }
+}
