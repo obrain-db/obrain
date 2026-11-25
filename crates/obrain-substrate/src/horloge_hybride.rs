@@ -207,6 +207,22 @@ mod tests {
     }
 
     #[test]
+    fn estampille_pack_depaquete_roundtrip() {
+        let e = Estampille {
+            physique: 1_725_000_000,
+            logique: 0xABCD,
+        };
+        let paquet = e.pack();
+        assert_eq!(Estampille::depaqueter(paquet), e);
+        // la borne basse : physique nul et logique nul
+        let nulle = Estampille {
+            physique: 0,
+            logique: 0,
+        };
+        assert_eq!(Estampille::depaqueter(nulle.pack()), nulle);
+    }
+
+    #[test]
     fn estampille_serialise_et_deserialise() {
         let e = Estampille {
             physique: 42,
