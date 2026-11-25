@@ -102,7 +102,7 @@ cognitive = ["energy", "synapse"]
 # Level 2: + fabric scoring, co-change detection, GDS refresh
 cognitive-fabric = ["cognitive", "fabric", "co-change", "gds-refresh"]
 # Level 3: all cognitive subsystems
-cognitive-full = ["cognitive-fabric", "kernel", "kernel-params", "session-metrics", "scar", "memory", "stagnation", "fingerprint", "distillation", "episodic", "consolidation", "persona", "gap-detection", "synthesis", "decision"]
+cognitive-full = ["cognitive-fabric", "kernel", "kernel-params", "session-metrics", "scar", "memory", "stagnation", "fingerprint", "distillation", "episodic", "consolidation", "persona", "gap-detection", "synthesis", "decision", "engram", "thinker", "stigmergy"]
 
 [dependencies]
 obrain-common.workspace = true
