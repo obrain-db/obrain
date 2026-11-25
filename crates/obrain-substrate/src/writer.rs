@@ -171,6 +171,10 @@ pub(crate) struct SimplexZones<'a> {
     pub postings: &'a mut ZoneFile,
 }
 
+
+/// État cohérent d'un engramme : membres (u32) + poids optionnels (f32).
+pub type EngramState = (Vec<u32>, Option<Vec<f32>>);
+
 impl Writer {
     /// Construct a writer. The WAL is opened at `substrate.wal_path()`.
     pub fn new(substrate: SubstrateFile, sync_mode: SyncMode) -> SubstrateResult<Self> {
@@ -2748,7 +2752,7 @@ impl Writer {
     pub fn read_engram_state(
         &self,
         engram_id: u16,
-    ) -> SubstrateResult<Option<(Vec<u32>, Option<Vec<f32>>)>> {
+    ) -> SubstrateResult<Option<EngramState>> {
         self.with_engram_state_zones(|mz, wz| {
             let members = crate::engram::EngramZone::members(mz, engram_id)?;
             let weights = crate::engram::EngramZone::weights(wz, engram_id)?;
