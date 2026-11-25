@@ -133,6 +133,7 @@ struct ZoneCache {
     edges: Option<ZoneFile>,
     engram_members: Option<ZoneFile>,
     engram_bitset: Option<ZoneFile>,
+    engram_weights: Option<ZoneFile>,
     /// Zones simpliciales (T4, décision 2d461b89) — toujours manipulées
     /// ENSEMBLE sous le même verrou d'écriture : répertoire + heap des
     /// hyperarêtes + incidence + pages de postings.
@@ -154,6 +155,7 @@ struct ZoneCache {
     edges_fsync_rc: std::sync::atomic::AtomicU64,
     engram_members_fsync_rc: std::sync::atomic::AtomicU64,
     engram_bitset_fsync_rc: std::sync::atomic::AtomicU64,
+    engram_weights_fsync_rc: std::sync::atomic::AtomicU64,
     simplex_dir_fsync_rc: std::sync::atomic::AtomicU64,
     simplex_heap_fsync_rc: std::sync::atomic::AtomicU64,
     simplex_incidence_fsync_rc: std::sync::atomic::AtomicU64,
@@ -2678,6 +2680,30 @@ impl Writer {
         self.with_engram_zone(|zf| crate::engram::EngramZone::members(zf, engram_id))
     }
 
+    /// Écrire les poids d'engramme (f32) — WAL-first, idempotent, même ordre
+    /// que les membres. Les f32 sont stockés en bits u32 dans le payload WAL.
+    pub fn set_engram_weights(&self, engram_id: u16, weights: Vec<f32>) -> SubstrateResult<()> {
+        let bits: Vec<u32> = weights.iter().map(|w| w.to_bits()).collect();
+        let rec = WalRecord {
+            lsn: 0,
+            timestamp: unix_micros(),
+            flags: 0,
+            payload: WalPayload::EngramWeightsSet {
+                engram_id,
+                weights: bits,
+            },
+        };
+        self.wal.append(rec)?;
+        self.with_engram_weights_zone(|zf| {
+            crate::engram::EngramZone::set_weights_raw(zf, engram_id, &weights)
+        })
+    }
+
+    /// Lire les poids d'engramme, dans le même ordre que les membres.
+    pub fn engram_weights(&self, engram_id: u16) -> SubstrateResult<Option<Vec<f32>>> {
+        self.with_engram_weights_zone(|zf| crate::engram::EngramZone::weights(zf, engram_id))
+    }
+
     // ==================================================================
     // Engram bitset column (T7 Step 1)
     // ==================================================================
@@ -3379,6 +3405,9 @@ impl Writer {
             Zone::EngramBitset => {
                 self.with_engram_bitset_zone(|zf| zf.advise_willneed(offset, len))
             }
+            Zone::EngramWeights => {
+                self.with_engram_weights_zone(|zf| zf.advise_willneed(offset, len))
+            }
             // One-shot zones: open a fresh handle, advise, drop. These
             // zones are not writer-managed in the ZoneCache because
             // mutations happen through dedicated paths (bulk_sort,
@@ -3530,6 +3559,18 @@ impl Writer {
             zones.engram_bitset = Some(sub.open_zone(Zone::EngramBitset)?);
         }
         f(zones.engram_bitset.as_mut().unwrap())
+    }
+
+    fn with_engram_weights_zone<R>(
+        &self,
+        f: impl FnOnce(&mut ZoneFile) -> SubstrateResult<R>,
+    ) -> SubstrateResult<R> {
+        let mut zones = self.zones.write();
+        if zones.engram_weights.is_none() {
+            let sub = self.substrate.lock();
+            zones.engram_weights = Some(sub.open_zone(Zone::EngramWeights)?);
+        }
+        f(zones.engram_weights.as_mut().unwrap())
     }
 
     /// Emprunte les QUATRE zones simpliciales sous le verrou d'écriture —
@@ -4735,6 +4776,27 @@ mod tests {
         let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
         let got = w2.engram_members(999).unwrap().unwrap();
         assert_eq!(got, members);
+    }
+
+    #[test]
+    fn set_engram_weights_close_reopen_roundtrip() {
+        // Même invariant que les membres, pour les poids (f32) : close →
+        // reopen → les poids sont relus intacts depuis la zone mmap.
+        let td = tempfile::tempdir().unwrap();
+        let sub_path = td.path().join("kb");
+        let weights: Vec<f32> = vec![0.75, 0.625, 0.625];
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            w.set_engram_weights(999, weights.clone()).unwrap();
+            w.commit().unwrap();
+            w.msync_zones().unwrap();
+            w.wal().fsync().unwrap();
+        }
+        let sub2 = SubstrateFile::open(&sub_path).unwrap();
+        let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
+        let got = w2.engram_weights(999).unwrap().unwrap();
+        assert_eq!(got, weights);
     }
 
     #[test]
