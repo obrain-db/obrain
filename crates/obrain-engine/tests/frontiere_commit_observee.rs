@@ -135,9 +135,10 @@ fn c_deux_fils_evaluent_chacun_son_propre_marqueur() {
 
 /// Taille du fichier WAL — ce que l'ANCIEN oracle compare à la frontière durable.
 fn taille_wal(base: &std::path::Path) -> u64 {
+    // Pas de `unwrap_or(0)` : une lecture impossible doit se voir, pas devenir « zéro ».
     std::fs::metadata(base.join("substrate.wal"))
-        .map(|m| m.len())
-        .unwrap_or(0)
+        .expect("le WAL doit exister et être lisible")
+        .len()
 }
 
 /// **Le scénario discriminant** : commit applicatif durable, puis écritures cognitives
@@ -226,4 +227,53 @@ fn d_ancien_oracle_contre_nouveau_sur_la_meme_execution() {
     );
 
     let _ = std::fs::remove_dir_all(&d);
+}
+
+
+/// **Contrôle minimal de l'oracle, sans cognition** : un écrivain secondaire emprunte le
+/// vrai chemin WAL (`Writer::reinforce_energy`, `flags: 0`) après un commit applicatif
+/// durable. On établit `C <= D` puis on MESURE si `D < T` — sans présumer que `flags: 0`
+/// implique l'absence de synchronisation.
+#[test]
+fn e_ecrivain_secondaire_controle_apres_commit_durable() {
+    let d = dir("e");
+    let db = ObrainDB::open_substrate(&d).expect("ouverture");
+    let mut s = db.session();
+    s.begin_transaction().expect("begin");
+    s.create_node(&["T"]);
+    s.commit().expect("commit");
+
+    let c = db
+        .substrate_handle()
+        .and_then(|x| x.frontiere_du_commit_du_fil())
+        .expect("marqueur du commit publié");
+    let d_apres_ack = db.wal_octets_durables().expect("frontière durable");
+    let t_apres_ack = taille_wal(&d);
+    assert!(
+        c <= d_apres_ack,
+        "le commit applicatif doit être durable à son acquittement : C={c} > D={d_apres_ack}"
+    );
+
+    // Écriture secondaire par le VRAI writer du même store, même WAL.
+    let sub = db.substrate_handle().expect("substrate");
+    sub.writer()
+        .reinforce_energy(0, 1000)
+        .expect("écriture secondaire d'énergie");
+
+    let t_final = taille_wal(&d);
+    let d_final = db.wal_octets_durables().expect("frontière durable après écriture secondaire");
+    db.close().expect("close");
+    let _ = std::fs::remove_dir_all(&d);
+
+    println!(
+        "commit acquitté : C={c} D={d_apres_ack} T={t_apres_ack} | après écriture secondaire : \
+         T'={t_final} D'={d_final} | ancien oracle signalerait : {}",
+        if d_final < t_final { "OUI (D' < T')" } else { "non (D' >= T')" }
+    );
+
+    assert!(t_final > t_apres_ack, "l'écriture secondaire doit étendre le WAL");
+    assert!(
+        c <= d_apres_ack,
+        "l'oracle corrigé doit rester satisfait (C={c} <= D={d_apres_ack})"
+    );
 }
