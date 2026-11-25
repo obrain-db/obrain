@@ -46247,6 +46247,64 @@ mod reception_versionnee {
         assert!(finales.contains("Int64(2)"), "le gagnant est horloge 200 (auteur 3) : {finales:?}");
     }
 
+    /// Réception persistante : valeur, auteur et HLC survivent à une
+    /// fermeture/réouverture propre ; un événement ancien reste ignoré ; un
+    /// rejeu identique reste identique.
+    #[test]
+    fn reception_persiste_valeur_et_estampille_apres_reouverture() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = store.create_node(&["fn"]);
+            assert_eq!(
+                store
+                    .recevoir_propriete_versionnee(
+                        id,
+                        "k",
+                        &obrain_common::types::Value::Int64(42),
+                        7,
+                        12_345
+                    )
+                    .unwrap(),
+                IssueReception::Appliquee
+            );
+            store.close().unwrap();
+        }
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        let id = NodeId(1);
+        // valeur lisible
+        assert_eq!(
+            store2.get_node_property(id, &obrain_common::types::PropertyKey::new("k")),
+            Some(obrain_common::types::Value::Int64(42))
+        );
+        // auteur + HLC conservés
+        {
+            let pz_lock = store2.props_zone.as_ref().unwrap();
+            let pz = pz_lock.read();
+            let node_rec = store2.writer.read_node(id.0 as u32).unwrap().unwrap();
+            let tete = (node_rec.first_prop_off.to_u64() != 0)
+                .then(|| node_rec.first_prop_off.to_u64());
+            let prop_key_id = store2.prop_keys.read().lookup("k").unwrap();
+            let entry = pz.get_latest_for_key_unite(tete, prop_key_id).unwrap().unwrap();
+            assert_eq!((entry.auteur, entry.horloge), (Some(7), Some(12_345)));
+        }
+        // événement ancien : ignoré
+        assert_eq!(
+            store2
+                .recevoir_propriete_versionnee(id, "k", &obrain_common::types::Value::Int64(0), 9, 100)
+                .unwrap(),
+            IssueReception::Ancienne
+        );
+        // rejeu identique : RejeuIdentique
+        assert_eq!(
+            store2
+                .recevoir_propriete_versionnee(id, "k", &obrain_common::types::Value::Int64(42), 7, 12_345)
+                .unwrap(),
+            IssueReception::RejeuIdentique
+        );
+    }
+
     /// Deux réceptions concurrentes de versions DISTINCTES pour la même
     /// propriété : la version la plus récente gagne, quel que soit l'ordre
     /// d'arrivée effectif. La tête est relue sous le verrou, donc pas de TOCTOU.
