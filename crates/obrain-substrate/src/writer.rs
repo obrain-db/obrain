@@ -4956,6 +4956,46 @@ mod tests {
     }
 
     #[test]
+    fn engram_state_wal_rebuild_atomic() {
+        // Atomicité du couple : UN record EngramStateSet. Efface les DEUX zones
+        // (membres ET poids), rejoue le WAL, vérifie que le couple est restauré
+        // indivisiblement (pas de demi-état membres seuls / poids seuls).
+        let td = tempfile::tempdir().unwrap();
+        let sub_path = td.path().join("kb");
+        let members = vec![10u32, 20, 30];
+        let weights = vec![0.2f32, 0.8, 0.5];
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            w.set_engram_state(4321, members.clone(), weights.clone())
+                .unwrap();
+            w.commit().unwrap();
+            w.wal().fsync().unwrap();
+            // pas de msync_zones : les mmap n'atteignent pas le disque.
+        }
+        std::fs::write(
+            sub_path.join(crate::file::zone::ENGRAM_MEMBERS),
+            Vec::<u8>::new(),
+        )
+        .unwrap();
+        std::fs::write(
+            sub_path.join(crate::file::zone::ENGRAM_WEIGHTS),
+            Vec::<u8>::new(),
+        )
+        .unwrap();
+        let sub2 = SubstrateFile::open(&sub_path).unwrap();
+        let stats = crate::replay::replay_from(&sub2, 0).unwrap();
+        assert_eq!(stats.decode_errors, 0);
+        let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
+        let state = w2.read_engram_state(4321).unwrap();
+        assert_eq!(
+            state,
+            Some((members, Some(weights))),
+            "couple restauré atomiquement"
+        );
+    }
+
+    #[test]
     fn engram_weights_wal_rebuild_after_zone_wipe() {
         // Crash-safety : efface la zone des poids, le rejeu la reconstruit.
         let td = tempfile::tempdir().unwrap();
