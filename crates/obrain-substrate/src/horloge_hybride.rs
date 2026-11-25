@@ -23,6 +23,23 @@ pub struct HorlogeHybride {
     logique: u32,
 }
 
+/// Horloge murale en millis depuis l'époque, portable. Sur wasm32 (`SystemTime`
+/// indisponible), on rend 0 : l'horloge hybride dégénère en horloge de Lamport
+/// (compteur monotone), suffisante en mono-processus navigateur.
+pub fn horloge_murale_millis() -> i64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
 impl Estampille {
     /// Encode en u64 pour le stockage on-disk : 48 bits de `physique` (positif,
     /// millis) + 16 bits de `logique`. Suffit pour la convergence LWW.

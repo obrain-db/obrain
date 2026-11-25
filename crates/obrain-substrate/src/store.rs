@@ -12549,10 +12549,7 @@ impl SubstrateStore {
         //    débordement. La tête est adressée en BRUT (U48) — on n'écrit le
         //    record que si elle change.
         let estampille = {
-            let millis = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let millis = crate::horloge_hybride::horloge_murale_millis();
             self.horloge.lock().maintenant(millis)
         };
         let nouvelle_tete: u64 = {
