@@ -279,3 +279,97 @@ mod dimension_comparison {
         }
     }
 }
+
+#[cfg(test)]
+mod ranking_fidelity {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    /// Référence EXACTE de similarité structurelle pondérée : cosinus des
+    /// vecteurs de poids (sparse) sur l'univers des nœuds.
+    fn ref_cosine(a: &[(NodeId, f64)], b: &[(NodeId, f64)]) -> f64 {
+        let ma: HashMap<NodeId, f64> = a.iter().copied().collect();
+        let mb: HashMap<NodeId, f64> = b.iter().copied().collect();
+        let dot: f64 = ma.iter().map(|(k, v)| v * mb.get(k).unwrap_or(&0.0)).sum();
+        let na = ma.values().map(|v| v * v).sum::<f64>().sqrt();
+        let nb = mb.values().map(|v| v * v).sum::<f64>().sqrt();
+        if na == 0.0 || nb == 0.0 {
+            return 0.0;
+        }
+        dot / (na * nb)
+    }
+
+    fn cosine(x: &[f64], y: &[f64]) -> f64 {
+        let dot: f64 = x.iter().zip(y).map(|(u, v)| u * v).sum();
+        let nx = x.iter().map(|u| u * u).sum::<f64>().sqrt();
+        let ny = y.iter().map(|u| u * u).sum::<f64>().sqrt();
+        if nx == 0.0 || ny == 0.0 {
+            return 0.0;
+        }
+        dot / (nx * ny)
+    }
+
+    /// Fidélité du classement : Recall@1 = fraction d'ensembles dont le plus
+    /// proche voisin (référence exacte) est aussi le plus proche en projection.
+    #[test]
+    fn fidelite_classement_par_dimension() {
+        let mut rng = 0x9E3779B97F4A7C15u64;
+        let mut next = || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng >> 33) as usize
+        };
+        let mut corpus: Vec<Vec<(NodeId, f64)>> = Vec::new();
+        for _ in 0..40 {
+            let size = 2 + next() % 7; // 2..8 membres
+            let mut ens = Vec::new();
+            let mut seen = HashSet::new();
+            while ens.len() < size {
+                let n = NodeId((next() % 60 + 1) as u64);
+                if seen.insert(n) {
+                    ens.push((n, 0.5 + (next() % 11) as f64 * 0.1)); // 0.5..1.5
+                }
+            }
+            corpus.push(ens);
+        }
+
+        for dims in [32usize, 64, 128, 256] {
+            let enc = DefaultSpectralEncoder::new(dims);
+            let sigs: Vec<Vec<f64>> = corpus.iter().map(|e| enc.encode(e)).collect();
+            let mut recall1 = 0usize;
+            for i in 0..corpus.len() {
+                let (mut tn, mut ts) = (usize::MAX, f64::NEG_INFINITY);
+                for j in 0..corpus.len() {
+                    if i == j {
+                        continue;
+                    }
+                    let s = ref_cosine(&corpus[i], &corpus[j]);
+                    if s > ts {
+                        (ts, tn) = (s, j);
+                    }
+                }
+                let (mut sn, mut ss) = (usize::MAX, f64::NEG_INFINITY);
+                for j in 0..corpus.len() {
+                    if i == j {
+                        continue;
+                    }
+                    let s = cosine(&sigs[i], &sigs[j]);
+                    if s > ss {
+                        (ss, sn) = (s, j);
+                    }
+                }
+                if sn == tn {
+                    recall1 += 1;
+                }
+            }
+            println!(
+                "dims={}: Recall@1 = {}/{} = {:.3}",
+                dims,
+                recall1,
+                corpus.len(),
+                recall1 as f64 / corpus.len() as f64
+            );
+        }
+    }
+}
