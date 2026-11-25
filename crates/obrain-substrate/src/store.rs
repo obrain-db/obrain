@@ -3133,6 +3133,10 @@ pub mod suspension_evenement {
         *ETAT.lock() = Etat { suspendu: false, reprendre: false };
     }
 }
+
+#[cfg(test)]
+static ECHEC_APPEND_WAL: parking_lot::Mutex<bool> = parking_lot::Mutex::new(false);
+
 impl SubstrateStore {
     /// Chemin du catalogue d'index.
     fn chemin_catalogue(&self) -> std::path::PathBuf {
@@ -6812,6 +6816,62 @@ impl SubstrateStore {
     /// réécrites. Sans elle, le rejeu suivant la prendrait pour une transaction
     /// en vol et restaurerait ses valeurs d'avant PAR-DESSUS les écritures
     /// commitées depuis.
+    /// Variante STRICTE de `journaliser_valeur_avant` : propage les échecs de
+    /// préparation (encodage, plafond WAL, append) au lieu de les avaler. Les
+    /// cas légitimes « pas de journal nécessaire » (SYSTEM, écriture partagée,
+    /// entité créée par la transaction) restent Ok(()).
+    fn journaliser_valeur_avant_strict(
+        &self,
+        tx: TransactionId,
+        entity_kind: EntityKind,
+        id: u64,
+        key: &str,
+        avant: Option<&Value>,
+    ) -> SubstrateResult<()> {
+        if tx == TransactionId::SYSTEM || self.ecriture_partagee {
+            return Ok(());
+        }
+        let creee_par_tx = match entity_kind {
+            EntityKind::Node => self
+                .en_attente_noeuds
+                .get(&NodeId(id))
+                .is_some_and(|t| *t.value() == tx.0),
+            EntityKind::Edge => self
+                .aretes_creees_par_tx
+                .get(&EdgeId(id))
+                .is_some_and(|t| *t.value() == tx.0),
+        };
+        if creee_par_tx {
+            return Ok(());
+        }
+        let avant = avant
+            .map(Self::wal_inline_encode_value)
+            .transpose()
+            .map_err(|e| {
+                SubstrateError::Internal(format!("TxProprieteAvant : valeur d'avant indécodable : {e}"))
+            })?;
+        if avant.as_ref().is_some_and(|a| a.len() > BLOB_WAL_MAX_BYTES) {
+            return Err(SubstrateError::Internal(format!(
+                "TxProprieteAvant : valeur d'avant au-delà du plafond WAL ({BLOB_WAL_MAX_BYTES} o)"
+            )));
+        }
+        #[cfg(test)]
+        if *ECHEC_APPEND_WAL.lock() {
+            return Err(SubstrateError::Internal("TxProprieteAvant : append saboté (test)".to_string()));
+        }
+        self.writer
+            .append_payload(WalPayload::TxProprieteAvant {
+                tx: tx.0,
+                entity_kind: entity_kind as u8,
+                id,
+                key: key.to_string(),
+                avant,
+            })
+            .map_err(|e| SubstrateError::Internal(format!("TxProprieteAvant non journalisée : {e}")))?;
+        self.tx_avec_valeur_avant.lock().insert(tx.0);
+        Ok(())
+    }
+
     fn clore_transaction_annulee(&self, tx: TransactionId) {
         if !self.tx_avec_valeur_avant.lock().remove(&tx.0) {
             return;
@@ -46314,5 +46374,48 @@ mod divergence_evenement {
             store.get_node_property(id, &PropertyKey::new("etat")),
             Some(Value::Int64(7))
         );
+    }
+}
+
+
+#[cfg(test)]
+mod journalisation_stricte {
+    use super::*;
+
+    #[test]
+    fn chemin_strict_propage_les_echecs_de_preparation() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        let tx = obrain_common::types::TransactionId(42);
+        // armer l'échec d'append
+        *ECHEC_APPEND_WAL.lock() = true;
+        let r = store.journaliser_valeur_avant_strict(
+            tx,
+            crate::vec_column::EntityKind::Node,
+            id.0 as u64,
+            "k",
+            Some(&obrain_common::types::Value::Int64(1)),
+        );
+        assert!(r.is_err(), "la variante stricte doit propager l'échec de préparation");
+        // l'ancienne variante avale silencieusement (retourne ())
+        store.journaliser_valeur_avant(
+            tx,
+            crate::vec_column::EntityKind::Node,
+            id.0 as u64,
+            "k",
+            Some(&obrain_common::types::Value::Int64(1)),
+        );
+        *ECHEC_APPEND_WAL.lock() = false;
+        // sans échec : la stricte réussit
+        assert!(store
+            .journaliser_valeur_avant_strict(
+                tx,
+                crate::vec_column::EntityKind::Node,
+                id.0 as u64,
+                "k",
+                Some(&obrain_common::types::Value::Int64(1)),
+            )
+            .is_ok());
     }
 }
