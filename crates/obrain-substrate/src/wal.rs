@@ -149,6 +149,8 @@ pub enum WalKind {
     SimplexPassesConfig = 0x74,
     /// Écriture de propriété versionnée (auteur + horloge HLC), #334.
     PropSetVersioned = 0x75,
+    /// Poids par membre d'engramme (f32 en bits u32, même ordre que les membres).
+    EngramWeightsSet = 0x76,
     CoactDecay = 0x46,
     /// (2026-08-23, chantier SlotRemappable) Repermutation Hilbert V2,
     /// porteuse d'un `remap_epoch` — les side-cars slot-indexés sont
@@ -254,6 +256,7 @@ impl WalKind {
             0x73 => SimplexTombstone,
             0x74 => SimplexPassesConfig,
             0x75 => PropSetVersioned,
+            0x76 => EngramWeightsSet,
             0x46 => CoactDecay,
             0x54 => HilbertRepermuteV2,
             0x55 => CompactCommunityV2,
@@ -774,6 +777,12 @@ pub enum WalPayload {
         auteur: u64,
         horloge: u64,
     },
+    /// Poids par membre d'engramme (f32 en bits u32, même ordre que les
+    /// membres). EN FIN D'ENUM (encodage par indice serde).
+    EngramWeightsSet {
+        engram_id: u16,
+        weights: Vec<u32>,
+    },
 }
 
 impl WalPayload {
@@ -811,6 +820,7 @@ impl WalPayload {
             Tier2Update { .. } => K::Tier2Update,
             EngramMembersSet { .. } => K::EngramMembersSet,
             EngramBitsetSet { .. } => K::EngramBitsetSet,
+            EngramWeightsSet { .. } => K::EngramWeightsSet,
             CoactDecay { .. } => K::CoactDecay,
             CompactCommunity { .. } => K::CompactCommunity,
             HilbertRepermuteV2 { .. } => K::HilbertRepermuteV2,

@@ -810,6 +810,8 @@ pub mod zone {
     /// efface HILBERT_SORTED et ne met donc pas ce fichier à jour).
     pub const ZGRID: &str = "substrate.zgrid";
     pub const ENGRAM_MEMBERS: &str = "substrate.engram_members";
+    /// Poids par membre d'engramme (f32, même ordre que engram_members).
+    pub const ENGRAM_WEIGHTS: &str = "substrate.engram_weights";
     pub const ENGRAM_BITSET: &str = "substrate.engram_bitset";
     /// Répertoire des simplexes — records fixes 32 B (T4, décision 2d461b89).
     pub const SIMPLEX_DIR: &str = "substrate.simplex_dir";
@@ -879,6 +881,9 @@ pub enum Zone {
     /// Per-node 64-bit engram signature (T7 Step 1). One u64 per node slot,
     /// used as a Bloom-filter-like candidate prune for Hopfield recall.
     EngramBitset,
+    /// Poids par membre d'engramme (f32), même ordre et même géométrie que
+    /// `EngramMembers` — l'état dynamique du membre, pas son identité.
+    EngramWeights,
     /// Répertoire des simplexes (T4, décision 2d461b89 option B) :
     /// `SimplexRecord` fixes 32 B, `simplex_id` = index. Les membres et
     /// propriétés des hyperarêtes vivent dans le side-car nommé
@@ -906,6 +911,7 @@ impl Zone {
             Zone::Zorder => zone::ZORDER,
             Zone::EngramMembers => zone::ENGRAM_MEMBERS,
             Zone::EngramBitset => zone::ENGRAM_BITSET,
+            Zone::EngramWeights => zone::ENGRAM_WEIGHTS,
             Zone::SimplexDir => zone::SIMPLEX_DIR,
             Zone::SimplexIncidence => zone::SIMPLEX_INCIDENCE,
         }
