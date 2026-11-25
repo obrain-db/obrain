@@ -4,20 +4,30 @@
 //! un nœud (label `structure`) relié à ses participants (`member`), à ses
 //! sous-connaissances référencées (`child`) et à ses relations orientées.
 //!
-//! Cinq notions d'identité DISTINCTES (jamais réduites à une seule clé) :
-//!   1. identité d'ENTITÉ           = le `NodeId` lui-même ;
-//!   2. identité de DÉFINITION STRUCTURELLE = `KnowledgeSpec::structural_key()`
-//!      (membres + enfants + relations orientées, immuable pour une version) ;
-//!   3. identité d'OCCURRENCE        = une référence `child` (cible + rôle),
-//!      distinguée de l'identité de sa cible — plusieurs occurrences d'une même
-//!      cible dans une composition forment un diamant légitime ;
-//!   4. ÉQUIVALENCE selon une projection = `projection_members_key()` (membres
-//!      seuls, relations/références ignorées) ;
-//!   5. ÉQUIVALENCE sémantique       = déclarée explicitement (hors module).
+//! # Périmètre des relations constitutives
+//! La résolution suit UNIQUEMENT les arêtes `member` et `child`. Toute autre
+//! arête sortante d'une connaissance est HORS périmètre et ignorée (elle n'est
+//! pas constitutive de la composition) — on ne rejette pas arbitrairement.
 //!
-//! La résolution signale les références absentes, les types d'arête inattendus
-//! et les cycles interdits ; un diamant (même sous-structure référencée deux
-//! fois) n'est PAS un cycle.
+//! # Cinq notions d'identité — état d'implémentation (limites exactes)
+//! 1. identité d'ENTITÉ = le `NodeId` — implémentée ;
+//! 2. identité de DÉFINITION STRUCTURELLE = `structural_key()` — implémentée
+//!    (encodage canonique versionné, non ambigu, injectif) ; l'IMMUTABILITÉ
+//!    n'est pas encore imposée par le moteur (aucune barrière d'écriture) ;
+//! 3. identité d'OCCURRENCE — `children` reste un `BTreeSet<NodeId>` : deux
+//!    occurrences d'une même cible avec des rôles différents NE sont PAS
+//!    distinguées (limite) ;
+//! 4. ÉQUIVALENCE selon une projection = `projection_members_key()` — membres
+//!    DIRECTS seulement, pas la fermeture transitive (limite) ;
+//! 5. ÉQUIVALENCE sémantique — déclarée explicitement, hors module.
+//!
+//! # Encodage et migration
+//! `structural_key` est versionné (`v2|`). L'ancien format `m[...]c[...]r[...]`
+//! (v1, avant l'enrichissement relationnel) n'est PAS migré automatiquement :
+//! la clé est stockée telle quelle à la construction. Le préfixe de version
+//! permet une migration future. Ne pas confondre cette identité structurelle
+//! locale (fondée sur des `NodeId`) avec une identité durable entre répliques
+//! (hors de ce module).
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -30,9 +40,11 @@ pub const LABEL_KNOWLEDGE: &str = "structure";
 pub const EDGE_MEMBER: &str = "member";
 pub const EDGE_CHILD: &str = "child";
 pub const KEY_CANONICAL: &str = "canonical_key";
+pub const KEY_ROLE: &str = "role";
+/// Profondeur maximale de résolution (garde anti-épuisement de pile).
+pub const MAX_RESOLVE_DEPTH: usize = 1024;
 
 /// Relation ORIENTÉE entre participants (type + src → dst + rôle optionnel).
-/// L'orientation fait partie de l'identité : A→B ≠ B→A.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Relation {
     pub rel_type: String,
@@ -41,8 +53,6 @@ pub struct Relation {
     pub role: Option<String>,
 }
 
-/// Spécification d'une connaissance : participants feuilles, sous-connaissances
-/// référencées, relations orientées. L'ordre n'importe pas.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnowledgeSpec {
     pub members: BTreeSet<NodeId>,
@@ -50,43 +60,78 @@ pub struct KnowledgeSpec {
     pub relations: BTreeSet<Relation>,
 }
 
-impl KnowledgeSpec {
-    /// Clé de DÉFINITION STRUCTURELLE (immuable pour une version donnée) :
-    /// inclut les relations orientées, donc A→B ≠ B→A à membres identiques.
-    pub fn structural_key(&self) -> String {
-        let m: Vec<String> = self.members.iter().map(|n| n.0.to_string()).collect();
-        let c: Vec<String> = self.children.iter().map(|n| n.0.to_string()).collect();
-        let r: Vec<String> = self
-            .relations
-            .iter()
-            .map(|rel| {
-                let role = rel.role.as_deref().unwrap_or("");
-                format!("{}:{}->{}#{}", rel.rel_type, rel.src.0, rel.dst.0, role)
-            })
-            .collect();
-        format!("m[{}]c[{}]r[{}]", m.join(","), c.join(","), r.join(","))
-    }
+/// Encodage canonique : chaque champ de longueur variable est préfixé par sa
+/// longueur en octets (`<len>|<contenu>`). Aucun séparateur ambigu, injectif.
+fn enc_str(out: &mut String, s: &str) {
+    out.push_str(&s.len().to_string());
+    out.push('|');
+    out.push_str(s);
+}
 
-    /// Clé de PROJECTION « membres seuls » (relations et références ignorées) :
-    /// deux connaissances équivalentes sous cette projection partagent la clé.
-    pub fn projection_members_key(&self) -> String {
-        let m: Vec<String> = self.members.iter().map(|n| n.0.to_string()).collect();
-        format!("m[{}]", m.join(","))
+/// Option<string> : `n|` = None, `s|` + longueur-préfixé = Some. `n`/`s` ne sont
+/// pas des chiffres, donc sans ambiguïté avec une longueur.
+fn enc_opt(out: &mut String, o: Option<&str>) {
+    match o {
+        None => out.push_str("n|"),
+        Some(s) => {
+            out.push_str("s|");
+            enc_str(out, s);
+        }
     }
 }
 
-/// Erreurs de résolution : la résolution ne doit jamais échouer silencieusement.
+impl KnowledgeSpec {
+    /// Clé de DÉFINITION STRUCTURELLE (versionnée, injective) : membres,
+    /// enfants et relations orientées. A→B ≠ B→A ; None ≠ Some("").
+    pub fn structural_key(&self) -> String {
+        let mut k = String::from("v2|");
+        enc_str(&mut k, &self.members.len().to_string());
+        for m in &self.members {
+            enc_str(&mut k, &m.0.to_string());
+        }
+        enc_str(&mut k, &self.children.len().to_string());
+        for c in &self.children {
+            enc_str(&mut k, &c.0.to_string());
+        }
+        enc_str(&mut k, &self.relations.len().to_string());
+        for r in &self.relations {
+            enc_str(&mut k, &r.rel_type);
+            enc_str(&mut k, &r.src.0.to_string());
+            enc_str(&mut k, &r.dst.0.to_string());
+            enc_opt(&mut k, r.role.as_deref());
+        }
+        k
+    }
+
+    /// Clé de PROJECTION « membres directs » (relations et références ignorées).
+    pub fn projection_members_key(&self) -> String {
+        let mut k = String::from("pm|");
+        enc_str(&mut k, &self.members.len().to_string());
+        for m in &self.members {
+            enc_str(&mut k, &m.0.to_string());
+        }
+        k
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
-    /// Une arête `child` pointe vers un nœud absent ou non-connaissance.
+    /// La racine n'existe pas.
+    RootMissing(NodeId),
+    /// La racine existe mais n'est pas une connaissance (label absent).
+    RootNotKnowledge(NodeId),
+    /// Une arête `child` pointe vers un nœud inexistant.
     MissingReference(NodeId),
-    /// Une arête sortante d'un type inattendu (ni member ni child).
-    InvalidEdgeType(String),
-    /// Cycle de références interdit (la trace est le chemin emprunté).
+    /// Une arête `child` pointe vers un nœud existant mais non-connaissance.
+    NotKnowledge(NodeId),
+    /// Une arête `member` pointe vers un nœud inexistant.
+    MissingParticipant(NodeId),
+    /// Cycle de références interdit (trace du chemin).
     Cycle(Vec<NodeId>),
+    /// Profondeur de résolution dépassée (garde anti-épuisement de pile).
+    DepthExceeded,
 }
 
-/// Interface compositionnelle sur le graphe natif.
 pub struct Composition<'a> {
     db: &'a ObrainDB,
 }
@@ -97,7 +142,7 @@ impl<'a> Composition<'a> {
     }
 
     /// Construction canonique : deux spécifications structurellement identiques
-    /// → même nœud (déduplication par clé structurelle).
+    /// → même nœud. Le rôle est matérialisé sur l'arête (propriété `role`).
     pub fn construct(&self, spec: &KnowledgeSpec) -> NodeId {
         let key = spec.structural_key();
         if let Some(existing) = self.find_by_key(&key) {
@@ -111,25 +156,33 @@ impl<'a> Composition<'a> {
         for c in &spec.children {
             self.db.create_edge(id, *c, EDGE_CHILD);
         }
-        // Relations : arêtes orientées ENTRE participants, type = rel_type.
         for rel in &spec.relations {
-            self.db.create_edge(rel.src, rel.dst, &rel.rel_type);
+            let eid = self.db.create_edge(rel.src, rel.dst, &rel.rel_type);
+            if let Some(role) = &rel.role {
+                self.db.set_edge_property(eid, KEY_ROLE, Value::from(role.clone()));
+            }
         }
         id
     }
 
-    /// Résolution des références : aplatit transitivement les `child` en
-    /// participants feuilles. Signale référence absente, type inattendu, cycle.
-    /// Un diamant (même cible référencée deux fois) est toléré.
+    /// Résolution : aplatit transitivement les `child` en participants feuilles.
+    /// Signale racine absente/invalide, référence absente/non-connaissance,
+    /// participant absent, cycle, profondeur excessive. Un diamant (même cible
+    /// référencée deux fois) est toléré.
     pub fn resolve(&self, id: NodeId) -> Result<BTreeSet<NodeId>, ResolveError> {
+        let Some(root) = self.db.get_node(id) else {
+            return Err(ResolveError::RootMissing(id));
+        };
+        if !root.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
+            return Err(ResolveError::RootNotKnowledge(id));
+        }
         let mut members = BTreeSet::new();
-        let mut state: HashMap<NodeId, u8> = HashMap::new(); // 1 = en cours, 2 = fait
+        let mut state: HashMap<NodeId, u8> = HashMap::new();
         let mut path = Vec::new();
-        self.resolve_dfs(id, &mut members, &mut state, &mut path)?;
+        self.resolve_dfs(id, &mut members, &mut state, &mut path, 0)?;
         Ok(members)
     }
 
-    /// Clé structurelle d'une connaissance existante.
     pub fn structural_key_of(&self, id: NodeId) -> Option<String> {
         let node = self.db.get_node(id)?;
         node.properties
@@ -143,7 +196,11 @@ impl<'a> Composition<'a> {
         members: &mut BTreeSet<NodeId>,
         state: &mut HashMap<NodeId, u8>,
         path: &mut Vec<NodeId>,
+        depth: usize,
     ) -> Result<(), ResolveError> {
+        if depth > MAX_RESOLVE_DEPTH {
+            return Err(ResolveError::DepthExceeded);
+        }
         match state.get(&id) {
             Some(1) => return Err(ResolveError::Cycle(path.clone())),
             Some(2) => return Ok(()), // diamant : déjà résolu, pas un cycle
@@ -158,27 +215,27 @@ impl<'a> Composition<'a> {
                 .ok_or(ResolveError::MissingReference(dst))?;
             match edge.edge_type.as_str() {
                 EDGE_MEMBER => {
+                    if self.db.get_node(dst).is_none() {
+                        return Err(ResolveError::MissingParticipant(dst));
+                    }
                     members.insert(dst);
                 }
                 EDGE_CHILD => {
-                    if !self.is_knowledge(dst) {
+                    let Some(child) = self.db.get_node(dst) else {
                         return Err(ResolveError::MissingReference(dst));
+                    };
+                    if !child.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
+                        return Err(ResolveError::NotKnowledge(dst));
                     }
-                    self.resolve_dfs(dst, members, state, path)?;
+                    self.resolve_dfs(dst, members, state, path, depth + 1)?;
                 }
-                other => return Err(ResolveError::InvalidEdgeType(other.to_string())),
+                // Autre type d'arête : hors périmètre constitutif, ignoré.
+                _ => {}
             }
         }
         path.pop();
         state.insert(id, 2);
         Ok(())
-    }
-
-    fn is_knowledge(&self, id: NodeId) -> bool {
-        self.db
-            .get_node(id)
-            .map(|n| n.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE))
-            .unwrap_or(false)
     }
 
     fn outgoing(&self, id: NodeId) -> Vec<(NodeId, EdgeId)> {
