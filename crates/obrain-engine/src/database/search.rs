@@ -931,3 +931,103 @@ impl super::vector_query_nodes::IndexVectorielsNommes for PoigneeIndexVectoriels
         )
     }
 }
+
+/// Tests de couverture du prédicat de filtre `value_matches_operators` (filtre
+/// d'allowlist vectorielle), une fonction pure : un opérateur (`$eq`, `$ne`,
+/// `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$contains`) s'applique à une
+/// valeur, tous devant tenir ; un filtre non-carte est une simple égalité.
+#[cfg(feature = "vector-index")]
+#[cfg(test)]
+mod tests_couverture_filtre_operateurs {
+    use super::value_matches_operators;
+    use obrain_common::types::{PropertyKey, Value};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    fn filtre(ops: &[(&str, Value)]) -> Value {
+        let map: BTreeMap<PropertyKey, Value> = ops
+            .iter()
+            .map(|(k, v)| (PropertyKey::from(*k), v.clone()))
+            .collect();
+        Value::Map(Arc::new(map))
+    }
+
+    #[test]
+    fn filtre_non_carte_est_une_egalite() {
+        assert!(value_matches_operators(&Value::Int64(5), &Value::Int64(5)));
+        assert!(!value_matches_operators(&Value::Int64(5), &Value::Int64(6)));
+    }
+
+    #[test]
+    fn eq_et_ne() {
+        let eq = filtre(&[("$eq", Value::Int64(5))]);
+        assert!(value_matches_operators(&Value::Int64(5), &eq));
+        assert!(!value_matches_operators(&Value::Int64(6), &eq));
+        let ne = filtre(&[("$ne", Value::Int64(5))]);
+        assert!(value_matches_operators(&Value::Int64(6), &ne));
+        assert!(!value_matches_operators(&Value::Int64(5), &ne));
+    }
+
+    #[test]
+    fn gt_et_gte() {
+        let gt = filtre(&[("$gt", Value::Int64(5))]);
+        assert!(value_matches_operators(&Value::Int64(6), &gt));
+        assert!(!value_matches_operators(&Value::Int64(5), &gt));
+        let gte = filtre(&[("$gte", Value::Int64(5))]);
+        assert!(value_matches_operators(&Value::Int64(5), &gte));
+        assert!(!value_matches_operators(&Value::Int64(4), &gte));
+    }
+
+    #[test]
+    fn lt_et_lte() {
+        let lt = filtre(&[("$lt", Value::Int64(5))]);
+        assert!(value_matches_operators(&Value::Int64(4), &lt));
+        assert!(!value_matches_operators(&Value::Int64(5), &lt));
+        let lte = filtre(&[("$lte", Value::Int64(5))]);
+        assert!(value_matches_operators(&Value::Int64(5), &lte));
+        assert!(!value_matches_operators(&Value::Int64(6), &lte));
+    }
+
+    #[test]
+    fn in_et_nin() {
+        let liste = Value::List(Arc::from([
+            Value::Int64(1),
+            Value::Int64(2),
+            Value::Int64(3),
+        ]));
+        let in_ = filtre(&[("$in", liste.clone())]);
+        assert!(value_matches_operators(&Value::Int64(2), &in_));
+        assert!(!value_matches_operators(&Value::Int64(4), &in_));
+        let nin = filtre(&[("$nin", liste)]);
+        assert!(value_matches_operators(&Value::Int64(4), &nin));
+        assert!(!value_matches_operators(&Value::Int64(2), &nin));
+    }
+
+    #[test]
+    fn contains_sur_chaine_et_sur_liste() {
+        let contient = filtre(&[("$contains", Value::from("ali"))]);
+        assert!(value_matches_operators(&Value::from("alix"), &contient));
+        assert!(!value_matches_operators(&Value::from("bob"), &contient));
+        let liste = Value::List(Arc::from([Value::Int64(1), Value::Int64(2)]));
+        let contient_2 = filtre(&[("$contains", Value::Int64(2))]);
+        assert!(value_matches_operators(&liste, &contient_2));
+        assert!(
+            !value_matches_operators(&Value::Int64(2), &contient_2),
+            "un scalaire ne contient pas un élément"
+        );
+    }
+
+    #[test]
+    fn operateur_inconnu_rend_faux() {
+        let f = filtre(&[("$foo", Value::Int64(5))]);
+        assert!(!value_matches_operators(&Value::Int64(5), &f));
+    }
+
+    #[test]
+    fn tous_les_operateurs_doivent_tenir() {
+        let f = filtre(&[("$gt", Value::Int64(5)), ("$lt", Value::Int64(10))]);
+        assert!(value_matches_operators(&Value::Int64(7), &f));
+        assert!(!value_matches_operators(&Value::Int64(12), &f));
+        assert!(!value_matches_operators(&Value::Int64(3), &f));
+    }
+}
