@@ -279,6 +279,7 @@ fn replay_from_avec(
     let mut edges: Option<ZoneFile> = None;
     let mut engram_members: Option<ZoneFile> = None;
     let mut engram_bitset: Option<ZoneFile> = None;
+    let mut engram_weights: Option<ZoneFile> = None;
     let mut hilbert: Option<ZoneFile> = None;
     let mut community: Option<ZoneFile> = None;
     let mut zorder: Option<ZoneFile> = None;
@@ -339,6 +340,7 @@ fn replay_from_avec(
                     &mut edges,
                     &mut engram_members,
                     &mut engram_bitset,
+                    &mut engram_weights,
                     &mut hilbert,
                     &mut community,
                     &mut zorder,
@@ -460,6 +462,7 @@ fn replay_from_avec(
                     &mut edges,
                     &mut engram_members,
                     &mut engram_bitset,
+                    &mut engram_weights,
                     &mut hilbert,
                     &mut community,
                     &mut zorder,
@@ -483,6 +486,7 @@ fn replay_from_avec(
                     &mut edges,
                     &mut engram_members,
                     &mut engram_bitset,
+                    &mut engram_weights,
                     &mut hilbert,
                     &mut community,
                     &mut zorder,
@@ -783,6 +787,7 @@ fn apply(
     edges: &mut Option<ZoneFile>,
     engram_members_zone: &mut Option<ZoneFile>,
     engram_bitset_zone: &mut Option<ZoneFile>,
+    engram_weights_zone: &mut Option<ZoneFile>,
     hilbert: &mut Option<ZoneFile>,
     community: &mut Option<ZoneFile>,
     zorder: &mut Option<ZoneFile>,
@@ -1749,6 +1754,7 @@ fn apply(
                 edges,
                 engram_members_zone,
                 engram_bitset_zone,
+                engram_weights_zone,
                 hilbert,
                 community,
                 zorder,
@@ -1928,10 +1934,16 @@ fn apply(
         | WalPayload::Tier0Update { .. }
         | WalPayload::Tier1Update { .. }
         | WalPayload::Tier2Update { .. } => Ok(Applied::Skipped),
-        // TODO(engram_weights) : reconstruction après crash-WAL à câbler —
-        // les poids survivent au close/réouverture via la zone mmap, mais le
-        // rejeu WAL (panne) ne les restaure pas encore.
-        WalPayload::EngramWeightsSet { .. } => Ok(Applied::Skipped),
+        // Poids d'engramme (f32 en bits u32) — même ordre que les membres.
+        WalPayload::EngramWeightsSet { engram_id, weights } => {
+            if engram_weights_zone.is_none() {
+                *engram_weights_zone = Some(substrate.open_zone(Zone::EngramWeights)?);
+            }
+            let zf = engram_weights_zone.as_mut().unwrap();
+            let ws: Vec<f32> = weights.iter().map(|b| f32::from_bits(*b)).collect();
+            crate::engram::EngramZone::set_weights_raw(zf, *engram_id, &ws)?;
+            Ok(Applied::Yes)
+        }
     }
 }
 
