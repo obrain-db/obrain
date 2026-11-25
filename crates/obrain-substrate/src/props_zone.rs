@@ -1869,6 +1869,12 @@ impl PropsZone {
         }
     }
 
+    fn erreur_decode_unite(addr: u64, e: crate::page::PropertyCodecError) -> SubstrateError {
+        SubstrateError::WalBadFrame(format!(
+            "get_latest_for_key: decode error on unit {addr:#x}: {e}"
+        ))
+    }
+
     pub(crate) fn get_latest_for_key_unite(
         &self,
         head: Option<u64>,
@@ -1881,11 +1887,7 @@ impl PropsZone {
                 break;
             };
             for entry in cursor {
-                let e = entry.map_err(|e| {
-                    SubstrateError::WalBadFrame(format!(
-                        "get_latest_for_key: decode error on unit {addr:#x}: {e}"
-                    ))
-                })?;
+                let e = entry.map_err(|e| Self::erreur_decode_unite(addr, e))?;
                 if e.prop_key == prop_key && Self::est_plus_recente(&e, meilleure.as_ref()) {
                     meilleure = Some(e);
                 }
@@ -2131,6 +2133,33 @@ mod tests {
         assert!(PropsZone::est_plus_recente(&nue, Some(&nue)));
         // aucune entrée : la première est conservée
         assert!(PropsZone::est_plus_recente(&a1, None));
+    }
+
+    #[test]
+    fn est_plus_recente_etat_mixte_invalide() {
+        // auteur sans horloge (état impossible, défensif) : branche _ => false.
+        let mixte = PropertyEntry {
+            flags: 0,
+            prop_key: 1,
+            value: PropertyValue::I64(0),
+            auteur: Some(5),
+            horloge: None,
+        };
+        let autre = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 5, 1);
+        assert!(!PropsZone::est_plus_recente(&mixte, Some(&autre)));
+        assert!(!PropsZone::est_plus_recente(&autre, Some(&mixte)));
+    }
+
+    #[test]
+    fn erreur_decode_unite_formate_le_contexte() {
+        let err = crate::page::PropertyCodecError::UnknownTag(0xFE);
+        match PropsZone::erreur_decode_unite(0x1234, err) {
+            SubstrateError::WalBadFrame(msg) => {
+                assert!(msg.contains("0x1234"), "message sans adresse : {msg}");
+                assert!(msg.contains("unknown"), "message sans la cause : {msg}");
+            }
+            e => panic!("mauvais type d'erreur : {e:?}"),
+        }
     }
 
     /// (MP-3, revue du 24/11 — B1) Un lot de pages de tas qui n'est plus
