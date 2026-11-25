@@ -169,7 +169,8 @@ fn deux_revisions_concurrentes_coherentes() {
         "les deux révisions sont appliquées (pas de mise à jour perdue) : {members:?}");
     assert_eq!(members.len(), 4, "aucun doublon, aucune perte : {members:?}");
     // Les poids sont décroissants mais cohérents (deux décroissances successives).
-    assert!((weight_of(&e.ensemble, a) - 0.9025).abs() < 1e-6
-        || (weight_of(&e.ensemble, a) - 0.95).abs() < 1e-6,
-        "poids A cohérent avec 1 ou 2 décroissances (sérialisé)");
+    assert!(
+        (weight_of(&e.ensemble, a) - 0.9025).abs() < 1e-6,
+        "poids A = 0.9025 : deux décroissances successives (sérialisé)"
+    );
 }
