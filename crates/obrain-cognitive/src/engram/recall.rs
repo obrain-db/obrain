@@ -701,6 +701,7 @@ mod tests {
     use super::*;
     use crate::engram::traits::InMemoryVectorIndex;
 
+    #[allow(dead_code)]
     fn make_store_and_index() -> (EngramStore, InMemoryVectorIndex, SpectralEncoder) {
         let store = EngramStore::new(None);
         let index = InMemoryVectorIndex::new();

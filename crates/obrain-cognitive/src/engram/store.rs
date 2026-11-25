@@ -127,15 +127,28 @@ impl std::fmt::Debug for EngramStore {
 /// (lecture), incohérence de longueurs, et échec de validation canonique.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RejectCause {
+    /// Erreur de LECTURE locale d'un engramme (corruption de son entrée).
     ReadError(String),
-    InconsistentWeights { members: usize, weights: usize },
+    /// Longueurs incohérentes entre membres et poids.
+    InconsistentWeights {
+        /// Nombre de membres lus.
+        members: usize,
+        /// Nombre de poids lus.
+        weights: usize,
+    },
+    /// Échec de validation canonique (doublon, valeur non représentable…).
     Validation(String),
 }
 
+/// Bilan structuré d'un chargement depuis le substrate : cohérents, dégradés
+/// (projection bitset incomplète), rejetés (id + cause), et défaillance globale.
 #[derive(Debug, Clone, Default)]
 pub struct LoadReport {
+    /// Nombre d'engrammes chargés cohérents.
     pub coherent: usize,
+    /// Engrammes chargés dont la projection bitset reste dégradée (id, cause).
     pub degraded: Vec<(EngramId, String)>,
+    /// Engrammes rejetés, avec leur identifiant ET la cause.
     pub rejected: Vec<(EngramId, RejectCause)>,
     /// Défaillance GLOBALE de la zone d'engrammes (magic/version/taille
     /// invalides) : le chargement s'est arrêté SANS balayer les 65 535
@@ -152,15 +165,21 @@ pub enum MaterializeOutcome {
     /// Contenu + révision écrits ensemble.
     Applied,
     /// La connaissance a avancé : conflit qualifié, rien n'est écrit.
-    Conflict { current_revision: u64 },
+    Conflict {
+        /// Révision EFFECTIVEMENT courante de la connaissance.
+        current_revision: u64,
+    },
 }
 
 /// Erreur de mutation du store : distingue absence et échec de persistance
 /// (au lieu d'un échec silencieux journalisé).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
+    /// L'engramme demandé n'existe pas.
     EngramAbsent(EngramId),
+    /// Le candidat a échoué la validation canonique.
     ValidationFailed(String),
+    /// Échec de la persistance (miroir substrat, stockage…).
     PersistenceFailed(String),
 }
 
@@ -341,6 +360,8 @@ impl EngramStore {
         }
     }
 
+    /// Applique `f` à l'engramme, en journalisant les erreurs (compatibilité
+    /// historique). Les chemins critiques utilisent [`Self::mutate`].
     pub fn update(&self, id: EngramId, f: impl FnOnce(&mut Engram)) {
         // Chemin infaillible historique : délègue à la discipline commune.
         // Les erreurs de persistance sont journalisées (compatibilité) ; les
@@ -476,7 +497,10 @@ impl EngramStore {
                         "état d'engramme illisible : identifiant réservé, engramme en quarantaine"
                     );
                     max_id = max_id.max(eid_u16 as u64);
-                    report.rejected.push((EngramId(eid_u16 as u64), RejectCause::ReadError(e.to_string())));
+                    report.rejected.push((
+                        EngramId(eid_u16 as u64),
+                        RejectCause::ReadError(e.to_string()),
+                    ));
                     continue;
                 }
             };
@@ -508,7 +532,13 @@ impl EngramStore {
                         poids = ws.len(),
                         "incohérence membres/poids : engramme en quarantaine (aucun poids inventé)"
                     );
-                    report.rejected.push((EngramId(eid_u16 as u64), RejectCause::InconsistentWeights { members: members.len(), weights: ws.len() }));
+                    report.rejected.push((
+                        EngramId(eid_u16 as u64),
+                        RejectCause::InconsistentWeights {
+                            members: members.len(),
+                            weights: ws.len(),
+                        },
+                    ));
                     continue;
                 }
             };
@@ -518,7 +548,9 @@ impl EngramStore {
             // invalide est écarté (id déjà réservé), pas réparé ni publié.
             if let Err(e) = self.validate_candidate(&engram) {
                 tracing::error!(engram_id = eid_u16, error = ?e, "engramme invalide au chargement : écarté");
-                report.rejected.push((eid, RejectCause::Validation(format!("{:?}", e))));
+                report
+                    .rejected
+                    .push((eid, RejectCause::Validation(format!("{:?}", e))));
                 continue;
             }
             // RÉPARATION des projections : reconstruire le bitset depuis les
@@ -528,7 +560,10 @@ impl EngramStore {
             let mut degraded: Option<String> = None;
             for (nid, _) in &engram.ensemble {
                 #[cfg(feature = "fault-injection")]
-                let repair = if self.fail_repair_bit.load(std::sync::atomic::Ordering::Relaxed) {
+                let repair = if self
+                    .fail_repair_bit
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
                     Err(SubstrateError::WalBadFrame(
                         "injected ensure_engram_bit failure (repair)".into(),
                     ))
@@ -677,29 +712,30 @@ impl EngramStore {
         let bitset = writer.engram_bitset(nid_u32)?;
         let mut candidates: Vec<EngramId> = Vec::new();
         if bitset != 0 {
-        // Two-tier filter: collect cached engrams whose bit is set, then
-        // verify via the substrate members snapshot.
-        for entry in &self.cache {
-            let eid = *entry.key();
-            let Some(eid_u16) = Self::engram_id_to_u16(eid) else {
-                continue;
-            };
-            if bitset & engram_bit_mask(eid_u16) == 0 {
-                continue;
+            // Two-tier filter: collect cached engrams whose bit is set, then
+            // verify via the substrate members snapshot.
+            for entry in &self.cache {
+                let eid = *entry.key();
+                let Some(eid_u16) = Self::engram_id_to_u16(eid) else {
+                    continue;
+                };
+                if bitset & engram_bit_mask(eid_u16) == 0 {
+                    continue;
+                }
+                // Bitset says "maybe" — verify against the members table.
+                match writer.engram_members(eid_u16)? {
+                    Some(members) if members.contains(&nid_u32) => candidates.push(eid),
+                    _ => {}
+                }
             }
-            // Bitset says "maybe" — verify against the members table.
-            match writer.engram_members(eid_u16)? {
-                Some(members) if members.contains(&nid_u32) => candidates.push(eid),
-                _ => {}
-            }
-        }
         }
         // Repli sur l'état canonique des engrammes DÉGRADÉS (bitset incomplet) :
         // l'appartenance est vérifiée sur l'ensemble pondéré, même si le bit
         // manque. Ne présente pas une projection dégradée comme une absence.
         for eid in self.degraded.read().iter() {
             if let Some(engram) = self.cache.get(eid) {
-                if engram.ensemble.iter().any(|(n, _)| *n == query_nid) && !candidates.contains(eid) {
+                if engram.ensemble.iter().any(|(n, _)| *n == query_nid) && !candidates.contains(eid)
+                {
                     candidates.push(*eid);
                 }
             }
@@ -739,6 +775,7 @@ impl EngramStore {
     /// Persist the (id, members) pair + per-node bit for an engram whose id
     /// was allocated externally (used by `form` and by the insert mirror).
     #[cfg(feature = "substrate")]
+    #[allow(dead_code)]
     fn form_with_id(&self, eid: EngramId, nids: &[NodeId]) -> SubstrateResult<()> {
         let writer = self
             .substrate_writer()
@@ -775,11 +812,7 @@ impl EngramStore {
     /// verrou d'entrée du cache, persiste membres+poids (substrate) et
     /// write-through DANS la même section critique, puis n'incrémente la
     /// révision qu'APRÈS. Propage les erreurs de persistance.
-    pub fn mutate(
-        &self,
-        id: EngramId,
-        f: impl FnOnce(&mut Engram),
-    ) -> Result<(), StoreError> {
+    pub fn mutate(&self, id: EngramId, f: impl FnOnce(&mut Engram)) -> Result<(), StoreError> {
         let Some(mut entry) = self.cache.get_mut(&id) else {
             return Err(StoreError::EngramAbsent(id));
         };
@@ -911,7 +944,9 @@ impl EngramStore {
                 return Err(StoreError::ValidationFailed(format!("poids non fini: {w}")));
             }
             if !seen.insert(*n) {
-                return Err(StoreError::ValidationFailed(format!("membre dupliqué: {n:?}")));
+                return Err(StoreError::ValidationFailed(format!(
+                    "membre dupliqué: {n:?}"
+                )));
             }
         }
         Ok(())
@@ -932,7 +967,9 @@ impl EngramStore {
         let mut weights = Vec::with_capacity(engram.ensemble.len());
         for (n, w) in &engram.ensemble {
             let Some(nu32) = Self::node_id_to_u32(*n) else {
-                return Err(StoreError::ValidationFailed(format!("NodeId non-u32: {n:?}")));
+                return Err(StoreError::ValidationFailed(format!(
+                    "NodeId non-u32: {n:?}"
+                )));
             };
             let wf32 = *w as f32;
             if !wf32.is_finite() {

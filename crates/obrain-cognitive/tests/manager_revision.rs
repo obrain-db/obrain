@@ -6,13 +6,18 @@
 
 use std::sync::{Arc, Mutex};
 
-use obrain_common::types::NodeId;
 use obrain_cognitive::engram::traits::{InMemoryVectorIndex, VectorIndex};
-use obrain_cognitive::engram::{EngramId, EngramManager, EngramManagerConfig, RejectCause, RevisionError, StoreError};
+use obrain_cognitive::engram::{
+    EngramId, EngramManager, EngramManagerConfig, RejectCause, RevisionError, StoreError,
+};
+use obrain_common::types::NodeId;
 use obrain_substrate::{SubstrateFile, SyncMode, Writer as SubstrateWriter};
 
 fn weight_of(ens: &[(NodeId, f64)], n: NodeId) -> f64 {
-    ens.iter().find(|(m, _)| *m == n).map(|(_, w)| *w).unwrap_or(0.0)
+    ens.iter()
+        .find(|(m, _)| *m == n)
+        .map(|(_, w)| *w)
+        .unwrap_or(0.0)
 }
 
 fn members_of(ens: &[(NodeId, f64)]) -> Vec<NodeId> {
@@ -29,8 +34,10 @@ fn revision_coherente_survit_a_la_reouverture() {
     let formed_id;
     let (before_sig, after_sig);
     {
-        let manager =
-            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let manager = EngramManager::new(
+            EngramManagerConfig::default(),
+            Arc::new(InMemoryVectorIndex::new()),
+        );
         let sub = SubstrateFile::create(&path).unwrap();
         let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
         manager.attach_substrate(Arc::new(writer));
@@ -47,14 +54,25 @@ fn revision_coherente_survit_a_la_reouverture() {
         before_sig = before[0].engram.spectral_signature.clone();
 
         // Observation indépendante (C co-activé) → révision effective.
-        let rev = manager.revise(formed_id, &[c], 0.5).expect("révision effectuée");
+        let rev = manager
+            .revise(formed_id, &[c], 0.5)
+            .expect("révision effectuée");
         after_sig = rev.signature.clone();
 
         // Règle de reconsolidation : poids unitaires + erreur 0.5 →
         // A=0.95, B=0.95, C=0.25.
-        assert!((weight_of(&rev.members, a) - 0.95).abs() < 1e-6, "A décroît à 0.95");
-        assert!((weight_of(&rev.members, b) - 0.95).abs() < 1e-6, "B décroît à 0.95");
-        assert!((weight_of(&rev.members, c) - 0.25).abs() < 1e-6, "C ajouté à 0.25");
+        assert!(
+            (weight_of(&rev.members, a) - 0.95).abs() < 1e-6,
+            "A décroît à 0.95"
+        );
+        assert!(
+            (weight_of(&rev.members, b) - 0.95).abs() < 1e-6,
+            "B décroît à 0.95"
+        );
+        assert!(
+            (weight_of(&rev.members, c) - 0.25).abs() < 1e-6,
+            "C ajouté à 0.25"
+        );
         assert_eq!(rev.members.len(), 3, "pas de doublon : 3 membres");
 
         // Signature recalculée : non vide ET différente de l'état initial.
@@ -71,19 +89,32 @@ fn revision_coherente_survit_a_la_reouverture() {
 
     // Réouverture : état exactement conservé (tolérance f32).
     {
-        let manager =
-            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let manager = EngramManager::new(
+            EngramManagerConfig::default(),
+            Arc::new(InMemoryVectorIndex::new()),
+        );
         let sub = SubstrateFile::open(&path).unwrap();
         let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
         manager.attach_substrate(Arc::new(writer));
 
         let engram = manager.store().get(formed_id).expect("engramme rechargé");
         let members = members_of(&engram.ensemble);
-        assert!(members.contains(&a) && members.contains(&b) && members.contains(&c),
-            "membres {{A,B,C}} conservés : {members:?}");
-        assert!((weight_of(&engram.ensemble, a) - 0.95).abs() < 1e-6, "poids A conservé (f32)");
-        assert!((weight_of(&engram.ensemble, b) - 0.95).abs() < 1e-6, "poids B conservé (f32)");
-        assert!((weight_of(&engram.ensemble, c) - 0.25).abs() < 1e-6, "poids C conservé (f32)");
+        assert!(
+            members.contains(&a) && members.contains(&b) && members.contains(&c),
+            "membres {{A,B,C}} conservés : {members:?}"
+        );
+        assert!(
+            (weight_of(&engram.ensemble, a) - 0.95).abs() < 1e-6,
+            "poids A conservé (f32)"
+        );
+        assert!(
+            (weight_of(&engram.ensemble, b) - 0.95).abs() < 1e-6,
+            "poids B conservé (f32)"
+        );
+        assert!(
+            (weight_of(&engram.ensemble, c) - 0.25).abs() < 1e-6,
+            "poids C conservé (f32)"
+        );
     }
 }
 
@@ -94,15 +125,22 @@ fn reconsolidation_deduplique_les_doublons() {
     let path = td.path().join("kb");
     let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
 
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let sub = SubstrateFile::create(&path).unwrap();
     let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
     manager.attach_substrate(Arc::new(writer));
 
     let id = manager.store().form(&[a, b]).unwrap();
     let rev = manager.revise(id, &[c, c], 0.5).expect("révision");
-    let cs: Vec<NodeId> = rev.members.iter().filter(|(n, _)| *n == c).map(|(n, _)| *n).collect();
+    let cs: Vec<NodeId> = rev
+        .members
+        .iter()
+        .filter(|(n, _)| *n == c)
+        .map(|(n, _)| *n)
+        .collect();
     assert_eq!(cs.len(), 1, "C ajouté une seule fois malgré [C, C]");
     assert_eq!(rev.members.len(), 3, "3 membres, pas de doublon");
 }
@@ -114,8 +152,10 @@ fn observation_invalide_refusee() {
     let path = td.path().join("kb");
     let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
 
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let sub = SubstrateFile::create(&path).unwrap();
     let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
     manager.attach_substrate(Arc::new(writer));
@@ -127,7 +167,11 @@ fn observation_invalide_refusee() {
     ));
     // L'engramme reste {A,B} (pas de C ajouté silencieusement).
     let e = manager.store().get(id).unwrap();
-    assert_eq!(e.ensemble.len(), 2, "état inchangé après observation invalide");
+    assert_eq!(
+        e.ensemble.len(),
+        2,
+        "état inchangé après observation invalide"
+    );
 }
 
 /// Contre-épreuve CONCURRENTE : deux révisions simultanées du même engramme.
@@ -165,9 +209,15 @@ fn deux_revisions_concurrentes_coherentes() {
 
     let e = manager.store().get(id).expect("engramme présent");
     let members = members_of(&e.ensemble);
-    assert!(members.contains(&c) && members.contains(&d),
-        "les deux révisions sont appliquées (pas de mise à jour perdue) : {members:?}");
-    assert_eq!(members.len(), 4, "aucun doublon, aucune perte : {members:?}");
+    assert!(
+        members.contains(&c) && members.contains(&d),
+        "les deux révisions sont appliquées (pas de mise à jour perdue) : {members:?}"
+    );
+    assert_eq!(
+        members.len(),
+        4,
+        "aucun doublon, aucune perte : {members:?}"
+    );
     // Les poids sont décroissants mais cohérents (deux décroissances successives).
     assert!(
         (weight_of(&e.ensemble, a) - 0.9025).abs() < 1e-6,
@@ -186,7 +236,10 @@ impl RecordingIndex {
     fn new() -> (Arc<Self>, Arc<Mutex<Vec<(String, Vec<f64>)>>>) {
         let history = Arc::new(Mutex::new(Vec::new()));
         (
-            Arc::new(Self { inner: InMemoryVectorIndex::new(), history: history.clone() }),
+            Arc::new(Self {
+                inner: InMemoryVectorIndex::new(),
+                history: history.clone(),
+            }),
             history,
         )
     }
@@ -195,7 +248,10 @@ impl RecordingIndex {
 impl VectorIndex for RecordingIndex {
     fn upsert(&self, id: &str, v: &[f64]) {
         self.inner.upsert(id, v);
-        self.history.lock().unwrap().push((id.to_string(), v.to_vec()));
+        self.history
+            .lock()
+            .unwrap()
+            .push((id.to_string(), v.to_vec()));
     }
     fn nearest(&self, q: &[f64], k: usize) -> Vec<(String, f64)> {
         self.inner.nearest(q, k)
@@ -232,19 +288,32 @@ fn publication_des_projections_ordonnee() {
     let barrier = Arc::new(std::sync::Barrier::new(2));
     let (m1, m2) = (manager.clone(), manager.clone());
     let (b1, b2) = (barrier.clone(), barrier.clone());
-    let t1 = std::thread::spawn(move || { b1.wait(); m1.revise(id, &[c], 0.5).unwrap(); });
-    let t2 = std::thread::spawn(move || { b2.wait(); m2.revise(id, &[d], 0.5).unwrap(); });
+    let t1 = std::thread::spawn(move || {
+        b1.wait();
+        m1.revise(id, &[c], 0.5).unwrap();
+    });
+    let t2 = std::thread::spawn(move || {
+        b2.wait();
+        m2.revise(id, &[d], 0.5).unwrap();
+    });
     t1.join().unwrap();
     t2.join().unwrap();
 
     // État canonique final (4 membres) et sa signature.
     let final_engram = manager.store().get(id).expect("engramme présent");
     let final_sig = final_engram.spectral_signature.clone();
-    assert_eq!(members_of(&final_engram.ensemble).len(), 4, "état final : 4 membres");
+    assert_eq!(
+        members_of(&final_engram.ensemble).len(),
+        4,
+        "état final : 4 membres"
+    );
 
     // La DERNIÈRE publication d'index pour cet engramme DOIT être l'état final.
     let hist = history.lock().unwrap().clone();
-    let last = hist.iter().rev().find(|(i, _)| i == &id.to_string())
+    let last = hist
+        .iter()
+        .rev()
+        .find(|(i, _)| i == &id.to_string())
         .expect("au moins un upsert enregistré");
     assert_eq!(
         &last.1, &final_sig,
@@ -260,8 +329,10 @@ fn mutate_refuse_invariants_invalides() {
     let path = td.path().join("kb");
     let (a, b) = (NodeId(1), NodeId(2));
 
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let sub = SubstrateFile::create(&path).unwrap();
     let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
     manager.attach_substrate(Arc::new(writer));
@@ -270,27 +341,62 @@ fn mutate_refuse_invariants_invalides() {
     let before = manager.store().get(id).unwrap().clone();
 
     // Changement d'identité logique refusé.
-    let r = manager.store().mutate(id, |e| { e.id = obrain_cognitive::engram::EngramId(999); });
-    assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "identité refusée");
-    assert_eq!(manager.store().get(id).unwrap().ensemble, before.ensemble, "état intact (identité)");
+    let r = manager.store().mutate(id, |e| {
+        e.id = obrain_cognitive::engram::EngramId(999);
+    });
+    assert!(
+        matches!(r, Err(StoreError::ValidationFailed(_))),
+        "identité refusée"
+    );
+    assert_eq!(
+        manager.store().get(id).unwrap().ensemble,
+        before.ensemble,
+        "état intact (identité)"
+    );
 
     // Membre dupliqué refusé.
-    let r = manager.store().mutate(id, |e| { e.ensemble.push((a, 1.0)); });
-    assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "doublon refusé");
-    assert_eq!(manager.store().get(id).unwrap().ensemble, before.ensemble, "état intact (doublon)");
+    let r = manager.store().mutate(id, |e| {
+        e.ensemble.push((a, 1.0));
+    });
+    assert!(
+        matches!(r, Err(StoreError::ValidationFailed(_))),
+        "doublon refusé"
+    );
+    assert_eq!(
+        manager.store().get(id).unwrap().ensemble,
+        before.ensemble,
+        "état intact (doublon)"
+    );
 
     // Poids non fini (f64) refusé.
-    let r = manager.store().mutate(id, |e| { e.ensemble[0].1 = f64::NAN; });
-    assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "NaN refusé");
-    assert_eq!(manager.store().get(id).unwrap().ensemble, before.ensemble, "état intact (NaN)");
+    let r = manager.store().mutate(id, |e| {
+        e.ensemble[0].1 = f64::NAN;
+    });
+    assert!(
+        matches!(r, Err(StoreError::ValidationFailed(_))),
+        "NaN refusé"
+    );
+    assert_eq!(
+        manager.store().get(id).unwrap().ensemble,
+        before.ensemble,
+        "état intact (NaN)"
+    );
 
     // Dépassement f32 refusé (substrate) : 1e300 est fini en f64 mais inf en f32.
-    let r = manager.store().mutate(id, |e| { e.ensemble[0].1 = 1e300; });
-    assert!(matches!(r, Err(StoreError::ValidationFailed(_))), "dépassement f32 refusé");
+    let r = manager.store().mutate(id, |e| {
+        e.ensemble[0].1 = 1e300;
+    });
+    assert!(
+        matches!(r, Err(StoreError::ValidationFailed(_))),
+        "dépassement f32 refusé"
+    );
 
     // État COMPLET inchangé après chaque refus (pas seulement len()).
     let e = manager.store().get(id).unwrap();
-    assert_eq!(e.ensemble, before.ensemble, "état canonique complet inchangé après refus");
+    assert_eq!(
+        e.ensemble, before.ensemble,
+        "état canonique complet inchangé après refus"
+    );
     assert_eq!(e.id, before.id, "identité inchangée");
 }
 
@@ -304,8 +410,10 @@ fn injection_erreur_partielle_set_then_bit() {
     let path = td.path().join("kb");
     let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
 
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let sub = SubstrateFile::create(&path).unwrap();
     let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
     manager.attach_substrate(writer.clone());
@@ -323,7 +431,10 @@ fn injection_erreur_partielle_set_then_bit() {
 
     // Cache : candidat NON committé → état inchangé.
     let after = manager.store().get(id).unwrap();
-    assert_eq!(after.ensemble, before.ensemble, "cache inchangé (candidat non committé)");
+    assert_eq!(
+        after.ensemble, before.ensemble,
+        "cache inchangé (candidat non committé)"
+    );
 
     // Substrat : set_engram_state a écrit les membres AVANT l'échec du bitset.
     let (members, _weights) = writer.read_engram_state(id.0 as u16).unwrap().unwrap();
@@ -337,7 +448,12 @@ fn injection_erreur_partielle_set_then_bit() {
     // d'observation (l'API n'a pas d'identité d'observation).
     manager.store().set_fail_bit_after_state(false);
     let retry = manager.revise(id, &[c], 0.5).expect("reprise réussie");
-    let cs: Vec<NodeId> = retry.members.iter().filter(|(n, _)| *n == c).map(|(n, _)| *n).collect();
+    let cs: Vec<NodeId> = retry
+        .members
+        .iter()
+        .filter(|(n, _)| *n == c)
+        .map(|(n, _)| *n)
+        .collect();
     assert_eq!(cs.len(), 1, "C présent une seule fois");
 }
 
@@ -353,8 +469,10 @@ fn reouverture_apres_ecriture_partielle() {
 
     let id;
     {
-        let manager =
-            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let manager = EngramManager::new(
+            EngramManagerConfig::default(),
+            Arc::new(InMemoryVectorIndex::new()),
+        );
         let sub = SubstrateFile::create(&path).unwrap();
         let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
         manager.attach_substrate(writer.clone());
@@ -366,8 +484,10 @@ fn reouverture_apres_ecriture_partielle() {
     }
 
     // Réouverture.
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let sub = SubstrateFile::open(&path).unwrap();
     let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
     manager.attach_substrate(writer.clone());
@@ -377,7 +497,12 @@ fn reouverture_apres_ecriture_partielle() {
     let ws = weights.expect("poids présents");
     assert_eq!(members.len(), 3, "3 membres restaurés");
     let sw = |n: u32| -> f32 {
-        members.iter().zip(&ws).find(|(m, _)| **m == n).map(|(_, w)| *w).unwrap()
+        members
+            .iter()
+            .zip(&ws)
+            .find(|(m, _)| **m == n)
+            .map(|(_, w)| *w)
+            .unwrap()
     };
     assert!((sw(a.0 as u32) - 0.95).abs() < 1e-6, "substrat A=0.95");
     assert!((sw(b.0 as u32) - 0.95).abs() < 1e-6, "substrat B=0.95");
@@ -385,10 +510,22 @@ fn reouverture_apres_ecriture_partielle() {
 
     // CACHE restauré (manager.store().get) : mêmes couples exacts.
     let restored = manager.store().get(id).unwrap();
-    assert!((weight_of(&restored.ensemble, a) - 0.95).abs() < 1e-6, "cache A=0.95");
-    assert!((weight_of(&restored.ensemble, b) - 0.95).abs() < 1e-6, "cache B=0.95");
-    assert!((weight_of(&restored.ensemble, c) - 0.25).abs() < 1e-6, "cache C=0.25");
-    assert!(!restored.spectral_signature.is_empty(), "signature restaurée");
+    assert!(
+        (weight_of(&restored.ensemble, a) - 0.95).abs() < 1e-6,
+        "cache A=0.95"
+    );
+    assert!(
+        (weight_of(&restored.ensemble, b) - 0.95).abs() < 1e-6,
+        "cache B=0.95"
+    );
+    assert!(
+        (weight_of(&restored.ensemble, c) - 0.25).abs() < 1e-6,
+        "cache C=0.25"
+    );
+    assert!(
+        !restored.spectral_signature.is_empty(),
+        "signature restaurée"
+    );
 
     // Bitset RÉPARÉ au chargement : le bit de C est reconstruit depuis les
     // membres persistés. (Présence du bit = nécessaire, PAS suffisante pour la
@@ -399,16 +536,36 @@ fn reouverture_apres_ecriture_partielle() {
 
     // Cohérence des deux chemins de rappel RESTAURÉE (plus de divergence).
     let native = manager.store().recall(c).expect("rappel natif");
-    assert!(native.iter().any(|e| *e == id), "rappel natif trouve C (bitset réparé)");
+    assert!(
+        native.iter().any(|e| *e == id),
+        "rappel natif trouve C (bitset réparé)"
+    );
     let mgr = manager.recall(&[c], 5);
-    assert!(mgr.iter().any(|r| r.engram_id == id), "rappel manager trouve C");
+    assert!(
+        mgr.iter().any(|r| r.engram_id == id),
+        "rappel manager trouve C"
+    );
 
     // Nouvelle tentative APRÈS réouverture : reconsolidation décroît TOUT.
     let rev = manager.revise(id, &[c], 0.5).expect("reprise réussie");
-    assert!((weight_of(&rev.members, a) - 0.9025).abs() < 1e-6, "A=0.9025 après retry");
-    assert!((weight_of(&rev.members, b) - 0.9025).abs() < 1e-6, "B=0.9025 après retry");
-    assert!((weight_of(&rev.members, c) - 0.2375).abs() < 1e-6, "C=0.2375 après retry");
-    let cs: Vec<NodeId> = rev.members.iter().filter(|(n, _)| *n == c).map(|(n, _)| *n).collect();
+    assert!(
+        (weight_of(&rev.members, a) - 0.9025).abs() < 1e-6,
+        "A=0.9025 après retry"
+    );
+    assert!(
+        (weight_of(&rev.members, b) - 0.9025).abs() < 1e-6,
+        "B=0.9025 après retry"
+    );
+    assert!(
+        (weight_of(&rev.members, c) - 0.2375).abs() < 1e-6,
+        "C=0.2375 après retry"
+    );
+    let cs: Vec<NodeId> = rev
+        .members
+        .iter()
+        .filter(|(n, _)| *n == c)
+        .map(|(n, _)| *n)
+        .collect();
     assert_eq!(cs.len(), 1, "C présent une seule fois");
 }
 
@@ -423,8 +580,10 @@ fn reouverture_saine_ne_reecrit_pas_les_bitsets() {
 
     let id;
     {
-        let manager =
-            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let manager = EngramManager::new(
+            EngramManagerConfig::default(),
+            Arc::new(InMemoryVectorIndex::new()),
+        );
         let sub = SubstrateFile::create(&path).unwrap();
         let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
         manager.attach_substrate(writer.clone());
@@ -456,8 +615,10 @@ fn chargement_sain_sans_amplification_wal() {
     let (a, b) = (NodeId(1), NodeId(2));
 
     {
-        let manager =
-            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let manager = EngramManager::new(
+            EngramManagerConfig::default(),
+            Arc::new(InMemoryVectorIndex::new()),
+        );
         let sub = SubstrateFile::create(&path).unwrap();
         let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
         manager.attach_substrate(writer.clone());
@@ -473,8 +634,10 @@ fn chargement_sain_sans_amplification_wal() {
     let tampon_before = writer.wal().records_en_tampon();
 
     // Chargement RÉEL : nouveau manager + attach_substrate.
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let report = manager.attach_substrate(writer.clone());
 
     let offset_after = writer.wal().offset();
@@ -484,7 +647,10 @@ fn chargement_sain_sans_amplification_wal() {
     assert_eq!(report.coherent, 1, "un engramme cohérent chargé");
     assert!(report.degraded.is_empty(), "aucun dégradé");
     assert_eq!(report.rejected.len(), 0, "aucun rejet");
-    assert_eq!(offset_before, offset_after, "offset WAL inchangé (aucune écriture)");
+    assert_eq!(
+        offset_before, offset_after,
+        "offset WAL inchangé (aucune écriture)"
+    );
     assert_eq!(ecrits_before, ecrits_after, "records_ecrits inchangé");
     assert_eq!(tampon_before, tampon_after, "records_en_tampon inchangé");
 }
@@ -500,22 +666,29 @@ fn base_vide_charge_sainement() {
     let td = tempfile::tempdir().unwrap();
     let path = td.path().join("kb");
     {
-        let manager =
-            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let manager = EngramManager::new(
+            EngramManagerConfig::default(),
+            Arc::new(InMemoryVectorIndex::new()),
+        );
         let sub = SubstrateFile::create(&path).unwrap();
         let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
         manager.attach_substrate(Arc::new(writer));
         // aucun engramme formé
     }
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let sub = SubstrateFile::open(&path).unwrap();
     let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
     let report = manager.attach_substrate(Arc::new(writer));
     assert_eq!(report.coherent, 0, "aucun engramme cohérent");
     assert!(report.degraded.is_empty(), "aucun dégradé");
     assert!(report.rejected.is_empty(), "aucun rejet");
-    assert!(report.global_failure.is_none(), "pas de défaillance globale : zone absente = légitime");
+    assert!(
+        report.global_failure.is_none(),
+        "pas de défaillance globale : zone absente = légitime"
+    );
     assert_eq!(manager.store().count(), 0, "cache vide");
 }
 
@@ -528,8 +701,10 @@ fn zone_inaccessible_est_une_defaillance_globale() {
     let path = td.path().join("kb");
     let (a, b) = (NodeId(1), NodeId(2));
     {
-        let manager =
-            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let manager = EngramManager::new(
+            EngramManagerConfig::default(),
+            Arc::new(InMemoryVectorIndex::new()),
+        );
         let sub = SubstrateFile::create(&path).unwrap();
         let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
         manager.attach_substrate(Arc::new(writer));
@@ -545,17 +720,29 @@ fn zone_inaccessible_est_une_defaillance_globale() {
         f.write_all(&[0xFF, 0xFF, 0xFF, 0xFF]).unwrap();
         f.flush().unwrap();
     }
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let sub = SubstrateFile::open(&path).unwrap();
     let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
     let report = manager.attach_substrate(Arc::new(writer));
 
-    assert!(report.global_failure.is_some(), "défaillance globale détectée");
-    assert!(report.rejected.is_empty(), "aucun rejet individuel (pas de balayage des 65 535 identifiants)");
+    assert!(
+        report.global_failure.is_some(),
+        "défaillance globale détectée"
+    );
+    assert!(
+        report.rejected.is_empty(),
+        "aucun rejet individuel (pas de balayage des 65 535 identifiants)"
+    );
     assert_eq!(report.coherent, 0, "aucun chargé");
     assert!(report.degraded.is_empty(), "aucun dégradé");
-    assert_eq!(manager.store().count(), 0, "cache vide (jamais présenté sain)");
+    assert_eq!(
+        manager.store().count(),
+        0,
+        "cache vide (jamais présenté sain)"
+    );
     // L'espace d'identifiants n'a PAS été épuisé : aucun identifiant réservé.
     assert_eq!(manager.store().next_id().0, 1, "aucun identifiant réservé");
 }
@@ -571,10 +758,14 @@ fn engramme_invalide_rejete_avec_identifiant_et_cause() {
         let sub = SubstrateFile::create(&path).unwrap();
         let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
         // Membre DUPLIQUÉ écrit directement via le substrat (form refuserait).
-        writer.set_engram_state(1, vec![7, 7], vec![1.0, 1.0]).unwrap();
+        writer
+            .set_engram_state(1, vec![7, 7], vec![1.0, 1.0])
+            .unwrap();
     }
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let sub = SubstrateFile::open(&path).unwrap();
     let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
     let report = manager.attach_substrate(Arc::new(writer));
@@ -583,7 +774,10 @@ fn engramme_invalide_rejete_avec_identifiant_et_cause() {
     assert_eq!(report.rejected.len(), 1, "un seul rejet");
     let (id, cause) = &report.rejected[0];
     assert_eq!(id.0, 1, "identifiant rejeté = 1");
-    assert!(matches!(cause, RejectCause::Validation(_)), "cause = validation (doublon), reçu : {cause:?}");
+    assert!(
+        matches!(cause, RejectCause::Validation(_)),
+        "cause = validation (doublon), reçu : {cause:?}"
+    );
     assert_eq!(manager.store().count(), 0, "aucun engramme publié");
     // Identifiant réservé : next_id repart à 2 (le 1 n'est pas réalloué).
     assert_eq!(manager.store().next_id().0, 2, "identifiant 1 réservé");
@@ -603,8 +797,10 @@ fn incoherence_membres_poids_rejetee() {
         writer.set_engram_members(1, vec![7]).unwrap();
         writer.set_engram_weights(1, vec![1.0, 2.0]).unwrap();
     }
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let sub = SubstrateFile::open(&path).unwrap();
     let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
     let report = manager.attach_substrate(Arc::new(writer));
@@ -613,7 +809,16 @@ fn incoherence_membres_poids_rejetee() {
     assert_eq!(report.rejected.len(), 1, "un rejet");
     let (id, cause) = &report.rejected[0];
     assert_eq!(id.0, 1, "identifiant rejeté = 1");
-    assert!(matches!(cause, RejectCause::InconsistentWeights { members: 1, weights: 2 }), "cause = incohérence 1 membre / 2 poids, reçu : {cause:?}");
+    assert!(
+        matches!(
+            cause,
+            RejectCause::InconsistentWeights {
+                members: 1,
+                weights: 2
+            }
+        ),
+        "cause = incohérence 1 membre / 2 poids, reçu : {cause:?}"
+    );
     assert_eq!(manager.store().count(), 0, "aucun engramme publié");
 }
 
@@ -635,11 +840,15 @@ fn rappel_degrade_replie_sur_etat_canonique_bitset_zero() {
         let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
         // Membres persistés SANS poser le bit (set_engram_state ne touche pas
         // le bitset) : projection bitset incomplète.
-        writer.set_engram_state(1, vec![a.0 as u32], vec![1.0]).unwrap();
+        writer
+            .set_engram_state(1, vec![a.0 as u32], vec![1.0])
+            .unwrap();
     }
     // Réouverture : la réparation du bit ÉCHOUE (injection) → dégradé.
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     manager.store().set_fail_repair_bit(true);
     let sub = SubstrateFile::open(&path).unwrap();
     let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
@@ -648,7 +857,11 @@ fn rappel_degrade_replie_sur_etat_canonique_bitset_zero() {
     assert!(report.global_failure.is_none(), "zone saine");
     assert_eq!(report.coherent, 0, "aucun cohérent");
     assert_eq!(report.degraded.len(), 1, "un dégradé");
-    assert_eq!(manager.store().degraded_engrams(), vec![EngramId(1)], "registre dégradé contient l'engramme");
+    assert_eq!(
+        manager.store().degraded_engrams(),
+        vec![EngramId(1)],
+        "registre dégradé contient l'engramme"
+    );
 
     // Le bit n'est PAS posé (réparation échouée) : bitset du nœud == 0.
     let bitset = writer.engram_bitset(a.0 as u32).unwrap();
@@ -657,7 +870,10 @@ fn rappel_degrade_replie_sur_etat_canonique_bitset_zero() {
     // Le rappel NATIF doit quand même retrouver l'engramme (repli canonique),
     // y compris via le retour anticipé bitset==0.
     let native = manager.store().recall(a).unwrap();
-    assert!(native.contains(&EngramId(1)), "repli dégradé retrouve l'engramme malgré bitset==0 : {native:?}");
+    assert!(
+        native.contains(&EngramId(1)),
+        "repli dégradé retrouve l'engramme malgré bitset==0 : {native:?}"
+    );
 }
 
 /// Cycle de vie du registre dégradé : une mutation réussie (qui ré-écrit le
@@ -673,11 +889,15 @@ fn cycle_de_vie_du_registre_degrade() {
     {
         let sub = SubstrateFile::create(&path).unwrap();
         let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
-        writer.set_engram_state(1, vec![a.0 as u32], vec![1.0]).unwrap();
+        writer
+            .set_engram_state(1, vec![a.0 as u32], vec![1.0])
+            .unwrap();
     }
     // Réouverture dégradée (réparation échouée).
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     manager.store().set_fail_repair_bit(true);
     let sub = SubstrateFile::open(&path).unwrap();
     let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
@@ -688,17 +908,26 @@ fn cycle_de_vie_du_registre_degrade() {
     // Désarme l'injection puis mute (ré-écrit membres + bitset) → dégradation
     // effacée.
     manager.store().set_fail_repair_bit(false);
-    manager.store().mutate(EngramId(1), |e| {
-        e.ensemble.push((b, 0.5));
-    }).expect("mutation réussie");
-    assert!(manager.store().degraded_engrams().is_empty(), "mutation réussie efface la dégradation (bitset ré-écrit complet)");
+    manager
+        .store()
+        .mutate(EngramId(1), |e| {
+            e.ensemble.push((b, 0.5));
+        })
+        .expect("mutation réussie");
+    assert!(
+        manager.store().degraded_engrams().is_empty(),
+        "mutation réussie efface la dégradation (bitset ré-écrit complet)"
+    );
 
     // Re-marque dégradé puis supprime → effacé.
     manager.store().set_fail_repair_bit(true);
     let _ = manager.store().load_from_substrate();
     assert!(!manager.store().degraded_engrams().is_empty(), "re-dégradé");
     manager.store().remove(EngramId(1));
-    assert!(manager.store().degraded_engrams().is_empty(), "suppression efface la dégradation");
+    assert!(
+        manager.store().degraded_engrams().is_empty(),
+        "suppression efface la dégradation"
+    );
 }
 
 // ===================================================================
@@ -717,7 +946,9 @@ fn reparation_bit_manquant_mesuree_wal() {
         let sub = SubstrateFile::create(&path).unwrap();
         let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
         // Membres persistés SANS le bit (projection incomplète).
-        writer.set_engram_state(1, vec![a.0 as u32], vec![0.75]).unwrap();
+        writer
+            .set_engram_state(1, vec![a.0 as u32], vec![0.75])
+            .unwrap();
     }
 
     let sub = SubstrateFile::open(&path).unwrap();
@@ -725,8 +956,10 @@ fn reparation_bit_manquant_mesuree_wal() {
     let offset_before = writer.wal().offset();
     let ecrits_before = writer.wal().records_ecrits();
 
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let report = manager.attach_substrate(writer.clone());
 
     let offset_after = writer.wal().offset();
@@ -735,8 +968,14 @@ fn reparation_bit_manquant_mesuree_wal() {
     assert!(report.global_failure.is_none(), "zone saine");
     assert_eq!(report.coherent, 1, "réparé → cohérent");
     assert!(report.degraded.is_empty(), "aucun dégradé");
-    assert!(offset_after > offset_before, "offset WAL a avancé (réparation)");
-    assert!(ecrits_after > ecrits_before, "records_ecrits a augmenté (réparation)");
+    assert!(
+        offset_after > offset_before,
+        "offset WAL a avancé (réparation)"
+    );
+    assert!(
+        ecrits_after > ecrits_before,
+        "records_ecrits a augmenté (réparation)"
+    );
 
     // Couple membre/poids exact (f32 → f64).
     let e = manager.store().get(EngramId(1)).unwrap();
@@ -747,11 +986,17 @@ fn reparation_bit_manquant_mesuree_wal() {
     // Signature re-dérivée + index (rappel spectral opérationnel).
     assert!(!e.spectral_signature.is_empty(), "signature re-dérivée");
     let mgr = manager.recall(&[a], 5);
-    assert!(mgr.iter().any(|r| r.engram_id == EngramId(1)), "rappel manager/spectral retrouve l'engramme");
+    assert!(
+        mgr.iter().any(|r| r.engram_id == EngramId(1)),
+        "rappel manager/spectral retrouve l'engramme"
+    );
 
     // Rappel natif (bitset réparé).
     let native = manager.store().recall(a).unwrap();
-    assert!(native.contains(&EngramId(1)), "rappel natif retrouve l'engramme");
+    assert!(
+        native.contains(&EngramId(1)),
+        "rappel natif retrouve l'engramme"
+    );
 
     // Le bit est maintenant posé.
     let bitset = writer.engram_bitset(a.0 as u32).unwrap();
@@ -768,12 +1013,16 @@ fn reouverture_suivante_apres_reparation_saine() {
     {
         let sub = SubstrateFile::create(&path).unwrap();
         let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
-        writer.set_engram_state(1, vec![a.0 as u32], vec![0.75]).unwrap();
+        writer
+            .set_engram_state(1, vec![a.0 as u32], vec![0.75])
+            .unwrap();
     }
     // Première réouverture : réparation du bit manquant.
     {
-        let manager =
-            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let manager = EngramManager::new(
+            EngramManagerConfig::default(),
+            Arc::new(InMemoryVectorIndex::new()),
+        );
         let sub = SubstrateFile::open(&path).unwrap();
         let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
         let report = manager.attach_substrate(Arc::new(writer));
@@ -785,15 +1034,20 @@ fn reouverture_suivante_apres_reparation_saine() {
     let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
     let offset_before = writer.wal().offset();
     let ecrits_before = writer.wal().records_ecrits();
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     let report = manager.attach_substrate(writer.clone());
     let offset_after = writer.wal().offset();
     let ecrits_after = writer.wal().records_ecrits();
 
     assert_eq!(report.coherent, 1, "chargé cohérent");
     assert!(report.degraded.is_empty(), "aucun dégradé");
-    assert_eq!(offset_before, offset_after, "offset inchangé (aucune réécriture)");
+    assert_eq!(
+        offset_before, offset_after,
+        "offset inchangé (aucune réécriture)"
+    );
     assert_eq!(ecrits_before, ecrits_after, "records_ecrits inchangé");
 }
 
@@ -809,7 +1063,9 @@ fn echec_pendant_reparation_ne_reecrit_pas_et_n_apprend_pas() {
     {
         let sub = SubstrateFile::create(&path).unwrap();
         let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
-        writer.set_engram_state(1, vec![a.0 as u32], vec![0.75]).unwrap();
+        writer
+            .set_engram_state(1, vec![a.0 as u32], vec![0.75])
+            .unwrap();
     }
 
     let sub = SubstrateFile::open(&path).unwrap();
@@ -817,8 +1073,10 @@ fn echec_pendant_reparation_ne_reecrit_pas_et_n_apprend_pas() {
     let offset_before = writer.wal().offset();
     let ecrits_before = writer.wal().records_ecrits();
 
-    let manager =
-        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let manager = EngramManager::new(
+        EngramManagerConfig::default(),
+        Arc::new(InMemoryVectorIndex::new()),
+    );
     manager.store().set_fail_repair_bit(true);
     let report = manager.attach_substrate(writer.clone());
 
@@ -829,14 +1087,24 @@ fn echec_pendant_reparation_ne_reecrit_pas_et_n_apprend_pas() {
     assert_eq!(report.degraded.len(), 1, "dégradé (échec de réparation)");
     // Aucune écriture de réparation n'a été émise (l'injection court-circuite
     // l'appel réel à ensure_engram_bit) : offset et records inchangés.
-    assert_eq!(offset_before, offset_after, "offset inchangé (aucune réparation écrite)");
+    assert_eq!(
+        offset_before, offset_after,
+        "offset inchangé (aucune réparation écrite)"
+    );
     assert_eq!(ecrits_before, ecrits_after, "records_ecrits inchangé");
 
     // État canonique PUBLIÉ (membres+poids exacts), poids NON modifiés.
     let e = manager.store().get(EngramId(1)).unwrap();
-    assert_eq!(e.ensemble, vec![(a, 0.75)], "état canonique publié, poids inchangés (aucun apprentissage)");
+    assert_eq!(
+        e.ensemble,
+        vec![(a, 0.75)],
+        "état canonique publié, poids inchangés (aucun apprentissage)"
+    );
 
     // Rappel natif : repli dégradé opérationnel malgré l'échec de réparation.
     let native = manager.store().recall(a).unwrap();
-    assert!(native.contains(&EngramId(1)), "repli dégradé après échec de réparation");
+    assert!(
+        native.contains(&EngramId(1)),
+        "repli dégradé après échec de réparation"
+    );
 }

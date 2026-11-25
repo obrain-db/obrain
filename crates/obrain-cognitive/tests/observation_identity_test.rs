@@ -9,12 +9,12 @@
 
 use std::sync::Arc;
 
-use obrain_common::types::NodeId;
 use obrain_cognitive::engram::traits::InMemoryVectorIndex;
 use obrain_cognitive::engram::{
     AtomicEventLedger, Engram, EngramManager, EngramManagerConfig, InMemoryAtomicEventLedger,
     ObservationId, ObservationOutcome, ResultingState, SourceRevision,
 };
+use obrain_common::types::NodeId;
 
 fn manager() -> EngramManager {
     EngramManager::new(
@@ -54,7 +54,10 @@ fn application_puis_rejeu() {
     let (o1, rev1) = m
         .revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0))
         .unwrap();
-    assert!(matches!(o1, ObservationOutcome::Applied { revision: 1, .. }));
+    assert!(matches!(
+        o1,
+        ObservationOutcome::Applied { revision: 1, .. }
+    ));
     assert!(rev1.is_some(), "une application publie le nouvel état");
     assert_eq!(m.observation_revision(id).unwrap(), 1);
     let e = m.store().get(id).unwrap();
@@ -63,9 +66,16 @@ fn application_puis_rejeu() {
     let (o2, rev2) = m
         .revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0))
         .unwrap();
-    assert!(matches!(o2, ObservationOutcome::Replayed { revision: 1, .. }));
+    assert!(matches!(
+        o2,
+        ObservationOutcome::Replayed { revision: 1, .. }
+    ));
     assert!(rev2.is_none(), "le rejeu n'applique rien");
-    assert_eq!(m.observation_revision(id).unwrap(), 1, "révision inchangée au rejeu");
+    assert_eq!(
+        m.observation_revision(id).unwrap(),
+        1,
+        "révision inchangée au rejeu"
+    );
 }
 
 /// Même identité, contenu incompatible → conflit d'identité nommé.
@@ -93,8 +103,14 @@ fn deux_observations_identiques_deux_applications() {
     let (o2, _) = m
         .revise_with_id(obs(2), id, &[NodeId(2)], 0.5, SourceRevision(1))
         .unwrap();
-    assert!(matches!(o1, ObservationOutcome::Applied { revision: 1, .. }));
-    assert!(matches!(o2, ObservationOutcome::Applied { revision: 2, .. }));
+    assert!(matches!(
+        o1,
+        ObservationOutcome::Applied { revision: 1, .. }
+    ));
+    assert!(matches!(
+        o2,
+        ObservationOutcome::Applied { revision: 2, .. }
+    ));
     assert_eq!(m.observation_revision(id).unwrap(), 2);
 }
 
@@ -120,15 +136,24 @@ fn conflit_de_revision_puis_recalcul() {
     }
     // Rien n'a été appliqué : le nœud 3 n'est PAS dans l'ensemble.
     let e = m.store().get(id).unwrap();
-    assert!(!e.ensemble.iter().any(|(n, _)| *n == NodeId(3)), "aucune application sur conflit");
+    assert!(
+        !e.ensemble.iter().any(|(n, _)| *n == NodeId(3)),
+        "aucune application sur conflit"
+    );
 
     // Recalcul depuis la révision courante (1), MÊME identité.
     let (o3, _) = m
         .revise_with_id(obs(2), id, &[NodeId(3)], 0.5, SourceRevision(1))
         .unwrap();
-    assert!(matches!(o3, ObservationOutcome::Applied { revision: 2, .. }));
+    assert!(matches!(
+        o3,
+        ObservationOutcome::Applied { revision: 2, .. }
+    ));
     let e = m.store().get(id).unwrap();
-    assert!(e.ensemble.iter().any(|(n, _)| *n == NodeId(3)), "appliqué après recalcul");
+    assert!(
+        e.ensemble.iter().any(|(n, _)| *n == NodeId(3)),
+        "appliqué après recalcul"
+    );
 }
 
 /// Rejeu d'une ancienne observation après de nouvelles révisions : NE restaure
@@ -148,11 +173,22 @@ fn rejeu_ancien_ne_restaure_pas() {
     let (o, rev) = m
         .revise_with_id(obs(1), id, &[NodeId(2)], 0.5, SourceRevision(0))
         .unwrap();
-    assert!(matches!(o, ObservationOutcome::Replayed { revision: 1, .. }));
+    assert!(matches!(
+        o,
+        ObservationOutcome::Replayed { revision: 1, .. }
+    ));
     assert!(rev.is_none());
     let after = m.store().get(id).unwrap();
-    assert_eq!(after.ensemble.len(), 3, "l'ancien candidat n'a PAS été restauré");
-    assert_eq!(m.observation_revision(id).unwrap(), 2, "révision courante préservée");
+    assert_eq!(
+        after.ensemble.len(),
+        3,
+        "l'ancien candidat n'a PAS été restauré"
+    );
+    assert_eq!(
+        m.observation_revision(id).unwrap(),
+        2,
+        "révision courante préservée"
+    );
 }
 
 /// Abandon : une observation abandonnée n'est jamais appliquée.
@@ -192,7 +228,11 @@ fn echec_materialisation_est_repare_au_rejeu() {
     assert!(failed.is_err(), "l'échec de matérialisation est propagé");
 
     // Registre : Applied (révision 1). Store : EN RETARD (pas de nœud 2).
-    assert_eq!(m.observation_revision(id).unwrap(), 1, "le registre a enregistré l'observation");
+    assert_eq!(
+        m.observation_revision(id).unwrap(),
+        1,
+        "le registre a enregistré l'observation"
+    );
     let stale = m.store().get(id).unwrap();
     assert!(
         !stale.ensemble.iter().any(|(n, _)| *n == b),
@@ -227,7 +267,8 @@ fn rejeu_ancien_ne_restaure_pas_une_connaissance_plus_recente() {
     assert!(after_one.revision >= 1);
 
     // Une mutation HORS observation avance la connaissance (revise sans id).
-    m.revise(id, &[NodeId(3)], 0.5).expect("revise sans identité");
+    m.revise(id, &[NodeId(3)], 0.5)
+        .expect("revise sans identité");
     let advanced = m.store().get(id).unwrap();
     assert!(
         advanced.ensemble.iter().any(|(n, _)| *n == NodeId(3)),
@@ -238,7 +279,9 @@ fn rejeu_ancien_ne_restaure_pas_une_connaissance_plus_recente() {
 
     // Rejeu de l'observation ancienne.
     let source = SourceRevision(m.observation_revision(id).unwrap());
-    let (out, _) = m.revise_with_id(obs(1), id, &[NodeId(2)], 0.5, source).unwrap();
+    let (out, _) = m
+        .revise_with_id(obs(1), id, &[NodeId(2)], 0.5, source)
+        .unwrap();
     assert!(matches!(out, ObservationOutcome::Replayed { .. }));
 
     // La connaissance plus récente n'a PAS été écrasée.
@@ -247,7 +290,10 @@ fn rejeu_ancien_ne_restaure_pas_une_connaissance_plus_recente() {
         final_state.ensemble.iter().any(|(n, _)| *n == NodeId(3)),
         "le nœud 3 (plus récent) est préservé"
     );
-    assert!(final_state.revision >= rev_advanced, "révision non régressée");
+    assert!(
+        final_state.revision >= rev_advanced,
+        "révision non régressée"
+    );
 }
 
 /// Point 3 : un registre qui applique RÉELLEMENT puis rapporte Indeterminate ;
@@ -267,7 +313,10 @@ fn resolution_restitue_l_etat_enregistre() {
         .unwrap();
     // La résolution a restitué l'état enregistré → Replayed, et la
     // matérialisation a eu lieu.
-    assert!(matches!(out, ObservationOutcome::Replayed { .. }), "reçu {out:?}");
+    assert!(
+        matches!(out, ObservationOutcome::Replayed { .. }),
+        "reçu {out:?}"
+    );
     let e = m.store().get(id).unwrap();
     assert!(
         e.ensemble.iter().any(|(n, _)| *n == b),
@@ -290,18 +339,33 @@ fn nouvelle_observation_avant_reparation_ne_part_pas_d_un_etat_obsolete() {
     let failed = m.revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0));
     assert!(failed.is_err());
     assert!(
-        !m.store().get(id).unwrap().ensemble.iter().any(|(n, _)| *n == b),
+        !m.store()
+            .get(id)
+            .unwrap()
+            .ensemble
+            .iter()
+            .any(|(n, _)| *n == b),
         "store en retard (A non matérialisée)"
     );
-    assert_eq!(m.observation_revision(id).unwrap(), 1, "registre a accepté A");
+    assert_eq!(
+        m.observation_revision(id).unwrap(),
+        1,
+        "registre a accepté A"
+    );
 
     // B arrive AVANT toute réparation.
     let src = SourceRevision(m.observation_revision(id).unwrap());
     let (out_b, _) = m.revise_with_id(obs(2), id, &[c], 0.5, src).unwrap();
-    assert!(matches!(out_b, ObservationOutcome::Applied { .. }), "reçu {out_b:?}");
+    assert!(
+        matches!(out_b, ObservationOutcome::Applied { .. }),
+        "reçu {out_b:?}"
+    );
 
     let e = m.store().get(id).unwrap();
-    assert!(e.ensemble.iter().any(|(n, _)| *n == b), "A (réparée) conservée");
+    assert!(
+        e.ensemble.iter().any(|(n, _)| *n == b),
+        "A (réparée) conservée"
+    );
     assert!(e.ensemble.iter().any(|(n, _)| *n == c), "B conservée");
 }
 
@@ -314,16 +378,32 @@ fn mutation_sans_identite_entre_echec_et_reparation() {
     let b = NodeId(2);
     let d = NodeId(4);
     m.store().set_fail_materialise(true);
-    assert!(m.revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0)).is_err());
+    assert!(
+        m.revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0))
+            .is_err()
+    );
     // Mutation sans identité : avance la connaissance (et la révision du store).
     m.revise(id, &[d], 0.5).expect("revise sans identité");
-    assert!(m.store().get(id).unwrap().ensemble.iter().any(|(n, _)| *n == d));
+    assert!(
+        m.store()
+            .get(id)
+            .unwrap()
+            .ensemble
+            .iter()
+            .any(|(n, _)| *n == d)
+    );
     // Le rejeu de A ne doit PAS écraser la mutation plus récente.
     let src = SourceRevision(m.observation_revision(id).unwrap());
     let (out, _) = m.revise_with_id(obs(1), id, &[b], 0.5, src).unwrap();
-    assert!(matches!(out, ObservationOutcome::Replayed { .. }), "reçu {out:?}");
+    assert!(
+        matches!(out, ObservationOutcome::Replayed { .. }),
+        "reçu {out:?}"
+    );
     let e = m.store().get(id).unwrap();
-    assert!(e.ensemble.iter().any(|(n, _)| *n == d), "mutation récente préservée");
+    assert!(
+        e.ensemble.iter().any(|(n, _)| *n == d),
+        "mutation récente préservée"
+    );
 }
 
 /// Point D : la résolution restitue l'état EFFECTIVEMENT ENREGISTRÉ, même s'il
@@ -336,7 +416,8 @@ fn resolution_discrimine_etat_enregistre_du_candidat_local() {
     let id = make_engram(&m, &[1]);
     let b = NodeId(2);
     // Application normale : révision 1, état enregistré = candidat (1,2).
-    m.revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0)).unwrap();
+    m.revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0))
+        .unwrap();
     // On REMPLACE l'effet enregistré par un état DIFFÉRENT (révision 5).
     let recorded = ResultingState {
         ensemble: vec![(NodeId(1), 0.9), (NodeId(9), 0.9)],
@@ -350,7 +431,10 @@ fn resolution_discrimine_etat_enregistre_du_candidat_local() {
     // révision 5), pas le candidat local (nœud 2).
     let src = SourceRevision(m.observation_revision(id).unwrap());
     let (out, _) = m.revise_with_id(obs(1), id, &[b], 0.5, src).unwrap();
-    assert!(matches!(out, ObservationOutcome::Replayed { .. }), "reçu {out:?}");
+    assert!(
+        matches!(out, ObservationOutcome::Replayed { .. }),
+        "reçu {out:?}"
+    );
     let e = m.store().get(id).unwrap();
     assert!(
         e.ensemble.iter().any(|(n, _)| *n == NodeId(9)),
