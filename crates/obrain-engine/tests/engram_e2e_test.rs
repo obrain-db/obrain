@@ -328,6 +328,10 @@ fn parite_etat_cognitif_memoire_substrate_reouverture() {
                 "poids restaurés pour {id_a} : {w1} vs {w2}"
             );
         }
+        assert!(
+            !sig_a.is_empty(),
+            "signature spectrale non vide pour {id_a} (dim attendue > 0)"
+        );
         assert_eq!(
             sig_a.len(),
             sig_b.len(),
