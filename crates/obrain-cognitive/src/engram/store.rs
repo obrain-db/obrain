@@ -377,6 +377,7 @@ impl EngramStore {
                         "état d'engramme illisible : identifiant réservé, engramme en quarantaine"
                     );
                     max_id = max_id.max(eid_u16 as u64);
+                    report.rejected += 1;
                     continue;
                 }
             };
