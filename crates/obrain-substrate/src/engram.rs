@@ -202,6 +202,11 @@ impl EngramZone {
         if engram_id == 0 {
             return Ok(None);
         }
+        if zf.len() == 0 {
+            // Zone vide = jamais initialisée (base legacy sans cette zone).
+            // C'est une ABSENCE légitime, pas une corruption : on rend None.
+            return Ok(None);
+        }
         Self::validate_header(zf)?;
         let (off, len) = Self::read_directory(zf, engram_id);
         if len == 0 {

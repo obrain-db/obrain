@@ -220,6 +220,10 @@ impl EngramStore {
     pub fn rehydrate_signature(&self, id: EngramId, sig: Vec<f64>) {
         if let Some(mut entry) = self.cache.get_mut(&id) {
             entry.value_mut().spectral_signature = sig;
+            // Invalide le cache de la matrice Hopfield (indexé par révision)
+            // SANS déclencher de write-through durable : une signature changée
+            // sans révision laisserait une matrice obsolète réutilisée.
+            self.revision.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -346,46 +350,46 @@ impl EngramStore {
                 Ok(Some(v)) => v,
                 Ok(None) => continue, // slot vide
                 Err(e) => {
+                    // Zone corrompue : on RÉSERVE l'identifiant (pour ne jamais
+                    // le réallouer) et on met l'engramme en quarantaine.
                     tracing::error!(
                         engram_id = eid_u16,
                         error = %e,
-                        "lecture de l'état d'engramme impossible : engramme ignoré"
+                        "état d'engramme illisible : identifiant réservé, engramme en quarantaine"
                     );
+                    max_id = max_id.max(eid_u16 as u64);
                     continue;
                 }
             };
             if members.is_empty() {
                 continue;
             }
+            // Slot occupé : réserve l'identifiant quoi qu'il arrive (même si
+            // les poids sont incohérents ou absents).
+            max_id = max_id.max(eid_u16 as u64);
             let eid = EngramId(eid_u16 as u64);
-            // Restaure les poids (état dynamique) depuis la zone parallèle ;
-            // sans zone (ancienne base) ou longueur incohérente → 1.0.
-            let ensemble: Vec<(NodeId, f64)> = {
-                // Absence legacy (base sans zone de poids) → 1.0 ; incohérence
-                // de longueur → corruption signalée (1.0).
-                match weights {
-                    Some(ws) if ws.len() == members.len() => members
-                        .into_iter()
-                        .zip(ws)
-                        .map(|(n, w)| (NodeId(n as u64), w as f64))
-                        .collect(),
-                    Some(ws) => {
-                        tracing::warn!(
-                            engram_id = eid_u16,
-                            membres = members.len(),
-                            poids = ws.len(),
-                            "incohérence membres/poids : poids ignorés (1.0)"
-                        );
-                        members
-                            .into_iter()
-                            .map(|n| (NodeId(n as u64), 1.0))
-                            .collect()
-                    }
-                    // Absence legacy (base sans zone de poids) : 1.0 voulu.
-                    None => members
-                        .into_iter()
-                        .map(|n| (NodeId(n as u64), 1.0))
-                        .collect(),
+            // Restaure les poids (état dynamique) depuis la zone parallèle.
+            let ensemble: Vec<(NodeId, f64)> = match weights {
+                Some(ws) if ws.len() == members.len() => members
+                    .into_iter()
+                    .zip(ws)
+                    .map(|(n, w)| (NodeId(n as u64), w as f64))
+                    .collect(),
+                // Absence legacy (base sans zone de poids) : 1.0 voulu.
+                None => members
+                    .into_iter()
+                    .map(|n| (NodeId(n as u64), 1.0))
+                    .collect(),
+                // Incohérence de longueur : corruption — PAS de fabrication de
+                // poids. Quarantaine (l'id est déjà réservé ci-dessus).
+                Some(ws) => {
+                    tracing::error!(
+                        engram_id = eid_u16,
+                        membres = members.len(),
+                        poids = ws.len(),
+                        "incohérence membres/poids : engramme en quarantaine (aucun poids inventé)"
+                    );
+                    continue;
                 }
             };
             let mut engram = Engram::new(eid, ensemble);

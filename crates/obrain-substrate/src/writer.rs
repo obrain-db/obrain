@@ -2701,21 +2701,15 @@ impl Writer {
         // du WAL suit l'ordre d'application, donc le rejeu reproduit le même
         // état final que la mémoire, même sous écritures concurrentes.
         self.with_engram_state_zones(|mz, wz| {
+            // UN record combiné membres+poids : le rejeu applique le couple
+            // indivisiblement (plus de demi-état possible entre deux records).
             self.wal.append(WalRecord {
                 lsn: 0,
                 timestamp: unix_micros(),
                 flags: 0,
-                payload: WalPayload::EngramMembersSet {
+                payload: WalPayload::EngramStateSet {
                     engram_id,
                     members: members.clone(),
-                },
-            })?;
-            self.wal.append(WalRecord {
-                lsn: 0,
-                timestamp: unix_micros(),
-                flags: 0,
-                payload: WalPayload::EngramWeightsSet {
-                    engram_id,
                     weights: bits.clone(),
                 },
             })?;
@@ -4875,6 +4869,32 @@ mod tests {
         let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
         let got = w2.engram_members(999).unwrap().unwrap();
         assert_eq!(got, members);
+    }
+
+    #[test]
+    fn engram_members_sans_poids_legacy_se_recharge_sans_erreur() {
+        // Base LEGACY : membres écrits SANS zone de poids (ancien code). La
+        // zone de poids absente doit être lue comme None, PAS comme une erreur
+        // de validation (sinon les engrammes d'une vraie base historique
+        // seraient ignorés au chargement).
+        let td = tempfile::tempdir().unwrap();
+        let sub_path = td.path().join("kb");
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            w.set_engram_members(1234, vec![1, 2, 3]).unwrap();
+            w.commit().unwrap();
+            w.msync_zones().unwrap();
+            w.wal().fsync().unwrap();
+        }
+        let sub2 = SubstrateFile::open(&sub_path).unwrap();
+        let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
+        let state = w2.read_engram_state(1234).unwrap();
+        assert_eq!(
+            state,
+            Some((vec![1, 2, 3], None)),
+            "legacy : membres présents, poids None (pas d'erreur)"
+        );
     }
 
     #[test]

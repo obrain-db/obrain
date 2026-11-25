@@ -1944,6 +1944,32 @@ fn apply(
             crate::engram::EngramZone::set_weights_raw(zf, *engram_id, &ws)?;
             Ok(Applied::Yes)
         }
+        // État complet (membres + poids) en UN record : le couple est appliqué
+        // indivisiblement au rejeu.
+        WalPayload::EngramStateSet {
+            engram_id,
+            members,
+            weights,
+        } => {
+            if engram_members_zone.is_none() {
+                *engram_members_zone = Some(substrate.open_zone(Zone::EngramMembers)?);
+            }
+            if engram_weights_zone.is_none() {
+                *engram_weights_zone = Some(substrate.open_zone(Zone::EngramWeights)?);
+            }
+            let ws: Vec<f32> = weights.iter().map(|b| f32::from_bits(*b)).collect();
+            crate::engram::EngramZone::set_members_raw(
+                engram_members_zone.as_mut().unwrap(),
+                *engram_id,
+                members,
+            )?;
+            crate::engram::EngramZone::set_weights_raw(
+                engram_weights_zone.as_mut().unwrap(),
+                *engram_id,
+                &ws,
+            )?;
+            Ok(Applied::Yes)
+        }
     }
 }
 
