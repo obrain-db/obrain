@@ -286,25 +286,51 @@ impl<'a> Composition<'a> {
             .db
             .get_node(occ)
             .ok_or(ResolveError::MissingReference(occ))?;
+        if !node.labels.iter().any(|l| l.as_str() == LABEL_RELATION) {
+            return Err(ResolveError::InvalidStructure(
+                "nœud référencé sans label relation_occurrence".into(),
+            ));
+        }
         let rel_type = node
             .properties
             .get(&PropertyKey::from(KEY_REL_TYPE))
             .and_then(|v| v.as_str().map(|s| s.to_string()))
             .ok_or_else(|| ResolveError::InvalidStructure("occurrence sans type".into()))?;
-        let role = node
-            .properties
-            .get(&PropertyKey::from(KEY_ROLE))
-            .and_then(|v| v.as_str().map(|s| s.to_string()));
-        let mut src = None;
-        let mut dst = None;
+        let role = match node.properties.get(&PropertyKey::from(KEY_ROLE)) {
+            None => None,
+            Some(v) => match v.as_str() {
+                Some(s) => Some(s.to_string()),
+                None => return Err(ResolveError::InvalidStructure("rôle non textuel".into())),
+            },
+        };
+        let mut src: Option<NodeId> = None;
+        let mut dst: Option<NodeId> = None;
         for (target, eid) in self.outgoing(occ) {
             let edge = self
                 .db
                 .get_edge(eid)
                 .ok_or(ResolveError::MissingReference(target))?;
             match edge.edge_type.as_str() {
-                EDGE_SRC => src = Some(target),
-                EDGE_DST => dst = Some(target),
+                EDGE_SRC => {
+                    if src.is_some() {
+                        return Err(ResolveError::InvalidStructure("multiples sources".into()));
+                    }
+                    if self.db.get_node(target).is_none() {
+                        return Err(ResolveError::MissingParticipant(target));
+                    }
+                    src = Some(target);
+                }
+                EDGE_DST => {
+                    if dst.is_some() {
+                        return Err(ResolveError::InvalidStructure(
+                            "multiples destinations".into(),
+                        ));
+                    }
+                    if self.db.get_node(target).is_none() {
+                        return Err(ResolveError::MissingParticipant(target));
+                    }
+                    dst = Some(target);
+                }
                 _ => {}
             }
         }

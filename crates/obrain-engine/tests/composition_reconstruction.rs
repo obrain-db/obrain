@@ -86,3 +86,38 @@ fn reconstruction_relationnelle_apres_reouverture() {
     }
     db2.close().unwrap();
 }
+
+/// Corruption ciblée : une occurrence à DEUX sources est refusée (jamais
+/// simplifiée silencieusement en connaissance valide).
+#[test]
+fn corruption_relationnelle_refusee() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let db = ObrainDB::open_substrate(&path).unwrap();
+    let comp = Composition::new(&db);
+    let a = db.create_node(&["fn"]);
+    let b = db.create_node(&["fn"]);
+
+    let k = db.create_node(&["structure"]);
+    db.set_node_property(k, "canonical_key", obrain_common::types::Value::from("x"));
+    db.create_edge(k, a, "member");
+    db.create_edge(k, b, "member");
+    let occ = db.create_node(&["relation_occurrence"]);
+    db.set_node_property(
+        occ,
+        "rel_type",
+        obrain_common::types::Value::from("appelle"),
+    );
+    db.create_edge(occ, a, "src");
+    db.create_edge(occ, b, "src"); // DEUX sources — corruption
+    db.create_edge(occ, b, "dst");
+    db.create_edge(k, occ, "relation");
+
+    assert!(matches!(
+        comp.read_spec(k),
+        Err(obrain_engine::composition::ResolveError::InvalidStructure(
+            _
+        ))
+    ));
+    db.close().unwrap();
+}
