@@ -267,6 +267,14 @@ pub enum ObservationOutcome {
         /// Révision EFFECTIVEMENT courante de la connaissance.
         current_revision: u64,
     },
+    /// L'effet a été ENREGISTRÉ au registre mais la matérialisation a trouvé la
+    /// connaissance AVANCÉE (hors verrou). DISTINCT d'un conflit certain avant
+    /// application : un rejeu réparera ; on ne présente pas un effet enregistré
+    /// comme un refus sans effet.
+    RecordedNotMaterialized {
+        /// Révision EFFECTIVEMENT courante de la connaissance.
+        current_revision: u64,
+    },
     /// Identité enregistrée comme FORMATION (aucune connaissance visée) : un
     /// rejeu ne réactive pas, et une apparition ultérieure de connaissance ne
     /// transforme PAS rétroactivement cette observation en révision.

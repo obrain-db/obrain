@@ -389,6 +389,10 @@ impl EngramManager {
                 .clone()
         };
         let _guard = lock.lock();
+        // A. RATTRAPAGE : une mutation sans identité ne doit JAMAIS partir
+        // d'un état en retard sur le registre (sinon un effet accepté mais non
+        // matérialisé serait perdu par le bump de révision).
+        self.catch_up_store(engram_id)?;
         self.store
             .mutate(engram_id, |e| {
                 reconsolidate(e, new_nodes, prediction_error);
@@ -469,7 +473,8 @@ impl EngramManager {
         let recorded =
             ResultingState::from_canonical_bytes(body).map_err(RevisionError::PersistenceFailed)?;
         let sig = self.spectral.encode(&recorded.ensemble);
-        self.store
+        let repaired = self
+            .store
             .repair_state(
                 engram_id,
                 rec_rev,
@@ -483,7 +488,9 @@ impl EngramManager {
                 StoreError::ValidationFailed(m) => RevisionError::ValidationFailed(m),
                 StoreError::PersistenceFailed(m) => RevisionError::PersistenceFailed(m),
             })?;
-        self.vector_index.upsert(&engram_id.to_string(), &sig);
+        if repaired {
+            self.vector_index.upsert(&engram_id.to_string(), &sig);
+        }
         Ok(())
     }
 
@@ -590,9 +597,11 @@ impl EngramManager {
                 {
                     MaterializeOutcome::Applied => {}
                     MaterializeOutcome::Conflict { current_revision } => {
-                        // La connaissance a avancé sous le verrou : conflit.
+                        // B. La connaissance a avancé HORS verrou APRÈS que le
+                        // registre a accepté l'effet : on ne présente PAS un
+                        // effet enregistré comme un refus sans effet.
                         return Ok((
-                            ObservationOutcome::RevisionConflict { current_revision },
+                            ObservationOutcome::RecordedNotMaterialized { current_revision },
                             None,
                         ));
                     }
@@ -636,7 +645,8 @@ impl EngramManager {
                     .ok_or(RevisionError::EngramAbsent(engram_id))?;
                 if live.revision < rec_rev {
                     let sig = self.spectral.encode(&recorded.ensemble);
-                    self.store
+                    if self
+                        .store
                         .repair_state(
                             engram_id,
                             rec_rev,
@@ -645,8 +655,12 @@ impl EngramManager {
                             recorded.recall_count,
                             sig.clone(),
                         )
-                        .map_err(map_store)?;
-                    self.vector_index.upsert(&engram_id.to_string(), &sig);
+                        .map_err(map_store)?
+                    {
+                        // Index mis à jour SEULEMENT si la réparation a eu lieu :
+                        // jamais d'ancienne projection réintroduite sur refus.
+                        self.vector_index.upsert(&engram_id.to_string(), &sig);
+                    }
                 }
                 Ok((
                     ObservationOutcome::Replayed {
@@ -662,6 +676,10 @@ impl EngramManager {
             }
             ObservationOutcome::RevisionConflict { current_revision } => Ok((
                 ObservationOutcome::RevisionConflict { current_revision },
+                None,
+            )),
+            ObservationOutcome::RecordedNotMaterialized { current_revision } => Ok((
+                ObservationOutcome::RecordedNotMaterialized { current_revision },
                 None,
             )),
             ObservationOutcome::AlreadyFormed => {
@@ -708,7 +726,8 @@ impl EngramManager {
                             .ok_or(RevisionError::EngramAbsent(engram_id))?;
                         if live.revision < rec_rev {
                             let sig = self.spectral.encode(&recorded.ensemble);
-                            self.store
+                            if self
+                                .store
                                 .repair_state(
                                     engram_id,
                                     rec_rev,
@@ -717,8 +736,10 @@ impl EngramManager {
                                     recorded.recall_count,
                                     sig.clone(),
                                 )
-                                .map_err(map_store)?;
-                            self.vector_index.upsert(&engram_id.to_string(), &sig);
+                                .map_err(map_store)?
+                            {
+                                self.vector_index.upsert(&engram_id.to_string(), &sig);
+                            }
                         }
                         Ok((
                             ObservationOutcome::Replayed {

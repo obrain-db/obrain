@@ -470,3 +470,69 @@ fn rejeu_vers_une_autre_connaissance_est_refuse() {
         "B intacte"
     );
 }
+
+/// A. Mutation sans identité entre l'échec et la réparation : le rattrapage
+/// conserve B ET D ensemble (pas seulement le récent).
+#[cfg(feature = "fault-injection")]
+#[test]
+fn mutation_sans_identite_conserve_b_et_d() {
+    let m = manager();
+    let id = make_engram(&m, &[1]);
+    let b = NodeId(2);
+    let d = NodeId(4);
+    // obsA ajoute B, matérialisation échoue.
+    m.store().set_fail_materialise(true);
+    assert!(
+        m.revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0))
+            .is_err()
+    );
+    assert!(
+        !m.store()
+            .get(id)
+            .unwrap()
+            .ensemble
+            .iter()
+            .any(|(n, _)| *n == b),
+        "B absent (matérialisation échouée)"
+    );
+    // Mutation sans identité (ajoute D) : le rattrapage matérialise B AVANT.
+    m.revise(id, &[d], 0.5).expect("revise sans identité");
+    let e = m.store().get(id).unwrap();
+    assert!(
+        e.ensemble.iter().any(|(n, _)| *n == b),
+        "B conservé (rattrapé)"
+    );
+    assert!(e.ensemble.iter().any(|(n, _)| *n == d), "D conservé");
+}
+
+/// B. Conflit APRÈS application au registre : l'effet est ENREGISTRÉ, pas un
+/// refus sans effet ; un rejeu répare.
+#[cfg(feature = "fault-injection")]
+#[test]
+fn conflit_apres_registre_est_enregistre_pas_refus() {
+    let m = manager();
+    let id = make_engram(&m, &[1]);
+    let b = NodeId(2);
+    m.store().set_fail_materialize_conflict(true);
+    let (out, _) = m
+        .revise_with_id(obs(1), id, &[b], 0.5, SourceRevision(0))
+        .unwrap();
+    match out {
+        ObservationOutcome::RecordedNotMaterialized { .. } => {}
+        other => panic!("attendu RecordedNotMaterialized, reçu {other:?}"),
+    }
+    // L'effet EST enregistré (registre à la révision 1).
+    assert_eq!(m.observation_revision(id).unwrap(), 1);
+    // Rejeu : Replayed + matérialisation de B.
+    let src = SourceRevision(m.observation_revision(id).unwrap());
+    let (out2, _) = m.revise_with_id(obs(1), id, &[b], 0.5, src).unwrap();
+    assert!(matches!(out2, ObservationOutcome::Replayed { .. }));
+    assert!(
+        m.store()
+            .get(id)
+            .unwrap()
+            .ensemble
+            .iter()
+            .any(|(n, _)| *n == b)
+    );
+}
