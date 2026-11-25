@@ -4,10 +4,10 @@
 
 #![cfg(all(feature = "engram", feature = "substrate"))]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use obrain_common::types::NodeId;
-use obrain_cognitive::engram::traits::InMemoryVectorIndex;
+use obrain_cognitive::engram::traits::{InMemoryVectorIndex, VectorIndex};
 use obrain_cognitive::engram::{EngramManager, EngramManagerConfig, RevisionError};
 use obrain_substrate::{SubstrateFile, SyncMode, Writer as SubstrateWriter};
 
@@ -172,5 +172,82 @@ fn deux_revisions_concurrentes_coherentes() {
     assert!(
         (weight_of(&e.ensemble, a) - 0.9025).abs() < 1e-6,
         "poids A = 0.9025 : deux décroissances successives (sérialisé)"
+    );
+}
+
+/// Index vectoriel INSTRUMENTÉ : enregistre l'ordre des publications (upsert)
+/// de signatures. Sert de contre-épreuve d'index, pas seulement des membres.
+struct RecordingIndex {
+    inner: InMemoryVectorIndex,
+    history: Arc<Mutex<Vec<(String, Vec<f64>)>>>,
+}
+
+impl RecordingIndex {
+    fn new() -> (Arc<Self>, Arc<Mutex<Vec<(String, Vec<f64>)>>>) {
+        let history = Arc::new(Mutex::new(Vec::new()));
+        (
+            Arc::new(Self { inner: InMemoryVectorIndex::new(), history: history.clone() }),
+            history,
+        )
+    }
+}
+
+impl VectorIndex for RecordingIndex {
+    fn upsert(&self, id: &str, v: &[f64]) {
+        self.inner.upsert(id, v);
+        self.history.lock().unwrap().push((id.to_string(), v.to_vec()));
+    }
+    fn nearest(&self, q: &[f64], k: usize) -> Vec<(String, f64)> {
+        self.inner.nearest(q, k)
+    }
+    fn remove(&self, id: &str) {
+        self.inner.remove(id);
+    }
+    fn dimensions(&self) -> usize {
+        self.inner.dimensions()
+    }
+}
+
+/// Contre-épreuve D'INDEX : après deux révisions concurrentes du même engramme,
+/// la DERNIÈRE signature publiée dans l'index doit correspondre à l'état final
+/// (4 membres), jamais à une projection obsolète (3 membres).
+#[test]
+fn publication_des_projections_ordonnee() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let (a, b, c, d) = (NodeId(1), NodeId(2), NodeId(3), NodeId(4));
+
+    let (index, history) = RecordingIndex::new();
+    let manager = Arc::new(EngramManager::new(
+        EngramManagerConfig::default(),
+        index.clone(),
+    ));
+    let sub = SubstrateFile::create(&path).unwrap();
+    let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+    manager.attach_substrate(Arc::new(writer));
+
+    let id = manager.store().form(&[a, b]).unwrap();
+
+    // Deux révisions concurrentes ([C] et [D]), barrière de départ simultané.
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let (m1, m2) = (manager.clone(), manager.clone());
+    let (b1, b2) = (barrier.clone(), barrier.clone());
+    let t1 = std::thread::spawn(move || { b1.wait(); m1.revise(id, &[c], 0.5).unwrap(); });
+    let t2 = std::thread::spawn(move || { b2.wait(); m2.revise(id, &[d], 0.5).unwrap(); });
+    t1.join().unwrap();
+    t2.join().unwrap();
+
+    // État canonique final (4 membres) et sa signature.
+    let final_engram = manager.store().get(id).expect("engramme présent");
+    let final_sig = final_engram.spectral_signature.clone();
+    assert_eq!(members_of(&final_engram.ensemble).len(), 4, "état final : 4 membres");
+
+    // La DERNIÈRE publication d'index pour cet engramme DOIT être l'état final.
+    let hist = history.lock().unwrap().clone();
+    let last = hist.iter().rev().find(|(i, _)| i == &id.to_string())
+        .expect("au moins un upsert enregistré");
+    assert_eq!(
+        &last.1, &final_sig,
+        "dernière signature publiée = état final (aucune projection obsolète)"
     );
 }
