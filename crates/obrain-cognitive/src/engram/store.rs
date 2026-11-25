@@ -90,6 +90,11 @@ pub struct EngramStore {
     /// `set_engram_state` réussi — reproduit l'écriture partielle du substrat.
     #[cfg(feature = "fault-injection")]
     fail_bit_after_state: std::sync::atomic::AtomicBool,
+    /// Registre des engrammes dont une projection (bitset) est dégradée.
+    /// Sert au repli du rappel natif sur l'état canonique. Effacé à chaque
+    /// chargement : reflète l'état courant, pas une seconde autorité.
+    #[cfg(feature = "substrate")]
+    degraded: PlRwLock<HashSet<EngramId>>,
 }
 
 impl std::fmt::Debug for EngramStore {
@@ -148,6 +153,8 @@ impl EngramStore {
             revision: AtomicU64::new(0),
             #[cfg(feature = "substrate")]
             substrate: PlRwLock::new(None),
+            #[cfg(feature = "substrate")]
+            degraded: PlRwLock::new(HashSet::new()),
             #[cfg(feature = "fault-injection")]
             fail_bit_after_state: std::sync::atomic::AtomicBool::new(false),
         }
@@ -370,6 +377,8 @@ impl EngramStore {
         let Some(writer) = self.substrate_writer() else {
             return report;
         };
+        // Le registre dégradé reflète CE chargement (pas un état antérieur).
+        self.degraded.write().clear();
         let mut max_id: u64 = 0;
         for eid_u16 in 1u16..=u16::MAX {
             // Lecture COHÉRENTE membres+poids sous un même verrou (pas de
@@ -450,6 +459,7 @@ impl EngramStore {
             max_id = max_id.max(eid.0);
             if let Some(cause) = degraded {
                 report.degraded.push((eid, cause));
+                self.degraded.write().insert(eid);
             } else {
                 report.coherent += 1;
             }
@@ -568,13 +578,10 @@ impl EngramStore {
             SubstrateError::WalBadFrame("node id overflows u32 substrate addressing".into())
         })?;
         let bitset = writer.engram_bitset(nid_u32)?;
-        if bitset == 0 {
-            return Ok(Vec::new());
-        }
-
+        let mut candidates: Vec<EngramId> = Vec::new();
+        if bitset != 0 {
         // Two-tier filter: collect cached engrams whose bit is set, then
         // verify via the substrate members snapshot.
-        let mut candidates: Vec<EngramId> = Vec::new();
         for entry in &self.cache {
             let eid = *entry.key();
             let Some(eid_u16) = Self::engram_id_to_u16(eid) else {
@@ -589,8 +596,25 @@ impl EngramStore {
                 _ => {}
             }
         }
+        }
+        // Repli sur l'état canonique des engrammes DÉGRADÉS (bitset incomplet) :
+        // l'appartenance est vérifiée sur l'ensemble pondéré, même si le bit
+        // manque. Ne présente pas une projection dégradée comme une absence.
+        for eid in self.degraded.read().iter() {
+            if let Some(engram) = self.cache.get(eid) {
+                if engram.ensemble.iter().any(|(n, _)| *n == query_nid) && !candidates.contains(eid) {
+                    candidates.push(*eid);
+                }
+            }
+        }
         candidates.sort_by_key(|eid| eid.0);
         Ok(candidates)
+    }
+
+    /// Engrammes dont une projection (bitset) est dégradée.
+    #[cfg(feature = "substrate")]
+    pub fn degraded_engrams(&self) -> Vec<EngramId> {
+        self.degraded.read().iter().copied().collect()
     }
 
     /// Read the members snapshot for `eid` directly from the substrate
