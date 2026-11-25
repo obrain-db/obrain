@@ -240,4 +240,44 @@ mod tests {
         let sig = enc.encode(&[(NodeId(1), 1.0)]);
         assert_eq!(sig.len(), 128);
     }
+
+    // --- E1 : permutation contrôlée des membres (poids fixes) ---
+    #[test]
+    fn e1_permutation_des_membres() {
+        let enc = SpectralEncoder::new();
+        let a = (NodeId(1), 0.5);
+        let b = (NodeId(2), 0.3);
+        let c = (NodeId(3), 0.2);
+        let perms: Vec<Vec<(NodeId, f64)>> = vec![
+            vec![a, b, c],
+            vec![a, c, b],
+            vec![b, a, c],
+            vec![b, c, a],
+            vec![c, a, b],
+            vec![c, b, a],
+        ];
+        let sigs: Vec<Vec<f64>> = perms.iter().map(|p| enc.encode(p)).collect();
+        let base = &sigs[0];
+        let mut max_l1 = 0.0f64;
+        for sig in &sigs[1..] {
+            let l1: f64 = base.iter().zip(sig).map(|(x, y)| (x - y).abs()).sum();
+            max_l1 = max_l1.max(l1);
+        }
+        eprintln!("E1 max_L1_permutation = {max_l1:e}");
+        assert_eq!(sigs.len(), 6);
+        assert_eq!(sigs[0].len(), 64);
+    }
+
+    // --- E2 : variation des poids, membres/ordre identiques ---
+    #[test]
+    fn e2_variation_des_poids() {
+        let enc = SpectralEncoder::new();
+        let base = enc.encode(&[(NodeId(1), 1.0), (NodeId(2), 1.0), (NodeId(3), 1.0)]);
+        let w2 = enc.encode(&[(NodeId(1), 0.1), (NodeId(2), 1.0), (NodeId(3), 1.0)]);
+        let w3 = enc.encode(&[(NodeId(1), 0.5), (NodeId(2), 0.5), (NodeId(3), 0.5)]);
+        let l1_12: f64 = base.iter().zip(&w2).map(|(x, y)| (x - y).abs()).sum();
+        let l1_13: f64 = base.iter().zip(&w3).map(|(x, y)| (x - y).abs()).sum();
+        eprintln!("E2 L1(uniformes -> 0.1/1/1) = {l1_12:e}");
+        eprintln!("E2 L1(uniformes -> 0.5/0.5/0.5) = {l1_13:e}");
+    }
 }
