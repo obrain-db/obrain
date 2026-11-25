@@ -48,6 +48,7 @@ pub mod session;
 pub mod transaction;
 #[cfg(feature = "algos")]
 pub mod window_procedures;
+pub mod composition;
 
 pub use admin::{
     AdminService, CompactionStats, DatabaseInfo, DatabaseMode, DatabaseStats, DumpFormat,
@@ -55,6 +56,7 @@ pub use admin::{
     ValidationResult, ValidationWarning, WalStatus,
 };
 pub use catalog::{Catalog, CatalogError, IndexDefinition, IndexType};
+pub use composition::{Composition, KnowledgeSpec};
 pub use config::{AccessMode, Config, ConfigError, DurabilityMode, GraphModel};
 pub use database::ObrainDB;
 pub use database::verification_contraintes::{RapportContraintes, ViolationContrainte};
