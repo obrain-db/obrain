@@ -128,45 +128,27 @@ fn chaine_e2e_observation_vers_rappel_persistant() {
         !rappel_a.is_empty(),
         "rappel par indice partiel [a] non vide"
     );
-    // La voie directe restitue l'engramme COMPLET parmi les résultats ; le
-    // classement spectral (hash) peut mettre un sous-ensemble en tête —
-    // limitation connue, à corriger en Priorité 2 (signatures spectrales).
-    assert!(
-        rappel_a
-            .iter()
-            .any(|r| ensemble_trie(&r.engram.node_ids()) == ensemble_trie(&trio1)),
-        "l'indice partiel [a] doit retrouver {{a,b,c}} complet (obtenu {:?})",
+    // ASSERTION STRICTE (P0) : le top-1 doit être l'engramme COMPLET. ROUGE
+    // tant que la formation incrémentale laisse subsister un engramme
+    // intermédiaire {a,b} (défaut mesuré — note diagnostic causal).
+    assert_eq!(
+        ensemble_trie(&rappel_a[0].engram.node_ids()),
+        ensemble_trie(&trio1),
+        "top-1 de recall([a]) = {{a,b,c}} complet (obtenu {:?})",
         rappel_a
             .iter()
             .map(|r| ensemble_trie(&r.engram.node_ids()))
             .collect::<Vec<_>>()
-    );
-    assert!(
-        rappel_a.iter().any(|r| r.engram.node_ids().len() > 1),
-        "rappel associatif : plus que le seul indice"
     );
 
     // ── Phase 3 : distracteurs ────────────────────────────────────────────
     // Un indice appartenant à l'AUTRE trio ne doit pas ramener {a,b,c}.
     let rappel_d = mgr.recall(&[d], 5);
     assert!(!rappel_d.is_empty(), "rappel par [d] non vide");
-    assert!(
-        rappel_d
-            .iter()
-            .any(|r| ensemble_trie(&r.engram.node_ids()) == ensemble_trie(&trio2)),
-        "l'indice [d] doit retrouver {{d,e,f}} (obtenu {:?})",
-        rappel_d
-            .iter()
-            .map(|r| ensemble_trie(&r.engram.node_ids()))
-            .collect::<Vec<_>>()
-    );
-    // La signature spectrale (hash) cross-contamine entre engrammes — c'est
-    // une limitation CONNUE (Priorité 2) : recall([d]) peut ramener {a,b,c} en
-    // rang bas. Ce qu'on exige ici, c'est que le TOP-1 soit le bon trio.
-    assert_ne!(
+    assert_eq!(
         ensemble_trie(&rappel_d[0].engram.node_ids()),
-        ensemble_trie(&trio1),
-        "le TOP-1 de recall([d]) ne doit pas être {{a,b,c}} (obtenu {:?})",
+        ensemble_trie(&trio2),
+        "top-1 de recall([d]) = {{d,e,f}} (obtenu {:?})",
         rappel_d
             .iter()
             .map(|r| ensemble_trie(&r.engram.node_ids()))
@@ -178,11 +160,10 @@ fn chaine_e2e_observation_vers_rappel_persistant() {
     // compléter {a,b,c} : le bruit n'inverse pas le rappel.
     let rappel_bruite = mgr.recall(&[a, b, d], 5);
     assert!(!rappel_bruite.is_empty(), "rappel bruité non vide");
-    assert!(
-        rappel_bruite
-            .iter()
-            .any(|r| ensemble_trie(&r.engram.node_ids()) == ensemble_trie(&trio1)),
-        "un indice bruité [a, b, d] rappelle toujours {{a,b,c}} (obtenu {:?})",
+    assert_eq!(
+        ensemble_trie(&rappel_bruite[0].engram.node_ids()),
+        ensemble_trie(&trio1),
+        "top-1 d'un indice bruité [a, b, d] = {{a,b,c}} (obtenu {:?})",
         rappel_bruite
             .iter()
             .map(|r| ensemble_trie(&r.engram.node_ids()))

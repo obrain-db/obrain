@@ -251,6 +251,40 @@ mod tests {
         }
     }
 
+    /// RÉGRESSION (25/11) : la formation incrémentale d'un triangle ne doit
+    /// produire QU'UN engramme {1,2,3} — ni intermédiaire {1,2}, ni doublon.
+    /// ROUGE tant que record_activation ne déduplique pas (défaut mesuré).
+    #[tokio::test]
+    async fn le_triangle_ne_forme_ni_intermediaire_ni_doublon() {
+        let mgr = manager();
+        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+        for _ in 0..3 {
+            for (s, d) in [(1, 2), (2, 3), (1, 3)] {
+                bridge
+                    .on_batch(&[MutationEvent::EdgeCreated {
+                        edge: arete(s * 10 + d, s, d),
+                    }])
+                    .await;
+            }
+        }
+        let mut tri: Vec<Vec<u64>> = mgr
+            .store()
+            .list()
+            .iter()
+            .map(|e| {
+                let mut v: Vec<u64> = e.node_ids().iter().map(|n| n.0).collect();
+                v.sort_unstable();
+                v
+            })
+            .collect();
+        tri.sort();
+        assert_eq!(
+            tri,
+            vec![vec![1, 2, 3]],
+            "exactement UN engramme {{1,2,3}} (obtenu {tri:?})"
+        );
+    }
+
     #[tokio::test]
     async fn une_arete_compte_comme_co_activation() {
         let mgr = manager();
