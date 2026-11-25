@@ -390,16 +390,18 @@ fn reouverture_apres_ecriture_partielle() {
     assert!((weight_of(&restored.ensemble, c) - 0.25).abs() < 1e-6, "cache C=0.25");
     assert!(!restored.spectral_signature.is_empty(), "signature restaurée");
 
-    // Bitset de C : NON posé → état partiel détectable (incohérence membres/bitset).
+    // Bitset RÉPARÉ au chargement : le bit de C est reconstruit depuis les
+    // membres persistés. (Présence du bit = nécessaire, PAS suffisante pour la
+    // complétude transactionnelle — c'est un filtre Bloom.)
     let bitset_c = writer.engram_bitset(c.0 as u32).unwrap();
-    assert_eq!(bitset_c, 0, "bitset de C non posé");
+    let expected_mask = 1u64 << ((id.0 as u16) & 0x3F);
+    assert_ne!(bitset_c & expected_mask, 0, "bitset de C réparé (bit posé)");
 
-    // Deux chemins de rappel DIVERGENT après réouverture :
-    // natif (bitset) → vide ; manager (RecallEngine direct) → trouve C.
-    let native = manager.store().recall(c).unwrap_or_default();
-    assert!(native.is_empty(), "rappel natif vide (bit C absent)");
+    // Cohérence des deux chemins de rappel RESTAURÉE (plus de divergence).
+    let native = manager.store().recall(c).expect("rappel natif");
+    assert!(native.iter().any(|e| *e == id), "rappel natif trouve C (bitset réparé)");
     let mgr = manager.recall(&[c], 5);
-    assert!(mgr.iter().any(|r| r.engram_id == id), "rappel manager trouve C (chemin direct)");
+    assert!(mgr.iter().any(|r| r.engram_id == id), "rappel manager trouve C");
 
     // Nouvelle tentative APRÈS réouverture : reconsolidation décroît TOUT.
     let rev = manager.revise(id, &[c], 0.5).expect("reprise réussie");
