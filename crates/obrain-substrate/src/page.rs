@@ -257,6 +257,9 @@ pub const ENTRY_FLAG_STAMPED: u8 = 0x02;
 
 /// Fixed prefix size before the per-tag payload: flags (1) + key (2) + tag (1).
 pub const ENTRY_HEADER_SIZE: usize = 4;
+/// Bytes of the HLC stamp appended when `ENTRY_FLAG_STAMPED` is set: auteur (8)
+/// + horloge (8).
+pub const ENTRY_STAMP_BYTES: usize = 16;
 
 /// Logical representation of a property entry's value, parameterised by
 /// the 9 [`ValueTag`] variants the substrate supports on-disk. Heap-typed
@@ -358,13 +361,29 @@ impl PropertyEntry {
         }
     }
 
+    pub fn tombstone_stamped(prop_key: u16, auteur: u64, horloge: u64) -> Self {
+        Self {
+            flags: ENTRY_FLAG_TOMBSTONE | ENTRY_FLAG_STAMPED,
+            prop_key,
+            auteur: Some(auteur),
+            horloge: Some(horloge),
+            value: PropertyValue::Null,
+        }
+    }
+
     pub fn is_tombstone(&self) -> bool {
         self.flags & ENTRY_FLAG_TOMBSTONE != 0
     }
 
     /// Total bytes this entry will occupy (header + value payload).
     pub fn encoded_len(&self) -> usize {
-        ENTRY_HEADER_SIZE + self.value.encoded_len() + if self.is_stamped() { 16 } else { 0 }
+        ENTRY_HEADER_SIZE
+            + self.value.encoded_len()
+            + if self.is_stamped() {
+                ENTRY_STAMP_BYTES
+            } else {
+                0
+            }
     }
 }
 
@@ -677,13 +696,6 @@ impl<'a> PropertyCursor<'a> {
     pub(crate) fn au_dessus(buf: &'a [u8]) -> Self {
         Self { buf, pos: 0 }
     }
-
-    /// Tranche d'octets que ce curseur n'a pas encore parcourue — exactement ce
-    /// que `Iterator::next` décoderait. Sert au balayage « clef + taille » de
-    /// [`clef_et_taille_entree`], qui ne décode rien.
-    pub(crate) fn tranche(&self) -> &'a [u8] {
-        &self.buf[self.pos..]
-    }
 }
 
 impl<'a> Iterator for PropertyCursor<'a> {
@@ -824,6 +836,20 @@ mod tests {
         roundtrip(PropertyEntry::new_stamped(9, PropertyValue::I64(7), 42, 99));
         // une entrée non estampillée reste non estampillée (flag absent)
         roundtrip(PropertyEntry::new(9, PropertyValue::I64(7)));
+    }
+
+    #[test]
+    fn codec_tombstone_estampille_roundtrip() {
+        let t = PropertyEntry::tombstone_stamped(9, 42, 99);
+        assert!(
+            t.is_tombstone(),
+            "le tombstone estampillé doit rester un tombstone"
+        );
+        assert!(
+            t.is_stamped(),
+            "le tombstone estampillé doit porter l'estampille"
+        );
+        roundtrip(t);
     }
 
     #[test]

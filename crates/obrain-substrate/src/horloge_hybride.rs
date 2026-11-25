@@ -23,6 +23,38 @@ pub struct HorlogeHybride {
     logique: u32,
 }
 
+/// Horloge murale en millis depuis l'époque, portable. Sur wasm32 (`SystemTime`
+/// indisponible), on rend 0 : l'horloge hybride dégénère en horloge de Lamport
+/// (compteur monotone), suffisante en mono-processus navigateur.
+pub fn horloge_murale_millis() -> i64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
+impl Estampille {
+    /// Encode en u64 pour le stockage on-disk : 48 bits de `physique` (positif,
+    /// millis) + 16 bits de `logique`. Suffit pour la convergence LWW.
+    pub fn pack(self) -> u64 {
+        ((self.physique.max(0) as u64) << 16) | (self.logique as u64 & 0xFFFF)
+    }
+
+    pub fn depaqueter(v: u64) -> Self {
+        Estampille {
+            physique: (v >> 16) as i64,
+            logique: (v & 0xFFFF) as u32,
+        }
+    }
+}
+
 impl HorlogeHybride {
     pub fn nouvelle() -> Self {
         Self::default()
@@ -36,6 +68,12 @@ impl HorlogeHybride {
             // L'horloge murale n'a pas dépassé notre dernière composante : on
             // avance le compteur logique pour garantir la stricte croissance.
             self.logique += 1;
+            if self.logique > 0xFFFF {
+                // Débordement du compteur logique (16 bits on-disk) : report
+                // sur la composante physique pour préserver la croissance.
+                self.physique += 1;
+                self.logique = 0;
+            }
         } else {
             self.physique = plafond;
             self.logique = 0;
@@ -60,6 +98,10 @@ impl HorlogeHybride {
             self.logique = 0;
         }
         self.physique = plafond;
+        if self.logique > 0xFFFF {
+            self.physique += 1;
+            self.logique = 0;
+        }
     }
 
     pub fn derniere(&self) -> Estampille {
@@ -96,6 +138,25 @@ mod tests {
         h.maintenant(1_000);
         let e = h.maintenant(2_000);
         assert_eq!((e.physique, e.logique), (2_000, 0));
+    }
+
+    #[test]
+    fn debordement_logique_reporte_sur_la_physique() {
+        let mut h = HorlogeHybride::nouvelle();
+        h.maintenant(1_000);
+        // Pousse le compteur logique jusqu'au plafond 16 bits on-disk.
+        for _ in 0..0xFFFF {
+            h.maintenant(1_000);
+        }
+        let avant = h.derniere();
+        assert_eq!((avant.physique, avant.logique), (1_000, 0xFFFF));
+        // Une écriture de plus déborde : la physique avance, le logique retombe.
+        let apres = h.maintenant(1_000);
+        assert_eq!((apres.physique, apres.logique), (1_001, 0));
+        assert!(
+            apres.pack() > avant.pack(),
+            "monotonie préservée au débordement du compteur logique"
+        );
     }
 
     #[test]
@@ -143,6 +204,22 @@ mod tests {
         );
         let e = h.maintenant(1_000);
         assert_eq!(h.derniere(), e);
+    }
+
+    #[test]
+    fn estampille_pack_depaquete_roundtrip() {
+        let e = Estampille {
+            physique: 1_725_000_000,
+            logique: 0xABCD,
+        };
+        let paquet = e.pack();
+        assert_eq!(Estampille::depaqueter(paquet), e);
+        // la borne basse : physique nul et logique nul
+        let nulle = Estampille {
+            physique: 0,
+            logique: 0,
+        };
+        assert_eq!(Estampille::depaqueter(nulle.pack()), nulle);
     }
 
     #[test]
@@ -194,6 +271,46 @@ mod tests {
             Estampille {
                 physique: 1_000,
                 logique: 2
+            }
+        );
+    }
+
+    #[test]
+    fn observer_quand_le_mur_est_en_avance_reinitialise_le_logique() {
+        let mut h = HorlogeHybride::nouvelle();
+        h.maintenant(1_000);
+        h.maintenant(1_000);
+        let distant = Estampille {
+            physique: 1_000,
+            logique: 3,
+        };
+        // physique_instant (2_000) dépasse self et distant : plafond == physique_instant.
+        h.observer(distant, 2_000);
+        assert_eq!(
+            h.derniere(),
+            Estampille {
+                physique: 2_000,
+                logique: 0
+            }
+        );
+    }
+
+    #[test]
+    fn observer_reporte_le_debordement_sur_la_physique() {
+        let mut h = HorlogeHybride::nouvelle();
+        h.maintenant(1_000);
+        let distant = Estampille {
+            physique: 1_000,
+            logique: 0xFFFF,
+        };
+        h.observer(distant, 500);
+        // plafond == self.physique == distant.physique : logique = max(0, 0xFFFF) + 1,
+        // soit 0x10000 — débordement : la physique avance, le logique retombe à 0.
+        assert_eq!(
+            h.derniere(),
+            Estampille {
+                physique: 1_001,
+                logique: 0
             }
         );
     }

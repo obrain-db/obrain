@@ -82,7 +82,7 @@ use crate::file::{SubstrateFile, ZoneFile};
 use crate::heap::{HEAP_PAGE_SIZE, HeapPage};
 use crate::page::{
     OwnerKind, PAGE_SIZE, PROP_PAGE_MAGIC_EDGE, PROP_PAGE_MAGIC_NODE, PropertyCursor,
-    PropertyEntry, PropertyPage, decode_entry,
+    PropertyEntry, PropertyPage,
 };
 use crate::record::U48;
 use bytemuck;
@@ -1851,81 +1851,50 @@ impl PropsZone {
 
     /// Variante unité-aware de [`Self::get_latest_for_key`] — `head` est
     /// l'adresse brute (page legacy ou slot packé).
+    /// Comparaison LWW de deux entrées de propriété : une estampillée (auteur +
+    /// horloge HLC) domine une non estampillée ; deux estampillées se comparent
+    /// par (horloge, auteur) — l'horloge HLC d'abord (ordre causal), l'auteur
+    /// départage les écritures concurrentes à horloge égale ; deux non
+    /// estampillées suivent l'ordre de chaîne.
+    fn est_plus_recente(a: &PropertyEntry, b: Option<&PropertyEntry>) -> bool {
+        let Some(b) = b else {
+            return true;
+        };
+        match (a.auteur, a.horloge, b.auteur, b.horloge) {
+            (Some(aa), Some(ah), Some(ba), Some(bh)) => (ah, aa) > (bh, ba),
+            (Some(_), Some(_), None, None) => true,
+            (None, None, Some(_), Some(_)) => false,
+            (None, None, None, None) => true,
+            _ => false,
+        }
+    }
+
+    fn erreur_decode_unite(addr: u64, e: crate::page::PropertyCodecError) -> SubstrateError {
+        SubstrateError::WalBadFrame(format!(
+            "get_latest_for_key: decode error on unit {addr:#x}: {e}"
+        ))
+    }
+
     pub(crate) fn get_latest_for_key_unite(
         &self,
         head: Option<u64>,
         prop_key: u16,
     ) -> SubstrateResult<Option<PropertyEntry>> {
         let mut cur = head;
+        let mut meilleure: Option<PropertyEntry> = None;
         while let Some(addr) = cur {
             let Some((cursor, next)) = self.unite_cursor(addr)? else {
                 break;
             };
-            // ── PASSE 1 : LES CLEFS SEULES (2026-09-12) ──
-            //
-            // Cette boucle décodait chaque entrée avec `decode_entry` — donc
-            // construisait un `PropertyEntry` complet, et allouait un `Vec` pour
-            // chaque valeur TABLEAU — alors que seule la clef décide. Sur un
-            // nœud à 57 propriétés (dont des listes), chercher UNE clef payait
-            // des dizaines de décodages et plusieurs allocations : mesuré
-            // 1 450 à 2 561 ns/cellule sur les nœuds `File`, contre 320 ns sur un
-            // nœud moyen, pour la MÊME clef.
-            //
-            // Ici on ne lit que l'en-tête et la longueur : aucune allocation,
-            // aucun `PropertyEntry`. On retient l'OFFSET de la DERNIÈRE entrée
-            // portant la clef — la sémantique LWW (« la dernière gagne ») est
-            // donc conservée à l'identique, et une entrée qui n'est pas la clef
-            // cherchée n'est plus décodée du tout.
-            let tranche = cursor.tranche();
-            let mut off = 0usize;
-            let mut dernier_off: Option<usize> = None;
-            let mut balayage_sur = true;
-            while off < tranche.len() {
-                match crate::page::clef_et_taille_entree(&tranche[off..]) {
-                    Some((clef, taille)) => {
-                        if clef == prop_key {
-                            dernier_off = Some(off);
-                        }
-                        off += taille;
-                    }
-                    // Entrée tronquée ou tag inconnu : on ne devine pas. La
-                    // passe 2 ci-dessous reprend le décodage complet, qui rendra
-                    // exactement l'erreur rendue avant ce correctif.
-                    None => {
-                        balayage_sur = false;
-                        break;
-                    }
-                }
-            }
-            if balayage_sur {
-                if let Some(o) = dernier_off {
-                    let (entree, _) = decode_entry(&tranche[o..]).map_err(|e| {
-                        SubstrateError::WalBadFrame(format!(
-                            "get_latest_for_key: decode error on unit {addr:#x}: {e}"
-                        ))
-                    })?;
-                    return Ok(Some(entree));
-                }
-            } else {
-                // ── PASSE 2 : CHEMIN D'ORIGINE, INCHANGÉ ──
-                let mut latest_in_page: Option<PropertyEntry> = None;
-                for entry in cursor {
-                    let e = entry.map_err(|e| {
-                        SubstrateError::WalBadFrame(format!(
-                            "get_latest_for_key: decode error on unit {addr:#x}: {e}"
-                        ))
-                    })?;
-                    if e.prop_key == prop_key {
-                        latest_in_page = Some(e);
-                    }
-                }
-                if latest_in_page.is_some() {
-                    return Ok(latest_in_page);
+            for entry in cursor {
+                let e = entry.map_err(|e| Self::erreur_decode_unite(addr, e))?;
+                if e.prop_key == prop_key && Self::est_plus_recente(&e, meilleure.as_ref()) {
+                    meilleure = Some(e);
                 }
             }
             cur = if next == 0 { None } else { Some(next) };
         }
-        Ok(None)
+        Ok(meilleure)
     }
 
     // ---- heap API ------------------------------------------------------
@@ -2136,7 +2105,62 @@ impl PropsZone {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::page::{HeapRef, PropertyValue};
+    use crate::page::{HeapRef, PropertyEntry, PropertyValue};
+
+    #[test]
+    fn est_plus_recente_compare_les_estampilles() {
+        let nue = PropertyEntry::new(1, PropertyValue::I64(0));
+        let a1 = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 10, 5);
+        let a2 = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 10, 6);
+        let b1 = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 11, 0);
+
+        // une estampillée domine une non estampillée
+        assert!(PropsZone::est_plus_recente(&a1, Some(&nue)));
+        assert!(!PropsZone::est_plus_recente(&nue, Some(&a1)));
+        // à auteur égal, l'horloge la plus haute gagne
+        assert!(PropsZone::est_plus_recente(&a2, Some(&a1)));
+        assert!(!PropsZone::est_plus_recente(&a1, Some(&a2)));
+        // L'horloge prime sur l'auteur : b1 (auteur 11, horloge 0) est plus
+        // ancienne que a2 (auteur 10, horloge 6) malgré son auteur supérieur.
+        assert!(!PropsZone::est_plus_recente(&b1, Some(&a2)));
+        assert!(PropsZone::est_plus_recente(&a2, Some(&b1)));
+        // À horloge égale, l'auteur départage (tie-break déterministe).
+        let c1 = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 11, 6);
+        let c2 = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 10, 6);
+        assert!(PropsZone::est_plus_recente(&c1, Some(&c2)));
+        assert!(!PropsZone::est_plus_recente(&c2, Some(&c1)));
+        // deux non estampillées : la nouvelle gagne (ordre de chaîne, compat)
+        assert!(PropsZone::est_plus_recente(&nue, Some(&nue)));
+        // aucune entrée : la première est conservée
+        assert!(PropsZone::est_plus_recente(&a1, None));
+    }
+
+    #[test]
+    fn est_plus_recente_etat_mixte_invalide() {
+        // auteur sans horloge (état impossible, défensif) : branche _ => false.
+        let mixte = PropertyEntry {
+            flags: 0,
+            prop_key: 1,
+            value: PropertyValue::I64(0),
+            auteur: Some(5),
+            horloge: None,
+        };
+        let autre = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 5, 1);
+        assert!(!PropsZone::est_plus_recente(&mixte, Some(&autre)));
+        assert!(!PropsZone::est_plus_recente(&autre, Some(&mixte)));
+    }
+
+    #[test]
+    fn erreur_decode_unite_formate_le_contexte() {
+        let err = crate::page::PropertyCodecError::UnknownTag(0xFE);
+        match PropsZone::erreur_decode_unite(0x1234, err) {
+            SubstrateError::WalBadFrame(msg) => {
+                assert!(msg.contains("0x1234"), "message sans adresse : {msg}");
+                assert!(msg.contains("unknown"), "message sans la cause : {msg}");
+            }
+            e => panic!("mauvais type d'erreur : {e:?}"),
+        }
+    }
 
     /// (MP-3, revue du 24/11 — B1) Un lot de pages de tas qui n'est plus
     /// contigu ne doit pas être écrit d'un bloc. Le pair est SIMULÉ dans ce

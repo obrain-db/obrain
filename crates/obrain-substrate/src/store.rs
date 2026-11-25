@@ -2787,6 +2787,10 @@ pub struct SubstrateStore {
     /// [`Self::persist_properties`] bincode sidecar path is the only
     /// property storage in play.
     props_zone: Option<RwLock<PropsZone>>,
+    /// Identité stable de l'écrivain (writer.id, #343) — auteur des estampilles.
+    writer_id: u64,
+    /// Horloge hybride locale (HLC) pour estampiller les écritures (#334).
+    horloge: Mutex<crate::horloge_hybride::HorlogeHybride>,
     /// Serializes the read-modify-write of a node's edge-chain head in
     /// `splice_edge_at_head` and the delete-unlink path. Without it, concurrent
     /// `create_edge` / `delete_edge` on the same source race on `first_edge_off`,
@@ -8029,6 +8033,7 @@ impl SubstrateStore {
         let lecture_seule = sub.est_lecture_seule();
         // (obrain#164) Écriture partagée : décidée ici, comme la lecture seule.
         let ecriture_partagee = sub.est_ecriture_partagee() && !lecture_seule;
+        let writer_id = crate::writer_id::writer_id(sub.path()).unwrap_or(0);
         // ══════ GARDE D'INTEGRITE DE LA REPERMUTATION ══════
         //
         // Deux refus, tous deux places ICI et non sur le resultat du
@@ -8561,6 +8566,8 @@ impl SubstrateStore {
             vec_columns: Arc::new(VecColumnRegistry::new()),
             blob_columns: Arc::new(BlobColumnRegistry::new()),
             props_zone,
+            writer_id,
+            horloge: Mutex::new(crate::horloge_hybride::HorlogeHybride::nouvelle()),
             splice_lock: Mutex::new(()),
             named_graphs: RwLock::new(std::collections::HashMap::new()),
             tx_undo: RwLock::new(std::collections::HashMap::new()),
@@ -12541,10 +12548,15 @@ impl SubstrateStore {
         //    les appends suivants suivent l'unité courante (slot) jusqu'au
         //    débordement. La tête est adressée en BRUT (U48) — on n'écrit le
         //    record que si elle change.
+        let estampille = {
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().maintenant(millis)
+        };
         let nouvelle_tete: u64 = {
             let mut pz = pz_lock.write();
             let pv = encode_value(&mut pz, value)?;
-            let entry = PropertyEntry::new(prop_key_id, pv);
+            let entry =
+                PropertyEntry::new_stamped(prop_key_id, pv, self.writer_id, estampille.pack());
             let tete_brute = if node_rec.first_prop_off.to_u64() == 0 {
                 None
             } else {
@@ -13019,9 +13031,14 @@ impl SubstrateStore {
         // (feat slots512-wiring, étape 3) Suppression : tombstone sur la
         // chaîne — variante brute sous env (tête slot packée possible),
         // chemin legacy inchangé par défaut.
+        let estampille = {
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().maintenant(millis)
+        };
         let nouvelle_tete: u64 = {
             let mut pz = pz_lock.write();
-            let entry = PropertyEntry::tombstone(prop_key_id, crate::page::ValueTag::Null);
+            let entry =
+                PropertyEntry::tombstone_stamped(prop_key_id, self.writer_id, estampille.pack());
             let tete_brute = if node_rec.first_prop_off.to_u64() == 0 {
                 None
             } else {
@@ -13528,10 +13545,15 @@ impl SubstrateStore {
 
         // 3/4. (feat slots512-wiring) Variante brute sous env ; chemin
         //    legacy inchangé par défaut.
+        let estampille = {
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().maintenant(millis)
+        };
         let nouvelle_tete: u64 = {
             let mut pz = pz_lock.write();
             let pv = encode_value(&mut pz, value)?;
-            let entry = PropertyEntry::new(prop_key_id, pv);
+            let entry =
+                PropertyEntry::new_stamped(prop_key_id, pv, self.writer_id, estampille.pack());
             let tete_brute = if edge_rec.first_prop_off.to_u64() == 0 {
                 None
             } else {
@@ -13569,9 +13591,14 @@ impl SubstrateStore {
         };
 
         // (feat slots512-wiring) Suppression arête : variante brute sous env.
+        let estampille = {
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().maintenant(millis)
+        };
         let nouvelle_tete: u64 = {
             let mut pz = pz_lock.write();
-            let entry = PropertyEntry::tombstone(prop_key_id, crate::page::ValueTag::Null);
+            let entry =
+                PropertyEntry::tombstone_stamped(prop_key_id, self.writer_id, estampille.pack());
             let tete_brute = if edge_rec.first_prop_off.to_u64() == 0 {
                 None
             } else {
@@ -14227,6 +14254,7 @@ impl SubstrateStore {
         premier_slot: u32,
         props: &[&'v [(&'v str, Value)]],
         cles: &std::collections::HashMap<&str, u16>,
+        horloge: u64,
         proprietaire: crate::page::OwnerKind,
     ) -> SubstrateResult<(
         Vec<(u32, crate::record::U48)>,
@@ -14260,8 +14288,14 @@ impl SubstrateStore {
         }
         let taille_entree = |g: &Genre<'_>| -> usize {
             match g {
-                Genre::Chaine(_) => crate::page::ENTRY_HEADER_SIZE + 8,
-                Genre::Scalaire(pv) => crate::page::ENTRY_HEADER_SIZE + pv.encoded_len(),
+                Genre::Chaine(_) => {
+                    crate::page::ENTRY_HEADER_SIZE + 8 + crate::page::ENTRY_STAMP_BYTES
+                }
+                Genre::Scalaire(pv) => {
+                    crate::page::ENTRY_HEADER_SIZE
+                        + pv.encoded_len()
+                        + crate::page::ENTRY_STAMP_BYTES
+                }
                 Genre::Differee => 0,
             }
         };
@@ -14392,7 +14426,7 @@ impl SubstrateStore {
                                 })
                             }
                         };
-                        let entree = E::new(cles[k], pv);
+                        let entree = E::new_stamped(cles[k], pv, self.writer_id, horloge);
                         if page.append_entry(&entree).is_err() {
                             // Page pleine : on la clôt, chaînée sur la précédente.
                             let idx = base_pages + n_pages;
@@ -14610,6 +14644,10 @@ impl SubstrateStore {
         // `OBRAIN_LOT_SEQUENTIEL=1` garde le chemin séquentiel (banc A/B).
         let sequentiel = std::env::var("OBRAIN_LOT_SEQUENTIEL").is_ok_and(|v| v == "1");
         let rien_a_construire = retenues.iter().all(|l| l.is_empty());
+        let estampille = {
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().maintenant(millis)
+        };
         let (mut tetes, differees, mut ecrites) = if rien_a_construire {
             // Tout le lot est reparti au chemin unitaire (#386).
             (
@@ -14674,7 +14712,12 @@ impl SubstrateStore {
                                 encode_value(&mut pz, v)?
                             }
                         };
-                        let entree = PropertyEntry::new(cles[k], pv);
+                        let entree = PropertyEntry::new_stamped(
+                            cles[k],
+                            pv,
+                            self.writer_id,
+                            estampille.pack(),
+                        );
                         match page.append_entry(&entree) {
                             Ok(_) => vide = false,
                             Err(crate::page::PropertyCodecError::PageFull { .. }) if !vide => {
@@ -14711,6 +14754,7 @@ impl SubstrateStore {
                 premier_slot,
                 &retenues,
                 &cles,
+                estampille.pack(),
                 crate::page::OwnerKind::Node,
             )?
         };
@@ -15069,11 +15113,16 @@ impl SubstrateStore {
         // Pages et têtes : même construction parallèle que pour les nœuds, sur
         // le genre de propriétaire « arête ».
         let tranches: Vec<&[(&str, Value)]> = retenues.iter().map(|v| v.as_slice()).collect();
+        let estampille = {
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().maintenant(millis)
+        };
         let (mut tetes, differees, ecrites) = self.construire_pages_en_parallele(
             pz_lock,
             premier_slot,
             &tranches,
             &cles,
+            estampille.pack(),
             crate::page::OwnerKind::Edge,
         )?;
         tetes.sort_unstable_by_key(|t| t.0);
