@@ -677,13 +677,6 @@ impl<'a> PropertyCursor<'a> {
     pub(crate) fn au_dessus(buf: &'a [u8]) -> Self {
         Self { buf, pos: 0 }
     }
-
-    /// Tranche d'octets que ce curseur n'a pas encore parcourue — exactement ce
-    /// que `Iterator::next` décoderait. Sert au balayage « clef + taille » de
-    /// [`clef_et_taille_entree`], qui ne décode rien.
-    pub(crate) fn tranche(&self) -> &'a [u8] {
-        &self.buf[self.pos..]
-    }
 }
 
 impl<'a> Iterator for PropertyCursor<'a> {

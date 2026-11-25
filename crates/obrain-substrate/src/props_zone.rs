@@ -2101,7 +2101,29 @@ impl PropsZone {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::page::{HeapRef, PropertyValue};
+    use crate::page::{HeapRef, PropertyEntry, PropertyValue};
+
+    #[test]
+    fn est_plus_recente_compare_les_estampilles() {
+        let nue = PropertyEntry::new(1, PropertyValue::I64(0));
+        let a1 = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 10, 5);
+        let a2 = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 10, 6);
+        let b1 = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 11, 0);
+
+        // une estampillée domine une non estampillée
+        assert!(PropsZone::est_plus_recente(&a1, Some(&nue)));
+        assert!(!PropsZone::est_plus_recente(&nue, Some(&a1)));
+        // à auteur égal, l'horloge la plus haute gagne
+        assert!(PropsZone::est_plus_recente(&a2, Some(&a1)));
+        assert!(!PropsZone::est_plus_recente(&a1, Some(&a2)));
+        // l'auteur le plus haut gagne
+        assert!(PropsZone::est_plus_recente(&b1, Some(&a2)));
+        assert!(!PropsZone::est_plus_recente(&a2, Some(&b1)));
+        // deux non estampillées : la nouvelle gagne (ordre de chaîne, compat)
+        assert!(PropsZone::est_plus_recente(&nue, Some(&nue)));
+        // aucune entrée : la première est conservée
+        assert!(PropsZone::est_plus_recente(&a1, None));
+    }
 
     /// (MP-3, revue du 24/11 — B1) Un lot de pages de tas qui n'est plus
     /// contigu ne doit pas être écrit d'un bloc. Le pair est SIMULÉ dans ce
