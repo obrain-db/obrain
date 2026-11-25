@@ -3314,3 +3314,74 @@ mod tests {
         assert_eq!(entree.value, PropertyValue::I64(42));
     }
 }
+
+
+#[cfg(test)]
+mod convergence_experiment {
+    use super::*;
+    use crate::page::{PropertyEntry, PropertyValue};
+
+    /// Trois événements immuables, mêmes identités + estampilles, appliqués dans
+    /// les six permutations : la fusion LWW (horloge, auteur) doit converger vers
+    /// le même gagnant — ici (auteur 3, horloge 200) : l'horloge la plus récente
+    /// prime sur l'auteur numériquement inférieur.
+    #[test]
+    fn trois_evenements_versionnes_six_permutations_convergent() {
+        let evts = [
+            PropertyEntry::new_stamped(1, PropertyValue::I64(1), 10, 100),
+            PropertyEntry::new_stamped(1, PropertyValue::I64(2), 3, 200),
+            PropertyEntry::new_stamped(1, PropertyValue::I64(3), 5, 150),
+        ];
+        let gagnant = (3u64, 200u64); // (auteur, horloge)
+        let perms: [[usize; 3]; 6] =
+            [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+        for p in perms {
+            let mut meilleure: Option<PropertyEntry> = None;
+            for &i in &p {
+                let e = evts[i].clone();
+                meilleure = match meilleure {
+                    None => Some(e),
+                    Some(m) => {
+                        if PropsZone::est_plus_recente(&e, Some(&m)) {
+                            Some(e)
+                        } else {
+                            Some(m)
+                        }
+                    }
+                };
+            }
+            let g = meilleure.unwrap();
+            assert_eq!(
+                (g.auteur.unwrap(), g.horloge.unwrap()),
+                gagnant,
+                "permutation {p:?}"
+            );
+        }
+    }
+
+    /// Idempotence (rejeu d'un événement identique), réception d'un événement
+    /// ancien, suppression versionnée, réapparition légitime postérieure,
+    /// même estampille avec contenus incompatibles (départage par auteur).
+    #[test]
+    fn rejeu_ancien_tombstone_reapparition_departage() {
+        let x = PropertyEntry::new_stamped(1, PropertyValue::I64(5), 10, 100);
+        // idempotence : rejouer l'identique ne change pas le gagnant
+        let x2 = x.clone();
+        assert!(!PropsZone::est_plus_recente(&x2, Some(&x)));
+        assert!(!PropsZone::est_plus_recente(&x, Some(&x2)));
+        // événement ancien : horloge inférieure, ne gagne pas
+        let ancien = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 10, 50);
+        assert!(!PropsZone::est_plus_recente(&ancien, Some(&x)));
+        // suppression versionnée : tombstone horloge 150 > écriture 100
+        let tomb = PropertyEntry::tombstone_stamped(1, 3, 150);
+        assert!(PropsZone::est_plus_recente(&tomb, Some(&x)), "tombstone récent gagne");
+        // réapparition légitime : nouvelle écriture horloge 200 > tombstone 150
+        let reapp = PropertyEntry::new_stamped(1, PropertyValue::I64(9), 7, 200);
+        assert!(PropsZone::est_plus_recente(&reapp, Some(&tomb)), "réapparition postérieure gagne");
+        // même estampille, contenus incompatibles : départage déterministe par auteur
+        let a10 = PropertyEntry::new_stamped(1, PropertyValue::I64(1), 10, 300);
+        let a3 = PropertyEntry::new_stamped(1, PropertyValue::I64(2), 3, 300);
+        assert!(PropsZone::est_plus_recente(&a10, Some(&a3)), "auteur 10 départage");
+        assert!(!PropsZone::est_plus_recente(&a3, Some(&a10)));
+    }
+}
