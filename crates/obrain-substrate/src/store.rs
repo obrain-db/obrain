@@ -46734,3 +46734,44 @@ mod contournement_lecture_magasin {
         ecrivain.join().unwrap();
     }
 }
+
+
+#[cfg(test)]
+mod publication_differee {
+    use super::*;
+    use crate::page::{OwnerKind, PropertyEntry, PropertyValue};
+
+    /// EXPÉRIENCE PHYSIQUE : préparer des entrées SANS publier la tête canonique,
+    /// puis publier par UNE seule modification de first_prop_off.
+    #[test]
+    fn append_est_in_place_pas_de_publication_differee() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let slot = id.0 as u32;
+        let prop_a = store.prop_keys.read().lookup("a").unwrap();
+        let prop_b = store.prop_keys.read().lookup("b").unwrap();
+        let auteur = store.writer_id;
+
+        let pz_lock = store.props_zone.as_ref().expect("zone v2");
+        let mut pz = pz_lock.write();
+        let node_rec = store.writer.read_node(slot).unwrap().unwrap();
+        let h0 = node_rec.first_prop_off.to_u64();
+
+        // CONSTAT : append_entree_sur_chainee(Some(h0), e) est IN-PLACE — le
+        // lecteur depuis H0 voit IMMÉDIATEMENT la nouvelle entrée (a=10), sans
+        // publication de tête. Il n'existe PAS de chaîne privée « non publiée ».
+        let e_a = PropertyEntry::new_stamped(prop_a, PropertyValue::I64(10), auteur, u64::MAX);
+        pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e_a)
+            .unwrap();
+        let lu_a = pz.get_latest_for_key_unite(Some(h0), prop_a).unwrap().unwrap();
+        eprintln!("APRES_APPEND_SANS_PUBLICATION a={:?}", lu_a.value);
+        assert_eq!(
+            lu_a.value,
+            PropertyValue::I64(10),
+            "l'append est immédiatement visible (in-place) — pas de publication différée native"
+        );
+    }
+}
