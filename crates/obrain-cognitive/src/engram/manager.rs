@@ -22,6 +22,10 @@ use super::hopfield::{
 use super::observe::EngramMetricsCollector;
 use super::recall::{reconsolidate, RecallEngine, RecallResult, WarmupConfig, WarmupSelector};
 use super::spectral::SpectralEncoder;
+use super::observation::{
+    AtomicEventLedger, CognitiveObservationAdapter, InMemoryAtomicEventLedger, ObservationDefinition,
+    ObservationId, ObservationOutcome, ResolvedState, ResultingState, SourceRevision,
+};
 use super::store::{EngramStore, LoadReport, StoreError};
 use super::traits::VectorIndex;
 use super::types::{Engram, EngramHorizon, EngramId, RecallEvent, RecallFeedback};
@@ -85,6 +89,10 @@ pub struct EngramManager {
     /// projection dérivée. À retirer quand la discipline native du store couvrira
     /// aussi la publication des projections (voir note de reprise).
     revise_locks: Mutex<HashMap<EngramId, Arc<Mutex<()>>>>,
+    /// Registre transactionnel d'identité d'observation (contrat RFC d59af717).
+    /// Par défaut l'implémentation de RÉFÉRENCE en mémoire — la primitive
+    /// durable du substrat la remplacera via [`Self::with_observation_ledger`].
+    observation_ledger: Arc<dyn AtomicEventLedger>,
 }
 
 /// Résultat d'une révision cohérente : identifie le nouvel état (révision,
@@ -106,6 +114,9 @@ pub enum RevisionError {
     InvalidObservation(String),
     ValidationFailed(String),
     PersistenceFailed(String),
+    /// Recalculs de révision épuisés (conflit de révision persistant) : l'appel
+    /// peut être rejoué avec la même identité une fois l'état stabilisé.
+    RetryExhausted,
 }
 
 impl EngramManager {
@@ -128,7 +139,24 @@ impl EngramManager {
             metrics,
             vector_index,
             revise_locks: Mutex::new(HashMap::new()),
+            observation_ledger: Arc::new(InMemoryAtomicEventLedger::new()),
         }
+    }
+
+    /// Remplace le registre d'observations (injecter la primitive durable du
+    /// substrat quand elle existe ; sinon l'implémentation de RÉFÉRENCE en
+    /// mémoire reste active et n'est JAMAIS présentée comme durable).
+    pub fn with_observation_ledger(mut self, ledger: Arc<dyn AtomicEventLedger>) -> Self {
+        self.observation_ledger = ledger;
+        self
+    }
+
+    /// Révision canonique COURANTE d'une connaissance, telle que connue du
+    /// registre transactionnel. À passer comme `source_revision` à
+    /// [`Self::revise_with_id`].
+    pub fn observation_revision(&self, engram_id: EngramId) -> Result<u64, String> {
+        self.observation_ledger
+            .resource_revision(&engram_id.0.to_be_bytes())
     }
 
     /// Returns a reference to the shared engram store.
@@ -364,6 +392,159 @@ impl EngramManager {
             members: engram.ensemble.clone(),
             signature,
         })
+    }
+
+    // -----------------------------------------------------------------
+    // Révision avec identité d'observation (contrat RFC d59af717)
+    // -----------------------------------------------------------------
+
+    /// Applique une observation IDENTIFIÉE, avec précondition de révision.
+    ///
+    /// * `observation_id` est l'identité LOGIQUE de l'événement, distincte des
+    ///   tentatives : un rejeu technique la réutilise.
+    /// * `source_revision` est la révision de la connaissance que l'appelant a
+    ///   observée (voir [`Self::observation_revision`]). Si la connaissance a
+    ///   avancé, l'appel rend `RevisionConflict { current_revision }` SANS rien
+    ///   appliquer : l'appelant RECALCULE son observation (mêmes `new_nodes` /
+    ///   `prediction_error` revisés depuis l'état courant) et rejoue avec la
+    ///   MÊME identité et la révision courante.
+    /// * Un rejeu (même identité + même définition) rend `Replayed` et
+    ///   n'applique RIEN de plus ; l'état enregistré est rendu à titre
+    ///   informatif (ne jamais l'écrire par-dessus un état plus récent).
+    /// * `Indeterminate` est RÉSOLU par interrogation de l'état transactionnel
+    ///   (rendu tel quel si rien n'a été appliqué — l'appelant peut rejouer).
+    ///
+    /// NOTE d'intégration : le registre (mock mémoire par défaut) est appliqué
+    /// AVANT la publication du cache. La primitive durable du substrat
+    /// remplacera le mock et portera l'atomicité identité+état.
+    pub fn revise_with_id(
+        &self,
+        observation_id: ObservationId,
+        engram_id: EngramId,
+        new_nodes: &[NodeId],
+        prediction_error: f64,
+        source_revision: SourceRevision,
+    ) -> Result<(ObservationOutcome, Option<EngramRevision>), RevisionError> {
+        if !prediction_error.is_finite() || prediction_error < 0.0 {
+            return Err(RevisionError::InvalidObservation(
+                "erreur de prédiction non finie ou négative".into(),
+            ));
+        }
+        if new_nodes.is_empty() {
+            return Err(RevisionError::InvalidObservation("observation vide".into()));
+        }
+        // Définition canonique versionnée (refuse non-fini / canonise).
+        let definition = ObservationDefinition::new(engram_id, new_nodes, prediction_error)
+            .map_err(RevisionError::InvalidObservation)?;
+
+        // Sérialise avec les autres mutations de CET engramme.
+        let lock = {
+            let mut m = self.revise_locks.lock();
+            m.entry(engram_id)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock();
+
+        let adapter = CognitiveObservationAdapter::new(self.observation_ledger.clone());
+        // État canonique COURANT (la transformation est toujours calculée à
+        // partir de la dernière version connue).
+        let current = self
+            .store
+            .get(engram_id)
+            .ok_or(RevisionError::EngramAbsent(engram_id))?;
+        let mut candidate = current;
+        reconsolidate(&mut candidate, new_nodes, prediction_error);
+        // Projection dérivée : recalculée, jamais conservée périmée.
+        let signature = self.spectral.encode(&candidate.ensemble);
+        let resulting_state = ResultingState {
+            ensemble: candidate.ensemble.clone(),
+            strength: candidate.strength,
+            recall_count: candidate.recall_count,
+        };
+        let resulting_revision = source_revision.0.saturating_add(1);
+
+        let outcome = adapter
+            .apply(
+                observation_id,
+                &definition,
+                source_revision,
+                &resulting_state,
+                resulting_revision,
+            )
+            .map_err(RevisionError::PersistenceFailed)?;
+
+        match outcome {
+            ObservationOutcome::Applied { .. } => {
+                let sig = signature.clone();
+                let state = resulting_state.clone();
+                self.store
+                    .mutate(engram_id, move |e| {
+                        e.ensemble = state.ensemble;
+                        e.strength = state.strength;
+                        e.recall_count = state.recall_count;
+                        e.spectral_signature = sig;
+                    })
+                    .map_err(|e| match e {
+                        StoreError::EngramAbsent(id) => RevisionError::EngramAbsent(id),
+                        StoreError::ValidationFailed(m) => RevisionError::ValidationFailed(m),
+                        StoreError::PersistenceFailed(m) => RevisionError::PersistenceFailed(m),
+                    })?;
+                self.vector_index
+                    .upsert(&engram_id.to_string(), &signature);
+                let engram = self
+                    .store
+                    .get(engram_id)
+                    .ok_or(RevisionError::EngramAbsent(engram_id))?;
+                Ok((
+                    ObservationOutcome::Applied {
+                        state: resulting_state,
+                        revision: resulting_revision,
+                    },
+                    Some(EngramRevision {
+                        engram_id,
+                        revision: self.store.revision(),
+                        members: engram.ensemble.clone(),
+                        signature: engram.spectral_signature.clone(),
+                    }),
+                ))
+            }
+            ObservationOutcome::Replayed { state, revision } => {
+                // RIEN n'est réappliqué : on rend l'état ENREGISTRÉ.
+                Ok((ObservationOutcome::Replayed { state, revision }, None))
+            }
+            ObservationOutcome::IdentityConflict { recorded } => {
+                Ok((ObservationOutcome::IdentityConflict { recorded }, None))
+            }
+            ObservationOutcome::RevisionConflict { current_revision } => {
+                // Recalcul attendu côté appelant (même identité). On n'applique
+                // rien : l'observation a été calculée sur une révision périmée.
+                Ok((
+                    ObservationOutcome::RevisionConflict { current_revision },
+                    None,
+                ))
+            }
+            ObservationOutcome::Abandoned => Ok((ObservationOutcome::Abandoned, None)),
+            ObservationOutcome::Indeterminate => {
+                // Interroger l'état transactionnel, ne pas deviner.
+                match adapter
+                    .resolve(observation_id)
+                    .map_err(RevisionError::PersistenceFailed)?
+                {
+                    ResolvedState::NotApplied => {
+                        Ok((ObservationOutcome::Indeterminate, None))
+                    }
+                    ResolvedState::Applied { .. } => Ok((
+                        ObservationOutcome::Replayed {
+                            state: resulting_state,
+                            revision: resulting_revision,
+                        },
+                        None,
+                    )),
+                    ResolvedState::Abandoned => Ok((ObservationOutcome::Abandoned, None)),
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------
