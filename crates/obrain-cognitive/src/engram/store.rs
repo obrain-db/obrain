@@ -101,6 +101,10 @@ pub struct EngramStore {
     /// l'incohérence registre-Appliqué / store-non-matérialisé.
     #[cfg(feature = "fault-injection")]
     fail_materialise: std::sync::atomic::AtomicBool,
+    /// Injection (test) : la prochaine matérialisation rend `Conflict`
+    /// (connaissance avancée hors verrou), au lieu d'appliquer.
+    #[cfg(feature = "fault-injection")]
+    fail_materialize_conflict: std::sync::atomic::AtomicBool,
     /// Registre des engrammes dont une projection (bitset) est dégradée.
     /// Sert au repli du rappel natif sur l'état canonique. Effacé à chaque
     /// chargement : reflète l'état courant, pas une seconde autorité.
@@ -207,6 +211,8 @@ impl EngramStore {
             fail_repair_bit: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "fault-injection")]
             fail_materialise: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "fault-injection")]
+            fail_materialize_conflict: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -247,6 +253,21 @@ impl EngramStore {
     /// Vrai si la faute de matérialisation est armée (consommée par le manager).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn set_fail_materialize_conflict(&self, fail: bool) {
+        self.fail_materialize_conflict
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Vrai si la faute de conflit de matérialisation est armée (consommée).
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn take_fail_materialize_conflict(&self) -> bool {
+        self.fail_materialize_conflict
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn take_fail_materialise(&self) -> bool {
         self.fail_materialise
             .swap(false, std::sync::atomic::Ordering::Relaxed)
@@ -874,6 +895,14 @@ impl EngramStore {
             return Err(StoreError::EngramAbsent(id));
         };
         let live = entry.value().revision;
+        // Injection (test) : conflit DÉTERMINISTE (connaissance avancée hors
+        // verrou). L'effet a déjà été enregistré au registre.
+        #[cfg(feature = "fault-injection")]
+        if self.take_fail_materialize_conflict() {
+            return Ok(MaterializeOutcome::Conflict {
+                current_revision: live.saturating_add(1),
+            });
+        }
         if live != expected_revision {
             return Ok(MaterializeOutcome::Conflict {
                 current_revision: live,
