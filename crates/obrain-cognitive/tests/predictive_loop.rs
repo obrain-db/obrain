@@ -264,12 +264,14 @@ fn baselines_et_sequences_difficiles() {
     }
 }
 
-/// Contexte observable : un marqueur de contexte est fourni AVANT la prédiction,
-/// à toutes les stratégies. Il distingue A→B (contexte 1) de A→C (contexte 2).
-/// L'ordre des contextes est varié (ctx1,ctx1,ctx2,ctx1,ctx2,ctx2), pas une
-/// simple alternance temporelle.
+/// CONTRÔLE POSITIF de rappel contextuel — PAS une prédiction avant observation :
+/// les engrammes {{ctx,A,B}} et {{ctx,A,C}} sont formés AVANT le rappel, donc ce
+/// test mesure la restitution d'associations déjà apprises, pas la prédiction.
+/// Il vérifie qu'un marqueur de contexte observable (nœud) permet de distinguer
+/// les deux associations, là où une union aveugle sur-prédit. Six form() pour
+/// deux structures : cas concret pour la future déduplication (non exercée ici).
 #[test]
-fn contexte_observable_permet_la_distinction() {
+fn rappel_contextuel_controle_positif() {
     let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
     let ctx1 = NodeId(101);
     let ctx2 = NodeId(102);
@@ -290,12 +292,12 @@ fn contexte_observable_permet_la_distinction() {
 
     // Formation par contexte : {ctx, A, B} et {ctx, A, C}. Le contexte est le
     // signal observable qui devient l'indice de rappel.
-    let mut eid_by_ctx: HashMap<NodeId, obrain_cognitive::engram::EngramId> = HashMap::new();
+    // Formation AVANT le rappel : 6 form() pour 2 structures distinctes
+    // (déduplication non exercée ici — c'est le contrat d'identité de la primitive).
     for (ctx, ep) in &steps {
         let mut full = vec![*ctx];
         full.extend(ep.iter());
-        let eid = store.form(&full).expect("form engramme de contexte");
-        eid_by_ctx.entry(*ctx).or_insert(eid);
+        store.form(&full).expect("form engramme de contexte");
     }
 
     // Prédiction par contexte (signal observable AVANT l'observation) :
