@@ -46568,6 +46568,11 @@ mod mutation_conditionnelle {
             store.get_node_property(id, &PropertyKey::new("b")),
             Some(Value::Int64(20))
         );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(3)),
+            "c=3 conservé via le chaînage next_page -> H0"
+        );
     }
 }
 
@@ -46750,6 +46755,7 @@ mod publication_differee {
         let id = store.create_node(&["ressource"]);
         store.set_node_property(id, "a", Value::Int64(1));
         store.set_node_property(id, "b", Value::Int64(2));
+        store.set_node_property(id, "c", Value::Int64(3));
         let slot = id.0 as u32;
         let prop_a = store.prop_keys.read().lookup("a").unwrap();
         let prop_b = store.prop_keys.read().lookup("b").unwrap();
@@ -46847,5 +46853,31 @@ mod preparation_privee_positive {
             store.get_node_property(id, &PropertyKey::new("b")),
             Some(Value::Int64(20))
         );
+    }
+}
+
+
+#[cfg(test)]
+mod revision_canonique {
+    use super::*;
+
+    /// CONTRE-ÉPREUVE : la mutation historique in-place ne change PAS first_prop_off,
+    /// alors que la valeur change. Un contrôle fondé sur l'égalité de tête accepterait
+    /// à tort une transformation préparée depuis une version obsolète.
+    #[test]
+    fn tete_inchangee_apres_mutation_historique_in_place() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        let slot = id.0 as u32;
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        // mutation historique in-place
+        store.set_node_property(id, "a", Value::Int64(30));
+        let h1 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let valeur = store.get_node_property(id, &PropertyKey::new("a"));
+        eprintln!("TETE_INCHANGEE h0={h0} h1={h1} valeur={valeur:?}");
+        assert_eq!(h0, h1, "la tête est INCHANGÉE malgré la mutation in-place");
+        assert_eq!(valeur, Some(Value::Int64(30)), "mais la valeur a changé");
     }
 }
