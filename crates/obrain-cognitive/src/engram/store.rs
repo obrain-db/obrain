@@ -418,8 +418,14 @@ impl EngramStore {
             report.global_failure = Some(e.to_string());
             return report;
         }
-        // Le registre dégradé reflète CE chargement (pas un état antérieur).
-        self.degraded.write().clear();
+        // CONTRAT DE CONCURRENCE (publication registre+cache au chargement) :
+        // le registre dégradé est construit dans un ensemble LOCAL pendant le
+        // balayage, puis publié d'un bloc à la fin (swap atomique). Jamais un
+        // état intermédiaire « effacé puis repeuplé progressivement »
+        // observable : un recall() concurrent pendant le chargement voit
+        // l'ANCIEN registre jusqu'au swap final, puis le NOUVEAU. Le cache,
+        // lui, croît de façon monotone (même contrat que load_from_graph).
+        let mut degraded_local: HashSet<EngramId> = HashSet::new();
         let mut max_id: u64 = 0;
         for eid_u16 in 1u16..=u16::MAX {
             // Lecture COHÉRENTE membres+poids sous un même verrou (pas de
@@ -510,7 +516,7 @@ impl EngramStore {
             max_id = max_id.max(eid.0);
             if let Some(cause) = degraded {
                 report.degraded.push((eid, cause));
-                self.degraded.write().insert(eid);
+                degraded_local.insert(eid);
             } else {
                 report.coherent += 1;
             }
@@ -532,6 +538,9 @@ impl EngramStore {
         // cache rendait donc l'état D'AVANT le chargement : les engrams chargés
         // étaient invisibles jusqu'à la mutation suivante. On incrémente ici,
         // comme partout ailleurs où le contenu change.
+        // Publication ATOMIQUE du registre dégradé (remplacement d'un bloc) :
+        // aucun lecteur ne voit un registre à moitié repeuplé.
+        *self.degraded.write() = degraded_local;
         self.revision.fetch_add(1, Ordering::Relaxed);
         report
     }
@@ -619,7 +628,10 @@ impl EngramStore {
     ///    collisions are filtered out here.
     ///
     /// Returns the verified engram ids in ascending order. An empty
-    /// bitset short-circuits to an empty result.
+    /// bitset (== 0) short-circuits to an empty result : c'est une ABSENCE
+    /// légitime (aucun engramme ne revendique le nœud), pas une erreur.
+    /// Une erreur de LECTURE du bitset (zone corrompue) est PROPAGÉE en
+    /// `Err` — jamais assimilée à une absence normale de connaissance.
     #[cfg(feature = "substrate")]
     pub fn recall(&self, query_nid: NodeId) -> SubstrateResult<Vec<EngramId>> {
         let writer = self
