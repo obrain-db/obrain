@@ -82,7 +82,7 @@ use crate::file::{SubstrateFile, ZoneFile};
 use crate::heap::{HEAP_PAGE_SIZE, HeapPage};
 use crate::page::{
     OwnerKind, PAGE_SIZE, PROP_PAGE_MAGIC_EDGE, PROP_PAGE_MAGIC_NODE, PropertyCursor,
-    PropertyEntry, PropertyPage, decode_entry,
+    PropertyEntry, PropertyPage,
 };
 use crate::record::U48;
 use bytemuck;
@@ -1851,81 +1851,46 @@ impl PropsZone {
 
     /// Variante unité-aware de [`Self::get_latest_for_key`] — `head` est
     /// l'adresse brute (page legacy ou slot packé).
+    /// Comparaison LWW de deux entrées de propriété : une estampillée (auteur +
+    /// horloge HLC) domine une non estampillée ; deux estampillées se comparent
+    /// lexicographiquement ; deux non estampillées suivent l'ordre de chaîne.
+    fn est_plus_recente(a: &PropertyEntry, b: Option<&PropertyEntry>) -> bool {
+        let Some(b) = b else {
+            return true;
+        };
+        match (a.auteur, a.horloge, b.auteur, b.horloge) {
+            (Some(aa), Some(ah), Some(ba), Some(bh)) => (aa, ah) > (ba, bh),
+            (Some(_), Some(_), None, None) => true,
+            (None, None, Some(_), Some(_)) => false,
+            (None, None, None, None) => true,
+            _ => false,
+        }
+    }
+
     pub(crate) fn get_latest_for_key_unite(
         &self,
         head: Option<u64>,
         prop_key: u16,
     ) -> SubstrateResult<Option<PropertyEntry>> {
         let mut cur = head;
+        let mut meilleure: Option<PropertyEntry> = None;
         while let Some(addr) = cur {
             let Some((cursor, next)) = self.unite_cursor(addr)? else {
                 break;
             };
-            // ── PASSE 1 : LES CLEFS SEULES (2026-09-12) ──
-            //
-            // Cette boucle décodait chaque entrée avec `decode_entry` — donc
-            // construisait un `PropertyEntry` complet, et allouait un `Vec` pour
-            // chaque valeur TABLEAU — alors que seule la clef décide. Sur un
-            // nœud à 57 propriétés (dont des listes), chercher UNE clef payait
-            // des dizaines de décodages et plusieurs allocations : mesuré
-            // 1 450 à 2 561 ns/cellule sur les nœuds `File`, contre 320 ns sur un
-            // nœud moyen, pour la MÊME clef.
-            //
-            // Ici on ne lit que l'en-tête et la longueur : aucune allocation,
-            // aucun `PropertyEntry`. On retient l'OFFSET de la DERNIÈRE entrée
-            // portant la clef — la sémantique LWW (« la dernière gagne ») est
-            // donc conservée à l'identique, et une entrée qui n'est pas la clef
-            // cherchée n'est plus décodée du tout.
-            let tranche = cursor.tranche();
-            let mut off = 0usize;
-            let mut dernier_off: Option<usize> = None;
-            let mut balayage_sur = true;
-            while off < tranche.len() {
-                match crate::page::clef_et_taille_entree(&tranche[off..]) {
-                    Some((clef, taille)) => {
-                        if clef == prop_key {
-                            dernier_off = Some(off);
-                        }
-                        off += taille;
-                    }
-                    // Entrée tronquée ou tag inconnu : on ne devine pas. La
-                    // passe 2 ci-dessous reprend le décodage complet, qui rendra
-                    // exactement l'erreur rendue avant ce correctif.
-                    None => {
-                        balayage_sur = false;
-                        break;
-                    }
-                }
-            }
-            if balayage_sur {
-                if let Some(o) = dernier_off {
-                    let (entree, _) = decode_entry(&tranche[o..]).map_err(|e| {
-                        SubstrateError::WalBadFrame(format!(
-                            "get_latest_for_key: decode error on unit {addr:#x}: {e}"
-                        ))
-                    })?;
-                    return Ok(Some(entree));
-                }
-            } else {
-                // ── PASSE 2 : CHEMIN D'ORIGINE, INCHANGÉ ──
-                let mut latest_in_page: Option<PropertyEntry> = None;
-                for entry in cursor {
-                    let e = entry.map_err(|e| {
-                        SubstrateError::WalBadFrame(format!(
-                            "get_latest_for_key: decode error on unit {addr:#x}: {e}"
-                        ))
-                    })?;
-                    if e.prop_key == prop_key {
-                        latest_in_page = Some(e);
-                    }
-                }
-                if latest_in_page.is_some() {
-                    return Ok(latest_in_page);
+            for entry in cursor {
+                let e = entry.map_err(|e| {
+                    SubstrateError::WalBadFrame(format!(
+                        "get_latest_for_key: decode error on unit {addr:#x}: {e}"
+                    ))
+                })?;
+                if e.prop_key == prop_key && Self::est_plus_recente(&e, meilleure.as_ref()) {
+                    meilleure = Some(e);
                 }
             }
             cur = if next == 0 { None } else { Some(next) };
         }
-        Ok(None)
+        Ok(meilleure)
     }
 
     // ---- heap API ------------------------------------------------------
