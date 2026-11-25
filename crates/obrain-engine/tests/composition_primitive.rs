@@ -2,6 +2,9 @@
 //! construction canonique, résolution, identité relationnelle, encodage
 //! injectif, détection de cycles/diamants, validation des références.
 
+// Noms à un caractère = notation A/B/C/D de l'expérience compositionnelle.
+#![allow(clippy::many_single_char_names)]
+
 use std::collections::BTreeSet;
 
 use obrain_common::types::NodeId;
@@ -32,7 +35,7 @@ fn set(ns: &[NodeId]) -> BTreeSet<NodeId> {
 #[test]
 fn construction_canonique_et_resolution() {
     let td = tempfile::tempdir().unwrap();
-    let db = ObrainDB::open_substrate(&td.path().join("kb")).unwrap();
+    let db = ObrainDB::open_substrate(td.path().join("kb")).unwrap();
     let comp = Composition::new(&db);
 
     let a = db.create_node(&["fn"]);
@@ -70,7 +73,7 @@ fn construction_canonique_et_resolution() {
 #[test]
 fn relations_orientes_distinguent_l_identite() {
     let td = tempfile::tempdir().unwrap();
-    let db = ObrainDB::open_substrate(&td.path().join("kb")).unwrap();
+    let db = ObrainDB::open_substrate(td.path().join("kb")).unwrap();
     let comp = Composition::new(&db);
 
     let a = db.create_node(&["fn"]);
@@ -147,7 +150,7 @@ fn encodage_structurel_injectif() {
 #[test]
 fn diamant_partage_non_cycle() {
     let td = tempfile::tempdir().unwrap();
-    let db = ObrainDB::open_substrate(&td.path().join("kb")).unwrap();
+    let db = ObrainDB::open_substrate(td.path().join("kb")).unwrap();
     let comp = Composition::new(&db);
 
     let a = db.create_node(&["fn"]);
@@ -168,7 +171,7 @@ fn diamant_partage_non_cycle() {
 #[test]
 fn resolution_valide_racine_et_references() {
     let td = tempfile::tempdir().unwrap();
-    let db = ObrainDB::open_substrate(&td.path().join("kb")).unwrap();
+    let db = ObrainDB::open_substrate(td.path().join("kb")).unwrap();
     let comp = Composition::new(&db);
 
     let a = db.create_node(&["fn"]);

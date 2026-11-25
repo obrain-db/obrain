@@ -271,10 +271,13 @@ impl<'a> Composition<'a> {
             if !node.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
                 continue;
             }
-            if let Some(v) = node.properties.get(&PropertyKey::from(KEY_CANONICAL)) {
-                if v.as_str() == Some(key) {
-                    return Some(id);
-                }
+            if node
+                .properties
+                .get(&PropertyKey::from(KEY_CANONICAL))
+                .and_then(|v| v.as_str())
+                == Some(key)
+            {
+                return Some(id);
             }
         }
         None
