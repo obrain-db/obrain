@@ -251,6 +251,9 @@ const _: [(); 1] = [(); (core::mem::size_of::<HeapRef>() == 8) as usize];
 /// Marks a logically deleted entry. The slot still occupies space until
 /// page compaction reclaims it.
 pub const ENTRY_FLAG_TOMBSTONE: u8 = 0x01;
+/// Bit posé quand l'entrée porte une estampille HLC (auteur + horloge) pour la
+/// convergence #334. L'ancien binaire ignore ce bit et lit l'entrée telle quelle.
+pub const ENTRY_FLAG_STAMPED: u8 = 0x02;
 
 /// Fixed prefix size before the per-tag payload: flags (1) + key (2) + tag (1).
 pub const ENTRY_HEADER_SIZE: usize = 4;
@@ -309,6 +312,9 @@ pub struct PropertyEntry {
     pub flags: u8,
     pub prop_key: u16,
     pub value: PropertyValue,
+    /// Estampille HLC (auteur = writer_id, horloge = HLC) si `ENTRY_FLAG_STAMPED`.
+    pub auteur: Option<u64>,
+    pub horloge: Option<u64>,
 }
 
 impl PropertyEntry {
@@ -317,7 +323,23 @@ impl PropertyEntry {
             flags: 0,
             prop_key,
             value,
+            auteur: None,
+            horloge: None,
         }
+    }
+
+    pub fn new_stamped(prop_key: u16, value: PropertyValue, auteur: u64, horloge: u64) -> Self {
+        Self {
+            flags: ENTRY_FLAG_STAMPED,
+            prop_key,
+            value,
+            auteur: Some(auteur),
+            horloge: Some(horloge),
+        }
+    }
+
+    pub fn is_stamped(&self) -> bool {
+        self.flags & ENTRY_FLAG_STAMPED != 0
     }
 
     pub fn tombstone(prop_key: u16, tag: ValueTag) -> Self {
@@ -327,6 +349,8 @@ impl PropertyEntry {
         Self {
             flags: ENTRY_FLAG_TOMBSTONE,
             prop_key,
+            auteur: None,
+            horloge: None,
             value: match tag {
                 ValueTag::Null => PropertyValue::Null,
                 _ => PropertyValue::Null,
@@ -340,7 +364,7 @@ impl PropertyEntry {
 
     /// Total bytes this entry will occupy (header + value payload).
     pub fn encoded_len(&self) -> usize {
-        ENTRY_HEADER_SIZE + self.value.encoded_len()
+        ENTRY_HEADER_SIZE + self.value.encoded_len() + if self.is_stamped() { 16 } else { 0 }
     }
 }
 
@@ -422,6 +446,12 @@ pub fn encode_entry(entry: &PropertyEntry, dst: &mut [u8]) -> Result<usize, Prop
                 body[off + 4..off + 8].copy_from_slice(&r.offset.to_le_bytes());
             }
         }
+    }
+    if entry.is_stamped() {
+        let valeur_len = entry.value.encoded_len();
+        let base = ENTRY_HEADER_SIZE + valeur_len;
+        dst[base..base + 8].copy_from_slice(&entry.auteur.unwrap().to_le_bytes());
+        dst[base + 8..base + 16].copy_from_slice(&entry.horloge.unwrap().to_le_bytes());
     }
     Ok(need)
 }
@@ -572,13 +602,26 @@ pub fn decode_entry(src: &[u8]) -> Result<(PropertyEntry, usize), PropertyCodecE
             (value, need)
         }
     };
+    let (auteur, horloge, stamp_len) = if flags & ENTRY_FLAG_STAMPED != 0 {
+        let base = ENTRY_HEADER_SIZE + body_len;
+        if src.len() < base + 16 {
+            return Err(PropertyCodecError::Truncated);
+        }
+        let a = u64::from_le_bytes(src[base..base + 8].try_into().unwrap());
+        let h = u64::from_le_bytes(src[base + 8..base + 16].try_into().unwrap());
+        (Some(a), Some(h), 16)
+    } else {
+        (None, None, 0)
+    };
     Ok((
         PropertyEntry {
             flags,
             prop_key,
             value,
+            auteur,
+            horloge,
         },
-        ENTRY_HEADER_SIZE + body_len,
+        ENTRY_HEADER_SIZE + body_len + stamp_len,
     ))
 }
 
@@ -774,6 +817,13 @@ mod tests {
         roundtrip(PropertyEntry::new(3, PropertyValue::I64(0)));
         roundtrip(PropertyEntry::new(3, PropertyValue::I64(i64::MIN)));
         roundtrip(PropertyEntry::new(3, PropertyValue::I64(i64::MAX)));
+    }
+
+    #[test]
+    fn codec_estampille_roundtrip() {
+        roundtrip(PropertyEntry::new_stamped(9, PropertyValue::I64(7), 42, 99));
+        // une entrée non estampillée reste non estampillée (flag absent)
+        roundtrip(PropertyEntry::new(9, PropertyValue::I64(7)));
     }
 
     #[test]
