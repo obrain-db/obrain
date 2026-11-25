@@ -13031,9 +13031,14 @@ impl SubstrateStore {
         // (feat slots512-wiring, étape 3) Suppression : tombstone sur la
         // chaîne — variante brute sous env (tête slot packée possible),
         // chemin legacy inchangé par défaut.
+        let estampille = {
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().maintenant(millis)
+        };
         let nouvelle_tete: u64 = {
             let mut pz = pz_lock.write();
-            let entry = PropertyEntry::tombstone(prop_key_id, crate::page::ValueTag::Null);
+            let entry =
+                PropertyEntry::tombstone_stamped(prop_key_id, self.writer_id, estampille.pack());
             let tete_brute = if node_rec.first_prop_off.to_u64() == 0 {
                 None
             } else {
@@ -13540,10 +13545,15 @@ impl SubstrateStore {
 
         // 3/4. (feat slots512-wiring) Variante brute sous env ; chemin
         //    legacy inchangé par défaut.
+        let estampille = {
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().maintenant(millis)
+        };
         let nouvelle_tete: u64 = {
             let mut pz = pz_lock.write();
             let pv = encode_value(&mut pz, value)?;
-            let entry = PropertyEntry::new(prop_key_id, pv);
+            let entry =
+                PropertyEntry::new_stamped(prop_key_id, pv, self.writer_id, estampille.pack());
             let tete_brute = if edge_rec.first_prop_off.to_u64() == 0 {
                 None
             } else {
@@ -13581,9 +13591,14 @@ impl SubstrateStore {
         };
 
         // (feat slots512-wiring) Suppression arête : variante brute sous env.
+        let estampille = {
+            let millis = crate::horloge_hybride::horloge_murale_millis();
+            self.horloge.lock().maintenant(millis)
+        };
         let nouvelle_tete: u64 = {
             let mut pz = pz_lock.write();
-            let entry = PropertyEntry::tombstone(prop_key_id, crate::page::ValueTag::Null);
+            let entry =
+                PropertyEntry::tombstone_stamped(prop_key_id, self.writer_id, estampille.pack());
             let tete_brute = if edge_rec.first_prop_off.to_u64() == 0 {
                 None
             } else {

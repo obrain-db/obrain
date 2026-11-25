@@ -358,6 +358,16 @@ impl PropertyEntry {
         }
     }
 
+    pub fn tombstone_stamped(prop_key: u16, auteur: u64, horloge: u64) -> Self {
+        Self {
+            flags: ENTRY_FLAG_TOMBSTONE | ENTRY_FLAG_STAMPED,
+            prop_key,
+            auteur: Some(auteur),
+            horloge: Some(horloge),
+            value: PropertyValue::Null,
+        }
+    }
+
     pub fn is_tombstone(&self) -> bool {
         self.flags & ENTRY_FLAG_TOMBSTONE != 0
     }
@@ -817,6 +827,20 @@ mod tests {
         roundtrip(PropertyEntry::new_stamped(9, PropertyValue::I64(7), 42, 99));
         // une entrée non estampillée reste non estampillée (flag absent)
         roundtrip(PropertyEntry::new(9, PropertyValue::I64(7)));
+    }
+
+    #[test]
+    fn codec_tombstone_estampille_roundtrip() {
+        let t = PropertyEntry::tombstone_stamped(9, 42, 99);
+        assert!(
+            t.is_tombstone(),
+            "le tombstone estampillé doit rester un tombstone"
+        );
+        assert!(
+            t.is_stamped(),
+            "le tombstone estampillé doit porter l'estampille"
+        );
+        roundtrip(t);
     }
 
     #[test]
