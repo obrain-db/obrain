@@ -67,6 +67,7 @@ pub mod record;
 pub mod registres_partages;
 pub mod repair_props;
 pub mod replay;
+pub mod reservation;
 pub mod result_buf;
 pub mod retrieval;
 pub mod simd;
@@ -154,6 +155,7 @@ pub use record::{
     simplex_kind,
 };
 pub use replay::{ReplayStats, replay_from};
+pub use reservation::{IssueReservation, PROP_CLE, PROP_DEFINITION, ReservationIndex, hash_cle};
 pub use result_buf::ResultBuf;
 pub use retrieval::{
     EmpreinteStore, K0_DEFAUT, K1_DEFAUT, LargeursCascade, NodeOffset, SourceNative,

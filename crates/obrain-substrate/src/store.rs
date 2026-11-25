@@ -2145,6 +2145,15 @@ pub struct SubstrateStore {
     /// aucun trou dans la zone d'aretes. Filigrane restaure a l'ouverture
     /// depuis le sidecar ET la fenetre WAL (fetch_max, jamais en arriere).
     next_external_edge_id: AtomicU64,
+    /// Index VÉRIFIÉ des identités réservées `(kind, hash_cle) → nœuds`
+    /// (#416). Miroir en mémoire, reconstruit paresseusement au premier
+    /// `reserver_identite` (même contrat que l'index simplicial — l'ouverture
+    /// ne paie rien). SECTION CRITIQUE COMMUNE : tenu pendant toute la
+    /// séquence recherche-vérifiée → construction, c'est lui qui empêche la
+    /// course TOCTOU de `find_by_key` → `create_node`. N'est PAS un verrou de
+    /// zone : les lectures/écritures de propriétés en dessous reprennent leurs
+    /// propres verrous, sans interblocage.
+    reservation_index: Mutex<Option<crate::reservation::ReservationIndex>>,
     /// T17b — index de propriété natif substrate, clés ENREGISTRÉES
     /// uniquement (la présence d'une clé dans la carte externe vaut
     /// enregistrement). `(propriété → (valeur scalaire → ids))`.
@@ -8608,6 +8617,7 @@ impl SubstrateStore {
             external_inbound: DashMap::new(),
             external_by_id: DashMap::new(),
             next_external_edge_id: AtomicU64::new(1),
+            reservation_index: Mutex::new(None),
         };
 
         // ── LE FILIGRANE EST RELEVÉ DES ZONES, PAS DU DICT (Phase B, pièce 2) ─
@@ -16447,6 +16457,129 @@ impl SubstrateStore {
         let raw: Vec<u32> = members.iter().map(|n| n.0 as u32).collect();
         self.writer
             .upsert_simplex(kind, type_id, flags, &raw, props)
+    }
+
+    // ==================================================================
+    // Réservation d'identité générique (#416)
+    // ==================================================================
+
+    /// Construit l'index VÉRIFIÉ des identités réservées en balayant les
+    /// nœuds vivants. Lecture paresseuse : uniquement sous le verrou de
+    /// réservation, au premier `reserver_identite` (jamais à l'ouverture).
+    fn construire_index_reservations(
+        &self,
+    ) -> SubstrateResult<crate::reservation::ReservationIndex> {
+        let mut index = crate::reservation::ReservationIndex::default();
+        let prop_cle = PropertyKey::new(crate::reservation::PROP_CLE);
+        for id in self.node_ids() {
+            let Some(Value::Bytes(stocke)) = self.lire_propriete_noeud_vivant(id, &prop_cle) else {
+                continue;
+            };
+            // Clé persistée = [kind] ++ cle. Un octet unique de kind ne porte
+            // aucune clé : entrée inutilisable, ignorée sans bruit.
+            if stocke.is_empty() {
+                continue;
+            }
+            let kind = stocke[0];
+            let hash = crate::reservation::hash_cle(&stocke[1..]);
+            index.insert(kind, hash, id.0 as u32);
+        }
+        Ok(index)
+    }
+
+    /// Construction transactionnelle sous identité réservée (#416) —
+    /// indépendante de `KnowledgeSpec` et des engrammes.
+    ///
+    /// Réutilise le modèle de [`Writer::upsert_simplex`] : une clé canonique,
+    /// un hash de départage, un index VÉRIFIÉ (comparaison du contenu
+    /// complet, jamais le hash seul) tenu sous une section critique commune,
+    /// puis la matérialisation atomique. Réservation et construction forment
+    /// la même unité transactionnelle : la recherche ne peut pas s'entrelacer
+    /// avec la construction, et le nœud n'existe jamais « clé écrite, arêtes
+    /// ou propriétés pas encore posées ».
+    ///
+    /// # Paramètres
+    ///
+    /// * `kind` — espace de noms (deux familles d'identité ne se croisent
+    ///   jamais, même à clé identique) ;
+    /// * `cle` — clé canonique d'identité (octets) ;
+    /// * `definition` — définition canonique (octets) : départage « identique
+    ///   » / « incompatible » quand la clé est déjà réservée ;
+    /// * `construction` — produit `(labels, propriétés)` ; invoquée UNIQUEMENT
+    ///   quand l'identité n'existe pas encore, sous la section critique. Elle
+    ///   ne doit pas ré-entrer dans `reserver_identite` (interblocage).
+    ///
+    /// # Résultat
+    ///
+    /// * [`crate::reservation::IssueReservation::Existante`] — clé déjà
+    ///   réservée, définition identique (aucun nœud créé) ;
+    /// * [`crate::reservation::IssueReservation::Cree`] — nouvelle identité
+    ///   publiée ;
+    /// * [`crate::reservation::IssueReservation::Conflit`] — clé déjà réservée,
+    ///   définition incompatible (rien n'est écrit) ;
+    /// * `Err(_)` — la construction a échoué ou a été abandonnée : aucun
+    ///   nœud, aucune entrée d'index ; un appel suivant peut reconstruire.
+    pub fn reserver_identite(
+        &self,
+        kind: u8,
+        cle: &[u8],
+        definition: &[u8],
+        construction: impl FnOnce() -> SubstrateResult<(Vec<String>, Vec<(PropertyKey, Value)>)>,
+    ) -> SubstrateResult<crate::reservation::IssueReservation> {
+        use crate::reservation as res;
+        self.refuser_mutation_en_lecture_seule("reserver_identite");
+
+        let hash = res::hash_cle(cle);
+        // Clé persistée = [kind] ++ cle : le kind survit au redémarrage et la
+        // reconstruction de l'index retrouve l'espace de noms exact.
+        let cle_persistee: Vec<u8> = std::iter::once(kind).chain(cle.iter().copied()).collect();
+
+        // SECTION CRITIQUE COMMUNE — recherche vérifiée PUIS construction sous
+        // le même verrou. C'est lui, et non SnapshotIsolation, qui empêche deux
+        // lecteurs « absent » de créer deux identités (course TOCTOU mesurée
+        // dans `reservation_concurrente.rs`).
+        let mut garde = self.reservation_index.lock();
+        if garde.is_none() {
+            *garde = Some(self.construire_index_reservations()?);
+        }
+        let index = garde.as_mut().unwrap();
+
+        let prop_cle = PropertyKey::new(res::PROP_CLE);
+        let prop_def = PropertyKey::new(res::PROP_DEFINITION);
+
+        // find_verified : le hash départage, la clé complète conclut.
+        if let Some(candidats) = index.candidats(kind, hash) {
+            for &nid in candidats {
+                let noeud = NodeId(u64::from(nid));
+                if !self.is_live_on_disk(noeud) {
+                    continue;
+                }
+                let Some(Value::Bytes(stocke)) = self.lire_propriete_noeud_vivant(noeud, &prop_cle)
+                else {
+                    continue;
+                };
+                if stocke.as_ref() != cle_persistee.as_slice() {
+                    continue; // collision de hash, pas la même clé
+                }
+                // Même clé : la définition départage identique / incompatible.
+                let definition_stockee = self.lire_propriete_noeud_vivant(noeud, &prop_def);
+                return Ok(match definition_stockee {
+                    Some(Value::Bytes(d)) if d.as_ref() == definition => {
+                        res::IssueReservation::Existante(nid)
+                    }
+                    _ => res::IssueReservation::Conflit(nid),
+                });
+            }
+        }
+
+        // Clé inconnue : construction dans la même unité transactionnelle.
+        let (labels, mut proprietes) = construction()?;
+        let labels_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        proprietes.push((prop_cle, Value::Bytes(Arc::from(cle_persistee))));
+        proprietes.push((prop_def, Value::Bytes(Arc::from(definition.to_vec()))));
+        let id = self.creer_noeud_atomique(&labels_refs, &proprietes);
+        index.insert(kind, hash, id.0 as u32);
+        Ok(res::IssueReservation::Cree(id.0 as u32))
     }
 
     /// Tombstone d'un simplexe. `false` si le slot est vide ou déjà mort.
