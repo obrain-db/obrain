@@ -44,6 +44,7 @@ pub mod file;
 pub mod geometric;
 pub mod heap;
 pub mod hilbert;
+pub mod horloge_hybride;
 pub mod index_labels;
 pub mod instantane;
 pub mod jump;
