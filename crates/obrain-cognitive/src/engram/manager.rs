@@ -3,6 +3,7 @@
 //! Owns all subsystems (formation, decay, recall, homeostasis, metrics)
 //! and provides a unified API for the rest of obrain-cognitive.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use web_time::SystemTime;
 
@@ -80,6 +81,9 @@ pub struct EngramManager {
     metrics: Arc<EngramMetricsCollector>,
     /// Vector index for spectral similarity search.
     vector_index: Arc<dyn VectorIndex>,
+    /// Verrous de révision PAR ENGRAMME (pas un verrou global) : sérialise
+    /// update+lecture+upsert d'un même engramme, laisse les autres parallèles.
+    revise_locks: Mutex<HashMap<EngramId, Arc<Mutex<()>>>>,
 }
 
 /// Résultat d'une révision cohérente : identifie le nouvel état (révision,
@@ -87,9 +91,18 @@ pub struct EngramManager {
 #[derive(Debug, Clone)]
 pub struct EngramRevision {
     pub engram_id: EngramId,
+    /// Révision GLOBALE du store (borne inférieure) — n'identifie pas à elle
+    /// seule le snapshot ; l'état réellement publié est `members`+`signature`.
     pub revision: u64,
     pub members: Vec<(NodeId, f64)>,
     pub signature: Vec<f64>,
+}
+
+/// Erreurs de révision, distinguées (pas un simple Option).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevisionError {
+    EngramAbsent(EngramId),
+    InvalidObservation(String),
 }
 
 impl EngramManager {
@@ -111,6 +124,7 @@ impl EngramManager {
             homeostasis: HomeostasisEngine::new(config.homeostasis),
             metrics,
             vector_index,
+            revise_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -301,18 +315,41 @@ impl EngramManager {
         engram_id: EngramId,
         new_nodes: &[NodeId],
         prediction_error: f64,
-    ) -> Option<EngramRevision> {
+    ) -> Result<EngramRevision, RevisionError> {
+        if !prediction_error.is_finite() || prediction_error < 0.0 {
+            return Err(RevisionError::InvalidObservation(
+                "erreur de prédiction non finie ou négative".into(),
+            ));
+        }
+        if new_nodes.is_empty() {
+            return Err(RevisionError::InvalidObservation("observation vide".into()));
+        }
+        // Verrou PAR ENGRAMME : update + lecture + upsert sont sérialisés pour
+        // CET engramme (pas de retour de l'index à une projection antérieure).
+        let lock = {
+            let mut m = self.revise_locks.lock();
+            m.entry(engram_id)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock();
+        if self.store.get(engram_id).is_none() {
+            return Err(RevisionError::EngramAbsent(engram_id));
+        }
         self.store.update(engram_id, |e| {
             reconsolidate(e, new_nodes, prediction_error);
             // Projection dérivée : signature recalculée sur l'ensemble pondéré
             // révisé, PAS conservée périmée.
             e.spectral_signature = self.spectral.encode(&e.ensemble);
         });
-        let engram = self.store.get(engram_id)?;
+        let engram = self
+            .store
+            .get(engram_id)
+            .ok_or(RevisionError::EngramAbsent(engram_id))?;
         let signature = engram.spectral_signature.clone();
         // Index vectoriel : le rappel spectral doit voir la nouvelle signature.
         self.vector_index.upsert(&engram_id.to_string(), &signature);
-        Some(EngramRevision {
+        Ok(EngramRevision {
             engram_id,
             revision: self.store.revision(),
             members: engram.ensemble.clone(),

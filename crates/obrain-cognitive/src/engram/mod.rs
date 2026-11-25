@@ -96,7 +96,7 @@ pub use crystallization::{
 #[cfg(feature = "engram")]
 mod manager;
 #[cfg(feature = "engram")]
-pub use manager::{EngramManager, EngramManagerConfig};
+pub use manager::{EngramManager, EngramManagerConfig, EngramRevision, RevisionError};
 
 #[cfg(feature = "engram")]
 mod bridge;
