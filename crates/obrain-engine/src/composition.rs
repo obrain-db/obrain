@@ -1,0 +1,260 @@
+//! Primitive compositionnelle native — construction canonique + résolution des
+//! références, posées sur les primitives existantes du graphe (ObrainDB +
+//! GraphStore). Ce n'est PAS un second moteur de graphe : une connaissance est
+//! un nœud (label `structure`) relié à ses participants (`member`), à ses
+//! sous-connaissances référencées (`child`) et à ses relations orientées.
+//!
+//! # Périmètre des relations constitutives
+//! La résolution suit UNIQUEMENT les arêtes `member` et `child`. Toute autre
+//! arête sortante d'une connaissance est HORS périmètre et ignorée (elle n'est
+//! pas constitutive de la composition) — on ne rejette pas arbitrairement.
+//!
+//! # Cinq notions d'identité — état d'implémentation (limites exactes)
+//! 1. identité d'ENTITÉ = le `NodeId` — implémentée ;
+//! 2. identité de DÉFINITION STRUCTURELLE = `structural_key()` — implémentée
+//!    (encodage canonique versionné, non ambigu, injectif) ; l'IMMUTABILITÉ
+//!    n'est pas encore imposée par le moteur (aucune barrière d'écriture) ;
+//! 3. identité d'OCCURRENCE — `children` reste un `BTreeSet<NodeId>` : deux
+//!    occurrences d'une même cible avec des rôles différents NE sont PAS
+//!    distinguées (limite) ;
+//! 4. ÉQUIVALENCE selon une projection = `projection_members_key()` — membres
+//!    DIRECTS seulement, pas la fermeture transitive (limite) ;
+//! 5. ÉQUIVALENCE sémantique — déclarée explicitement, hors module.
+//!
+//! # Encodage et migration
+//! `structural_key` est versionné (`v2|`). L'ancien format `m[...]c[...]r[...]`
+//! (v1, avant l'enrichissement relationnel) n'est PAS migré automatiquement :
+//! la clé est stockée telle quelle à la construction. Le préfixe de version
+//! permet une migration future. Ne pas confondre cette identité structurelle
+//! locale (fondée sur des `NodeId`) avec une identité durable entre répliques
+//! (hors de ce module).
+
+use std::collections::{BTreeSet, HashMap};
+
+use obrain_common::types::{EdgeId, NodeId, PropertyKey, Value};
+use obrain_core::graph::Direction;
+
+use crate::database::ObrainDB;
+
+pub const LABEL_KNOWLEDGE: &str = "structure";
+pub const EDGE_MEMBER: &str = "member";
+pub const EDGE_CHILD: &str = "child";
+pub const KEY_CANONICAL: &str = "canonical_key";
+pub const KEY_ROLE: &str = "role";
+/// Profondeur maximale de résolution (garde anti-épuisement de pile).
+pub const MAX_RESOLVE_DEPTH: usize = 1024;
+
+/// Relation ORIENTÉE entre participants (type + src → dst + rôle optionnel).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Relation {
+    pub rel_type: String,
+    pub src: NodeId,
+    pub dst: NodeId,
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeSpec {
+    pub members: BTreeSet<NodeId>,
+    pub children: BTreeSet<NodeId>,
+    pub relations: BTreeSet<Relation>,
+}
+
+/// Encodage canonique : chaque champ de longueur variable est préfixé par sa
+/// longueur en octets (`<len>|<contenu>`). Aucun séparateur ambigu, injectif.
+fn enc_str(out: &mut String, s: &str) {
+    out.push_str(&s.len().to_string());
+    out.push('|');
+    out.push_str(s);
+}
+
+/// Option<string> : `n|` = None, `s|` + longueur-préfixé = Some. `n`/`s` ne sont
+/// pas des chiffres, donc sans ambiguïté avec une longueur.
+fn enc_opt(out: &mut String, o: Option<&str>) {
+    match o {
+        None => out.push_str("n|"),
+        Some(s) => {
+            out.push_str("s|");
+            enc_str(out, s);
+        }
+    }
+}
+
+impl KnowledgeSpec {
+    /// Clé de DÉFINITION STRUCTURELLE (versionnée, injective) : membres,
+    /// enfants et relations orientées. A→B ≠ B→A ; None ≠ Some("").
+    pub fn structural_key(&self) -> String {
+        let mut k = String::from("v2|");
+        enc_str(&mut k, &self.members.len().to_string());
+        for m in &self.members {
+            enc_str(&mut k, &m.0.to_string());
+        }
+        enc_str(&mut k, &self.children.len().to_string());
+        for c in &self.children {
+            enc_str(&mut k, &c.0.to_string());
+        }
+        enc_str(&mut k, &self.relations.len().to_string());
+        for r in &self.relations {
+            enc_str(&mut k, &r.rel_type);
+            enc_str(&mut k, &r.src.0.to_string());
+            enc_str(&mut k, &r.dst.0.to_string());
+            enc_opt(&mut k, r.role.as_deref());
+        }
+        k
+    }
+
+    /// Clé de PROJECTION « membres directs » (relations et références ignorées).
+    pub fn projection_members_key(&self) -> String {
+        let mut k = String::from("pm|");
+        enc_str(&mut k, &self.members.len().to_string());
+        for m in &self.members {
+            enc_str(&mut k, &m.0.to_string());
+        }
+        k
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveError {
+    /// La racine n'existe pas.
+    RootMissing(NodeId),
+    /// La racine existe mais n'est pas une connaissance (label absent).
+    RootNotKnowledge(NodeId),
+    /// Une arête `child` pointe vers un nœud inexistant.
+    MissingReference(NodeId),
+    /// Une arête `child` pointe vers un nœud existant mais non-connaissance.
+    NotKnowledge(NodeId),
+    /// Une arête `member` pointe vers un nœud inexistant.
+    MissingParticipant(NodeId),
+    /// Cycle de références interdit (trace du chemin).
+    Cycle(Vec<NodeId>),
+    /// Profondeur de résolution dépassée (garde anti-épuisement de pile).
+    DepthExceeded,
+}
+
+pub struct Composition<'a> {
+    db: &'a ObrainDB,
+}
+
+impl<'a> Composition<'a> {
+    pub fn new(db: &'a ObrainDB) -> Self {
+        Self { db }
+    }
+
+    /// Construction canonique : deux spécifications structurellement identiques
+    /// → même nœud. Le rôle est matérialisé sur l'arête (propriété `role`).
+    pub fn construct(&self, spec: &KnowledgeSpec) -> NodeId {
+        let key = spec.structural_key();
+        if let Some(existing) = self.find_by_key(&key) {
+            return existing;
+        }
+        let id = self.db.create_node(&[LABEL_KNOWLEDGE]);
+        self.db.set_node_property(id, KEY_CANONICAL, Value::from(key));
+        for m in &spec.members {
+            self.db.create_edge(id, *m, EDGE_MEMBER);
+        }
+        for c in &spec.children {
+            self.db.create_edge(id, *c, EDGE_CHILD);
+        }
+        for rel in &spec.relations {
+            let eid = self.db.create_edge(rel.src, rel.dst, &rel.rel_type);
+            if let Some(role) = &rel.role {
+                self.db.set_edge_property(eid, KEY_ROLE, Value::from(role.clone()));
+            }
+        }
+        id
+    }
+
+    /// Résolution : aplatit transitivement les `child` en participants feuilles.
+    /// Signale racine absente/invalide, référence absente/non-connaissance,
+    /// participant absent, cycle, profondeur excessive. Un diamant (même cible
+    /// référencée deux fois) est toléré.
+    pub fn resolve(&self, id: NodeId) -> Result<BTreeSet<NodeId>, ResolveError> {
+        let Some(root) = self.db.get_node(id) else {
+            return Err(ResolveError::RootMissing(id));
+        };
+        if !root.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
+            return Err(ResolveError::RootNotKnowledge(id));
+        }
+        let mut members = BTreeSet::new();
+        let mut state: HashMap<NodeId, u8> = HashMap::new();
+        let mut path = Vec::new();
+        self.resolve_dfs(id, &mut members, &mut state, &mut path, 0)?;
+        Ok(members)
+    }
+
+    pub fn structural_key_of(&self, id: NodeId) -> Option<String> {
+        let node = self.db.get_node(id)?;
+        node.properties
+            .get(&PropertyKey::from(KEY_CANONICAL))
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+    }
+
+    fn resolve_dfs(
+        &self,
+        id: NodeId,
+        members: &mut BTreeSet<NodeId>,
+        state: &mut HashMap<NodeId, u8>,
+        path: &mut Vec<NodeId>,
+        depth: usize,
+    ) -> Result<(), ResolveError> {
+        if depth > MAX_RESOLVE_DEPTH {
+            return Err(ResolveError::DepthExceeded);
+        }
+        match state.get(&id) {
+            Some(1) => return Err(ResolveError::Cycle(path.clone())),
+            Some(2) => return Ok(()), // diamant : déjà résolu, pas un cycle
+            _ => {}
+        }
+        state.insert(id, 1);
+        path.push(id);
+        for (dst, eid) in self.outgoing(id) {
+            let edge = self
+                .db
+                .get_edge(eid)
+                .ok_or(ResolveError::MissingReference(dst))?;
+            match edge.edge_type.as_str() {
+                EDGE_MEMBER => {
+                    if self.db.get_node(dst).is_none() {
+                        return Err(ResolveError::MissingParticipant(dst));
+                    }
+                    members.insert(dst);
+                }
+                EDGE_CHILD => {
+                    let Some(child) = self.db.get_node(dst) else {
+                        return Err(ResolveError::MissingReference(dst));
+                    };
+                    if !child.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
+                        return Err(ResolveError::NotKnowledge(dst));
+                    }
+                    self.resolve_dfs(dst, members, state, path, depth + 1)?;
+                }
+                // Autre type d'arête : hors périmètre constitutif, ignoré.
+                _ => {}
+            }
+        }
+        path.pop();
+        state.insert(id, 2);
+        Ok(())
+    }
+
+    fn outgoing(&self, id: NodeId) -> Vec<(NodeId, EdgeId)> {
+        self.db.data_store().edges_from(id, Direction::Outgoing)
+    }
+
+    fn find_by_key(&self, key: &str) -> Option<NodeId> {
+        let store = self.db.data_store();
+        for id in store.node_ids() {
+            let Some(node) = self.db.get_node(id) else { continue };
+            if !node.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
+                continue;
+            }
+            if let Some(v) = node.properties.get(&PropertyKey::from(KEY_CANONICAL)) {
+                if v.as_str() == Some(key) {
+                    return Some(id);
+                }
+            }
+        }
+        None
+    }
+}

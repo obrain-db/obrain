@@ -58,7 +58,8 @@ pub use spectral::SpectralEncoder;
 mod recall;
 #[cfg(feature = "engram")]
 pub use recall::{
-    ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig, WarmupSelector,
+    reconsolidate, ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig,
+    WarmupSelector,
 };
 
 #[cfg(feature = "engram")]
