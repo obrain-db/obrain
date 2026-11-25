@@ -254,3 +254,49 @@ fn un_noeud_isole_ne_forme_pas_d_engramme() {
         "un nœud isolé ne forme pas d'engramme (min 2 nœuds co-activés)"
     );
 }
+
+/// PARITÉ (Lot 1) : état cognitif en mémoire / après formation substrate /
+/// après réouverture. Mesure la divergence des poids et signatures.
+#[test]
+fn parite_etat_cognitif_memoire_substrate_reouverture() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let chemin = dir.path().join("base");
+    let db = ObrainDB::open_substrate_observed(&chemin).expect("open");
+    let session = db.session();
+    session
+        .execute("CREATE (:Item {name:'a'}), (:Item {name:'b'}), (:Item {name:'c'})")
+        .expect("create");
+    quiesce(&db);
+    for valeur in 1..=3 {
+        activer(&session, &["a", "b", "c"], valeur);
+        quiesce(&db);
+    }
+    let engine = db.cognitive_engine().expect("moteur");
+    let mgr = engine.engram_manager().expect("mgr");
+    let avant: Vec<(u64, Vec<f64>, usize)> = mgr
+        .store()
+        .list()
+        .iter()
+        .map(|e| {
+            let w: Vec<f64> = e.ensemble.iter().map(|(_, x)| *x).collect();
+            (e.id.0, w, e.spectral_signature.len())
+        })
+        .collect();
+    db.close().expect("close");
+    drop(db);
+
+    let db2 = ObrainDB::open_substrate_observed(&chemin).expect("reopen");
+    let engine2 = db2.cognitive_engine().expect("moteur2");
+    let mgr2 = engine2.engram_manager().expect("mgr2");
+    let apres: Vec<(u64, Vec<f64>, usize)> = mgr2
+        .store()
+        .list()
+        .iter()
+        .map(|e| {
+            let w: Vec<f64> = e.ensemble.iter().map(|(_, x)| *x).collect();
+            (e.id.0, w, e.spectral_signature.len())
+        })
+        .collect();
+    eprintln!("PARITE avant={avant:?}");
+    eprintln!("PARITE apres={apres:?}");
+}
