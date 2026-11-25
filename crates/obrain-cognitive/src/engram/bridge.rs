@@ -294,6 +294,51 @@ mod tests {
         );
     }
 
+    /// CAUSE MESURÉE de l'écart de score entre les deux ABC (25/11) : la
+    /// formation incrémentale leur attribue des POIDS RELATIFS différents.
+    #[tokio::test]
+    async fn la_formation_donne_des_poids_differents_aux_deux_abc() {
+        let mgr = manager();
+        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+        for _ in 0..3 {
+            for (s, d) in [(1, 2), (2, 3), (1, 3)] {
+                bridge
+                    .on_batch(&[MutationEvent::EdgeCreated {
+                        edge: arete(s * 10 + d, s, d),
+                    }])
+                    .await;
+            }
+        }
+        let mut abc: Vec<Vec<(u64, f64)>> = mgr
+            .store()
+            .list()
+            .iter()
+            .filter(|e| e.ensemble.len() == 3)
+            .map(|e| {
+                let mut v: Vec<(u64, f64)> = e.ensemble.iter().map(|(n, w)| (n.0, *w)).collect();
+                v.sort_by(|a, b| a.0.cmp(&b.0));
+                v
+            })
+            .collect();
+        assert_eq!(
+            abc.len(),
+            2,
+            "deux engrammes ABC (doublon mesuré) : {abc:?}"
+        );
+        // Normaliser (échelle-invariant) puis comparer les RAPPORTS de poids.
+        let norm = |v: &[(u64, f64)]| {
+            let s: f64 = v.iter().map(|(_, w)| *w).sum();
+            v.iter().map(|(_, w)| w / s).collect::<Vec<f64>>()
+        };
+        let w0 = norm(&abc[0]);
+        let w1 = norm(&abc[1]);
+        let l1: f64 = w0.iter().zip(&w1).map(|(a, b)| (a - b).abs()).sum();
+        assert!(
+            l1 > 1e-9,
+            "les deux ABC ont des poids relatifs DIFFÉRENTS (l1={l1:e}) : {w0:?} vs {w1:?}"
+        );
+    }
+
     #[tokio::test]
     async fn une_arete_compte_comme_co_activation() {
         let mgr = manager();
