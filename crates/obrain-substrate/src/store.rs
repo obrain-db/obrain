@@ -1276,6 +1276,27 @@ thread_local! {
     static SABOTAGE_REGISTRE_CLES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+// SONDES DE TEST de la réservation d'identité (#416). Absentes du binaire de
+// production.
+#[cfg(test)]
+thread_local! {
+    /// VRAI : `creer_noeud_atomique` échoue à SCELLER (simule un échec d'append
+    /// du `TxCommit`) — le nœud reste déclaré en vol, non scellé, et la
+    /// primitive rend `Err`. Consommé une fois (remis à `false` à l'usage).
+    static ECHEC_SCELLEMENT_ATOMIQUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Suspension de `creer_noeud_atomique` juste après la création du nœud (avant
+/// toute propriété, donc avant que le marqueur de réservation soit posé), pour
+/// qu'un lecteur INDÉPENDANT sur un autre fil observe l'état en vol. GLOBALE
+/// (et non `thread_local!`) : le fil qui construit n'est pas celui qui pose la
+/// sonde. Le `Mutex` sert à pouvoir la poser/retirer d'un test à l'autre.
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+static APRES_CREATION_NOEUD_ATOMIQUE: std::sync::OnceLock<
+    std::sync::Mutex<Option<Box<dyn Fn(u32) + Send>>>,
+> = std::sync::OnceLock::new();
+
 // SONDES DE TEST de la résolution multi-critères (`find_nodes_by_properties`).
 //
 // `CANDIDATS_REVERIFIES` compte les candidats que `indexed_candidates` relit
@@ -16507,7 +16528,18 @@ impl SubstrateStore {
     ///   » / « incompatible » quand la clé est déjà réservée ;
     /// * `construction` — produit `(labels, propriétés)` ; invoquée UNIQUEMENT
     ///   quand l'identité n'existe pas encore, sous la section critique. Elle
-    ///   ne doit pas ré-entrer dans `reserver_identite` (interblocage).
+    ///   ne doit pas ré-entrer dans `reserver_identite` (interblocage) et doit
+    ///   être PURE : déterministe, sans effet de bord externe — elle peut être
+    ///   invoquée une fois, zéro fois, ou rejetée sans prévenir.
+    ///
+    /// # Contrat de durabilité
+    ///
+    /// La primitive matérialise un NŒUD + ses propriétés (une seule unité de
+    /// rejeu), PAS une structure multi-nœuds ni des relations. Le scellement
+    /// est journalisé SANS `fsync` systématique : la durabilité de la
+    /// réservation est celle des écritures auto-commit — acquise au prochain
+    /// `flush`/`close`, pas à chaque appel. Un `Err` de scellement est PROPAGÉ
+    /// (état indéterminé : l'identité n'est ni indexée ni acquittée `Cree`).
     ///
     /// # Résultat
     ///
@@ -16577,7 +16609,9 @@ impl SubstrateStore {
         let labels_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
         proprietes.push((prop_cle, Value::Bytes(Arc::from(cle_persistee))));
         proprietes.push((prop_def, Value::Bytes(Arc::from(definition.to_vec()))));
-        let id = self.creer_noeud_atomique(&labels_refs, &proprietes);
+        // L'échec de scellement est propagé : ni entrée d'index ni `Cree`
+        // (la réservation ne doit pas être acquittée non durable).
+        let id = self.creer_noeud_atomique(&labels_refs, &proprietes)?;
         index.insert(kind, hash, id.0 as u32);
         Ok(res::IssueReservation::Cree(id.0 as u32))
     }
@@ -26742,6 +26776,7 @@ impl GraphStoreMut for SubstrateStore {
         properties: &[(PropertyKey, Value)],
     ) -> NodeId {
         self.creer_noeud_atomique(labels, properties)
+            .expect("création atomique nœud+propriétés : scellement WAL impossible")
     }
 
     fn create_node_with_props_versioned(
@@ -26763,7 +26798,9 @@ impl GraphStoreMut for SubstrateStore {
             }
             return id;
         }
-        let id = self.creer_noeud_atomique(labels, properties);
+        let id = self
+            .creer_noeud_atomique(labels, properties)
+            .expect("création atomique nœud+propriétés : scellement WAL impossible");
         if epoch.0 > 0 {
             self.naissances_noeuds.insert(id, epoch.0);
             self.note_mvcc_actif();
@@ -45505,12 +45542,25 @@ impl SubstrateStore {
     /// reste celle des autres écritures). Le rejeu existant écarte (`NodeDelete`)
     /// toute déclaration jamais scellée : le nœud existe entier ou pas du tout.
     /// Sans propriétés il n'y a rien à lier : chemin inchangé.
-    fn creer_noeud_atomique(&self, labels: &[&str], properties: &[(PropertyKey, Value)]) -> NodeId {
+    fn creer_noeud_atomique(
+        &self,
+        labels: &[&str],
+        properties: &[(PropertyKey, Value)],
+    ) -> SubstrateResult<NodeId> {
         if properties.is_empty() {
-            return self.creer_noeud(labels, DeclarationEnVol::Aucune);
+            return Ok(self.creer_noeud(labels, DeclarationEnVol::Aucune));
         }
         let id = self.creer_noeud(labels, DeclarationEnVol::CreationAuto);
         obrain_common::utils::panne::point_creation_noeud(0);
+        // Sonde de test : suspendre la construction après la création du nœud,
+        // AVANT toute propriété (le marqueur de réservation n'est pas encore
+        // posé) — un lecteur indépendant doit ne rien observer de réservé.
+        #[cfg(test)]
+        if let Some(cell) = APRES_CREATION_NOEUD_ATOMIQUE.get()
+            && let Some(f) = cell.lock().unwrap().as_ref()
+        {
+            f(id.0 as u32);
+        }
         for (rang, (k, v)) in properties.iter().enumerate() {
             self.set_node_property(id, k.as_str(), v.clone());
             obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
@@ -45523,10 +45573,24 @@ impl SubstrateStore {
                 tx: Self::tx_creation_auto(id),
             },
         };
-        if let Err(e) = self.writer.wal().append_encoded(&rec) {
-            tracing::error!(error = %e, "WAL : impossible de sceller la création du nœud");
+        // L'échec du SCELLEMENT est propagé, pas avalé (défaut relevé en revue,
+        // note 54279ac0) : un nœud déclaré en vol (`TxNoeudEnAttente`) dont le
+        // `TxCommit` n'est pas journalisé est ÉCARTÉ au rejeu. L'acquitter comme
+        // durable serait faux. Le record garde `flags: 0` — pas de fsync par
+        // réservation : la durabilité du scellement reste celle des écritures
+        // auto-commit, acquise au prochain `flush`/`close`. Un `Err` signifie
+        // « état indéterminé » : l'appelant ne doit pas traiter l'identité
+        // comme réservée. Les échecs AVANT écriture (`write_node`) continuent
+        // de paniquer (contrat pré-existant), les écritures de propriétés
+        // restent best-effort (`set_node_property` avale ses erreurs).
+        #[cfg(test)]
+        if ECHEC_SCELLEMENT_ATOMIQUE.with(|c| c.replace(false)) {
+            return Err(SubstrateError::Internal(
+                "scellement saboté (test) : TxCommit non journalisé".into(),
+            ));
         }
-        id
+        self.writer.wal().append_encoded(&rec)?;
+        Ok(id)
     }
 }
 
@@ -45550,6 +45614,178 @@ fn horodatage_micros() -> i64 {
         .duration_since(web_time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod reservation_tests {
+    use super::*;
+
+    const KIND: u8 = 1;
+    const CLE: &[u8] = b"cle-canonique";
+    const DEFINITION: &[u8] = b"definition-v1";
+
+    /// Le résultat d'une construction : `(labels, propriétés)` ou une erreur.
+    type Construction = SubstrateResult<(Vec<String>, Vec<(PropertyKey, Value)>)>;
+
+    fn construction() -> Construction {
+        Ok((
+            vec!["structure".to_string()],
+            vec![(PropertyKey::new("payload"), Value::Int64(1))],
+        ))
+    }
+
+    fn cle_persistee() -> Vec<u8> {
+        std::iter::once(KIND).chain(CLE.iter().copied()).collect()
+    }
+
+    /// L'échec du scellement (`TxCommit` non journalisé) est propagé : ni
+    /// entrée d'index, ni `Cree`. La réservation non durable n'est pas
+    /// réutilisée comme identité valide, et le nœud non scellé est écarté au
+    /// rejeu.
+    #[test]
+    fn echec_scellement_ne_indexe_pas_et_ne_rend_pas_cree() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+
+        ECHEC_SCELLEMENT_ATOMIQUE.with(|c| c.set(true));
+        let r = s.reserver_identite(KIND, CLE, DEFINITION, construction);
+        assert!(
+            r.is_err(),
+            "l'échec de scellement doit être propagé : {r:?}"
+        );
+
+        // L'index n'a PAS été pollué : même clé → une NOUVELLE identité, pas un
+        // `Existante` sur le nœud non scellé.
+        let r2 = s
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert!(
+            matches!(r2, crate::reservation::IssueReservation::Cree(_)),
+            "nouvelle identité après l'échec : {r2:?}"
+        );
+
+        // Au rejeu, le nœud non scellé est écarté : après réouverture, une seule
+        // identité durable, la scellée (si le nœud saboté survivait, il serait
+        // trouvé en premier par l'ordre de slots).
+        s.close().unwrap();
+        let s2 = SubstrateStore::open(td.path()).unwrap();
+        let r3 = s2
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert!(
+            matches!(r3, crate::reservation::IssueReservation::Existante(_)),
+            "identité scellée retrouvée après réouverture : {r3:?}"
+        );
+        assert_eq!(r3.identite(), r2.identite(), "la durable est la scellée");
+    }
+
+    /// Isolation réelle : pendant la construction (nœud créé, propriétés pas
+    /// encore posées), un lecteur indépendant n'observe AUCUNE réservation.
+    #[test]
+    fn aucune_visibilite_partielle_pendant_construction() {
+        let td = tempfile::tempdir().unwrap();
+        let s = Arc::new(SubstrateStore::create(td.path()).unwrap());
+
+        let (tx_noeud, rx_noeud) = std::sync::mpsc::channel::<u32>();
+        let (tx_liberer, rx_liberer) = std::sync::mpsc::channel::<()>();
+
+        {
+            let cell = APRES_CREATION_NOEUD_ATOMIQUE.get_or_init(|| std::sync::Mutex::new(None));
+            *cell.lock().unwrap() = Some(Box::new(move |id: u32| {
+                let _ = tx_noeud.send(id);
+                let _ = rx_liberer.recv();
+            }));
+        }
+
+        let s2 = Arc::clone(&s);
+        let fil =
+            std::thread::spawn(move || s2.reserver_identite(KIND, CLE, DEFINITION, construction));
+
+        let id = rx_noeud
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("le nœud est créé avant les propriétés");
+        let nid = NodeId(u64::from(id));
+
+        // Lecteur INDÉPENDANT (pas `reserver_identite`, donc pas le même
+        // mutex) : pendant la construction, la réservation n'est PAS observable
+        // — ni sa clé, ni sa définition (le marqueur n'est posé qu'à la fin,
+        // avec la définition complète).
+        assert_eq!(
+            s.get_node_property(nid, &PropertyKey::new(crate::reservation::PROP_CLE)),
+            None,
+            "la clé de réservation n'est pas encore observable"
+        );
+        assert_eq!(
+            s.get_node_property(nid, &PropertyKey::new(crate::reservation::PROP_DEFINITION)),
+            None,
+            "la définition de réservation n'est pas encore observable"
+        );
+
+        // Libère la construction, puis retire la sonde.
+        tx_liberer.send(()).unwrap();
+        *APRES_CREATION_NOEUD_ATOMIQUE.get().unwrap().lock().unwrap() = None;
+
+        let issue = fil.join().unwrap().unwrap();
+        assert!(matches!(
+            issue,
+            crate::reservation::IssueReservation::Cree(_)
+        ));
+
+        // Après la construction : clé et définition complètes.
+        assert_eq!(
+            s.get_node_property(nid, &PropertyKey::new(crate::reservation::PROP_CLE)),
+            Some(Value::Bytes(Arc::from(cle_persistee())))
+        );
+        assert_eq!(
+            s.get_node_property(nid, &PropertyKey::new(crate::reservation::PROP_DEFINITION)),
+            Some(Value::Bytes(Arc::from(DEFINITION.to_vec())))
+        );
+    }
+
+    /// Collision de hash forcée : deux clés différentes qui hachent à la même
+    /// valeur donnent DEUX identités, et chaque clé retrouve la sienne —
+    /// l'index VÉRIFIÉ lève la collision par comparaison du contenu complet.
+    #[test]
+    fn collision_de_hash_levee_par_comparaison_complete() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+
+        // Le hash forcé doit rester actif pendant TOUS les appels (construction
+        // comme recherche) : l'index est bâti sous la clé `(kind, 42)`, la
+        // recherche doit interroger la même clé.
+        crate::reservation::forcer_hash_cle(Some(42));
+        let a = s
+            .reserver_identite(KIND, b"cle-a", DEFINITION, construction)
+            .unwrap();
+        let b = s
+            .reserver_identite(KIND, b"cle-b", DEFINITION, construction)
+            .unwrap();
+        let retrouve_a = s
+            .reserver_identite(KIND, b"cle-a", DEFINITION, construction)
+            .unwrap();
+        let retrouve_b = s
+            .reserver_identite(KIND, b"cle-b", DEFINITION, construction)
+            .unwrap();
+        crate::reservation::forcer_hash_cle(None);
+
+        assert!(matches!(a, crate::reservation::IssueReservation::Cree(_)));
+        assert!(matches!(b, crate::reservation::IssueReservation::Cree(_)));
+        assert_ne!(
+            a.identite(),
+            b.identite(),
+            "deux identités malgré la collision"
+        );
+
+        // Chaque clé retrouve SA propre identité (pas celle de l'autre).
+        assert_eq!(
+            retrouve_a,
+            crate::reservation::IssueReservation::Existante(a.identite())
+        );
+        assert_eq!(
+            retrouve_b,
+            crate::reservation::IssueReservation::Existante(b.identite())
+        );
+    }
 }
 
 #[cfg(test)]

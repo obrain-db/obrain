@@ -43,10 +43,36 @@ pub const PROP_DEFINITION: &str = "_obrain_reservation_definition";
 /// Hash de départage d'une clé d'identité — xxh3 64 bits, même famille que
 /// `simplex_zone::key_hash_members`. N'est JAMAIS une preuve d'égalité.
 pub fn hash_cle(cle: &[u8]) -> u64 {
+    // Surcharge de test : force le hash à une valeur fixe pour provoquer des
+    // collisions et prouver que l'index VÉRIFIÉ les lève par comparaison du
+    // contenu complet (jamais le hash seul).
+    #[cfg(test)]
+    if let Some(h) = HASH_CLE_FORCE.with(|c| c.get()) {
+        return h;
+    }
     twox_hash::XxHash3_64::oneshot(cle)
 }
 
+// Surcharge de test du hash (collision forcée). Absente du binaire de
+// production.
+#[cfg(test)]
+thread_local! {
+    static HASH_CLE_FORCE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Force le hash de toutes les clés à `h` (`None` = hachage réel) — tests de
+/// collision uniquement. Absent du binaire de production.
+#[cfg(test)]
+pub(crate) fn forcer_hash_cle(h: Option<u64>) {
+    HASH_CLE_FORCE.with(|c| c.set(h));
+}
+
 /// Résultat d'une construction sous identité réservée.
+///
+/// L'identifiant porté est un SLOT de nœud `u32` (l'espace d'identité du
+/// substrat, borné à `u32::MAX` — résolution externe via
+/// `NodeId(u64::from(slot))`). Ce n'est PAS un identifiant distribué ni un
+/// hash : c'est le nœud qui porte la clé réservée.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IssueReservation {
     /// L'identité était déjà réservée avec une définition identique : aucun
@@ -60,7 +86,8 @@ pub enum IssueReservation {
 }
 
 impl IssueReservation {
-    /// Le nœud qui porte l'identité, quelle que soit l'issue.
+    /// Le slot de nœud qui porte l'identité, quelle que soit l'issue
+    /// (résolution en `NodeId` : `NodeId(u64::from(slot))`).
     pub fn identite(&self) -> u32 {
         match *self {
             IssueReservation::Existante(id)
