@@ -13547,21 +13547,22 @@ impl SubstrateStore {
             .expect("recevoir_propriete_versionnee appelée sans PropsZone v2");
         let prop_key_id = self.interner_cle_journalisee(key)?;
         let slot = id.0 as u32;
-        let node_rec = match self.writer.read_node(slot)? {
-            Some(r) => r,
-            None => {
-                return Err(SubstrateError::Internal(format!(
-                    "recevoir_propriete_versionnee : nœud {slot} absent"
-                )))
-            }
-        };
-        let tete_brute = (node_rec.first_prop_off.to_u64() != 0)
-            .then(|| node_rec.first_prop_off.to_u64());
-
         // 1. Décision + application ATOMIQUES sous un seul verrou d'écriture.
         let mut decision = IssueReception::Ancienne;
         {
             let mut pz = pz_lock.write();
+            // Re-lecture de la tête SOUS le verrou : sinon TOCTOU (la tête lue
+            // avant le verrou peut être périmée par une écriture concurrente).
+            let node_rec = match self.writer.read_node(slot)? {
+                Some(r) => r,
+                None => {
+                    return Err(SubstrateError::Internal(format!(
+                        "recevoir_propriete_versionnee : nœud {slot} absent"
+                    )))
+                }
+            };
+            let tete_brute = (node_rec.first_prop_off.to_u64() != 0)
+                .then(|| node_rec.first_prop_off.to_u64());
             let courante = match tete_brute {
                 None => None,
                 Some(t) => pz.get_latest_for_key_unite(Some(t), prop_key_id)?,
@@ -46244,6 +46245,36 @@ mod reception_versionnee {
         }
         assert_eq!(finales.len(), 1, "convergence attendue : {finales:?}");
         assert!(finales.contains("Int64(2)"), "le gagnant est horloge 200 (auteur 3) : {finales:?}");
+    }
+
+    /// Deux réceptions concurrentes de versions DISTINCTES pour la même
+    /// propriété : la version la plus récente gagne, quel que soit l'ordre
+    /// d'arrivée effectif. La tête est relue sous le verrou, donc pas de TOCTOU.
+    #[test]
+    fn deux_receptions_concurrentes_la_plus_recente_gagne() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = store.create_node(&["fn"]);
+        let barriere = Arc::new(Barrier::new(2));
+        let mut fils = Vec::new();
+        for (a, h, v) in [
+            (10u64, 100u64, obrain_common::types::Value::Int64(1)),
+            (3u64, 200u64, obrain_common::types::Value::Int64(2)),
+        ] {
+            let store = Arc::clone(&store);
+            let barriere = Arc::clone(&barriere);
+            fils.push(thread::spawn(move || {
+                barriere.wait();
+                store.recevoir_propriete_versionnee(id, "k", &v, a, h).unwrap()
+            }));
+        }
+        let issues: Vec<_> = fils.into_iter().map(|f| f.join().unwrap()).collect();
+        let finale = store
+            .get_node_property(id, &obrain_common::types::PropertyKey::new("k"))
+            .unwrap();
+        assert_eq!(finale, obrain_common::types::Value::Int64(2), "issues={issues:?}");
     }
 
     /// La réception distingue application, version ancienne, égalité d'estampille
