@@ -375,6 +375,20 @@ impl EngramStore {
             if members.is_empty() {
                 continue;
             }
+            // RÉPARATION des projections : reconstruire le bitset Bloom depuis
+            // les membres persistés, SANS toucher aux poids ni à l'ensemble.
+            // Idempotent (OR d'un bit déjà posé = no-op) ; ne crée aucune
+            // observation ni transformation de l'état cognitif appris.
+            for nid in &members {
+                if let Err(e) = writer.add_engram_bit(*nid, eid_u16) {
+                    tracing::warn!(
+                        engram_id = eid_u16,
+                        node_id = *nid,
+                        error = %e,
+                        "réparation du bitset échouée"
+                    );
+                }
+            }
             // Slot occupé : réserve l'identifiant quoi qu'il arrive (même si
             // les poids sont incohérents ou absents).
             max_id = max_id.max(eid_u16 as u64);
