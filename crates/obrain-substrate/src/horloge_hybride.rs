@@ -260,6 +260,46 @@ mod tests {
     }
 
     #[test]
+    fn observer_quand_le_mur_est_en_avance_reinitialise_le_logique() {
+        let mut h = HorlogeHybride::nouvelle();
+        h.maintenant(1_000);
+        h.maintenant(1_000);
+        let distant = Estampille {
+            physique: 1_000,
+            logique: 3,
+        };
+        // physique_instant (2_000) dépasse self et distant : plafond == physique_instant.
+        h.observer(distant, 2_000);
+        assert_eq!(
+            h.derniere(),
+            Estampille {
+                physique: 2_000,
+                logique: 0
+            }
+        );
+    }
+
+    #[test]
+    fn observer_reporte_le_debordement_sur_la_physique() {
+        let mut h = HorlogeHybride::nouvelle();
+        h.maintenant(1_000);
+        let distant = Estampille {
+            physique: 1_000,
+            logique: 0xFFFF,
+        };
+        h.observer(distant, 500);
+        // plafond == self.physique == distant.physique : logique = max(0, 0xFFFF) + 1,
+        // soit 0x10000 — débordement : la physique avance, le logique retombe à 0.
+        assert_eq!(
+            h.derniere(),
+            Estampille {
+                physique: 1_001,
+                logique: 0
+            }
+        );
+    }
+
+    #[test]
     fn deux_ecrivains_qui_s_observent_convergent() {
         let mut x = HorlogeHybride::nouvelle();
         let mut y = HorlogeHybride::nouvelle();
