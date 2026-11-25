@@ -297,6 +297,7 @@ fn mutate_refuse_invariants_invalides() {
 /// Injection d'erreur contrôlée : set_engram_state réussit PUIS add_engram_bit
 /// échoue → écriture partielle (substrat r+1, cache r). Observe cache, substrat
 /// et définit la source de vérité (le cache, non committé).
+#[cfg(feature = "fault-injection")]
 #[test]
 fn injection_erreur_partielle_set_then_bit() {
     let td = tempfile::tempdir().unwrap();
@@ -337,4 +338,54 @@ fn injection_erreur_partielle_set_then_bit() {
     let retry = manager.revise(id, &[c], 0.5).expect("reprise réussie");
     let cs: Vec<NodeId> = retry.members.iter().filter(|(n, _)| *n == c).map(|(n, _)| *n).collect();
     assert_eq!(cs.len(), 1, "C ajouté une seule fois (pas de double application)");
+}
+
+/// Contre-épreuve ESSENTIELLE : fermeture immédiate après échec partiel, puis
+/// réouverture. Observe l'état réellement restauré et la détection de l'état
+/// partiel (membres vs bitset), sans retry manuel.
+#[cfg(feature = "fault-injection")]
+#[test]
+fn reouverture_apres_ecriture_partielle() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
+
+    let id;
+    {
+        let manager =
+            EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+        let sub = SubstrateFile::create(&path).unwrap();
+        let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
+        manager.attach_substrate(writer.clone());
+        id = manager.store().form(&[a, b]).unwrap();
+        manager.store().set_fail_bit_after_state(true);
+        let r = manager.revise(id, &[c], 0.5);
+        assert!(matches!(r, Err(RevisionError::PersistenceFailed(_))));
+        // FERMETURE immédiate, sans nouvelle tentative.
+    }
+
+    // Réouverture.
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
+    manager.attach_substrate(writer.clone());
+
+    // Membres RESTAURÉS incluent C : set_engram_state a persisté C AVANT l'échec.
+    let (members, weights) = writer.read_engram_state(id.0 as u16).unwrap().unwrap();
+    assert!(
+        members.contains(&(c.0 as u32)),
+        "membres restaurés incluent C (écriture partielle persistée) : {members:?}"
+    );
+    assert_eq!(members.len(), 3, "3 membres restaurés");
+
+    // Poids restaurés : C=0.25, A/B=0.95 (set_engram_state a écrit les poids aussi).
+    let ws = weights.expect("poids présents");
+    // ordre = ordre des membres ; on ne présume pas l'ordre, on vérifie les valeurs.
+    assert!(ws.iter().any(|w| (w - 0.25).abs() < 1e-6), "poids C=0.25 présent");
+
+    // Bitset de C : NON posé → l'état partiel EST détectable (incohérence
+    // membres/bitset). C'est le mécanisme de détection, pas un retry.
+    let bitset_c = writer.engram_bitset(c.0 as u32).unwrap();
+    assert_eq!(bitset_c, 0, "bitset de C non posé : état partiel détectable via l'incohérence membres/bitset");
 }
