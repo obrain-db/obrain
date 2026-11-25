@@ -32,7 +32,7 @@ pub use types::*;
 #[cfg(feature = "engram")]
 mod store;
 #[cfg(feature = "engram")]
-pub use store::EngramStore;
+pub use store::{EngramStore, StoreError};
 
 #[cfg(feature = "engram")]
 mod formation;
