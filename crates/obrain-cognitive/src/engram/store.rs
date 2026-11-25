@@ -104,6 +104,16 @@ impl std::fmt::Debug for EngramStore {
     }
 }
 
+/// Bilan structuré d'un chargement depuis le substrate : distingue les
+/// engrammes cohérents, les états canoniques valides dont une projection est
+/// dégradée, et les états canoniques invalides écartés (id réservés).
+#[derive(Debug, Clone, Default)]
+pub struct LoadReport {
+    pub coherent: usize,
+    pub degraded: Vec<EngramId>,
+    pub rejected: usize,
+}
+
 /// Erreur de mutation du store : distingue absence et échec de persistance
 /// (au lieu d'un échec silencieux journalisé).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,11 +356,11 @@ impl EngramStore {
     /// 1..=65535 (les slots vides sont des `None` rapides) et réhydrate
     /// le cache. La signature spectrale est re-encodée au prochain rappel.
     #[cfg(feature = "substrate")]
-    pub fn load_from_substrate(&self) -> usize {
+    pub fn load_from_substrate(&self) -> LoadReport {
+        let mut report = LoadReport::default();
         let Some(writer) = self.substrate_writer() else {
-            return 0;
+            return report;
         };
-        let mut loaded = 0usize;
         let mut max_id: u64 = 0;
         for eid_u16 in 1u16..=u16::MAX {
             // Lecture COHÉRENTE membres+poids sous un même verrou (pas de
@@ -398,24 +408,28 @@ impl EngramStore {
                         poids = ws.len(),
                         "incohérence membres/poids : engramme en quarantaine (aucun poids inventé)"
                     );
+                    report.rejected += 1;
                     continue;
                 }
             };
             let mut engram = Engram::new(eid, ensemble);
-            // RÉPARATION des projections APRÈS validation de l'état canonique :
-            // reconstruire le bitset depuis les membres validés, sans écriture
-            // inutile (ensure_engram_bit est no-op si le bit est déjà posé).
+            // VALIDATION de l'état canonique AVANT toute réparation/publication :
+            // unicité des membres + poids finis (validate_candidate). Un état
+            // invalide est écarté (id déjà réservé), pas réparé ni publié.
+            if let Err(e) = self.validate_candidate(&engram) {
+                tracing::error!(engram_id = eid_u16, error = ?e, "engramme invalide au chargement : écarté");
+                report.rejected += 1;
+                continue;
+            }
+            // RÉPARATION des projections : reconstruire le bitset depuis les
+            // membres validés, sans écriture inutile (ensure_engram_bit no-op si
+            // le bit est déjà posé). Un échec marque la projection DÉGRADÉE mais
+            // l'état canonique reste valide et publié.
+            let mut degraded = false;
             for (nid, _) in &engram.ensemble {
-                match writer.ensure_engram_bit(nid.0 as u32, eid_u16) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::error!(
-                            engram_id = eid_u16,
-                            node_id = nid.0,
-                            error = %e,
-                            "projection bitset dégradée"
-                        );
-                    }
+                if let Err(e) = writer.ensure_engram_bit(nid.0 as u32, eid_u16) {
+                    tracing::error!(engram_id = eid_u16, node_id = nid.0, error = %e, "projection bitset dégradée");
+                    degraded = true;
                 }
             }
             // Signature spectrale : re-encodée paresseusement par le manager
@@ -424,7 +438,11 @@ impl EngramStore {
             engram.spectral_signature = Vec::new();
             self.cache.insert(eid, engram);
             max_id = max_id.max(eid.0);
-            loaded += 1;
+            if degraded {
+                report.degraded.push(eid);
+            } else {
+                report.coherent += 1;
+            }
         }
         // Avance le compteur d'ids au-dessus du max chargé.
         if max_id > 0 {
@@ -444,7 +462,7 @@ impl EngramStore {
         // étaient invisibles jusqu'à la mutation suivante. On incrémente ici,
         // comme partout ailleurs où le contenu change.
         self.revision.fetch_add(1, Ordering::Relaxed);
-        loaded
+        report
     }
 
     /// Returns a snapshot of all engrams currently in the cache.

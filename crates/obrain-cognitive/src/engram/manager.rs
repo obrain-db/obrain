@@ -143,8 +143,8 @@ impl EngramManager {
     #[cfg(feature = "substrate")]
     pub fn attach_substrate(&self, writer: Arc<obrain_substrate::Writer>) {
         self.store.attach_substrate(writer);
-        let loaded = self.store.load_from_substrate();
-        if loaded > 0 {
+        let report = self.store.load_from_substrate();
+        if report.coherent > 0 || !report.degraded.is_empty() {
             // Re-dériver les signatures spectrales (projection de l'ensemble
             // pondéré restauré) et ré-upserter l'index vectoriel — le rappel
             // spectral est opérationnel dès la réouverture.
@@ -155,7 +155,7 @@ impl EngramManager {
                 // réécriture durable (update() miroir le substrate).
                 self.store.rehydrate_signature(engram.id, sig);
             }
-            tracing::info!(loaded, "cognitive: engrams rechargés depuis le substrate");
+            tracing::info!(coherent = report.coherent, degraded = report.degraded.len(), rejected = report.rejected, "cognitive: engrams rechargés depuis le substrate");
         }
     }
 
