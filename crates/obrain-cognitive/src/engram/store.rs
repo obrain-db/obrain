@@ -213,6 +213,16 @@ impl EngramStore {
     /// Updates an engram in-place by applying `f` to its mutable reference.
     ///
     /// This is a no-op if no engram with the given `id` exists.
+    /// Reconstruit une projection DÉRIVÉE (signature spectrale) SANS muter
+    /// l'état canonique : ni révision, ni write-through, ni miroir substrate.
+    /// Le chargement re-dérive ainsi les signatures sans amplification
+    /// d'écriture à chaque redémarrage.
+    pub fn rehydrate_signature(&self, id: EngramId, sig: Vec<f64>) {
+        if let Some(mut entry) = self.cache.get_mut(&id) {
+            entry.value_mut().spectral_signature = sig;
+        }
+    }
+
     pub fn update(&self, id: EngramId, f: impl FnOnce(&mut Engram)) {
         self.revision.fetch_add(1, Ordering::Relaxed);
         if let Some(mut entry) = self.cache.get_mut(&id) {
@@ -330,8 +340,19 @@ impl EngramStore {
         let mut loaded = 0usize;
         let mut max_id: u64 = 0;
         for eid_u16 in 1u16..=u16::MAX {
-            let Ok(Some(members)) = writer.engram_members(eid_u16) else {
-                continue;
+            // Lecture COHÉRENTE membres+poids sous un même verrou (pas de
+            // fenêtre d'entrelacement entre deux lectures séparées).
+            let (members, weights) = match writer.read_engram_state(eid_u16) {
+                Ok(Some(v)) => v,
+                Ok(None) => continue, // slot vide
+                Err(e) => {
+                    tracing::error!(
+                        engram_id = eid_u16,
+                        error = %e,
+                        "lecture de l'état d'engramme impossible : engramme ignoré"
+                    );
+                    continue;
+                }
             };
             if members.is_empty() {
                 continue;
@@ -340,20 +361,8 @@ impl EngramStore {
             // Restaure les poids (état dynamique) depuis la zone parallèle ;
             // sans zone (ancienne base) ou longueur incohérente → 1.0.
             let ensemble: Vec<(NodeId, f64)> = {
-                // Distingue explicitement : erreur de lecture (ne pas charger
-                // silencieusement avec des poids faux), absence legacy (1.0
-                // voulu), incohérence de longueur (corruption signalée).
-                let weights: Option<Vec<f32>> = match writer.engram_weights(eid_u16) {
-                    Ok(w) => w,
-                    Err(e) => {
-                        tracing::error!(
-                            engram_id = eid_u16,
-                            error = %e,
-                            "lecture des poids d'engramme impossible : engramme ignoré"
-                        );
-                        continue;
-                    }
-                };
+                // Absence legacy (base sans zone de poids) → 1.0 ; incohérence
+                // de longueur → corruption signalée (1.0).
                 match weights {
                     Some(ws) if ws.len() == members.len() => members
                         .into_iter()

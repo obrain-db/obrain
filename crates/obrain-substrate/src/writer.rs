@@ -2748,6 +2748,20 @@ impl Writer {
         self.with_engram_weights_zone(|zf| crate::engram::EngramZone::weights(zf, engram_id))
     }
 
+    /// Lecture COHÉRENTE membres+poids sous un même verrou : un écrivain
+    /// concurrent ne peut pas intercaler une mutation entre les deux lectures
+    /// (contrairement à engram_members() puis engram_weights()).
+    pub fn read_engram_state(
+        &self,
+        engram_id: u16,
+    ) -> SubstrateResult<Option<(Vec<u32>, Option<Vec<f32>>)>> {
+        self.with_engram_state_zones(|mz, wz| {
+            let members = crate::engram::EngramZone::members(mz, engram_id)?;
+            let weights = crate::engram::EngramZone::weights(wz, engram_id)?;
+            Ok(members.map(|m| (m, weights)))
+        })
+    }
+
     // ==================================================================
     // Engram bitset column (T7 Step 1)
     // ==================================================================
@@ -3629,16 +3643,28 @@ impl Writer {
         f: impl FnOnce(&mut ZoneFile, &mut ZoneFile) -> SubstrateResult<R>,
     ) -> SubstrateResult<R> {
         let mut zones = self.zones.write();
-        // Tout-ou-rien : on n'ouvre les deux zones en locales et on ne les
-        // publie qu'une fois les deux obtenues (obrain#238 appliqué au cas
-        // engramme : sinon une ouverture partielle laisse un état incohérent).
-        if zones.engram_members.is_none() {
-            let zone = self.substrate.lock().open_zone(Zone::EngramMembers)?;
-            zones.engram_members = Some(zone);
-        }
-        if zones.engram_weights.is_none() {
-            let zone = self.substrate.lock().open_zone(Zone::EngramWeights)?;
-            zones.engram_weights = Some(zone);
+        // TOUT OU RIEN (motif with_simplex_zones, obrain#238) : les zones
+        // MANQUANTES s'ouvrent dans des locales et ne sont publiées qu'une fois
+        // TOUTES les ouvertures réussies. Une ouverture partielle ne laisse
+        // jamais le cache avec membres publiés et poids absents.
+        if zones.engram_members.is_none() || zones.engram_weights.is_none() {
+            let sub = self.substrate.lock();
+            let new_members = if zones.engram_members.is_none() {
+                Some(sub.open_zone(Zone::EngramMembers)?)
+            } else {
+                None
+            };
+            let new_weights = if zones.engram_weights.is_none() {
+                Some(sub.open_zone(Zone::EngramWeights)?)
+            } else {
+                None
+            };
+            if let Some(m) = new_members {
+                zones.engram_members = Some(m);
+            }
+            if let Some(w) = new_weights {
+                zones.engram_weights = Some(w);
+            }
         }
         let cache = &mut *zones;
         let mz = cache.engram_members.as_mut().unwrap();
