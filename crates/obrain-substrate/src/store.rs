@@ -3137,6 +3137,17 @@ pub mod suspension_evenement {
 #[cfg(test)]
 static ECHEC_APPEND_WAL: parking_lot::Mutex<bool> = parking_lot::Mutex::new(false);
 
+
+/// Verrous de publication shardés (256) : séparent les lecteurs cohérents des
+/// écrivains pendant une publication atomique. EXPÉRIMENTAL — pas une garantie
+/// distribuée ni une architecture définitive.
+static VERROUS_PUBLICATION: std::sync::LazyLock<Box<[parking_lot::RwLock<()>]>> =
+    std::sync::LazyLock::new(|| (0..256).map(|_| parking_lot::RwLock::new(())).collect());
+
+fn verrou_publication(id: NodeId) -> &'static parking_lot::RwLock<()> {
+    &VERROUS_PUBLICATION[(id.0 % 256) as usize]
+}
+
 impl SubstrateStore {
     /// Chemin du catalogue d'index.
     fn chemin_catalogue(&self) -> std::path::PathBuf {
@@ -6909,6 +6920,39 @@ impl SubstrateStore {
         self.seal_commit(tx)
             .map_err(|e| SubstrateError::Internal(format!("seal_commit : {e}")))?;
         Ok(())
+    }
+
+    /// Publication atomique de DEUX propriétés d'une ressource existante : le
+    /// verrou d'écriture de publication est tenu pendant les deux mutations,
+    /// donc un lecteur cohérent (lire_deux_proprietes_coherent) ne peut observer
+    /// que V0 ou V1, jamais le mélange. EXPÉRIMENTAL.
+    pub fn publier_deux_proprietes_atomiquement(
+        &self,
+        cible: NodeId,
+        cle1: &str,
+        valeur1: Value,
+        cle2: &str,
+        valeur2: Value,
+    ) -> SubstrateResult<()> {
+        let _g = verrou_publication(cible).write();
+        self.set_node_property(cible, cle1, valeur1);
+        self.set_node_property(cible, cle2, valeur2);
+        Ok(())
+    }
+
+    /// Lecture cohérente de DEUX propriétés : attend le verrou de lecture de
+    /// publication, donc ne traverse jamais une publication atomique en cours.
+    pub fn lire_deux_proprietes_coherent(
+        &self,
+        cible: NodeId,
+        cle1: &str,
+        cle2: &str,
+    ) -> (Option<Value>, Option<Value>) {
+        let _g = verrou_publication(cible).read();
+        (
+            self.get_node_property(cible, &PropertyKey::new(cle1)),
+            self.get_node_property(cible, &PropertyKey::new(cle2)),
+        )
     }
 
     fn clore_transaction_annulee(&self, tx: TransactionId) {
@@ -46550,5 +46594,44 @@ mod visibilite_transactionnelle {
         // - si a=10 : la mutation est visible avant commit → pas d'isolation.
         assert_eq!(a, Some(Value::Int64(10)), "a est visible avant commit");
         assert_eq!(b, Some(Value::Int64(2)), "b inchangé");
+    }
+}
+
+
+#[cfg(test)]
+mod publication_atomique {
+    use super::*;
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn lecteur_coherent_ne_voit_pas_le_melange() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let (tx, rx) = mpsc::channel();
+        let store2 = Arc::clone(&store);
+        let ecrivain = thread::spawn(move || {
+            let _g = verrou_publication(id).write();
+            store2.set_node_property(id, "a", Value::Int64(10));
+            tx.send(()).unwrap();
+            // fenêtre pendant laquelle le verrou est tenu et a est déjà muté
+            thread::sleep(Duration::from_millis(120));
+            store2.set_node_property(id, "b", Value::Int64(20));
+        });
+        rx.recv().unwrap();
+        let store3 = Arc::clone(&store);
+        let lecteur = thread::spawn(move || store3.lire_deux_proprietes_coherent(id, "a", "b"));
+        ecrivain.join().unwrap();
+        let (a, b) = lecteur.join().unwrap();
+        eprintln!("APRES_PUBLICATION a={a:?} b={b:?}");
+        assert_eq!(
+            (a, b),
+            (Some(Value::Int64(10)), Some(Value::Int64(20))),
+            "V1 cohérent, jamais le mélange (a=10,b=2)"
+        );
     }
 }
