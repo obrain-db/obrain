@@ -459,7 +459,7 @@ impl EngramManager {
             return Ok(());
         }
         let body = match effect.first() {
-            Some(&1) => &effect[1..],
+            Some(&1) => &effect[9..],
             _ => {
                 return Err(RevisionError::PersistenceFailed(
                     "effet de ressource non-révision (formation)".into(),
@@ -550,6 +550,7 @@ impl EngramManager {
         let outcome = adapter
             .apply(
                 observation_id,
+                engram_id,
                 &engram_id.0.to_be_bytes(),
                 &definition,
                 source_revision,
@@ -617,9 +618,18 @@ impl EngramManager {
             ObservationOutcome::Replayed {
                 state: recorded,
                 revision: rec_rev,
+                target: rec_target,
             } => {
-                // Vérifier la matérialisation ; réparer si le cache est en
-                // retard. Jamais au-delà d'une révision plus récente.
+                // D. La CIBLE enregistrée doit être CETTE connaissance : ne
+                // jamais matérialiser un ancien état dans une autre.
+                if rec_target != engram_id {
+                    // Vérifier la matérialisation ; réparer si le cache est en
+                    // retard. Jamais au-delà d'une révision plus récente.
+                    return Err(RevisionError::ValidationFailed(format!(
+                        "observation enregistrée pour la connaissance {:?}, pas {:?}",
+                        rec_target, engram_id
+                    )));
+                }
                 let live = self
                     .store
                     .get(engram_id)
@@ -642,6 +652,7 @@ impl EngramManager {
                     ObservationOutcome::Replayed {
                         state: recorded,
                         revision: rec_rev,
+                        target: rec_target,
                     },
                     None,
                 ))
@@ -659,6 +670,9 @@ impl EngramManager {
                 Ok((ObservationOutcome::AlreadyFormed, None))
             }
             ObservationOutcome::Formed => Ok((ObservationOutcome::Formed, None)),
+            ObservationOutcome::FormationPending => {
+                Ok((ObservationOutcome::FormationPending, None))
+            }
             ObservationOutcome::Abandoned => Ok((ObservationOutcome::Abandoned, None)),
             ObservationOutcome::Indeterminate => {
                 match adapter
@@ -680,7 +694,7 @@ impl EngramManager {
                         // L'effet enregistré porte un préfixe : 0x01 révision
                         // (suit l'état sérialisé) ou 0x02 formation.
                         let recorded = match rec_state.first() {
-                            Some(&1) => ResultingState::from_canonical_bytes(&rec_state[1..])
+                            Some(&1) => ResultingState::from_canonical_bytes(&rec_state[9..])
                                 .map_err(RevisionError::PersistenceFailed)?,
                             _ => {
                                 return Err(RevisionError::PersistenceFailed(
@@ -710,6 +724,7 @@ impl EngramManager {
                             ObservationOutcome::Replayed {
                                 state: recorded,
                                 revision: rec_rev,
+                                target: engram_id,
                             },
                             None,
                         ))

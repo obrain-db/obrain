@@ -68,10 +68,12 @@ use std::sync::Mutex;
 
 use obrain_common::types::NodeId;
 
+use super::types::EngramId;
+
 /// Version de la représentation canonique : l'incrémenter invalide les
 /// définitions déjà enregistrées (une empreinte d'une autre version ne vaut
 /// pas comparaison).
-pub const OBSERVATION_DEFINITION_VERSION: u32 = 1;
+pub const OBSERVATION_DEFINITION_VERSION: u32 = 2;
 
 /// Identité LOGIQUE d'une observation (l'événement), distincte des tentatives.
 ///
@@ -251,6 +253,8 @@ pub enum ObservationOutcome {
         state: ResultingState,
         /// Révision ENREGISTRÉE à l'application (informationnelle).
         revision: u64,
+        /// Connaissance sur laquelle l'observation a EFFECTIVEMENT été appliquée.
+        target: EngramId,
     },
     /// Même identifiant, DÉFINITION différente : conflit nommé.
     IdentityConflict {
@@ -267,8 +271,12 @@ pub enum ObservationOutcome {
     /// rejeu ne réactive pas, et une apparition ultérieure de connaissance ne
     /// transforme PAS rétroactivement cette observation en révision.
     Formed,
-    /// Identité déjà enregistrée comme FORMATION : rien à refaire.
+    /// Identité déjà enregistrée comme FORMATION, activation CONFIRMÉE.
     AlreadyFormed,
+    /// Identité de FORMATION réservée mais activation NON confirmée (échec ou
+    /// interruption entre la réservation et l'activation) : le rejeu doit
+    /// RÉACTIVER, jamais déclarer l'apprentissage fait alors qu'il est absent.
+    FormationPending,
     /// Identité explicitement abandonnée (jamais appliquée, ne le sera pas).
     Abandoned,
     /// État transactionnel indéterminé : APPELER [`CognitiveObservationAdapter::resolve`],
@@ -394,6 +402,10 @@ pub trait AtomicEventLedger: Send + Sync {
 
     /// Abandon conditionnel (refusé si déjà appliquée).
     fn abandon(&self, event_id: &[u8; 16]) -> Result<AbandonOutcome, String>;
+
+    /// Confirme qu'une FORMATION réservée a bien produit son effet (passe
+    /// l'effet de PENDING à DONE). Rend `true` si la transition a eu lieu.
+    fn complete_formation(&self, event_id: &[u8; 16]) -> Result<bool, String>;
 }
 
 // ===================================================================
@@ -437,6 +449,10 @@ impl<T: AtomicEventLedger + ?Sized> AtomicEventLedger for std::sync::Arc<T> {
     fn abandon(&self, event_id: &[u8; 16]) -> Result<AbandonOutcome, String> {
         (**self).abandon(event_id)
     }
+
+    fn complete_formation(&self, event_id: &[u8; 16]) -> Result<bool, String> {
+        (**self).complete_formation(event_id)
+    }
 }
 
 /// Adaptateur cognitif : sérialise les concepts (`ObservationId`,
@@ -446,10 +462,14 @@ pub struct CognitiveObservationAdapter<L: AtomicEventLedger> {
     ledger: L,
 }
 
-/// Préfixe d'effet : révision (suit un `ResultingState` sérialisé).
+/// Préfixe d'effet : révision. Suit : cible u64 (engramme) puis
+/// `ResultingState` sérialisé. La CIBLE est conservée dans la PREUVE de
+/// transformation, même hors de la définition brute.
 const EFFECT_REVISION: u8 = 0x01;
-/// Préfixe d'effet : formation (aucun état d'engramme).
-const EFFECT_FORMATION: u8 = 0x02;
+/// Préfixe d'effet : formation TERMINÉE (activation effectuée).
+const EFFECT_FORMATION_DONE: u8 = 0x02;
+/// Préfixe d'effet : formation RÉSERVÉE, activation pas encore confirmée.
+const EFFECT_FORMATION_PENDING: u8 = 0x03;
 
 impl<L: AtomicEventLedger> CognitiveObservationAdapter<L> {
     /// Construit un adaptateur au-dessus d'une primitive d'observation.
@@ -470,12 +490,16 @@ impl<L: AtomicEventLedger> CognitiveObservationAdapter<L> {
             resource,
             &definition.canonical_bytes(),
             0,
-            &[EFFECT_FORMATION],
+            &[EFFECT_FORMATION_PENDING],
             1,
         )?;
         Ok(match outcome {
             LedgerOutcome::Applied => ObservationOutcome::Formed,
-            LedgerOutcome::AlreadyApplied { .. } => ObservationOutcome::AlreadyFormed,
+            LedgerOutcome::AlreadyApplied { state, .. } => match state.first() {
+                Some(&EFFECT_FORMATION_DONE) => ObservationOutcome::AlreadyFormed,
+                Some(&EFFECT_FORMATION_PENDING) => ObservationOutcome::FormationPending,
+                _ => ObservationOutcome::AlreadyFormed,
+            },
             LedgerOutcome::Abandoned => ObservationOutcome::Abandoned,
             LedgerOutcome::Indeterminate => ObservationOutcome::Indeterminate,
             LedgerOutcome::IdentityConflict {
@@ -499,14 +523,16 @@ impl<L: AtomicEventLedger> CognitiveObservationAdapter<L> {
     pub fn apply(
         &self,
         observation_id: ObservationId,
+        target: EngramId,
         resource: &[u8],
         definition: &ObservationDefinition,
         source_revision: SourceRevision,
         resulting_state: &ResultingState,
         resulting_revision: u64,
     ) -> Result<ObservationOutcome, String> {
-        let mut effect = Vec::with_capacity(1 + 16 * resulting_state.ensemble.len() + 13);
+        let mut effect = Vec::with_capacity(9 + 16 * resulting_state.ensemble.len() + 13);
         effect.push(EFFECT_REVISION);
+        effect.extend_from_slice(&target.0.to_be_bytes());
         effect.extend_from_slice(&resulting_state.canonical_bytes());
         let outcome = self.ledger.apply_event(
             &observation_id.0,
@@ -522,11 +548,20 @@ impl<L: AtomicEventLedger> CognitiveObservationAdapter<L> {
                 revision: resulting_revision,
             },
             LedgerOutcome::AlreadyApplied { state, revision } => match state.first() {
-                Some(&EFFECT_REVISION) => ObservationOutcome::Replayed {
-                    state: ResultingState::from_canonical_bytes(&state[1..])?,
-                    revision,
-                },
-                Some(&EFFECT_FORMATION) => ObservationOutcome::AlreadyFormed,
+                Some(&EFFECT_REVISION) => {
+                    if state.len() < 9 {
+                        return Err("effet révision tronqué".into());
+                    }
+                    let recorded_target =
+                        EngramId(u64::from_be_bytes(state[1..9].try_into().unwrap()));
+                    ObservationOutcome::Replayed {
+                        state: ResultingState::from_canonical_bytes(&state[9..])?,
+                        revision,
+                        target: recorded_target,
+                    }
+                }
+                Some(&EFFECT_FORMATION_DONE) => ObservationOutcome::AlreadyFormed,
+                Some(&EFFECT_FORMATION_PENDING) => ObservationOutcome::FormationPending,
                 _ => return Err("effet enregistré invalide (préfixe inconnu)".into()),
             },
             LedgerOutcome::IdentityConflict {
@@ -542,6 +577,11 @@ impl<L: AtomicEventLedger> CognitiveObservationAdapter<L> {
             LedgerOutcome::Abandoned => ObservationOutcome::Abandoned,
             LedgerOutcome::Indeterminate => ObservationOutcome::Indeterminate,
         })
+    }
+
+    /// Confirme la fin d'une formation (PENDING → DONE).
+    pub fn complete_formation(&self, observation_id: ObservationId) -> Result<bool, String> {
+        self.ledger.complete_formation(&observation_id.0)
     }
 
     /// Résout un état indéterminé : interroge l'état transactionnel réel.
@@ -798,6 +838,27 @@ impl AtomicEventLedger for InMemoryAtomicEventLedger {
         }
     }
 
+    fn complete_formation(&self, event_id: &[u8; 16]) -> Result<bool, String> {
+        let mut events = self.events.lock().unwrap();
+        match events.get(event_id) {
+            Some(EventEntry::Applied {
+                definition, state, ..
+            }) if state.first() == Some(&EFFECT_FORMATION_PENDING) => {
+                let definition = definition.clone();
+                events.insert(
+                    *event_id,
+                    EventEntry::Applied {
+                        definition,
+                        state: vec![EFFECT_FORMATION_DONE],
+                        revision: 1,
+                    },
+                );
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     fn abandon(&self, event_id: &[u8; 16]) -> Result<AbandonOutcome, String> {
         let mut events = self.events.lock().unwrap();
         match events.get(event_id) {
@@ -849,7 +910,15 @@ mod tests {
         let d = def(10, &[1, 2], 0.5);
         let s = state(&[(1, 0.5), (2, 0.25)], 0.6, 1);
         let first = a
-            .apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1)
+            .apply(
+                oid(1),
+                EngramId(10),
+                &10u64.to_be_bytes(),
+                &d,
+                SourceRevision(0),
+                &s,
+                1,
+            )
             .unwrap();
         assert_eq!(
             first,
@@ -859,13 +928,22 @@ mod tests {
             }
         );
         let replay = a
-            .apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1)
+            .apply(
+                oid(1),
+                EngramId(10),
+                &10u64.to_be_bytes(),
+                &d,
+                SourceRevision(0),
+                &s,
+                1,
+            )
             .unwrap();
         assert_eq!(
             replay,
             ObservationOutcome::Replayed {
                 state: s,
-                revision: 1
+                revision: 1,
+                target: EngramId(10)
             }
         );
         // La ressource n'a pas bougé au rejeu.
@@ -883,6 +961,7 @@ mod tests {
         let d2 = def(10, &[2], 0.5);
         a.apply(
             oid(1),
+            EngramId(10),
             &10u64.to_be_bytes(),
             &d1,
             SourceRevision(0),
@@ -893,6 +972,7 @@ mod tests {
         let out = a
             .apply(
                 oid(1),
+                EngramId(10),
                 &10u64.to_be_bytes(),
                 &d2,
                 SourceRevision(0),
@@ -915,12 +995,28 @@ mod tests {
         let d = def(10, &[7], 0.5);
         let s = state(&[(7, 0.25)], 0.6, 1);
         let o1 = a
-            .apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1)
+            .apply(
+                oid(1),
+                EngramId(10),
+                &10u64.to_be_bytes(),
+                &d,
+                SourceRevision(0),
+                &s,
+                1,
+            )
             .unwrap();
         // La seconde est calculée depuis la révision COURANTE (1), sinon elle
         // serait en conflit de révision.
         let o2 = a
-            .apply(oid(2), &10u64.to_be_bytes(), &d, SourceRevision(1), &s, 2)
+            .apply(
+                oid(2),
+                EngramId(10),
+                &10u64.to_be_bytes(),
+                &d,
+                SourceRevision(1),
+                &s,
+                2,
+            )
             .unwrap();
         assert!(matches!(o1, ObservationOutcome::Applied { .. }));
         assert!(
@@ -943,6 +1039,7 @@ mod tests {
         let o1 = a
             .apply(
                 oid(1),
+                EngramId(10),
                 &10u64.to_be_bytes(),
                 &def(10, &[1], 0.5),
                 SourceRevision(0),
@@ -953,6 +1050,7 @@ mod tests {
         let o2 = a
             .apply(
                 oid(2),
+                EngramId(10),
                 &10u64.to_be_bytes(),
                 &def(10, &[2], 0.5),
                 SourceRevision(0),
@@ -976,6 +1074,7 @@ mod tests {
         let a = adapter();
         a.apply(
             oid(1),
+            EngramId(10),
             &10u64.to_be_bytes(),
             &def(10, &[1], 0.5),
             SourceRevision(0),
@@ -987,6 +1086,7 @@ mod tests {
         let conflict = a
             .apply(
                 oid(2),
+                EngramId(10),
                 &10u64.to_be_bytes(),
                 &d2,
                 SourceRevision(0),
@@ -1005,6 +1105,7 @@ mod tests {
         let recomputed = a
             .apply(
                 oid(2),
+                EngramId(10),
                 &10u64.to_be_bytes(),
                 &d2,
                 SourceRevision(1),
@@ -1029,10 +1130,19 @@ mod tests {
         let a = adapter();
         let d1 = def(10, &[1], 0.5);
         let s1 = state(&[(1, 0.5)], 0.6, 1);
-        a.apply(oid(1), &10u64.to_be_bytes(), &d1, SourceRevision(0), &s1, 1)
-            .unwrap();
+        a.apply(
+            oid(1),
+            EngramId(10),
+            &10u64.to_be_bytes(),
+            &d1,
+            SourceRevision(0),
+            &s1,
+            1,
+        )
+        .unwrap();
         a.apply(
             oid(2),
+            EngramId(10),
             &10u64.to_be_bytes(),
             &def(10, &[2], 0.5),
             SourceRevision(1),
@@ -1042,7 +1152,15 @@ mod tests {
         .unwrap();
         // Rejeu de l'observation ancienne.
         let replay = a
-            .apply(oid(1), &10u64.to_be_bytes(), &d1, SourceRevision(0), &s1, 1)
+            .apply(
+                oid(1),
+                EngramId(10),
+                &10u64.to_be_bytes(),
+                &d1,
+                SourceRevision(0),
+                &s1,
+                1,
+            )
             .unwrap();
         match replay {
             ObservationOutcome::Replayed { revision, .. } => {
@@ -1067,6 +1185,7 @@ mod tests {
         let a = adapter();
         a.apply(
             oid(1),
+            EngramId(10),
             &10u64.to_be_bytes(),
             &def(10, &[1], 0.5),
             SourceRevision(0),
@@ -1091,6 +1210,7 @@ mod tests {
         let d = def(10, &[1], 0.5);
         a.apply(
             oid(1),
+            EngramId(10),
             &10u64.to_be_bytes(),
             &d,
             SourceRevision(0),
@@ -1101,6 +1221,7 @@ mod tests {
         a.ledger().set_fail_partial_write(true);
         let crashed = a.apply(
             oid(1),
+            EngramId(10),
             &10u64.to_be_bytes(),
             &d,
             SourceRevision(0),
@@ -1123,13 +1244,29 @@ mod tests {
         let d = def(10, &[1], 0.5);
         let s = state(&[(1, 0.5)], 0.6, 1);
         a.ledger().set_fail_partial_write(true);
-        let crashed = a.apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1);
+        let crashed = a.apply(
+            oid(1),
+            EngramId(10),
+            &10u64.to_be_bytes(),
+            &d,
+            SourceRevision(0),
+            &s,
+            1,
+        );
         assert!(crashed.is_err(), "transaction interrompue");
         // Résolution : la transaction n'a pas abouti → aucune application.
         assert_eq!(a.resolve(oid(1)).unwrap(), ResolvedState::NotApplied);
         // Le rejeu peut alors appliquer proprement.
         let retry = a
-            .apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1)
+            .apply(
+                oid(1),
+                EngramId(10),
+                &10u64.to_be_bytes(),
+                &d,
+                SourceRevision(0),
+                &s,
+                1,
+            )
             .unwrap();
         assert!(matches!(retry, ObservationOutcome::Applied { .. }));
     }
@@ -1140,8 +1277,16 @@ mod tests {
         let a = adapter();
         let d = def(10, &[1, 2], 0.5);
         let s = state(&[(1, 0.5), (2, 0.25)], 0.6, 1);
-        a.apply(oid(1), &10u64.to_be_bytes(), &d, SourceRevision(0), &s, 1)
-            .unwrap();
+        a.apply(
+            oid(1),
+            EngramId(10),
+            &10u64.to_be_bytes(),
+            &d,
+            SourceRevision(0),
+            &s,
+            1,
+        )
+        .unwrap();
         match a.resolve(oid(1)).unwrap() {
             ResolvedState::Applied {
                 definition,
@@ -1155,7 +1300,7 @@ mod tests {
                     "préfixe d'effet révision"
                 );
                 assert_eq!(
-                    ResultingState::from_canonical_bytes(&state[1..]).unwrap(),
+                    ResultingState::from_canonical_bytes(&state[9..]).unwrap(),
                     s,
                     "état résultant conservé"
                 );
@@ -1172,6 +1317,56 @@ mod tests {
         let b = def(10, &[1, 2], 0.5);
         assert_eq!(a.canonical_bytes(), b.canonical_bytes());
         assert_eq!(a, b);
+    }
+
+    // A. Deux observations INDÉPENDANTES de même contenu renforcent chacune :
+    // une identité de CONTENU ne supprime pas une occurrence indépendante.
+    #[test]
+    fn deux_formations_independantes_de_meme_contenu_renforcent() {
+        let a = adapter();
+        let d = def(10, &[1, 2], 0.5);
+        let o1 = a.apply_formation(oid(1), b"F:obs1", &d).unwrap();
+        let o2 = a.apply_formation(oid(2), b"F:obs2", &d).unwrap();
+        assert_eq!(o1, ObservationOutcome::Formed, "première formation");
+        assert_eq!(
+            o2,
+            ObservationOutcome::Formed,
+            "seconde indépendante, même contenu"
+        );
+        assert!(a.complete_formation(oid(1)).unwrap());
+        assert!(a.complete_formation(oid(2)).unwrap());
+    }
+
+    // B. Une formation RÉSERVÉE mais non confirmée n'est PAS déclarée faite :
+    // le rejeu doit réactiver (Pending), jamais AlreadyFormed.
+    #[test]
+    fn formation_pending_non_confirmee_n_est_pas_declaree_faite() {
+        let a = adapter();
+        let d = def(10, &[1, 2], 0.5);
+        assert_eq!(
+            a.apply_formation(oid(1), b"F:obs1", &d).unwrap(),
+            ObservationOutcome::Formed
+        );
+        // Rejeu AVANT confirmation : PENDING (activation pas confirmée).
+        assert_eq!(
+            a.apply_formation(oid(1), b"F:obs1", &d).unwrap(),
+            ObservationOutcome::FormationPending
+        );
+        // Confirmation explicite, puis rejeu : DONE.
+        assert!(a.complete_formation(oid(1)).unwrap());
+        assert_eq!(
+            a.apply_formation(oid(1), b"F:obs1", &d).unwrap(),
+            ObservationOutcome::AlreadyFormed
+        );
+    }
+
+    // D. Une ancienne définition (v1, avec cible) est explicitement REJETÉE :
+    // le format a changé et la version le dit.
+    #[test]
+    fn ancienne_version_de_definition_rejetee() {
+        let mut bytes = def(10, &[1], 0.5).canonical_bytes();
+        bytes[3] = 1; // force la version 1 (ancienne, format différent)
+        assert!(decode_definition(&bytes).is_err(), "v1 rejetée");
     }
 
     // Une erreur non finie est refusée AVANT toute persistance.

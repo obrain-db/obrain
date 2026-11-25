@@ -425,6 +425,7 @@ fn resolution_discrimine_etat_enregistre_du_candidat_local() {
         recall_count: 7,
     };
     let mut effect = vec![1u8];
+    effect.extend_from_slice(&id.0.to_be_bytes());
     effect.extend_from_slice(&recorded.canonical_bytes());
     ledger.set_recorded_effect(obs(1), effect, 5);
     // Rejeu : la réparation doit matérialiser l'ÉTAT ENREGISTRÉ (nœud 9,
@@ -441,4 +442,31 @@ fn resolution_discrimine_etat_enregistre_du_candidat_local() {
         "l'état ENREGISTRÉ (nœud 9) a été matérialisé"
     );
     assert_eq!(e.revision, 5, "révision enregistrée");
+}
+
+/// D. Rejeu d'une révision quand la CIBLE a changé : l'ancien état enregistré ne
+/// doit JAMAIS être matérialisé dans une autre connaissance.
+#[test]
+fn rejeu_vers_une_autre_connaissance_est_refuse() {
+    let m = manager();
+    let id_a = make_engram(&m, &[1]);
+    let id_b = make_engram(&m, &[2]);
+    // obs1 appliquée à la connaissance A.
+    m.revise_with_id(obs(1), id_a, &[NodeId(3)], 0.5, SourceRevision(0))
+        .unwrap();
+    let rev_b_before = m.store().get(id_b).unwrap().revision;
+    // Rejeu de la MÊME identité vers la connaissance B : refusé.
+    let src = SourceRevision(m.observation_revision(id_b).unwrap());
+    let res = m.revise_with_id(obs(1), id_b, &[NodeId(3)], 0.5, src);
+    assert!(
+        res.is_err(),
+        "rejeu vers une autre connaissance refusé, reçu {res:?}"
+    );
+    // B n'a PAS été touchée par l'état enregistré de A.
+    let b = m.store().get(id_b).unwrap();
+    assert_eq!(b.revision, rev_b_before, "B non révisée");
+    assert!(
+        !b.ensemble.iter().any(|(n, _)| *n == NodeId(3)),
+        "B intacte"
+    );
 }

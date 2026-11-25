@@ -129,7 +129,7 @@ impl EngramObservationBridge {
     /// en étant des contextes distincts. En cas d'ÉGALITÉ au meilleur
     /// recouvrement, on REFUSE de choisir (None) plutôt que de modifier
     /// arbitrairement la mauvaise connaissance.
-    fn target_engram(&self, nodes: &[NodeId]) -> Option<EngramId> {
+    fn target_engram(&self, nodes: &[NodeId]) -> TargetSelection {
         let mut best: Option<(EngramId, usize)> = None;
         let mut ambiguous = false;
         self.manager.store().for_each(|e| {
@@ -149,10 +149,33 @@ impl EngramObservationBridge {
             }
         });
         if ambiguous {
-            None
+            // C. Ambiguïté DISTINCTE de l'absence : on préserve les hypothèses
+            // concurrentes plutôt que de forcer une formation arbitraire.
+            TargetSelection::Ambiguous(
+                self.candidates_with_overlap(nodes)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect(),
+            )
         } else {
-            best.map(|(id, _)| id)
+            match best {
+                Some((id, _)) => TargetSelection::Unique(id),
+                None => TargetSelection::None,
+            }
         }
+    }
+
+    /// Toutes les connaissances qui recouvrent au moins 2 nœuds (hypothèses).
+    fn candidates_with_overlap(&self, nodes: &[NodeId]) -> Vec<(EngramId, usize)> {
+        let mut out: Vec<(EngramId, usize)> = Vec::new();
+        self.manager.store().for_each(|e| {
+            let overlap = e.ensemble.iter().filter(|(n, _)| nodes.contains(n)).count();
+            if overlap >= 2 {
+                out.push((e.id, overlap));
+            }
+        });
+        out.sort_by(|a, b| b.1.cmp(&a.1));
+        out
     }
 
     /// Traite un événement de mutation, en distinguant FORMATION et RÉVISION.
@@ -188,27 +211,34 @@ impl EngramObservationBridge {
             None
         };
         if let Some(id) = id {
-            if let Some(target) = self.target_engram(&nodes) {
-                // RÉVISION identifiée. Une lecture de révision EN ERREUR n'est
-                // JAMAIS assimilée à la révision initiale : on propage.
-                let revision = match self.manager.observation_revision(target) {
-                    Ok(r) => r,
-                    Err(e) => return BridgeObservation::Failed(e),
-                };
-                return match self.manager.revise_with_id(
-                    id,
-                    target,
-                    &nodes,
-                    self.prediction_error,
-                    SourceRevision(revision),
-                ) {
-                    // L'identité a déjà été traitée (révision OU formation) :
-                    // rien n'est refait.
-                    Ok((ObservationOutcome::AlreadyFormed, _)) => BridgeObservation::Replayed,
-                    Ok((ObservationOutcome::Formed, _)) => BridgeObservation::Replayed,
-                    Ok((outcome, _)) => BridgeObservation::Revised(outcome),
-                    Err(e) => BridgeObservation::Failed(format!("{e:?}")),
-                };
+            match self.target_engram(&nodes) {
+                TargetSelection::Ambiguous(candidates) => {
+                    // Aucune modification : les hypothèses restent ouvertes.
+                    return BridgeObservation::Ambiguous(candidates);
+                }
+                TargetSelection::Unique(target) => {
+                    // RÉVISION identifiée. Une lecture de révision EN ERREUR n'est
+                    // JAMAIS assimilée à la révision initiale : on propage.
+                    let revision = match self.manager.observation_revision(target) {
+                        Ok(r) => r,
+                        Err(e) => return BridgeObservation::Failed(e),
+                    };
+                    return match self.manager.revise_with_id(
+                        id,
+                        target,
+                        &nodes,
+                        self.prediction_error,
+                        SourceRevision(revision),
+                    ) {
+                        // L'identité a déjà été traitée (révision OU formation) :
+                        // rien n'est refait.
+                        Ok((ObservationOutcome::AlreadyFormed, _)) => BridgeObservation::Replayed,
+                        Ok((ObservationOutcome::Formed, _)) => BridgeObservation::Replayed,
+                        Ok((outcome, _)) => BridgeObservation::Revised(outcome),
+                        Err(e) => BridgeObservation::Failed(format!("{e:?}")),
+                    };
+                }
+                TargetSelection::None => {}
             }
             // AUCUNE cible (ou ambiguë) : FORMATION identifiée. L'identité est
             // enregistrée AVANT la transformation, pour qu'un rejeu ne
@@ -217,17 +247,25 @@ impl EngramObservationBridge {
                 Ok(d) => d,
                 Err(e) => return BridgeObservation::Failed(e),
             };
-            // Ressource SYNTHÉTIQUE de la formation (aucune connaissance visée).
+            // Ressource SYNTHÉTIQUE propre à l'OBSERVATION (pas au contenu) :
+            // deux observations indépendantes de même contenu doivent toutes
+            // deux renforcer l'apprentissage.
             let mut resource = b"F".to_vec();
-            resource.extend_from_slice(&definition.fingerprint().to_be_bytes());
+            resource.extend_from_slice(&id.0);
             let adapter = super::observation::CognitiveObservationAdapter::new(
                 self.manager.observation_ledger_arc(),
             );
             match adapter.apply_formation(id, &resource, &definition) {
-                Ok(ObservationOutcome::Formed) => {
+                // B. L'identité n'est CONFIRMÉE qu'APRÈS l'activation : un
+                // rejeu d'une formation PENDING réactive — jamais « déjà fait »
+                // alors que l'apprentissage est absent.
+                Ok(ObservationOutcome::Formed) | Ok(ObservationOutcome::FormationPending) => {
                     let formed = self
                         .manager
                         .record_activation(&nodes, self.prediction_error);
+                    if let Err(e) = adapter.complete_formation(id) {
+                        return BridgeObservation::Failed(e);
+                    }
                     if formed.is_empty() {
                         BridgeObservation::ActivationRecorded
                     } else {
@@ -256,6 +294,17 @@ impl EngramObservationBridge {
     }
 }
 
+/// Sélection de la connaissance cible d'une observation identifiée.
+#[derive(Debug, Clone, PartialEq)]
+enum TargetSelection {
+    /// Aucune connaissance ne recouvre suffisamment l'événement.
+    None,
+    /// Un unique meilleur recouvrement (PAS une preuve de pertinence).
+    Unique(EngramId),
+    /// Égalité : plusieurs connaissances concurrentes.
+    Ambiguous(Vec<EngramId>),
+}
+
 /// Issue d'un événement traité par le pont.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BridgeObservation {
@@ -270,6 +319,9 @@ pub enum BridgeObservation {
     Revised(ObservationOutcome),
     /// REJEU : l'identité était déjà traitée, AUCUNE transformation refaite.
     Replayed,
+    /// CIBLE AMBIGUË : plusieurs connaissances recouvrent l'événement à
+    /// égalité. AUCUNE modification ; les hypothèses sont préservées.
+    Ambiguous(Vec<EngramId>),
     /// Échec (lecture de révision, formation identifiée inattendue, ...).
     Failed(String),
 }
@@ -699,10 +751,15 @@ mod tests {
             EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
         // L'événement {1,2} recouvre les DEUX au mieux (2 nœuds) : ambigu.
         let out = bridge.observe(&edge_event(9, 1, 2), Some(ObservationId::from_u128(1)));
-        assert!(
-            !matches!(out, BridgeObservation::Revised(_)),
-            "cible ambiguë : aucune révision arbitraire, reçu {out:?}"
-        );
+        match out {
+            BridgeObservation::Ambiguous(candidates) => {
+                assert!(
+                    candidates.contains(&e1) && candidates.contains(&e2),
+                    "hypothèses préservées"
+                );
+            }
+            other => panic!("attendu Ambiguous (distinct de l'absence), reçu {other:?}"),
+        }
         assert_eq!(mgr.observation_revision(e1).unwrap(), 0, "e1 non révisé");
         assert_eq!(mgr.observation_revision(e2).unwrap(), 0, "e2 non révisé");
     }
@@ -740,6 +797,9 @@ mod tests {
                 &self,
                 _: &[u8; 16],
             ) -> Result<crate::engram::observation::AbandonOutcome, String> {
+                Err("unused".into())
+            }
+            fn complete_formation(&self, _: &[u8; 16]) -> Result<bool, String> {
                 Err("unused".into())
             }
         }
