@@ -1853,13 +1853,15 @@ impl PropsZone {
     /// l'adresse brute (page legacy ou slot packé).
     /// Comparaison LWW de deux entrées de propriété : une estampillée (auteur +
     /// horloge HLC) domine une non estampillée ; deux estampillées se comparent
-    /// lexicographiquement ; deux non estampillées suivent l'ordre de chaîne.
+    /// par (horloge, auteur) — l'horloge HLC d'abord (ordre causal), l'auteur
+    /// départage les écritures concurrentes à horloge égale ; deux non
+    /// estampillées suivent l'ordre de chaîne.
     fn est_plus_recente(a: &PropertyEntry, b: Option<&PropertyEntry>) -> bool {
         let Some(b) = b else {
             return true;
         };
         match (a.auteur, a.horloge, b.auteur, b.horloge) {
-            (Some(aa), Some(ah), Some(ba), Some(bh)) => (aa, ah) > (ba, bh),
+            (Some(aa), Some(ah), Some(ba), Some(bh)) => (ah, aa) > (bh, ba),
             (Some(_), Some(_), None, None) => true,
             (None, None, Some(_), Some(_)) => false,
             (None, None, None, None) => true,
@@ -2116,9 +2118,15 @@ mod tests {
         // à auteur égal, l'horloge la plus haute gagne
         assert!(PropsZone::est_plus_recente(&a2, Some(&a1)));
         assert!(!PropsZone::est_plus_recente(&a1, Some(&a2)));
-        // l'auteur le plus haut gagne
-        assert!(PropsZone::est_plus_recente(&b1, Some(&a2)));
-        assert!(!PropsZone::est_plus_recente(&a2, Some(&b1)));
+        // L'horloge prime sur l'auteur : b1 (auteur 11, horloge 0) est plus
+        // ancienne que a2 (auteur 10, horloge 6) malgré son auteur supérieur.
+        assert!(!PropsZone::est_plus_recente(&b1, Some(&a2)));
+        assert!(PropsZone::est_plus_recente(&a2, Some(&b1)));
+        // À horloge égale, l'auteur départage (tie-break déterministe).
+        let c1 = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 11, 6);
+        let c2 = PropertyEntry::new_stamped(1, PropertyValue::I64(0), 10, 6);
+        assert!(PropsZone::est_plus_recente(&c1, Some(&c2)));
+        assert!(!PropsZone::est_plus_recente(&c2, Some(&c1)));
         // deux non estampillées : la nouvelle gagne (ordre de chaîne, compat)
         assert!(PropsZone::est_plus_recente(&nue, Some(&nue)));
         // aucune entrée : la première est conservée

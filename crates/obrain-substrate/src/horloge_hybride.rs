@@ -68,6 +68,12 @@ impl HorlogeHybride {
             // L'horloge murale n'a pas dépassé notre dernière composante : on
             // avance le compteur logique pour garantir la stricte croissance.
             self.logique += 1;
+            if self.logique > 0xFFFF {
+                // Débordement du compteur logique (16 bits on-disk) : report
+                // sur la composante physique pour préserver la croissance.
+                self.physique += 1;
+                self.logique = 0;
+            }
         } else {
             self.physique = plafond;
             self.logique = 0;
@@ -92,6 +98,10 @@ impl HorlogeHybride {
             self.logique = 0;
         }
         self.physique = plafond;
+        if self.logique > 0xFFFF {
+            self.physique += 1;
+            self.logique = 0;
+        }
     }
 
     pub fn derniere(&self) -> Estampille {
@@ -128,6 +138,25 @@ mod tests {
         h.maintenant(1_000);
         let e = h.maintenant(2_000);
         assert_eq!((e.physique, e.logique), (2_000, 0));
+    }
+
+    #[test]
+    fn debordement_logique_reporte_sur_la_physique() {
+        let mut h = HorlogeHybride::nouvelle();
+        h.maintenant(1_000);
+        // Pousse le compteur logique jusqu'au plafond 16 bits on-disk.
+        for _ in 0..0xFFFF {
+            h.maintenant(1_000);
+        }
+        let avant = h.derniere();
+        assert_eq!((avant.physique, avant.logique), (1_000, 0xFFFF));
+        // Une écriture de plus déborde : la physique avance, le logique retombe.
+        let apres = h.maintenant(1_000);
+        assert_eq!((apres.physique, apres.logique), (1_001, 0));
+        assert!(
+            apres.pack() > avant.pack(),
+            "monotonie préservée au débordement du compteur logique"
+        );
     }
 
     #[test]
