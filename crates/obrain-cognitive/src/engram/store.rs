@@ -107,11 +107,20 @@ impl std::fmt::Debug for EngramStore {
 /// Bilan structuré d'un chargement depuis le substrate : distingue les
 /// engrammes cohérents, les états canoniques valides dont une projection est
 /// dégradée, et les états canoniques invalides écartés (id réservés).
+/// Cause d'un rejet d'engramme au chargement : distingue corruption locale
+/// (lecture), incohérence de longueurs, et échec de validation canonique.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RejectCause {
+    ReadError(String),
+    InconsistentWeights { members: usize, weights: usize },
+    Validation(String),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LoadReport {
     pub coherent: usize,
-    pub degraded: Vec<EngramId>,
-    pub rejected: usize,
+    pub degraded: Vec<(EngramId, String)>,
+    pub rejected: Vec<(EngramId, RejectCause)>,
 }
 
 /// Erreur de mutation du store : distingue absence et échec de persistance
@@ -379,7 +388,7 @@ impl EngramStore {
                         "état d'engramme illisible : identifiant réservé, engramme en quarantaine"
                     );
                     max_id = max_id.max(eid_u16 as u64);
-                    report.rejected += 1;
+                    report.rejected.push((EngramId(eid_u16 as u64), RejectCause::ReadError(e.to_string())));
                     continue;
                 }
             };
@@ -411,7 +420,7 @@ impl EngramStore {
                         poids = ws.len(),
                         "incohérence membres/poids : engramme en quarantaine (aucun poids inventé)"
                     );
-                    report.rejected += 1;
+                    report.rejected.push((EngramId(eid_u16 as u64), RejectCause::InconsistentWeights { members: members.len(), weights: ws.len() }));
                     continue;
                 }
             };
@@ -421,18 +430,18 @@ impl EngramStore {
             // invalide est écarté (id déjà réservé), pas réparé ni publié.
             if let Err(e) = self.validate_candidate(&engram) {
                 tracing::error!(engram_id = eid_u16, error = ?e, "engramme invalide au chargement : écarté");
-                report.rejected += 1;
+                report.rejected.push((eid, RejectCause::Validation(format!("{:?}", e))));
                 continue;
             }
             // RÉPARATION des projections : reconstruire le bitset depuis les
             // membres validés, sans écriture inutile (ensure_engram_bit no-op si
             // le bit est déjà posé). Un échec marque la projection DÉGRADÉE mais
             // l'état canonique reste valide et publié.
-            let mut degraded = false;
+            let mut degraded: Option<String> = None;
             for (nid, _) in &engram.ensemble {
                 if let Err(e) = writer.ensure_engram_bit(nid.0 as u32, eid_u16) {
                     tracing::error!(engram_id = eid_u16, node_id = nid.0, error = %e, "projection bitset dégradée");
-                    degraded = true;
+                    degraded = Some(e.to_string());
                 }
             }
             // Signature spectrale : re-encodée paresseusement par le manager
@@ -441,8 +450,8 @@ impl EngramStore {
             engram.spectral_signature = Vec::new();
             self.cache.insert(eid, engram);
             max_id = max_id.max(eid.0);
-            if degraded {
-                report.degraded.push(eid);
+            if let Some(cause) = degraded {
+                report.degraded.push((eid, cause));
             } else {
                 report.coherent += 1;
             }
