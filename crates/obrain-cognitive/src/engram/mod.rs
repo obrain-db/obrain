@@ -38,8 +38,9 @@ pub use store::{EngramStore, LoadReport, RejectCause, StoreError};
 mod observation;
 #[cfg(feature = "engram")]
 pub use observation::{
-    InMemoryObservationLedger, ObservationFingerprint, ObservationId, ObservationLedger,
-    ObservationOutcome, observation_fingerprint,
+    AbandonOutcome, AtomicEventLedger, CognitiveObservationAdapter, InMemoryAtomicEventLedger,
+    LedgerOutcome, ObservationDefinition, ObservationId, ObservationOutcome, ResolvedState,
+    ResultingState, SourceRevision,
 };
 
 #[cfg(feature = "engram")]
