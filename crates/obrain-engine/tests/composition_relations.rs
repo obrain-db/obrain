@@ -6,8 +6,12 @@
 //!  2. contre-exemple : K1 (A CALLS B) et K2 (B CALLS A) ont les mêmes
 //!     membres {A,B} mais des relations orientées DISTINCTES, chacune
 //!     explicitement possédée (propriété owned_by) : elles restent
-//!     distinguables, et une relation ajoutée au graphe global ne change
-//!     pas leur identité.
+//!     distinguables par orientation et par possession.
+//!
+//! LIMITE (ne pas sur-interpréter) : `owned_by` est une propriété SCALAIRE à
+//! un seul propriétaire ; elle ne démontre PAS l'invariance de l'identité
+//! structurelle, ni le partage d'une même relation par plusieurs compositions
+//! (il faudrait un modèle relation/occurrence/rôle/version, hors de ce test).
 
 use obrain_common::types::{PropertyKey, Value};
 use obrain_engine::ObrainDB;
