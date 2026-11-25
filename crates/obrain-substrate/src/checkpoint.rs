@@ -187,6 +187,9 @@ fn checkpoint_sous_fence(
         Zone::Zorder,
         Zone::SimplexDir,
         Zone::SimplexIncidence,
+        Zone::EngramMembers,
+        Zone::EngramBitset,
+        Zone::EngramWeights,
     ] {
         let zf = substrate.open_zone(zone)?;
         // An empty zone has no mmap; skip silently.

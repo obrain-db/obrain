@@ -124,7 +124,9 @@ impl EngramManager {
             for engram in self.store.list() {
                 let sig = self.spectral.encode(&engram.ensemble);
                 self.vector_index.upsert(&engram.id.to_string(), &sig);
-                self.store.update(engram.id, |e| e.spectral_signature = sig);
+                // Reconstruction de projection DÉRIVÉE : cache seul, pas de
+                // réécriture durable (update() miroir le substrate).
+                self.store.rehydrate_signature(engram.id, sig);
             }
             tracing::info!(loaded, "cognitive: engrams rechargés depuis le substrate");
         }
