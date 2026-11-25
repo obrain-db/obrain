@@ -45245,7 +45245,10 @@ mod tests {
                 "l'id 1 reste PART_OF"
             );
             let id_synapse = reg.id_for("SYNAPSE").expect("SYNAPSE interné");
-            assert_ne!(id_synapse, 1, "SYNAPSE reçoit un id libre, pas l'id 1 occupé");
+            assert_ne!(
+                id_synapse, 1,
+                "SYNAPSE reçoit un id libre, pas l'id 1 occupé"
+            );
             assert_eq!(reg.name_for(id_synapse).as_deref(), Some("SYNAPSE"));
 
             assert_eq!(

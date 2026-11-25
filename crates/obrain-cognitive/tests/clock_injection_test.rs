@@ -224,8 +224,7 @@ fn apres_redemarrage_sans_materialisation_la_remontee_est_reelle() {
     //    `t_hi` durable est resté BASE. L'énergie REMONTE à ≈ 0,7071.
     clock.store(BASE + JOUR / 2, Ordering::Relaxed);
     let sub = Arc::new(SubstrateStore::open(&chemin).unwrap());
-    let store =
-        EnergyStore::with_substrate(config_h24(), sub.clone()).with_clock(clock_fn.clone());
+    let store = EnergyStore::with_substrate(config_h24(), sub.clone()).with_clock(clock_fn.clone());
     let e = store.get_energy(node);
     // Assertion qui FIGE la limite (pas qui la cache) : le maximum de lecture
     // n'a pas été persisté, donc la remontée est réelle et vaut 2^(-12/24).

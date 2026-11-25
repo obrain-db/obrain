@@ -276,7 +276,7 @@ impl PositionProvider for SubstratePositionProvider {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "engram"))]
 mod tests {
     use super::*;
     use crate::engram::position::SlicePositionProvider;

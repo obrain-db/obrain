@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn echec_sync_incidence_empeche_la_troncature_du_wal() {
         use crate::synapse_incidence::{
-            SynapseIncidenceZone, SYNAPSE_INCIDENCE_FILENAME, SYNAPSE_POSTINGS_FILENAME,
+            SYNAPSE_INCIDENCE_FILENAME, SYNAPSE_POSTINGS_FILENAME, SynapseIncidenceZone,
         };
 
         let dir = tempdir().unwrap();
