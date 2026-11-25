@@ -132,3 +132,98 @@ fn c_deux_fils_evaluent_chacun_son_propre_marqueur() {
         assert!(r.iter().all(|v| *v > 0));
     }
 }
+
+/// Taille du fichier WAL — ce que l'ANCIEN oracle compare à la frontière durable.
+fn taille_wal(base: &std::path::Path) -> u64 {
+    std::fs::metadata(base.join("substrate.wal"))
+        .map(|m| m.len())
+        .unwrap_or(0)
+}
+
+/// **Le scénario discriminant** : commit applicatif durable, puis écritures cognitives
+/// concurrentes. Ancien oracle et nouvel oracle jugent LA MÊME exécution.
+///
+/// Ce qui déclenche RÉELLEMENT des écritures cognitives : la flotte de thinkers
+/// (`open_substrate_with_thinkers`). `open_substrate_observed` seul n'écrit rien — mesuré.
+// MESURÉ : dans cette configuration (create_node/create_edge + flotte standard), AUCUNE
+// écriture cognitive n'atteint le WAL — ni avec `open_substrate_observed`, ni avec
+// `open_substrate_with_thinkers` et 5 s d'attente (`taille finale == fin du marqueur`).
+// Le scénario « commit durable puis écriture cognitive non synchronisée » n'est donc PAS
+// reproduit ici ; le test échoue volontairement plutôt que de faire semblant. Il reste
+// `#[ignore]` tant que le déclencheur réel des écritures cognitives n'est pas établi.
+#[ignore = "aucune écriture cognitive observée dans cette configuration : scénario non établi"]
+#[test]
+fn d_ancien_oracle_contre_nouveau_sur_la_meme_execution() {
+    let d = dir("d");
+    let db = ObrainDB::open_substrate_with_thinkers(
+        &d,
+        obrain_cognitive::thinker::ThinkersConfig::default(),
+    )
+    .expect("ouverture avec thinkers");
+    let mut s = db.session();
+    let mut ancien_signalerait = 0;
+    let mut nouvel_signalerait = 0;
+    let mut cognition_presente_a_la_mesure = 0;
+    let mut mesures = Vec::new();
+
+    for _ in 0..10 {
+        s.begin_transaction().expect("begin");
+        let a = s.create_node(&["T"]);
+        let b = s.create_node(&["T"]);
+        s.create_edge(a, b, "LIEN");
+        s.commit().expect("commit");
+
+        let fin = db
+            .substrate_handle()
+            .and_then(|x| x.frontiere_du_commit_du_fil())
+            .expect("le marqueur du commit doit être publié");
+        let durable = db.wal_octets_durables().expect("base persistante");
+        let total = taille_wal(&d);
+
+        if fin > durable {
+            nouvel_signalerait += 1;
+        }
+        if durable < total {
+            ancien_signalerait += 1;
+        }
+        if total > fin {
+            cognition_presente_a_la_mesure += 1;
+        }
+        mesures.push((fin, durable, total));
+    }
+
+    // On laisse la flotte de thinkers travailler, en attendant un VRAI signe d'écriture
+    // cognitive (le WAL dépasse le dernier marqueur applicatif) — pas un délai arbitraire.
+    let fin_dernier = mesures.last().map(|m| m.0).unwrap_or(0);
+    let mut cognition_apres_coup = 0;
+    for _ in 0..50 {
+        if taille_wal(&d) > fin_dernier {
+            cognition_apres_coup = 1;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let total_final = taille_wal(&d);
+    db.close().expect("close");
+
+    println!(
+        "10 commits — cognition présente à la mesure : {cognition_presente_a_la_mesure}/10 ; \
+         ancien oracle signalerait : {ancien_signalerait} ; nouvel oracle signalerait : {nouvel_signalerait} ; \
+         écriture cognitive après le dernier marqueur : {cognition_apres_coup} (taille finale {total_final} > fin {fin_dernier})"
+    );
+
+    assert!(
+        cognition_apres_coup == 1,
+        "les thinkers n'ont rien écrit dans le WAL : le scénario n'a toujours pas eu lieu"
+    );
+    assert_eq!(
+        nouvel_signalerait, 0,
+        "le nouvel oracle signale {nouvel_signalerait} commit(s) acquitté(s) non couvert(s)"
+    );
+    assert!(
+        ancien_signalerait + cognition_apres_coup > 0,
+        "l'ancien oracle devrait signaler une violation dès que la cognition écrit après le marqueur"
+    );
+
+    let _ = std::fs::remove_dir_all(&d);
+}
