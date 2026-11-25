@@ -337,10 +337,22 @@ impl EngramStore {
                 continue;
             }
             let eid = EngramId(eid_u16 as u64);
-            let ensemble: Vec<(NodeId, f64)> = members
-                .into_iter()
-                .map(|n| (NodeId(n as u64), 1.0))
-                .collect();
+            // Restaure les poids (état dynamique) depuis la zone parallèle ;
+            // sans zone (ancienne base) ou longueur incohérente → 1.0.
+            let ensemble: Vec<(NodeId, f64)> = {
+                let weights = writer.engram_weights(eid_u16).unwrap_or(None);
+                match weights {
+                    Some(ws) if ws.len() == members.len() => members
+                        .into_iter()
+                        .zip(ws)
+                        .map(|(n, w)| (NodeId(n as u64), w as f64))
+                        .collect(),
+                    _ => members
+                        .into_iter()
+                        .map(|n| (NodeId(n as u64), 1.0))
+                        .collect(),
+                }
+            };
             let mut engram = Engram::new(eid, ensemble);
             // Signature spectrale : re-encodée paresseusement par le manager
             // (le rappel spectral l'utilise ; ici on la laisse vide, le
@@ -558,6 +570,20 @@ impl EngramStore {
                 error = %e,
                 "substrate engram mirror failed (insert/update)"
             );
+            return;
+        }
+        // Poids : zone parallèle (état dynamique, même ordre que les membres).
+        if let (Some(writer), Some(eid_u16)) =
+            (self.substrate_writer(), Self::engram_id_to_u16(engram.id))
+        {
+            let weights: Vec<f32> = engram.ensemble.iter().map(|(_, w)| *w as f32).collect();
+            if let Err(e) = writer.set_engram_weights(eid_u16, weights) {
+                tracing::warn!(
+                    engram_id = engram.id.0,
+                    error = %e,
+                    "substrate engram weights mirror failed"
+                );
+            }
         }
     }
 

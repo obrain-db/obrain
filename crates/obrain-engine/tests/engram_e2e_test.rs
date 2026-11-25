@@ -299,4 +299,18 @@ fn parite_etat_cognitif_memoire_substrate_reouverture() {
         .collect();
     eprintln!("PARITE avant={avant:?}");
     eprintln!("PARITE apres={apres:?}");
+    // Invariant #1 : les poids appris survivent à la réouverture (aux arrondis
+    // f32 de la zone près, tolérance 1e-6).
+    for (id_avant, poids_avant, _) in &avant {
+        let (_, poids_apres, _) = apres
+            .iter()
+            .find(|(id2, _, _)| id2 == id_avant)
+            .expect("engramme présent après réouverture");
+        for (a, b) in poids_avant.iter().zip(poids_apres) {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "poids non restaurés pour l'engramme {id_avant} : avant={poids_avant:?} après={poids_apres:?}"
+            );
+        }
+    }
 }
