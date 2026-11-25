@@ -2787,6 +2787,10 @@ pub struct SubstrateStore {
     /// [`Self::persist_properties`] bincode sidecar path is the only
     /// property storage in play.
     props_zone: Option<RwLock<PropsZone>>,
+    /// Identité stable de l'écrivain (writer.id, #343) — auteur des estampilles.
+    writer_id: u64,
+    /// Horloge hybride locale (HLC) pour estampiller les écritures (#334).
+    horloge: Mutex<crate::horloge_hybride::HorlogeHybride>,
     /// Serializes the read-modify-write of a node's edge-chain head in
     /// `splice_edge_at_head` and the delete-unlink path. Without it, concurrent
     /// `create_edge` / `delete_edge` on the same source race on `first_edge_off`,
@@ -8029,6 +8033,7 @@ impl SubstrateStore {
         let lecture_seule = sub.est_lecture_seule();
         // (obrain#164) Écriture partagée : décidée ici, comme la lecture seule.
         let ecriture_partagee = sub.est_ecriture_partagee() && !lecture_seule;
+        let writer_id = crate::writer_id::writer_id(sub.path()).unwrap_or(0);
         // ══════ GARDE D'INTEGRITE DE LA REPERMUTATION ══════
         //
         // Deux refus, tous deux places ICI et non sur le resultat du
@@ -8561,6 +8566,8 @@ impl SubstrateStore {
             vec_columns: Arc::new(VecColumnRegistry::new()),
             blob_columns: Arc::new(BlobColumnRegistry::new()),
             props_zone,
+            writer_id,
+            horloge: Mutex::new(crate::horloge_hybride::HorlogeHybride::nouvelle()),
             splice_lock: Mutex::new(()),
             named_graphs: RwLock::new(std::collections::HashMap::new()),
             tx_undo: RwLock::new(std::collections::HashMap::new()),
@@ -12541,10 +12548,18 @@ impl SubstrateStore {
         //    les appends suivants suivent l'unité courante (slot) jusqu'au
         //    débordement. La tête est adressée en BRUT (U48) — on n'écrit le
         //    record que si elle change.
+        let estampille = {
+            let millis = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            self.horloge.lock().maintenant(millis)
+        };
         let nouvelle_tete: u64 = {
             let mut pz = pz_lock.write();
             let pv = encode_value(&mut pz, value)?;
-            let entry = PropertyEntry::new(prop_key_id, pv);
+            let entry =
+                PropertyEntry::new_stamped(prop_key_id, pv, self.writer_id, estampille.pack());
             let tete_brute = if node_rec.first_prop_off.to_u64() == 0 {
                 None
             } else {

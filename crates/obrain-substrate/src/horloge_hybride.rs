@@ -23,6 +23,21 @@ pub struct HorlogeHybride {
     logique: u32,
 }
 
+impl Estampille {
+    /// Encode en u64 pour le stockage on-disk : 48 bits de `physique` (positif,
+    /// millis) + 16 bits de `logique`. Suffit pour la convergence LWW.
+    pub fn pack(self) -> u64 {
+        ((self.physique.max(0) as u64) << 16) | (self.logique as u64 & 0xFFFF)
+    }
+
+    pub fn depaqueter(v: u64) -> Self {
+        Estampille {
+            physique: (v >> 16) as i64,
+            logique: (v & 0xFFFF) as u32,
+        }
+    }
+}
+
 impl HorlogeHybride {
     pub fn nouvelle() -> Self {
         Self::default()
