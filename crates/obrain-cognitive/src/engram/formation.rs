@@ -316,6 +316,10 @@ pub struct HebbianWithSurprise {
     surprise_accumulator: f64,
     /// Number of activations recorded (for averaging).
     activation_count: u32,
+    /// Compositions deja formees (ensemble de NodeId trie) : rend
+    /// `should_form_engram` IDEMPOTENT. Sans cela il re-emet le meme motif tant
+    /// que les compteurs restent >= min_episodes et duplique l engramme.
+    formed: std::cell::RefCell<std::collections::HashSet<Vec<u64>>>,
 }
 
 impl HebbianWithSurprise {
@@ -326,6 +330,7 @@ impl HebbianWithSurprise {
             detector: CoActivationDetector::new(),
             surprise_accumulator: 0.0,
             activation_count: 0,
+            formed: std::cell::RefCell::new(std::collections::HashSet::new()),
         }
     }
 
@@ -358,6 +363,20 @@ impl HebbianWithSurprise {
             ensemble.truncate(self.config.max_ensemble_size);
         }
 
+        // DEDUPLICATION : une composition de noeuds n est formee qu UNE fois.
+        // Le detecteur continue de proposer le meme motif tant que ses compteurs
+        // restent >= min_episodes ; sans ce filtre chaque nouvelle observation
+        // dupliquait l engramme (mesure : 2x le meme trio).
+        let mut formed = self.formed.borrow_mut();
+        ensembles.retain(|ensemble| {
+            let mut key: Vec<u64> = ensemble.iter().map(|(n, _)| n.0).collect();
+            key.sort_unstable();
+            if formed.contains(&key) {
+                return false;
+            }
+            formed.insert(key);
+            true
+        });
         ensembles
     }
 
@@ -451,6 +470,12 @@ impl HebbianWithSurprise {
             detector: CoActivationDetector::restore(&snapshot.detector),
             surprise_accumulator: snapshot.surprise_accumulator,
             activation_count: snapshot.activation_count,
+            // Le snapshot ne porte pas les compositions deja formees : apres
+            // restauration, la deduplication repart d un ensemble vide (limite
+            // assumee : un motif deja forme avant le snapshot pourra etre
+            // repropose). A ajouter au format si la restauration doit rester
+            // strictement idempotente.
+            formed: std::cell::RefCell::new(std::collections::HashSet::new()),
         }
     }
 }
