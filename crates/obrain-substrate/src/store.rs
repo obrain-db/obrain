@@ -3041,6 +3041,61 @@ pub fn noeuds_hydrates() -> u64 {
     NOEUDS_HYDRATES.with(std::cell::Cell::get)
 }
 
+
+
+/// Issue d'une application transactionnelle d'événement (générique, expérimentale).
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum IssueEvenement {
+    /// Première application : état et preuve présents.
+    Applique,
+    /// Même identité, même définition : aucun nouvel effet.
+    RejeuIdentique,
+    /// Même identité, définition incompatible : conflit.
+    ConflitIdentite,
+    /// Révision de la cible différente de la révision attendue : refus.
+    ConflitRevision,
+}
+
+static VERROU_EVENEMENTS: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// Application générique d'un événement identifiable sur une cible logique
+/// (nœud existant) : déduplication par identité d'événement, précondition de
+/// révision, transformation + preuve sous une section critique commune.
+/// EXPÉRIMENTAL : la durabilité sous perte électrique n'est PAS acquise (la
+/// valeur n'est pas WAL-journalisée) ; l'atomicité réelle identité+transformation
+/// reste à qualifier sur le chemin transactionnel natif.
+pub fn appliquer_evenement(
+    store: &SubstrateStore,
+    cible: NodeId,
+    evenement_id: &str,
+    definition: &str,
+    revision_attendue: &str,
+    nouvelle_revision: &str,
+    etat_resultant: Value,
+) -> SubstrateResult<IssueEvenement> {
+    use obrain_core::graph::traits::{GraphStore, GraphStoreMut};
+    let _garde = VERROU_EVENEMENTS.lock();
+    // 1. Déduplication par identité d'événement.
+    let cle = format!("ev:{evenement_id}");
+    if let Some(existante) = store.get_node_property(cible, &PropertyKey::new(&cle)) {
+        return Ok(if existante.as_str() == Some(definition) {
+            IssueEvenement::RejeuIdentique
+        } else {
+            IssueEvenement::ConflitIdentite
+        });
+    }
+    // 2. Précondition de révision.
+    let rev = store.get_node_property(cible, &PropertyKey::new("revision"));
+    let rev_courante = rev.as_ref().and_then(|v| v.as_str()).unwrap_or("");
+    if rev_courante != revision_attendue {
+        return Ok(IssueEvenement::ConflitRevision);
+    }
+    // 3. Transformation + preuve.
+    store.set_node_property(cible, &cle, Value::from(definition.to_string()));
+    store.set_node_property(cible, "etat", etat_resultant);
+    store.set_node_property(cible, "revision", Value::from(nouvelle_revision.to_string()));
+    Ok(IssueEvenement::Applique)
+}
 impl SubstrateStore {
     /// Chemin du catalogue d'index.
     fn chemin_catalogue(&self) -> std::path::PathBuf {
@@ -46102,6 +46157,83 @@ mod fenetre_remplacement_blob {
             s.blob_columns
                 .read_value(&cle, EntityKind::Node, a.0 as u32)
                 .is_none()
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod application_evenement {
+    use super::*;
+
+    fn nœud(store: &SubstrateStore) -> NodeId {
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "revision", Value::from("rev0"));
+        id
+    }
+
+    #[test]
+    fn a_premiere_application_etat_et_preuve_presents() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = nœud(&store);
+        let r = appliquer_evenement(
+            &store,
+            id,
+            "e1",
+            "def-e1",
+            "rev0",
+            "rev1",
+            Value::Int64(7),
+        )
+        .unwrap();
+        assert_eq!(r, IssueEvenement::Applique);
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("etat")),
+            Some(Value::Int64(7))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("ev:e1")),
+            Some(Value::from("def-e1"))
+        );
+    }
+
+    #[test]
+    fn b_rejeu_identique_aucun_nouvel_effet() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = nœud(&store);
+        appliquer_evenement(&store, id, "e1", "def-e1", "rev0", "rev1", Value::Int64(7)).unwrap();
+        let r = appliquer_evenement(&store, id, "e1", "def-e1", "rev1", "rev2", Value::Int64(9)).unwrap();
+        assert_eq!(r, IssueEvenement::RejeuIdentique);
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("etat")),
+            Some(Value::Int64(7)),
+            "l'état ne change pas"
+        );
+    }
+
+    #[test]
+    fn c_meme_identite_contenu_different_conflit() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = nœud(&store);
+        appliquer_evenement(&store, id, "e1", "def-a", "rev0", "rev1", Value::Int64(1)).unwrap();
+        let r = appliquer_evenement(&store, id, "e1", "def-b", "rev1", "rev2", Value::Int64(2)).unwrap();
+        assert_eq!(r, IssueEvenement::ConflitIdentite);
+    }
+
+    #[test]
+    fn d_conflit_de_revision_refus() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = nœud(&store);
+        let r = appliquer_evenement(&store, id, "e1", "def-e1", "rev-ancienne", "rev1", Value::Int64(1)).unwrap();
+        assert_eq!(r, IssueEvenement::ConflitRevision);
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("etat")),
+            None,
+            "aucun état appliqué"
         );
     }
 }
