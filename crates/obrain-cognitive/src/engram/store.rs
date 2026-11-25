@@ -340,14 +340,40 @@ impl EngramStore {
             // Restaure les poids (état dynamique) depuis la zone parallèle ;
             // sans zone (ancienne base) ou longueur incohérente → 1.0.
             let ensemble: Vec<(NodeId, f64)> = {
-                let weights = writer.engram_weights(eid_u16).unwrap_or(None);
+                // Distingue explicitement : erreur de lecture (ne pas charger
+                // silencieusement avec des poids faux), absence legacy (1.0
+                // voulu), incohérence de longueur (corruption signalée).
+                let weights: Option<Vec<f32>> = match writer.engram_weights(eid_u16) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        tracing::error!(
+                            engram_id = eid_u16,
+                            error = %e,
+                            "lecture des poids d'engramme impossible : engramme ignoré"
+                        );
+                        continue;
+                    }
+                };
                 match weights {
                     Some(ws) if ws.len() == members.len() => members
                         .into_iter()
                         .zip(ws)
                         .map(|(n, w)| (NodeId(n as u64), w as f64))
                         .collect(),
-                    _ => members
+                    Some(ws) => {
+                        tracing::warn!(
+                            engram_id = eid_u16,
+                            membres = members.len(),
+                            poids = ws.len(),
+                            "incohérence membres/poids : poids ignorés (1.0)"
+                        );
+                        members
+                            .into_iter()
+                            .map(|n| (NodeId(n as u64), 1.0))
+                            .collect()
+                    }
+                    // Absence legacy (base sans zone de poids) : 1.0 voulu.
+                    None => members
                         .into_iter()
                         .map(|n| (NodeId(n as u64), 1.0))
                         .collect(),
@@ -564,31 +590,36 @@ impl EngramStore {
             return;
         }
         let nids: Vec<NodeId> = engram.ensemble.iter().map(|(n, _)| *n).collect();
-        // Écriture ATOMIQUE membres+poids (sous le même verrou, motif simplex),
-        // puis bitset (par nœud, pas de correspondance d'ordre).
-        if let (Some(writer), Some(eid_u16)) =
-            (self.substrate_writer(), Self::engram_id_to_u16(engram.id))
-        {
-            let members: Vec<u32> = nids
-                .iter()
-                .filter_map(|n| Self::node_id_to_u32(*n))
-                .collect();
-            let weights: Vec<f32> = engram.ensemble.iter().map(|(_, w)| *w as f32).collect();
-            if let Err(e) = writer.set_engram_state(eid_u16, members, weights) {
-                tracing::warn!(
-                    engram_id = engram.id.0,
-                    error = %e,
-                    "substrate engram state mirror failed"
-                );
-                return;
-            }
-        }
-        if let Err(e) = self.form_with_id(engram.id, &nids) {
+        let Some(writer) = self.substrate_writer() else {
+            return;
+        };
+        let Some(eid_u16) = Self::engram_id_to_u16(engram.id) else {
+            return;
+        };
+        let members: Vec<u32> = nids
+            .iter()
+            .filter_map(|n| Self::node_id_to_u32(*n))
+            .collect();
+        let weights: Vec<f32> = engram.ensemble.iter().map(|(_, w)| *w as f32).collect();
+        // Écriture ATOMIQUE membres+poids (même verrou), puis bitset par nœud
+        // (aucune correspondance d'ordre) — pas de réécriture des membres.
+        if let Err(e) = writer.set_engram_state(eid_u16, members.clone(), weights) {
             tracing::warn!(
                 engram_id = engram.id.0,
                 error = %e,
-                "substrate engram bitset mirror failed"
+                "substrate engram state mirror failed"
             );
+            return;
+        }
+        for nid in &members {
+            if let Err(e) = writer.add_engram_bit(*nid, eid_u16) {
+                tracing::warn!(
+                    engram_id = engram.id.0,
+                    node_id = *nid,
+                    error = %e,
+                    "substrate engram bitset mirror failed"
+                );
+            }
         }
     }
 
@@ -603,7 +634,9 @@ impl EngramStore {
         let Some(eid_u16) = Self::engram_id_to_u16(id) else {
             return;
         };
-        if let Err(e) = writer.set_engram_members(eid_u16, Vec::new()) {
+        // Suppression atomique : membres ET poids vides (set_engram_state
+        // valide 0 == 0 et écrit les deux zones sous un même verrou).
+        if let Err(e) = writer.set_engram_state(eid_u16, Vec::new(), Vec::new()) {
             tracing::warn!(
                 engram_id = id.0,
                 error = %e,
