@@ -24,10 +24,10 @@
 //!
 //! ## Crash-safety
 //!
-//! Les écritures d'incidence N'ONT AUCUN enregistrement WAL : [`append`] écrit
+//! Les écritures d'incidence N'ONT AUCUN enregistrement WAL : [`SynapseIncidenceZone::append`] écrit
 //! les deux side-cars en mmap DIRECT (cf. `SubstrateStore::create_synapse_slot`),
 //! tandis que seule l'arête SYNAPSE (`write_edge`) passe par le WAL. C'est la
-//! raison pour laquelle [`crate::checkpoint`] msync+fsync ces deux side-cars
+//! raison pour laquelle [`crate::checkpoint()`] msync+fsync ces deux side-cars
 //! AVANT de tronquer le WAL — sans cela, un checkpoint + coupure de courant
 //! perdrait l'index alors que les arêtes, elles, seraient rejouées depuis le
 //! WAL (`for_each_synapse` rendrait 0 pendant que `len()` rendrait N).

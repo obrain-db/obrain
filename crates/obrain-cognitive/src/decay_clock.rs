@@ -18,17 +18,17 @@
 //!
 //! ## Lecture paresseuse, tique facultative
 //!
-//! La valeur rendue par [`current_energy`] est calculée depuis l'ancre, donc
+//! La valeur rendue par `current_energy` est calculée depuis l'ancre, donc
 //! elle est **exacte sans qu'aucune minuterie ne tourne**. La tique
-//! périodique ([`advance_all`]) ne sert qu'à faire vieillir les nœuds que
+//! périodique (`advance_all`) ne sert qu'à faire vieillir les nœuds que
 //! PERSONNE NE LIT, pour `list_low_energy` et l'archivage.
 //!
 //! ## Contrat de monotonie
 //!
 //! Monotonie garantie au sein d'une session (via `session_hi`, en mémoire,
 //! dans [`crate::energy::EnergyStore`]) ; à travers un redémarrage, reprise
-//! sur la dernière borne durable `t_hi` (écrite seulement par [`reinforce`] /
-//! [`advance_all`]). Une lecture seule d'un instant plus grand n'est PAS
+//! sur la dernière borne durable `t_hi` (écrite seulement par `reinforce` /
+//! `advance_all`). Une lecture seule d'un instant plus grand n'est PAS
 //! persistée : après un crash suivi d'un recul d'horloge, l'énergie peut
 //! remonter vers la valeur impliquée par le dernier `t_hi` durable —
 //! limitation documentée, pas une corruption.
@@ -183,7 +183,7 @@ pub fn energy_at(
         Some(t_ref) => Some(law.energy_at(e_ref, elapsed_since(t_ref, now_micros))),
         // Ancienne base SANS ancre : âge inconnu. On ne l'invente pas (pas de
         // remise à zéro silencieuse) : on rend E_ref tel quel, et l'ancrage de
-        // migration est fait par [`advance_all`] au prochain passage.
+        // migration est fait par `advance_all` au prochain passage.
         None => Some(e_ref),
     }
 }
