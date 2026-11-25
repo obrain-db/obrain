@@ -59,6 +59,11 @@ pub const DEFAULT_PREDICTION_ERROR_PER_ACTIVATION: f64 = 0.5;
 pub struct EngramObservationBridge {
     manager: Arc<EngramManager>,
     prediction_error: f64,
+    /// Voie EXPÉRIMENTALE d'identité d'observation (registre VOLATIL).
+    /// Désactivée par défaut : sans opt-in explicite, le pont fait UNIQUEMENT
+    /// de la FORMATION (aucune identité d'observation n'est forcée). Ce n'est
+    /// pas un comportement de production.
+    experimental_revision: bool,
 }
 
 impl EngramObservationBridge {
@@ -67,7 +72,16 @@ impl EngramObservationBridge {
         Self {
             manager,
             prediction_error: DEFAULT_PREDICTION_ERROR_PER_ACTIVATION,
+            experimental_revision: false,
         }
+    }
+
+    /// Active EXPLICITEMENT la voie expérimentale de révision identifiée.
+    /// Sans cet opt-in, le pont ne fait que de la formation. Le registre
+    /// d'observation par défaut est le mock VOLATIL (non durable).
+    pub fn with_experimental_revision(mut self, enabled: bool) -> Self {
+        self.experimental_revision = enabled;
+        self
     }
 
     /// Crée le pont avec une surprise par épisode explicite (tests/simulation).
@@ -75,6 +89,7 @@ impl EngramObservationBridge {
         Self {
             manager,
             prediction_error,
+            experimental_revision: false,
         }
     }
 
@@ -161,7 +176,8 @@ impl EngramObservationBridge {
         if nodes.len() < 2 {
             return BridgeObservation::Ignored;
         }
-        if let Some(id) = observation_id
+        if self.experimental_revision
+            && let Some(id) = observation_id
             && let Some(target) = self.target_engram(&nodes)
         {
             let revision = self.manager.observation_revision(target).unwrap_or(0);
@@ -522,7 +538,8 @@ mod tests {
     #[tokio::test]
     async fn revision_identifiee_sur_engramme_existant() {
         let mgr = manager();
-        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+        let bridge =
+            EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
         // Formation de {1,2}.
         for _ in 0..3 {
             bridge.observe(&edge_event(1, 1, 2), None);
@@ -546,7 +563,8 @@ mod tests {
     #[tokio::test]
     async fn rejeu_de_l_evenement_identifie_ne_reapplique_pas() {
         let mgr = manager();
-        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+        let bridge =
+            EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
         for _ in 0..3 {
             bridge.observe(&edge_event(1, 1, 2), None);
         }
@@ -567,7 +585,8 @@ mod tests {
     #[tokio::test]
     async fn evenement_identifie_sans_cible_forme() {
         let mgr = manager();
-        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+        let bridge =
+            EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
         let out = bridge.observe(&edge_event(1, 10, 11), Some(ObservationId::from_u128(5)));
         assert_eq!(
             out,

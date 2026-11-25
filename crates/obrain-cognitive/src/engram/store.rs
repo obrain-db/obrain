@@ -96,6 +96,11 @@ pub struct EngramStore {
     /// DÉDIÉE, absente de la production.
     #[cfg(feature = "fault-injection")]
     fail_repair_bit: std::sync::atomic::AtomicBool,
+    /// Injection de faute (test) : fait échouer la MATÉRIALISATION dans le
+    /// cache (`revise_with_id`, après l'application au registre) — expose
+    /// l'incohérence registre-Appliqué / store-non-matérialisé.
+    #[cfg(feature = "fault-injection")]
+    fail_materialise: std::sync::atomic::AtomicBool,
     /// Registre des engrammes dont une projection (bitset) est dégradée.
     /// Sert au repli du rappel natif sur l'état canonique. Effacé à chaque
     /// chargement : reflète l'état courant, pas une seconde autorité.
@@ -172,6 +177,8 @@ impl EngramStore {
             fail_bit_after_state: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "fault-injection")]
             fail_repair_bit: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "fault-injection")]
+            fail_materialise: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -197,6 +204,24 @@ impl EngramStore {
     pub fn set_fail_repair_bit(&self, fail: bool) {
         self.fail_repair_bit
             .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Injection de faute (test) : TANT QUE ce drapeau est actif, `mutate`
+    /// échoue AVANT de committer le candidat au cache — reproduit l'échec de
+    /// matérialisation APRÈS que le registre d'observation a dit `Applied`.
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn set_fail_materialise(&self, fail: bool) {
+        self.fail_materialise
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Vrai si la faute de matérialisation est armée (consommée par le manager).
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn take_fail_materialise(&self) -> bool {
+        self.fail_materialise
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Attach a substrate writer. After this call every subsequent
@@ -752,6 +777,11 @@ impl EngramStore {
         // ÉTAT CANDIDAT : clone, applique, valide — SANS muter l'état publié.
         let mut candidate = entry.value().clone();
         f(&mut candidate);
+        // RÉVISION CANONIQUE : toute mutation qui change l'état avance la
+        // révision de CETTE connaissance (autorité unique du contrat
+        // d'observation, quel que soit le chemin : revise, revise_with_id,
+        // mutate, formation, update...).
+        candidate.revision = candidate.revision.saturating_add(1);
         // Invariance de l'identité logique : une révision ne change pas l'id.
         if candidate.id != id {
             return Err(StoreError::ValidationFailed(
@@ -778,6 +808,39 @@ impl EngramStore {
         // Révision incrémentée APRÈS modification + persistance effectives.
         self.revision.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// MATÉRIALISE l'état canonique d'une observation dans le cache, en
+    /// positionnant la révision à `max(révision_courante, révision_demandée)`
+    /// (jamais de régression). Utilisé par le chemin d'application ET par la
+    /// RÉPARATION d'une matérialisation manquante.
+    ///
+    /// La garde « ne jamais restaurer un ancien candidat sur une connaissance
+    /// plus récente » appartient à l'APPELANT (comparer `revision` avant), pas à
+    /// ce point qui matérialise ce qu'on lui donne.
+    pub fn materialize_state(
+        &self,
+        id: EngramId,
+        ensemble: Vec<(NodeId, f64)>,
+        strength: f64,
+        recall_count: u32,
+        revision: u64,
+    ) -> Result<bool, StoreError> {
+        let Some(mut entry) = self.cache.get_mut(&id) else {
+            return Err(StoreError::EngramAbsent(id));
+        };
+        let mut candidate = entry.value().clone();
+        candidate.ensemble = ensemble;
+        candidate.strength = strength;
+        candidate.recall_count = recall_count;
+        candidate.revision = candidate.revision.max(revision);
+        self.validate_candidate(&candidate)?;
+        #[cfg(feature = "substrate")]
+        self.mirror_substrate_insert(&candidate)?;
+        *entry.value_mut() = candidate;
+        drop(entry);
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        Ok(true)
     }
 
     /// Validation d'un candidat AVANT mutation : représentabilité u16/u32 et

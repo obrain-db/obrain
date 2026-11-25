@@ -150,6 +150,13 @@ impl ObservationDefinition {
         self.version
     }
 
+    /// Les nœuds CANONISÉS (triés, dédupliqués). La transformation DOIT
+    /// recevoir exactement ces nœuds, pour que la définitions et l'effet
+    /// appliqué coïncident.
+    pub fn canonical_nodes(&self) -> &[NodeId] {
+        &self.new_nodes
+    }
+
     /// Sérialisation canonique (big-endian, déterministe). C'est l'identité de
     /// CONTENU sur laquelle porte l'égalité.
     ///
@@ -534,6 +541,10 @@ pub struct InMemoryAtomicEventLedger {
     events: Mutex<HashMap<[u8; 16], EventEntry>>,
     resources: Mutex<HashMap<Vec<u8>, u64>>,
     fail_partial_write: std::sync::atomic::AtomicBool,
+    /// Injection (test) : la prochaine application RÉUSSIT réellement mais
+    /// rapporte `Indeterminate` — exerce la résolution qui doit restituer
+    /// l'état EFFECTIVEMENT enregistré.
+    indeterminate_but_applied: std::sync::atomic::AtomicBool,
 }
 
 impl Default for InMemoryAtomicEventLedger {
@@ -548,7 +559,15 @@ impl InMemoryAtomicEventLedger {
             events: Mutex::new(HashMap::new()),
             resources: Mutex::new(HashMap::new()),
             fail_partial_write: std::sync::atomic::AtomicBool::new(false),
+            indeterminate_but_applied: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Injection (test) : la prochaine application réussit mais rapporte
+    /// `Indeterminate` (l'effet EST enregistré, la confirmation ne l'est pas).
+    pub fn set_indeterminate_but_applied(&self, enabled: bool) {
+        self.indeterminate_but_applied
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Injection de faute (test) : la PROCHAINE application simule un crash
@@ -639,6 +658,14 @@ impl AtomicEventLedger for InMemoryAtomicEventLedger {
             },
         );
         resources.insert(resource_id.to_vec(), resulting_revision);
+        // Mode test : l'effet est enregistré, mais la confirmation est
+        // indéterminée — resolve() devra restituer l'état ENREGISTRÉ.
+        if self
+            .indeterminate_but_applied
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return Ok(LedgerOutcome::Indeterminate);
+        }
         Ok(LedgerOutcome::Applied)
     }
 

@@ -400,23 +400,22 @@ impl EngramManager {
 
     /// Applique une observation IDENTIFIÉE, avec précondition de révision.
     ///
-    /// * `observation_id` est l'identité LOGIQUE de l'événement, distincte des
-    ///   tentatives : un rejeu technique la réutilise.
-    /// * `source_revision` est la révision de la connaissance que l'appelant a
-    ///   observée (voir [`Self::observation_revision`]). Si la connaissance a
-    ///   avancé, l'appel rend `RevisionConflict { current_revision }` SANS rien
-    ///   appliquer : l'appelant RECALCULE son observation (mêmes `new_nodes` /
-    ///   `prediction_error` revisés depuis l'état courant) et rejoue avec la
-    ///   MÊME identité et la révision courante.
-    /// * Un rejeu (même identité + même définition) rend `Replayed` et
-    ///   n'applique RIEN de plus ; l'état enregistré est rendu à titre
-    ///   informatif (ne jamais l'écrire par-dessus un état plus récent).
-    /// * `Indeterminate` est RÉSOLU par interrogation de l'état transactionnel
-    ///   (rendu tel quel si rien n'a été appliqué — l'appelant peut rejouer).
+    /// * `observation_id` : identité LOGIQUE de l'événement, distincte des
+    ///   tentatives (un rejeu technique la réutilise).
+    /// * `source_revision` : révision observée par l'appelant (voir
+    ///   [`Self::observation_revision`]). Si la connaissance a avancé côté
+    ///   registre, l'appel rend `RevisionConflict` SANS rien appliquer.
+    /// * Un rejeu rend `Replayed` ET **vérifie la matérialisation** : si le
+    ///   cache est EN RETARD sur la révision enregistrée (échec de
+    ///   matérialisation après application au registre), il est RÉPARÉ avec
+    ///   l'état ENREGISTRÉ. Jamais de restauration d'un ancien candidat sur une
+    ///   connaissance plus récente (`engram.revision > recorded.revision`).
+    /// * `Indeterminate` est résolu par interrogation de l'état transactionnel ;
+    ///   la résolution restitue l'état EFFECTIVEMENT enregistré.
     ///
-    /// NOTE d'intégration : le registre (mock mémoire par défaut) est appliqué
-    /// AVANT la publication du cache. La primitive durable du substrat
-    /// remplacera le mock et portera l'atomicité identité+état.
+    /// NOTE : le registre par défaut est le mock VOLATIL ; la primitive durable
+    /// du substrat portera l'atomicité. La transformation reçoit EXACTEMENT les
+    /// nœuds canonisés de la définition.
     pub fn revise_with_id(
         &self,
         observation_id: ObservationId,
@@ -436,8 +435,10 @@ impl EngramManager {
         // Définition canonique versionnée (refuse non-fini / canonise).
         let definition = ObservationDefinition::new(engram_id, new_nodes, prediction_error)
             .map_err(RevisionError::InvalidObservation)?;
+        // La transformation reçoit les nœuds CANONISÉS : définition et effet
+        // coïncident exactement.
+        let canonical_nodes: Vec<NodeId> = definition.canonical_nodes().to_vec();
 
-        // Sérialise avec les autres mutations de CET engramme.
         let lock = {
             let mut m = self.revise_locks.lock();
             m.entry(engram_id)
@@ -447,15 +448,12 @@ impl EngramManager {
         let _guard = lock.lock();
 
         let adapter = CognitiveObservationAdapter::new(self.observation_ledger.clone());
-        // État canonique COURANT (la transformation est toujours calculée à
-        // partir de la dernière version connue).
         let current = self
             .store
             .get(engram_id)
             .ok_or(RevisionError::EngramAbsent(engram_id))?;
         let mut candidate = current;
-        reconsolidate(&mut candidate, new_nodes, prediction_error);
-        // Projection dérivée : recalculée, jamais conservée périmée.
+        reconsolidate(&mut candidate, &canonical_nodes, prediction_error);
         let signature = self.spectral.encode(&candidate.ensemble);
         let resulting_state = ResultingState {
             ensemble: candidate.ensemble.clone(),
@@ -474,22 +472,31 @@ impl EngramManager {
             )
             .map_err(RevisionError::PersistenceFailed)?;
 
+        let map_store = |e: StoreError| match e {
+            StoreError::EngramAbsent(id) => RevisionError::EngramAbsent(id),
+            StoreError::ValidationFailed(m) => RevisionError::ValidationFailed(m),
+            StoreError::PersistenceFailed(m) => RevisionError::PersistenceFailed(m),
+        };
+
         match outcome {
             ObservationOutcome::Applied { .. } => {
-                let sig = signature.clone();
-                let state = resulting_state.clone();
+                // Injection de faute (test) : échec de matérialisation APRÈS
+                // l'application au registre → incohérence réparable au rejeu.
+                #[cfg(feature = "fault-injection")]
+                if self.store.take_fail_materialise() {
+                    return Err(RevisionError::PersistenceFailed(
+                        "injected materialisation failure".into(),
+                    ));
+                }
                 self.store
-                    .mutate(engram_id, move |e| {
-                        e.ensemble = state.ensemble;
-                        e.strength = state.strength;
-                        e.recall_count = state.recall_count;
-                        e.spectral_signature = sig;
-                    })
-                    .map_err(|e| match e {
-                        StoreError::EngramAbsent(id) => RevisionError::EngramAbsent(id),
-                        StoreError::ValidationFailed(m) => RevisionError::ValidationFailed(m),
-                        StoreError::PersistenceFailed(m) => RevisionError::PersistenceFailed(m),
-                    })?;
+                    .materialize_state(
+                        engram_id,
+                        resulting_state.ensemble.clone(),
+                        resulting_state.strength,
+                        resulting_state.recall_count,
+                        resulting_revision,
+                    )
+                    .map_err(map_store)?;
                 self.vector_index
                     .upsert(&engram_id.to_string(), &signature);
                 let engram = self
@@ -509,43 +516,95 @@ impl EngramManager {
                     }),
                 ))
             }
-            ObservationOutcome::Replayed { state, revision } => {
-                // RIEN n'est réappliqué : on rend l'état ENREGISTRÉ.
-                Ok((ObservationOutcome::Replayed { state, revision }, None))
+            ObservationOutcome::Replayed {
+                state: recorded,
+                revision: rec_rev,
+            } => {
+                // Vérifier la matérialisation ; réparer si le cache est en
+                // retard. Jamais au-delà d'une révision plus récente.
+                let live = self
+                    .store
+                    .get(engram_id)
+                    .ok_or(RevisionError::EngramAbsent(engram_id))?;
+                if live.revision < rec_rev {
+                    self.store
+                        .materialize_state(
+                            engram_id,
+                            recorded.ensemble.clone(),
+                            recorded.strength,
+                            recorded.recall_count,
+                            rec_rev,
+                        )
+                        .map_err(map_store)?;
+                    let sig = self.spectral.encode(&recorded.ensemble);
+                    self.vector_index.upsert(&engram_id.to_string(), &sig);
+                }
+                Ok((
+                    ObservationOutcome::Replayed {
+                        state: recorded,
+                        revision: rec_rev,
+                    },
+                    None,
+                ))
             }
             ObservationOutcome::IdentityConflict { recorded } => {
                 Ok((ObservationOutcome::IdentityConflict { recorded }, None))
             }
-            ObservationOutcome::RevisionConflict { current_revision } => {
-                // Recalcul attendu côté appelant (même identité). On n'applique
-                // rien : l'observation a été calculée sur une révision périmée.
-                Ok((
-                    ObservationOutcome::RevisionConflict { current_revision },
-                    None,
-                ))
-            }
+            ObservationOutcome::RevisionConflict { current_revision } => Ok((
+                ObservationOutcome::RevisionConflict { current_revision },
+                None,
+            )),
             ObservationOutcome::Abandoned => Ok((ObservationOutcome::Abandoned, None)),
             ObservationOutcome::Indeterminate => {
-                // Interroger l'état transactionnel, ne pas deviner.
                 match adapter
                     .resolve(observation_id)
                     .map_err(RevisionError::PersistenceFailed)?
                 {
-                    ResolvedState::NotApplied => {
-                        Ok((ObservationOutcome::Indeterminate, None))
+                    ResolvedState::NotApplied => Ok((ObservationOutcome::Indeterminate, None)),
+                    ResolvedState::Applied {
+                        definition: rec_def,
+                        state: rec_state,
+                        revision: rec_rev,
+                    } => {
+                        // La résolution restitue l'état EFFECTIVEMENT enregistré.
+                        if rec_def != definition.canonical_bytes() {
+                            return Err(RevisionError::ValidationFailed(
+                                "définition enregistrée différente de la définition tentée".into(),
+                            ));
+                        }
+                        let recorded = ResultingState::from_canonical_bytes(&rec_state)
+                            .map_err(RevisionError::PersistenceFailed)?;
+                        let live = self
+                            .store
+                            .get(engram_id)
+                            .ok_or(RevisionError::EngramAbsent(engram_id))?;
+                        if live.revision < rec_rev {
+                            self.store
+                                .materialize_state(
+                                    engram_id,
+                                    recorded.ensemble.clone(),
+                                    recorded.strength,
+                                    recorded.recall_count,
+                                    rec_rev,
+                                )
+                                .map_err(map_store)?;
+                            let sig = self.spectral.encode(&recorded.ensemble);
+                            self.vector_index.upsert(&engram_id.to_string(), &sig);
+                        }
+                        Ok((
+                            ObservationOutcome::Replayed {
+                                state: recorded,
+                                revision: rec_rev,
+                            },
+                            None,
+                        ))
                     }
-                    ResolvedState::Applied { .. } => Ok((
-                        ObservationOutcome::Replayed {
-                            state: resulting_state,
-                            revision: resulting_revision,
-                        },
-                        None,
-                    )),
                     ResolvedState::Abandoned => Ok((ObservationOutcome::Abandoned, None)),
                 }
             }
         }
     }
+
 
     // -----------------------------------------------------------------
     // Recall
