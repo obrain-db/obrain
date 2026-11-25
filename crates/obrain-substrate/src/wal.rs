@@ -151,6 +151,7 @@ pub enum WalKind {
     PropSetVersioned = 0x75,
     /// Poids par membre d'engramme (f32 en bits u32, même ordre que les membres).
     EngramWeightsSet = 0x76,
+    EngramStateSet = 0x77,
     CoactDecay = 0x46,
     /// (2026-08-23, chantier SlotRemappable) Repermutation Hilbert V2,
     /// porteuse d'un `remap_epoch` — les side-cars slot-indexés sont
@@ -257,6 +258,7 @@ impl WalKind {
             0x74 => SimplexPassesConfig,
             0x75 => PropSetVersioned,
             0x76 => EngramWeightsSet,
+            0x77 => EngramStateSet,
             0x46 => CoactDecay,
             0x54 => HilbertRepermuteV2,
             0x55 => CompactCommunityV2,
@@ -783,6 +785,15 @@ pub enum WalPayload {
         engram_id: u16,
         weights: Vec<u32>,
     },
+    /// État complet d'un engramme (membres + poids en bits u32) en UN record :
+    /// l'unité atomique de journalisation qui préserve le couple au rejeu (un
+    /// arrêt entre deux records ne peut plus mélanger nouveaux membres et
+    /// anciens poids). EN FIN D'ENUM.
+    EngramStateSet {
+        engram_id: u16,
+        members: Vec<u32>,
+        weights: Vec<u32>,
+    },
 }
 
 impl WalPayload {
@@ -821,6 +832,7 @@ impl WalPayload {
             EngramMembersSet { .. } => K::EngramMembersSet,
             EngramBitsetSet { .. } => K::EngramBitsetSet,
             EngramWeightsSet { .. } => K::EngramWeightsSet,
+            EngramStateSet { .. } => K::EngramStateSet,
             CoactDecay { .. } => K::CoactDecay,
             CompactCommunity { .. } => K::CompactCommunity,
             HilbertRepermuteV2 { .. } => K::HilbertRepermuteV2,
