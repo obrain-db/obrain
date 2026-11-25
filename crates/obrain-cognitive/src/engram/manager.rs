@@ -118,6 +118,14 @@ impl EngramManager {
         self.store.attach_substrate(writer);
         let loaded = self.store.load_from_substrate();
         if loaded > 0 {
+            // Re-dériver les signatures spectrales (projection de l'ensemble
+            // pondéré restauré) et ré-upserter l'index vectoriel — le rappel
+            // spectral est opérationnel dès la réouverture.
+            for engram in self.store.list() {
+                let sig = self.spectral.encode(&engram.ensemble);
+                self.vector_index.upsert(&engram.id.to_string(), &sig);
+                self.store.update(engram.id, |e| e.spectral_signature = sig);
+            }
             tracing::info!(loaded, "cognitive: engrams rechargés depuis le substrate");
         }
     }
