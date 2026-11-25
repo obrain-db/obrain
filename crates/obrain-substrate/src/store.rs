@@ -3092,9 +3092,46 @@ pub fn appliquer_evenement(
     }
     // 3. Transformation + preuve.
     store.set_node_property(cible, &cle, Value::from(definition.to_string()));
+    #[cfg(test)]
+    crate::store::suspension_evenement::suspendre_apres_preuve();
     store.set_node_property(cible, "etat", etat_resultant);
     store.set_node_property(cible, "revision", Value::from(nouvelle_revision.to_string()));
     Ok(IssueEvenement::Applique)
+}
+
+#[cfg(test)]
+pub mod suspension_evenement {
+    use parking_lot::{Condvar, Mutex};
+
+    pub struct Etat {
+        pub suspendu: bool,
+        pub reprendre: bool,
+    }
+    pub static ETAT: Mutex<Etat> = Mutex::new(Etat { suspendu: false, reprendre: false });
+    pub static CV: Condvar = Condvar::new();
+
+    pub fn suspendre_apres_preuve() {
+        let mut e = ETAT.lock();
+        e.suspendu = true;
+        CV.notify_all();
+        while !e.reprendre {
+            CV.wait(&mut e);
+        }
+    }
+    pub fn attendre_suspension() {
+        let mut e = ETAT.lock();
+        while !e.suspendu {
+            CV.wait(&mut e);
+        }
+    }
+    pub fn relacher() {
+        let mut e = ETAT.lock();
+        e.reprendre = true;
+        CV.notify_all();
+    }
+    pub fn reinitialiser() {
+        *ETAT.lock() = Etat { suspendu: false, reprendre: false };
+    }
 }
 impl SubstrateStore {
     /// Chemin du catalogue d'index.
@@ -46234,6 +46271,48 @@ mod application_evenement {
             store.get_node_property(id, &PropertyKey::new("etat")),
             None,
             "aucun état appliqué"
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod divergence_evenement {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    /// DÉFAUT REPRODUIT : la preuve (ev:e1) et l'état sont écrits NON-atomiquement.
+    /// Un lecteur indépendant, pendant la suspension après la preuve, observe la
+    /// preuve sans l'état — la divergence que l'atomicité doit résoudre.
+    #[test]
+    fn divergence_identite_enregistree_etat_non_applique() {
+        crate::store::suspension_evenement::reinitialiser();
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "revision", Value::from("rev0"));
+        let store2 = Arc::clone(&store);
+        let h = thread::spawn(move || {
+            appliquer_evenement(&store2, id, "e1", "def-e1", "rev0", "rev1", Value::Int64(7))
+                .unwrap()
+        });
+        crate::store::suspension_evenement::attendre_suspension();
+        // lecteur indépendant : preuve présente, état absent
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("ev:e1")),
+            Some(Value::from("def-e1"))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("etat")),
+            None,
+            "DIVERGENCE : preuve enregistrée mais état non matérialisé"
+        );
+        crate::store::suspension_evenement::relacher();
+        h.join().unwrap();
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("etat")),
+            Some(Value::Int64(7))
         );
     }
 }
