@@ -25,7 +25,7 @@ fn config_rapide() -> ThinkersConfig {
 }
 
 /// Ouverture opt-in : la flotte par défaut (Consolidator + Warden + Predictor
-/// + Dreamer) est vivante dès l'ouverture, ses tiques avancent, et l'arrêt ne
+/// et Dreamer) est vivante dès l'ouverture, ses tiques avancent, et l'arrêt ne
 /// laisse aucune tâche survivre (le test se termine sans hang).
 #[test]
 fn ouverture_opt_in_demarre_la_flotte_et_s_arrete_proprement() {

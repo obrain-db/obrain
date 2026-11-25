@@ -318,7 +318,7 @@ mod tests {
         // L'horloge revient à t = 12 h SANS high-water mark : remontée.
         let sans_garde = EnergyAnchor::new(1.0, 0, h).energy_at(12 * 3600 * 1_000_000);
         assert!(
-            (sans_garde - 0.7071).abs() < 1e-3,
+            (sans_garde - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-3,
             "remontée reproduite : {sans_garde}"
         );
         // AVEC high-water mark (t_hi = 24 h persisté) : pas de remontée.

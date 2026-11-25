@@ -1,3 +1,6 @@
+// Noms à un caractère = identifiants de session de l'expérience e2e.
+#![allow(clippy::many_single_char_names)]
+
 //! Chaîne E2E « observation → activation → engramme → rappel par indice
 //! partiel → consolidation → persistance → redémarrage → rappel ».
 //!

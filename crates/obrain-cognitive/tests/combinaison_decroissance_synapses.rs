@@ -1,3 +1,4 @@
+#![allow(clippy::many_single_char_names)]
 //! (2026-11-24) TESTS DE LA COMBINAISON — décroissance persistante × dédup synapses.
 //!
 //! Ces tests n appartiennent à AUCUNE des deux branches : ils n ont de sens

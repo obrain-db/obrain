@@ -114,7 +114,7 @@ fn apres_redemarrage_la_remontee_est_bornee_par_le_t_hi_persiste() {
         "recul après redémarrage : {e}, attendu 0,5 (borné par t_hi persisté)"
     );
     assert!(
-        (e - 0.7071).abs() > 0.05,
+        (e - std::f64::consts::FRAC_1_SQRT_2).abs() > 0.05,
         "la borne persistée doit empêcher la remontée à 0,7071 : {e}"
     );
 }
@@ -229,7 +229,7 @@ fn apres_redemarrage_sans_materialisation_la_remontee_est_reelle() {
     // Assertion qui FIGE la limite (pas qui la cache) : le maximum de lecture
     // n'a pas été persisté, donc la remontée est réelle et vaut 2^(-12/24).
     assert!(
-        (e - 0.7071).abs() < 1e-3,
+        (e - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-3,
         "remontée après redémarrage sans matérialisation : {e}, attendu ≈ 0,7071"
     );
     assert!(
