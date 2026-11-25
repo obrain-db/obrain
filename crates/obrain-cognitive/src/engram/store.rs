@@ -552,11 +552,30 @@ impl EngramStore {
             return;
         }
         let nids: Vec<NodeId> = engram.ensemble.iter().map(|(n, _)| *n).collect();
+        // Écriture ATOMIQUE membres+poids (sous le même verrou, motif simplex),
+        // puis bitset (par nœud, pas de correspondance d'ordre).
+        if let (Some(writer), Some(eid_u16)) =
+            (self.substrate_writer(), Self::engram_id_to_u16(engram.id))
+        {
+            let members: Vec<u32> = nids
+                .iter()
+                .filter_map(|n| Self::node_id_to_u32(*n))
+                .collect();
+            let weights: Vec<f32> = engram.ensemble.iter().map(|(_, w)| *w as f32).collect();
+            if let Err(e) = writer.set_engram_state(eid_u16, members, weights) {
+                tracing::warn!(
+                    engram_id = engram.id.0,
+                    error = %e,
+                    "substrate engram state mirror failed"
+                );
+                return;
+            }
+        }
         if let Err(e) = self.form_with_id(engram.id, &nids) {
             tracing::warn!(
                 engram_id = engram.id.0,
                 error = %e,
-                "substrate engram mirror failed (insert/update)"
+                "substrate engram bitset mirror failed"
             );
         }
     }
