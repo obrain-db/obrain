@@ -346,3 +346,52 @@ fn parite_etat_cognitif_memoire_substrate_reouverture() {
         }
     }
 }
+
+/// Non-réutilisation d'identifiant : une base legacy (membres à l'id 999, sans
+/// zone de poids) charge son engramme, et une nouvelle formation n'écrase pas
+/// l'ancien id (réservation via max_id).
+#[test]
+fn identifiant_legacy_non_realloue() {
+    use obrain_substrate::{SubstrateFile, SyncMode, Writer};
+    let dir = tempfile::tempdir().unwrap();
+    let chemin = dir.path().join("base");
+    {
+        let sub = SubstrateFile::create(&chemin).unwrap();
+        let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+        w.set_engram_members(999, vec![1, 2, 3]).unwrap();
+        w.commit().unwrap();
+        w.msync_zones().unwrap();
+        w.wal().fsync().unwrap();
+    }
+    let db = ObrainDB::open_substrate_observed(&chemin).unwrap();
+    let mgr = db.cognitive_engine().unwrap().engram_manager().unwrap();
+    assert!(
+        mgr.store().list().iter().any(|e| e.id.0 == 999),
+        "engramme legacy (id 999) chargé : {:?}",
+        mgr.store()
+            .list()
+            .iter()
+            .map(|e| e.id.0)
+            .collect::<Vec<_>>()
+    );
+    let session = db.session();
+    session
+        .execute("CREATE (:Item {name:'a'}), (:Item {name:'b'}), (:Item {name:'c'})")
+        .unwrap();
+    quiesce(&db);
+    for v in 1..=3 {
+        activer(&session, &["a", "b", "c"], v);
+        quiesce(&db);
+    }
+    let ids: Vec<u64> = mgr.store().list().iter().map(|e| e.id.0).collect();
+    assert!(
+        ids.iter().any(|&id| id > 999),
+        "une nouvelle formation obtient un id > 999 : {ids:?}"
+    );
+    for &id in &ids {
+        assert!(
+            id == 999 || id > 999,
+            "aucun nouvel engramme ne réutilise l'id legacy 999 : {ids:?}"
+        );
+    }
+}
