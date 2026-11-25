@@ -1388,6 +1388,19 @@ impl PropsZone {
 
     /// Append a node-owned property entry. See [`append_entry_inner`](Self::append_entry_inner)
     /// for full semantics.
+    /// Prépare une NOUVELLE page privée (inaccessible depuis la tête canonique),
+    /// dont `next_page` référence `head`. Utilisée pour une publication différée.
+    pub fn preparer_page_privee(
+        &mut self,
+        owner_id: u32,
+        kind: OwnerKind,
+        head: Option<u64>,
+        entry: &PropertyEntry,
+    ) -> SubstrateResult<u64> {
+        self.allouer_page_neuve_sur(owner_id, kind, head, entry)
+            .map(|idx| u64::from(idx))
+    }
+
     #[inline]
     pub fn append_entry_node(
         &mut self,

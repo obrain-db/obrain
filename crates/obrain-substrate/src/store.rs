@@ -46775,3 +46775,77 @@ mod publication_differee {
         );
     }
 }
+
+
+#[cfg(test)]
+mod preparation_privee_positive {
+    use super::*;
+    use crate::page::{OwnerKind, PropertyEntry, PropertyValue};
+
+    #[test]
+    fn preparation_privee_puis_publication_atomique() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let slot = id.0 as u32;
+        let prop_a = store.prop_keys.read().lookup("a").unwrap();
+        let prop_b = store.prop_keys.read().lookup("b").unwrap();
+        let auteur = store.writer_id;
+        let millis = crate::horloge_hybride::horloge_murale_millis();
+        let horloge = store.horloge.lock().maintenant(millis).pack();
+
+        let pz_lock = store.props_zone.as_ref().unwrap();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+
+        // 1. prépare a=10 dans une page privée (next_page = H0), récupère P.
+        let p = {
+            let mut pz = pz_lock.write();
+            let e_a = PropertyEntry::new_stamped(prop_a, PropertyValue::I64(10), auteur, horloge);
+            pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_a)
+                .unwrap()
+        };
+        // lecture publique canonique : inchangée (H0 ne pointe pas vers P)
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(1))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(2))
+        );
+
+        // 2. ajoute b=20 à la chaîne privée (P -> P2)
+        let p2 = {
+            let mut pz = pz_lock.write();
+            let e_b = PropertyEntry::new_stamped(prop_b, PropertyValue::I64(20), auteur, horloge);
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(p), &e_b)
+                .unwrap()
+        };
+        // canonique encore inchangé
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(1))
+        );
+
+        // 3. publication : UNE seule modification de la tête canonique.
+        store
+            .writer
+            .update_node_first_prop_off(slot, crate::record::U48::from_u64(p2))
+            .unwrap();
+        eprintln!(
+            "APRES_PUBLICATION a={:?} b={:?}",
+            store.get_node_property(id, &PropertyKey::new("a")),
+            store.get_node_property(id, &PropertyKey::new("b"))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20))
+        );
+    }
+}
