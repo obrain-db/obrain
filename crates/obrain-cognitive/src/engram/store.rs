@@ -86,6 +86,10 @@ pub struct EngramStore {
     /// Optional substrate writer for side-table + bitset mirror (T7 Step 2).
     #[cfg(feature = "substrate")]
     substrate: PlRwLock<Option<Arc<SubstrateWriter>>>,
+    /// Injection de faute (test) : fait échouer `add_engram_bit` APRÈS un
+    /// `set_engram_state` réussi — reproduit l'écriture partielle du substrat.
+    #[cfg(feature = "substrate")]
+    fail_bit_after_state: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for EngramStore {
@@ -125,6 +129,8 @@ impl EngramStore {
             revision: AtomicU64::new(0),
             #[cfg(feature = "substrate")]
             substrate: PlRwLock::new(None),
+            #[cfg(feature = "substrate")]
+            fail_bit_after_state: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -137,6 +143,15 @@ impl EngramStore {
     /// Pass `None`-wrapped to detach; re-attaching overwrites the previous
     /// writer.
     #[cfg(feature = "substrate")]
+    /// Injection de faute (test) : fait échouer le prochain `add_engram_bit`
+    /// APRÈS un `set_engram_state` réussi.
+    #[cfg(feature = "substrate")]
+    #[doc(hidden)]
+    pub fn set_fail_bit_after_state(&self, fail: bool) {
+        self.fail_bit_after_state
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn attach_substrate(&self, writer: Arc<SubstrateWriter>) {
         *self.substrate.write() = Some(writer);
     }
@@ -683,6 +698,15 @@ impl EngramStore {
         writer
             .set_engram_state(eid_u16, members.clone(), weights)
             .map_err(|e| StoreError::PersistenceFailed(e.to_string()))?;
+        // Point d'injection : échec AVANT add_engram_bit, après set_engram_state.
+        if self
+            .fail_bit_after_state
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(StoreError::PersistenceFailed(
+                "injected add_engram_bit failure".into(),
+            ));
+        }
         for nid in &members {
             writer
                 .add_engram_bit(*nid, eid_u16)

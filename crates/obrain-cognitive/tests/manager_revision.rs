@@ -293,3 +293,48 @@ fn mutate_refuse_invariants_invalides() {
     assert_eq!(e.ensemble, before.ensemble, "état canonique complet inchangé après refus");
     assert_eq!(e.id, before.id, "identité inchangée");
 }
+
+/// Injection d'erreur contrôlée : set_engram_state réussit PUIS add_engram_bit
+/// échoue → écriture partielle (substrat r+1, cache r). Observe cache, substrat
+/// et définit la source de vérité (le cache, non committé).
+#[test]
+fn injection_erreur_partielle_set_then_bit() {
+    let td = tempfile::tempdir().unwrap();
+    let path = td.path().join("kb");
+    let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
+
+    let manager =
+        EngramManager::new(EngramManagerConfig::default(), Arc::new(InMemoryVectorIndex::new()));
+    let sub = SubstrateFile::create(&path).unwrap();
+    let writer = Arc::new(SubstrateWriter::new(sub, SyncMode::Never).unwrap());
+    manager.attach_substrate(writer.clone());
+
+    let id = manager.store().form(&[a, b]).unwrap();
+    let before = manager.store().get(id).unwrap().clone();
+
+    // Injection : le prochain add_engram_bit échouera APRÈS set_engram_state.
+    manager.store().set_fail_bit_after_state(true);
+    let r = manager.revise(id, &[c], 0.5);
+    assert!(
+        matches!(r, Err(RevisionError::PersistenceFailed(_))),
+        "échec de persistance propagé, pas un succès silencieux : {r:?}"
+    );
+
+    // Cache : candidat NON committé → état inchangé.
+    let after = manager.store().get(id).unwrap();
+    assert_eq!(after.ensemble, before.ensemble, "cache inchangé (source de vérité)");
+
+    // Substrat : set_engram_state a écrit les membres AVANT l'échec du bitset.
+    let (members, _weights) = writer.read_engram_state(id.0 as u16).unwrap().unwrap();
+    assert!(
+        members.contains(&(c.0 as u32)),
+        "substrat contient le membre partiel (r+1) : {members:?}"
+    );
+
+    // Nouvelle tentative : sans ré-injection, elle doit réussir SANS réappliquer
+    // deux fois la même observation (le candidat n'a jamais été committé).
+    manager.store().set_fail_bit_after_state(false);
+    let retry = manager.revise(id, &[c], 0.5).expect("reprise réussie");
+    let cs: Vec<NodeId> = retry.members.iter().filter(|(n, _)| *n == c).map(|(n, _)| *n).collect();
+    assert_eq!(cs.len(), 1, "C ajouté une seule fois (pas de double application)");
+}
