@@ -21,7 +21,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use obrain_cognitive::engram::{reconsolidate, EngramStore};
+use obrain_cognitive::engram::{EngramStore, reconsolidate};
 use obrain_common::types::NodeId;
 use obrain_substrate::{SubstrateFile, SyncMode, Writer as SubstrateWriter};
 
@@ -84,7 +84,7 @@ fn baseline_freq_topk(history: &[Ep], k: usize) -> Ep {
         }
     }
     let mut v: Vec<(NodeId, usize)> = counts.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0 .0.cmp(&b.0 .0)));
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.0.cmp(&b.0.0)));
     v.into_iter().take(k).map(|(n, _)| n).collect()
 }
 
@@ -166,18 +166,34 @@ fn boucle_predictive_reellement_executee() {
         misses.push(m.miss);
     }
 
-    assert!(misses[0] > misses[1], "taux de manque décroît ({} -> {})", misses[0], misses[1]);
-    assert!(misses[1] > misses[2], "taux de manque décroît ({} -> {})", misses[1], misses[2]);
+    assert!(
+        misses[0] > misses[1],
+        "taux de manque décroît ({} -> {})",
+        misses[0],
+        misses[1]
+    );
+    assert!(
+        misses[1] > misses[2],
+        "taux de manque décroît ({} -> {})",
+        misses[1],
+        misses[2]
+    );
     assert_eq!(misses[3], 0.0, "prédiction exacte une fois le motif appris");
 
     // Rappel par un membre NOUVELLEMENT AJOUTÉ, pas seulement par l'indice A.
     let eid = last_eid.expect("un engramme a dû être formé");
     for newly in [c, d] {
         let recalled = store.recall(newly).expect("rappel par membre ajouté");
-        assert!(recalled.contains(&eid), "le membre {newly:?} ajouté rappelle l'engramme");
+        assert!(
+            recalled.contains(&eid),
+            "le membre {newly:?} ajouté rappelle l'engramme"
+        );
     }
     let members = store.members(eid).expect("lecture des membres");
-    assert!(members.contains(&c) && members.contains(&d), "membres {c:?},{d:?} persistés");
+    assert!(
+        members.contains(&c) && members.contains(&d),
+        "membres {c:?},{d:?} persistés"
+    );
 }
 
 /// Une prédiction « tout » obtiendrait miss=0 : la métrique miss seule est
@@ -192,8 +208,14 @@ fn metrique_miss_seule_est_aveugle_aux_superflus() {
 
     let m = metrics(&tout, &observed);
     assert_eq!(m.miss, 0.0, "miss=0 : l'ancienne métrique dit « parfait »");
-    assert!((m.jaccard - 2.0 / 3.0).abs() < 1e-9, "Jaccard révèle le superflu (2/3)");
-    assert!(m.superflu > 0.0, "proportion de prédictions superflues non nulle");
+    assert!(
+        (m.jaccard - 2.0 / 3.0).abs() < 1e-9,
+        "Jaccard révèle le superflu (2/3)"
+    );
+    assert!(
+        m.superflu > 0.0,
+        "proportion de prédictions superflues non nulle"
+    );
 }
 
 /// Comparaison adaptatif vs baselines sur des séquences non croissantes.
@@ -211,7 +233,10 @@ fn baselines_et_sequences_difficiles() {
     let decroissante = [ab.clone(), abc.clone(), abcd.clone(), ab.clone()];
     let alternee = [ab.clone(), ac.clone(), ab.clone(), ac.clone()];
 
-    for (name, seq) in [("décroissante", &decroissante[..]), ("alternée", &alternee[..])] {
+    for (name, seq) in [
+        ("décroissante", &decroissante[..]),
+        ("alternée", &alternee[..]),
+    ] {
         let mut h: Vec<Ep> = Vec::new();
         let mut union_m = Vec::new();
         let mut last_m = Vec::new();
@@ -236,8 +261,15 @@ fn baselines_et_sequences_difficiles() {
         }
 
         // Démarrage à froid (pas 0) : sous-prédiction, tout est manquant.
-        assert!(union_m[0].miss > 0.0, "[{name}] démarrage à froid : miss = {}", union_m[0].miss);
-        assert_eq!(union_m[0].superflu, 0.0, "[{name}] pas de prédiction superflue au départ");
+        assert!(
+            union_m[0].miss > 0.0,
+            "[{name}] démarrage à froid : miss = {}",
+            union_m[0].miss
+        );
+        assert_eq!(
+            union_m[0].superflu, 0.0,
+            "[{name}] pas de prédiction superflue au départ"
+        );
 
         // Après apprentissage (dernier pas) : l'union cumulative SUR-prédit.
         let last_union = union_m.last().unwrap();
@@ -316,13 +348,27 @@ fn rappel_contextuel_controle_positif() {
     let obs2: Ep = [a, c].into_iter().collect();
 
     // L'adaptatif (conditionné par le contexte) distingue les deux contextes.
-    assert_eq!(metrics(&predict_by_ctx(ctx1), &obs1).jaccard, 1.0, "ctx1 → {{A,B}} exact");
-    assert_eq!(metrics(&predict_by_ctx(ctx2), &obs2).jaccard, 1.0, "ctx2 → {{A,C}} exact");
+    assert_eq!(
+        metrics(&predict_by_ctx(ctx1), &obs1).jaccard,
+        1.0,
+        "ctx1 → {{A,B}} exact"
+    );
+    assert_eq!(
+        metrics(&predict_by_ctx(ctx2), &obs2).jaccard,
+        1.0,
+        "ctx2 → {{A,C}} exact"
+    );
 
     // Un prédicteur aveugle au contexte (union des deux) ne distingue pas.
     let blind: Ep = [a, b, c].into_iter().collect();
     let m1 = metrics(&blind, &obs1);
     let m2 = metrics(&blind, &obs2);
-    assert!((m1.jaccard - 2.0 / 3.0).abs() < 1e-9, "union aveugle sur-prédit en ctx1");
-    assert!((m2.jaccard - 2.0 / 3.0).abs() < 1e-9, "union aveugle sur-prédit en ctx2");
+    assert!(
+        (m1.jaccard - 2.0 / 3.0).abs() < 1e-9,
+        "union aveugle sur-prédit en ctx1"
+    );
+    assert!(
+        (m2.jaccard - 2.0 / 3.0).abs() < 1e-9,
+        "union aveugle sur-prédit en ctx2"
+    );
 }

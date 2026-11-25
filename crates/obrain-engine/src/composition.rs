@@ -36,10 +36,15 @@ use obrain_core::graph::Direction;
 
 use crate::database::ObrainDB;
 
+/// Label des nœuds de connaissance.
 pub const LABEL_KNOWLEDGE: &str = "structure";
+/// Type d'arête reliant une connaissance à ses participants.
 pub const EDGE_MEMBER: &str = "member";
+/// Type d'arête reliant une connaissance à ses sous-connaissances référencées.
 pub const EDGE_CHILD: &str = "child";
+/// Clé de propriété stockant la clé canonique d'une connaissance.
 pub const KEY_CANONICAL: &str = "canonical_key";
+/// Clé de propriété stockant le rôle d'une relation.
 pub const KEY_ROLE: &str = "role";
 /// Profondeur maximale de résolution (garde anti-épuisement de pile).
 pub const MAX_RESOLVE_DEPTH: usize = 1024;
@@ -47,16 +52,25 @@ pub const MAX_RESOLVE_DEPTH: usize = 1024;
 /// Relation ORIENTÉE entre participants (type + src → dst + rôle optionnel).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Relation {
+    /// Type de la relation (ex. « calls », « knows »).
     pub rel_type: String,
+    /// Source orientée de la relation.
     pub src: NodeId,
+    /// Destination orientée de la relation.
     pub dst: NodeId,
+    /// Rôle optionnel de l'occurrence de cette relation.
     pub role: Option<String>,
 }
 
+/// Spécification d'une connaissance : participants feuilles, sous-connaissances
+/// référencées et relations orientées. L'ordre n'importe pas (`BTreeSet`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnowledgeSpec {
+    /// Participants feuilles.
     pub members: BTreeSet<NodeId>,
+    /// Sous-connaissances référencées.
     pub children: BTreeSet<NodeId>,
+    /// Relations orientées.
     pub relations: BTreeSet<Relation>,
 }
 
@@ -114,6 +128,7 @@ impl KnowledgeSpec {
     }
 }
 
+/// Erreurs de résolution : la résolution ne doit jamais échouer silencieusement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
     /// La racine n'existe pas.
@@ -132,11 +147,13 @@ pub enum ResolveError {
     DepthExceeded,
 }
 
+/// Interface compositionnelle sur le graphe natif (construire, résoudre).
 pub struct Composition<'a> {
     db: &'a ObrainDB,
 }
 
 impl<'a> Composition<'a> {
+    /// Construit un accès compositionnel sur la base `db`.
     pub fn new(db: &'a ObrainDB) -> Self {
         Self { db }
     }
@@ -149,7 +166,8 @@ impl<'a> Composition<'a> {
             return existing;
         }
         let id = self.db.create_node(&[LABEL_KNOWLEDGE]);
-        self.db.set_node_property(id, KEY_CANONICAL, Value::from(key));
+        self.db
+            .set_node_property(id, KEY_CANONICAL, Value::from(key));
         for m in &spec.members {
             self.db.create_edge(id, *m, EDGE_MEMBER);
         }
@@ -159,7 +177,8 @@ impl<'a> Composition<'a> {
         for rel in &spec.relations {
             let eid = self.db.create_edge(rel.src, rel.dst, &rel.rel_type);
             if let Some(role) = &rel.role {
-                self.db.set_edge_property(eid, KEY_ROLE, Value::from(role.clone()));
+                self.db
+                    .set_edge_property(eid, KEY_ROLE, Value::from(role.clone()));
             }
         }
         id
@@ -183,6 +202,7 @@ impl<'a> Composition<'a> {
         Ok(members)
     }
 
+    /// Clé structurelle d'une connaissance existante, si elle en a une.
     pub fn structural_key_of(&self, id: NodeId) -> Option<String> {
         let node = self.db.get_node(id)?;
         node.properties
@@ -245,7 +265,9 @@ impl<'a> Composition<'a> {
     fn find_by_key(&self, key: &str) -> Option<NodeId> {
         let store = self.db.data_store();
         for id in store.node_ids() {
-            let Some(node) = self.db.get_node(id) else { continue };
+            let Some(node) = self.db.get_node(id) else {
+                continue;
+            };
             if !node.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
                 continue;
             }

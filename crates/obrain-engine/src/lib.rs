@@ -33,6 +33,7 @@ pub mod cognitive_boost;
 pub mod cognitive_procedures;
 #[cfg(feature = "cognitive")]
 pub mod cognitive_udfs;
+pub mod composition;
 pub mod config;
 pub mod database;
 #[cfg(feature = "embed")]
@@ -48,7 +49,6 @@ pub mod session;
 pub mod transaction;
 #[cfg(feature = "algos")]
 pub mod window_procedures;
-pub mod composition;
 
 pub use admin::{
     AdminService, CompactionStats, DatabaseInfo, DatabaseMode, DatabaseStats, DumpFormat,
