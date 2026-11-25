@@ -46916,3 +46916,66 @@ mod autorite_revision {
         eprintln!("HLC_GLOBALE : la même horloge sert toutes les ressources");
     }
 }
+
+
+#[cfg(test)]
+mod revision_composite {
+    use super::*;
+
+    fn horloge_de(store: &SubstrateStore, id: NodeId, key: &str) -> Option<u64> {
+        let pz_lock = store.props_zone.as_ref()?;
+        let pz = pz_lock.read();
+        let node_rec = store.writer.read_node(id.0 as u32).ok()??;
+        let tete = (node_rec.first_prop_off.to_u64() != 0)
+            .then(|| node_rec.first_prop_off.to_u64());
+        let prop_key_id = store.prop_keys.read().lookup(key)?;
+        let entry = pz.get_latest_for_key_unite(tete, prop_key_id).ok()??;
+        entry.horloge
+    }
+
+    /// RÉVISION COMPOSITE : précondition sur les estampilles canoniques des
+    /// propriétés dont dépend une transformation (a et b), pas sur le max global.
+    #[test]
+    fn precondition_composite_sur_estampilles() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (sa, sb, sa2, sb2) = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = store.create_node(&["ressource"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            store.set_node_property(id, "b", Value::Int64(2));
+            store.set_node_property(id, "c", Value::Int64(3));
+            let sa = horloge_de(&store, id, "a").unwrap();
+            let sb = horloge_de(&store, id, "b").unwrap();
+            // A : mutation historique de a → précondition invalidée
+            store.set_node_property(id, "a", Value::Int64(10));
+            assert_ne!(horloge_de(&store, id, "a"), Some(sa), "A : a invalidé");
+            assert_eq!(horloge_de(&store, id, "b"), Some(sb), "A : b inchangé");
+
+            let id2 = store.create_node(&["ressource"]);
+            store.set_node_property(id2, "a", Value::Int64(1));
+            store.set_node_property(id2, "b", Value::Int64(2));
+            store.set_node_property(id2, "c", Value::Int64(3));
+            let sa2 = horloge_de(&store, id2, "a").unwrap();
+            let sb2 = horloge_de(&store, id2, "b").unwrap();
+            // B : mutation de c → précondition (a,b) valide
+            store.set_node_property(id2, "c", Value::Int64(30));
+            assert_eq!(horloge_de(&store, id2, "a"), Some(sa2), "B : a inchangé");
+            assert_eq!(horloge_de(&store, id2, "b"), Some(sb2), "B : b inchangé");
+            // C : autre ressource → aucune invalidation
+            let id3 = store.create_node(&["ressource"]);
+            store.set_node_property(id3, "z", Value::Int64(99));
+            assert_eq!(horloge_de(&store, id2, "a"), Some(sa2), "C : a inchangé");
+            assert_eq!(horloge_de(&store, id2, "b"), Some(sb2), "C : b inchangé");
+            store.close().unwrap();
+            (sa, sb, sa2, sb2)
+        };
+        // réouverture : conservation des estampilles
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        // (a et b de id ont été mutées : a changé, b conservé)
+        assert_eq!(horloge_de(&store2, NodeId(1), "b"), Some(sb), "réouverture : b conservé");
+        assert_eq!(horloge_de(&store2, NodeId(2), "a"), Some(sa2), "réouverture : a(id2) conservé");
+        assert_eq!(horloge_de(&store2, NodeId(2), "b"), Some(sb2), "réouverture : b(id2) conservé");
+        eprintln!("REVISION_COMPOSITE OK : estampilles persistées et précondition par dépendances");
+    }
+}
