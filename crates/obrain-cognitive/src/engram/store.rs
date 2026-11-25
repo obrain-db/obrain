@@ -90,6 +90,12 @@ pub struct EngramStore {
     /// `set_engram_state` réussi — reproduit l'écriture partielle du substrat.
     #[cfg(feature = "fault-injection")]
     fail_bit_after_state: std::sync::atomic::AtomicBool,
+    /// Injection de faute (test) : fait échouer la RÉPARATION au chargement
+    /// (`ensure_engram_bit`) — reproduit un échec d'écriture du bitset pendant
+    /// le balayage, qui laisse l'engramme DÉGRADÉ (bit manquant). Feature
+    /// DÉDIÉE, absente de la production.
+    #[cfg(feature = "fault-injection")]
+    fail_repair_bit: std::sync::atomic::AtomicBool,
     /// Registre des engrammes dont une projection (bitset) est dégradée.
     /// Sert au repli du rappel natif sur l'état canonique. Effacé à chaque
     /// chargement : reflète l'état courant, pas une seconde autorité.
@@ -126,6 +132,13 @@ pub struct LoadReport {
     pub coherent: usize,
     pub degraded: Vec<(EngramId, String)>,
     pub rejected: Vec<(EngramId, RejectCause)>,
+    /// Défaillance GLOBALE de la zone d'engrammes (magic/version/taille
+    /// invalides) : le chargement s'est arrêté SANS balayer les 65 535
+    /// identifiants. En sa présence, `rejected` est VIDE (une zone morte n'est
+    /// pas un rejet individuel par identifiant — cela épuiserait l'espace
+    /// d'identifiants). Une défaillance globale n'est JAMAIS présentée comme
+    /// un chargement sain.
+    pub global_failure: Option<String>,
 }
 
 /// Erreur de mutation du store : distingue absence et échec de persistance
@@ -157,6 +170,8 @@ impl EngramStore {
             degraded: PlRwLock::new(HashSet::new()),
             #[cfg(feature = "fault-injection")]
             fail_bit_after_state: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "fault-injection")]
+            fail_repair_bit: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -169,6 +184,18 @@ impl EngramStore {
     #[doc(hidden)]
     pub fn set_fail_bit_after_state(&self, fail: bool) {
         self.fail_bit_after_state
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Injection de faute (test) : TANT QUE ce drapeau est actif, la
+    /// RÉPARATION du bitset au chargement (`ensure_engram_bit`) échoue —
+    /// l'engramme est chargé avec une projection DÉGRADÉE (bit manquant), ce
+    /// qui exerce le repli du rappel natif sur l'état canonique. Feature
+    /// DÉDIÉE, absente de la production.
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn set_fail_repair_bit(&self, fail: bool) {
+        self.fail_repair_bit
             .store(fail, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -379,6 +406,20 @@ impl EngramStore {
         let Some(writer) = self.substrate_writer() else {
             return report;
         };
+        // DÉFAILLANCE GLOBALE : la zone d'engrammes est structurellement
+        // invalide (magic/version/taille). On REFUSE le chargement SANS balayer
+        // les 65 535 identifiants : un balayage transformerait une zone morte
+        // en 65 535 rejets artificiels et épuiserait l'espace d'identifiants.
+        // Une défaillance globale n'est JAMAIS présentée comme un chargement
+        // sain (ni comme une série de rejets locaux).
+        if let Err(e) = writer.validate_engram_zones() {
+            tracing::error!(
+                error = %e,
+                "zone d'engrammes structurellement invalide : chargement refusé (défaillance globale)"
+            );
+            report.global_failure = Some(e.to_string());
+            return report;
+        }
         // Le registre dégradé reflète CE chargement (pas un état antérieur).
         self.degraded.write().clear();
         let mut max_id: u64 = 0;
@@ -448,7 +489,17 @@ impl EngramStore {
             // l'état canonique reste valide et publié.
             let mut degraded: Option<String> = None;
             for (nid, _) in &engram.ensemble {
-                if let Err(e) = writer.ensure_engram_bit(nid.0 as u32, eid_u16) {
+                #[cfg(feature = "fault-injection")]
+                let repair = if self.fail_repair_bit.load(std::sync::atomic::Ordering::Relaxed) {
+                    Err(SubstrateError::WalBadFrame(
+                        "injected ensure_engram_bit failure (repair)".into(),
+                    ))
+                } else {
+                    writer.ensure_engram_bit(nid.0 as u32, eid_u16)
+                };
+                #[cfg(not(feature = "fault-injection"))]
+                let repair = writer.ensure_engram_bit(nid.0 as u32, eid_u16);
+                if let Err(e) = repair {
                     tracing::error!(engram_id = eid_u16, node_id = nid.0, error = %e, "projection bitset dégradée");
                     degraded = Some(e.to_string());
                 }
@@ -784,6 +835,11 @@ impl EngramStore {
                 .add_engram_bit(*nid, eid_u16)
                 .map_err(|e| StoreError::PersistenceFailed(e.to_string()))?;
         }
+        // Miroir complet RÉUSSI (membres + tous les bits posés) : la projection
+        // n'est plus dégradée. On efface le marqueur — le registre dégradé ne
+        // devient jamais une autorité périmée qui survivrait à une réparation
+        // effective.
+        self.degraded.write().remove(&engram.id);
         Ok(())
     }
 
@@ -792,6 +848,9 @@ impl EngramStore {
     /// false positives resolved by `recall` via the members lookup.
     #[cfg(feature = "substrate")]
     fn mirror_substrate_remove(&self, id: EngramId) {
+        // L'engramme disparaît : son éventuel marqueur dégradé n'a plus lieu
+        // d'être (pas de registre périmé pointant vers un id disparu).
+        self.degraded.write().remove(&id);
         let Some(writer) = self.substrate_writer() else {
             return;
         };

@@ -136,7 +136,7 @@ impl EngramZone {
 
     /// Validate the zone's magic + version. Returns an error if the zone is
     /// uninitialised or carries an unsupported version.
-    fn validate_header(zf: &ZoneFile) -> SubstrateResult<()> {
+    pub(crate) fn validate_header(zf: &ZoneFile) -> SubstrateResult<()> {
         if (zf.len() as usize) < ENGRAM_HEADER_SIZE {
             return Err(SubstrateError::WalBadFrame(format!(
                 "engram zone too short: {} < {}",

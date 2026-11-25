@@ -2756,6 +2756,29 @@ impl Writer {
         })
     }
 
+    /// Contrôle de santé STRUCTUREL des zones d'engrammes (magic + version),
+    /// SANS balayer les 65 535 identifiants. Une zone vide (base legacy sans
+    /// cette colonne) est une ABSENCE légitime, pas une corruption : Ok(()).
+    ///
+    /// Destiné au chargement cognitif : distinguer une défaillance GLOBALE de
+    /// la zone (magic/version/taille invalides — refuser le chargement) d'une
+    /// corruption LOCALE (une entrée de répertoire qui pointe hors zone —
+    /// réserver l'identifiant et continuer). Un balayage naïf transformerait
+    /// une zone morte en 65 535 rejets artificiels et épuiserait l'espace
+    /// d'identifiants.
+    pub fn validate_engram_zones(&self) -> SubstrateResult<()> {
+        self.with_engram_state_zones(|mz, wz| {
+            if mz.len() == 0 {
+                return Ok(());
+            }
+            crate::engram::EngramZone::validate_header(mz)?;
+            if wz.len() > 0 {
+                crate::engram::EngramZone::validate_header(wz)?;
+            }
+            Ok(())
+        })
+    }
+
     // ==================================================================
     // Engram bitset column (T7 Step 1)
     // ==================================================================
