@@ -35,6 +35,14 @@ mod store;
 pub use store::{EngramStore, LoadReport, RejectCause, StoreError};
 
 #[cfg(feature = "engram")]
+mod observation;
+#[cfg(feature = "engram")]
+pub use observation::{
+    InMemoryObservationLedger, ObservationFingerprint, ObservationId, ObservationLedger,
+    ObservationOutcome, observation_fingerprint,
+};
+
+#[cfg(feature = "engram")]
 mod formation;
 #[cfg(all(feature = "engram", feature = "epigenetic"))]
 pub use formation::compute_modulated_min_episodes;
