@@ -583,8 +583,9 @@ pub struct ExpandStep {
 pub struct LazyFactorizedChainOperator {
     /// The graph store.
     store: Arc<dyn GraphStore>,
-    /// The source operator (filter, scan, etc).
-    source: Option<Box<dyn Operator>>,
+    /// The source operator (filter, scan, etc). Conservée d'une exécution à
+    /// l'autre : `reset` la rejoue (obrain#376).
+    source: Box<dyn Operator>,
     /// The expand steps to execute.
     steps: Vec<ExpandStep>,
     /// Transaction ID for MVCC visibility.
@@ -618,7 +619,7 @@ impl LazyFactorizedChainOperator {
     ) -> Self {
         Self {
             store,
-            source: Some(source),
+            source,
             steps,
             transaction_id: None,
             viewing_epoch: None,
@@ -652,13 +653,17 @@ impl LazyFactorizedChainOperator {
     /// factorized chunk without flattening, allowing O(n) aggregation instead
     /// of O(n²) or worse.
     fn execute_factorized(&mut self) -> Result<Option<FactorizedChunk>, OperatorError> {
-        let Some(source) = self.source.take() else {
-            return Ok(None);
-        };
+        // (obrain#376) La source est DRAINÉE par emprunt, pas déplacée dans la
+        // chaîne : elle reste donc là pour être rejouée après `reset`. La chaîne
+        // reçoit une copie à usage unique des lignes qu'elle a produites.
+        let input = FactorizedExpandChain::collect_all_batches(&mut *self.source)?;
 
         // Build and execute the chain
-        let mut chain = FactorizedExpandChain::new(Arc::clone(&self.store), source)
-            .with_read_only(self.read_only);
+        let mut chain = FactorizedExpandChain::new(
+            Arc::clone(&self.store),
+            Box::new(SingleChunkOperator { chunk: input }),
+        )
+        .with_read_only(self.read_only);
 
         if let Some(epoch) = self.viewing_epoch {
             chain = chain.with_transaction_context(epoch, self.transaction_id);
@@ -699,8 +704,17 @@ impl LazyFactorizedChainOperator {
     /// Executes the chain and returns the flattened result.
     fn execute(&mut self) -> Result<Option<DataChunk>, OperatorError> {
         // Use the factorized execution and then flatten
-        let factorized = self.execute_factorized()?;
-        Ok(factorized.map(|c| c.flatten()))
+        let Some(factorized) = self.execute_factorized()? else {
+            return Ok(None);
+        };
+        // (obrain#376) Une étape sans arête n'ajoute pas son niveau : aplatie, la
+        // chaîne rendrait les lignes du niveau précédent (un seul saut, plus
+        // étroites que le schéma annoncé) au lieu de zéro. Aucun chemin complet
+        // n'existe : rien à rendre. Même décision que `FactorizedAggregate`.
+        if factorized.level_count() < self.steps.len() + 1 {
+            return Ok(None);
+        }
+        Ok(Some(factorized.flatten()))
     }
 }
 
@@ -716,10 +730,14 @@ impl Operator for LazyFactorizedChainOperator {
     }
 
     fn reset(&mut self) {
-        // Cannot reset - source has been consumed
+        // (obrain#376) Rejouable : la source est réarmée et les résultats mis
+        // en cache sont oubliés, la prochaine lecture ré-exécute la chaîne.
+        // (Avant : `executed = true`, donc une lecture après `reset` rendait
+        // toujours vide, y compris la première d'un `Apply` corrélé.)
+        self.source.reset();
         self.result = None;
         self.factorized_result = None;
-        self.executed = true;
+        self.executed = false;
     }
 
     fn name(&self) -> &'static str {
