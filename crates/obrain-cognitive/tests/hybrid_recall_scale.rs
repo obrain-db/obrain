@@ -36,8 +36,10 @@
 
 #![cfg(all(feature = "engram", feature = "substrate"))]
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomOrder};
 use std::time::Instant;
 
 use obrain_cognitive::engram::substrate_adapter::SubstrateVectorIndexAdapter;
@@ -52,7 +54,68 @@ use obrain_substrate::retrieval::{
 };
 use obrain_substrate::tiers::{L2_DIM, Tier0, Tier1, Tier2};
 
+// ---------------------------------------------------------------------------
+// Mémoire RÉELLE — allocateur compteur
+// ---------------------------------------------------------------------------
+
+/// Octets actuellement alloués par ce binaire de test.
+static OCTETS_VIVANTS: AtomicUsize = AtomicUsize::new(0);
+/// Pic d'octets vivants depuis la dernière remise à zéro du pic.
+static OCTETS_PIC: AtomicUsize = AtomicUsize::new(0);
+
+/// `size_of::<Tier0>() + …` donne la taille des STRUCTURES, pas la mémoire
+/// réellement allouée (tables de hachage, vecteurs de slots, maps
+/// identifiant → offset, capacité réservée). Cet allocateur compte les octets
+/// rendus et repris au système, ce qui est la seule mesure honnête.
+struct AllocateurCompteur;
+
+unsafe impl GlobalAlloc for AllocateurCompteur {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let p = unsafe { System.alloc(layout) };
+        if !p.is_null() {
+            let n = OCTETS_VIVANTS.fetch_add(layout.size(), AtomOrder::Relaxed) + layout.size();
+            OCTETS_PIC.fetch_max(n, AtomOrder::Relaxed);
+        }
+        p
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        OCTETS_VIVANTS.fetch_sub(layout.size(), AtomOrder::Relaxed);
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let q = unsafe { System.realloc(ptr, layout, new_size) };
+        if !q.is_null() {
+            let n = OCTETS_VIVANTS.fetch_add(new_size, AtomOrder::Relaxed) + new_size;
+            OCTETS_VIVANTS.fetch_sub(layout.size(), AtomOrder::Relaxed);
+            OCTETS_PIC.fetch_max(n, AtomOrder::Relaxed);
+        }
+        q
+    }
+}
+
+#[global_allocator]
+static ALLOCATEUR_COMPTEUR: AllocateurCompteur = AllocateurCompteur;
+
+/// Exécute `f` et rend `(valeur, octets nets retenus, pic d'octets pendant l'appel)`.
+fn octets_alloues<T>(f: impl FnOnce() -> T) -> (T, usize, usize) {
+    let avant = OCTETS_VIVANTS.load(AtomOrder::Relaxed);
+    OCTETS_PIC.store(avant, AtomOrder::Relaxed);
+    let valeur = f();
+    let apres = OCTETS_VIVANTS.load(AtomOrder::Relaxed);
+    let pic = OCTETS_PIC.load(AtomOrder::Relaxed);
+    (
+        valeur,
+        apres.saturating_sub(avant),
+        pic.saturating_sub(avant),
+    )
+}
+
 const K: usize = 10;
+/// Tailles du balayage d'échelle. 16 000 est la plus grande qui tienne dans un
+/// budget de banc raisonnable (construction ≈ 130 µs/vecteur/index).
+const TAILLES: [usize; 6] = [250, 500, 1000, 2000, 4000, 16_000];
 const N_PROBE: usize = 50;
 /// Budget de candidats « modéré » comparé aux largeurs par défaut du cascade.
 const K0_BUDGET: usize = 200;
@@ -312,6 +375,13 @@ fn cout_index_seul(
         par_requete.push(median(samples));
     }
     median(par_requete)
+}
+
+fn moyenne(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.iter().sum::<f64>() / v.len() as f64
 }
 
 fn median(mut v: Vec<f64>) -> f64 {
@@ -667,7 +737,7 @@ fn banc_echelle_et_fidelite() {
         "construit"
     );
     let mut pentes: Vec<(usize, Kind, Mesure)> = Vec::new();
-    for n in [250usize, 500, 1000, 2000, 4000] {
+    for n in TAILLES {
         let corpus = make_corpus(n, Distrib::Clusters, Densite::Moyenne, 0x9E37_79B9);
         let queries = make_queries(Distrib::Clusters, Densite::Moyenne, 0x9E37_79B9);
         let t_build = Instant::now();
@@ -740,20 +810,14 @@ fn banc_echelle_et_fidelite() {
         );
     }
 
-    println!("\n-- pente observée T(2N)/T(N) : coût de l'INDEX seul, puis du chemin complet --");
     println!(
-        "{:<26} {:>22} {:>22}",
-        "index", "index seul", "chemin complet"
+        "\n-- rapport T(N')/T(N) sur tailles consécutives : INDEX seul, puis chemin complet --"
     );
+    println!("   (doublements, SAUF le dernier couple 4000→16000 qui vaut ×4)");
     for kind in [Kind::Brute, Kind::Cascade, Kind::CascadeBudget] {
         let mut cells_idx: Vec<String> = Vec::new();
         let mut cells_path: Vec<String> = Vec::new();
-        for pair in [
-            (250usize, 500usize),
-            (500, 1000),
-            (1000, 2000),
-            (2000, 4000),
-        ] {
+        for pair in TAILLES.windows(2).map(|w| (w[0], w[1])) {
             let get = |n: usize| {
                 pentes
                     .iter()
@@ -780,7 +844,11 @@ fn banc_echelle_et_fidelite() {
             cells_path.join(" ")
         );
     }
-    println!("   (250→500, 500→1000, 1000→2000, 2000→4000)");
+    let legende: Vec<String> = TAILLES
+        .windows(2)
+        .map(|w| format!("{}→{}", w[0], w[1]))
+        .collect();
+    println!("   ({})", legende.join(", "));
     println!("   → Ces rapports ne mesurent PAS une complexité, dans aucun sens.");
     println!(
         "     La cascade n'est PAS sous-linéaire : le palier L0 balaie TOUS les vecteurs (16 o,"
@@ -957,29 +1025,461 @@ fn banc_echelle_et_fidelite() {
         }
     }
 
-    // ---- 5) Ce que ces chiffres ne disent pas ----
-    println!("\n-- 5. Ce que ces chiffres ne disent pas --");
-    println!("a. Aucune complexité. L0 balaie tous les vecteurs : c'est linéaire en n. Sur des");
-    println!("   signatures 64d la cascade est même PLUS LENTE que la force brute (elle projette");
+    // ---- 5) Mémoire RÉELLEMENT allouée ----
+    println!("\n-- 5. Mémoire réellement allouée (allocateur compteur, pas size_of) --");
+    let n_mem = 4000usize;
+    let corpus_mem = make_corpus(n_mem, Distrib::Clusters, Densite::Moyenne, 0x9E37_79B9);
+    let (store_mem, octets_store, pic_store) = octets_alloues(|| {
+        let store = EngramStore::new(None);
+        for (i, ensemble) in corpus_mem.iter().enumerate() {
+            let mut e = Engram::new(EngramId(i as u64 + 1), ensemble.clone());
+            e.spectral_signature = encoder.encode(ensemble);
+            store.insert(e);
+        }
+        store
+    });
+    let (brute_mem, octets_brute, pic_brute) = octets_alloues(|| {
+        let b = Brute::default();
+        store_mem.for_each(|e| b.upsert(&e.id.to_string(), &e.spectral_signature));
+        b
+    });
+    let (cascade_mem, octets_cascade, pic_cascade) = octets_alloues(|| {
+        let inner = Arc::new(SubstrateTieredIndex::new(encoder.dimensions()));
+        let a = adapter(&inner);
+        store_mem.for_each(|e| a.upsert(&e.id.to_string(), &e.spectral_signature));
+        (inner, a)
+    });
+    {
+        let n = n_mem as f64;
+        println!(
+            "{:<30} {:>12} {:>11} {:>12} {:>11}",
+            "composant", "total o", "o/vecteur", "pic o", "pic/vect"
+        );
+        for (nom, total, pic) in [
+            ("store (engrammes + signatures)", octets_store, pic_store),
+            ("+ index force brute", octets_brute, pic_brute),
+            ("+ cascade substrate", octets_cascade, pic_cascade),
+        ] {
+            println!(
+                "{:<30} {:>12} {:>11.0} {:>12} {:>11.0}",
+                nom,
+                total,
+                total as f64 / n,
+                pic,
+                pic as f64 / n
+            );
+        }
+        println!(
+            "   → size_of annonce {} o/vecteur de paliers ; l'allocateur en compte {:.0} o/vecteur",
+            std::mem::size_of::<Tier0>()
+                + std::mem::size_of::<Tier1>()
+                + std::mem::size_of::<Tier2>(),
+            octets_cascade as f64 / n
+        );
+        println!(
+            "     pour le cascade ENTIER (paliers + table identifiant→offset + Vec de slots +"
+        );
+        println!("     capacités réservées). C'est le second chiffre qui fixe un budget mémoire.");
+        std::hint::black_box((&brute_mem, &store_mem, &cascade_mem));
+    }
+
+    // ---- 6) Coûts de construction, de mise à jour, de suppression ----
+    println!("\n-- 6. Coût par vecteur : construire / mettre à jour / supprimer (N = {n_mem}) --");
+    {
+        let vecs: Vec<(String, Vec<f64>)> = corpus_mem
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (format!("engram:{}", i + 1), encoder.encode(e)))
+            .collect();
+
+        let t0 = Instant::now();
+        let brute2 = Brute::default();
+        for (id, v) in &vecs {
+            brute2.upsert(id, v);
+        }
+        let brut_construit = t0.elapsed().as_secs_f64() * 1e6 / vecs.len() as f64;
+        let t0 = Instant::now();
+        for (id, v) in &vecs {
+            brute2.upsert(id, v);
+        }
+        let brut_maj = t0.elapsed().as_secs_f64() * 1e6 / vecs.len() as f64;
+        let t0 = Instant::now();
+        for (id, _) in &vecs {
+            brute2.remove(id);
+        }
+        let brut_suppr = t0.elapsed().as_secs_f64() * 1e6 / vecs.len() as f64;
+
+        let inner2 = Arc::new(SubstrateTieredIndex::new(encoder.dimensions()));
+        let casc2 = adapter(&inner2);
+        let t0 = Instant::now();
+        for (id, v) in &vecs {
+            casc2.upsert(id, v);
+        }
+        let casc_construit = t0.elapsed().as_secs_f64() * 1e6 / vecs.len() as f64;
+        let t0 = Instant::now();
+        for (id, v) in &vecs {
+            casc2.upsert(id, v);
+        }
+        let casc_maj = t0.elapsed().as_secs_f64() * 1e6 / vecs.len() as f64;
+        let t0 = Instant::now();
+        for (id, _) in &vecs {
+            casc2.remove(id);
+        }
+        let casc_suppr = t0.elapsed().as_secs_f64() * 1e6 / vecs.len() as f64;
+
+        println!(
+            "{:<24} {:>14} {:>16} {:>14}",
+            "index", "construire", "mettre à jour", "supprimer"
+        );
+        println!(
+            "{:<24} {:>11.1} µs {:>13.1} µs {:>11.1} µs",
+            "force brute", brut_construit, brut_maj, brut_suppr
+        );
+        println!(
+            "{:<24} {:>11.1} µs {:>13.1} µs {:>11.1} µs",
+            "cascade substrate", casc_construit, casc_maj, casc_suppr
+        );
+        println!("   → la cascade paie 128×384 + 512×384 de projection PAR VECTEUR, y compris en");
+        println!(
+            "     MISE À JOUR : `insert` recalcule les trois paliers AVANT de chercher le slot"
+        );
+        println!(
+            "     (retrieval.rs:958), donc le « chemin rapide » ne couvre que la stabilité du"
+        );
+        println!("     slot, pas le coût. Mesuré : mise à jour = construction. Un flux d'écriture");
+        println!(
+            "     réel paie ce coût à chaque réécriture de signature, pas seulement à la création."
+        );
+        std::hint::black_box((&brute2, &casc2));
+    }
+
+    // ---- 7) Budget ADAPTATIF selon l'incertitude de rappel ----
+    println!("\n-- 7. Budget adaptatif (N = {n_frontiere}) --");
+    println!("   Deux politiques SIMULÉES dans le banc, PAS branchées dans le moteur.");
+    println!("   DÉFAUT STRUCTUREL D'ABORD : le trait `VectorIndex` n'expose que `nearest(k)`,");
+    println!("   et l'adaptateur substrate la traduit en `search_top_k`, qui utilise des LARGEURS");
+    println!("   FIGÉES (k0=4000, k1=400). Changer `k` ne change donc QUE la troncature de");
+    println!("   sortie, pas le travail : un budget adaptatif n'est pas exprimable à travers le");
     println!(
-        "   en 384) ; son avantage n'apparaît qu'à la dimension pour laquelle les paliers sont"
+        "   trait — il faut `definir_largeurs` sur le type CONCRET. C'est ce que fait ce banc."
     );
-    println!("   faits. Rien ici n'est sous-linéaire en n, et rien ne l'affirme : un index");
+    {
+        let cap = 400usize;
+
+        // Plafond@10 du vivier pour un budget b, et le top-k exact de ce vivier.
+        let mesure_plafond = |cues: &[NodeId], q: usize, b: usize| -> (f64, Vec<EngramId>) {
+            banc.largeurs(b);
+            let sig = encoder.encode(&cues.iter().map(|&n| (n, 1.0)).collect::<Vec<_>>());
+            let vivier: Vec<EngramId> = banc
+                .cascade
+                .nearest(&sig, b)
+                .iter()
+                .filter_map(|(raw, _)| parse_engram_id(raw))
+                .collect();
+            let ref_top: Vec<EngramId> = refs[q].iter().take(K).map(|(id, _)| *id).collect();
+            let plafond = vivier.iter().filter(|id| ref_top.contains(id)).count() as f64
+                / ref_top.len() as f64;
+            let query: Vec<(NodeId, f64)> = cues.iter().map(|&n| (n, 1.0)).collect();
+            let mut scores: Vec<(EngramId, f64)> = vivier
+                .iter()
+                .filter_map(|id| {
+                    banc.store
+                        .get(*id)
+                        .map(|e| (*id, harness_cosine(&query, &e.ensemble)))
+                })
+                .collect();
+            scores.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.0.0.cmp(&b.0.0))
+            });
+            (plafond, scores.iter().take(K).map(|(id, _)| *id).collect())
+        };
+
+        struct Pol {
+            nom: &'static str,
+            budgets: Vec<f64>,
+            couts: Vec<f64>,
+            plafonds: Vec<f64>,
+            atteint_max: usize,
+        }
+
+        let mut politiques: Vec<Pol> = Vec::new();
+        for nom in ["A: gain de plafond < 1 pt", "B: top-k stable"] {
+            let mut budgets = Vec::new();
+            let mut couts = Vec::new();
+            let mut plafonds = Vec::new();
+            let mut atteint_max = 0usize;
+            for (q, cues) in queries.iter().enumerate() {
+                let (plafond_max, _) = mesure_plafond(cues, q, cap);
+                let mut b = 25usize;
+                let mut cout = 0usize;
+                let mut plafond_prec = 0.0f64;
+                let mut top_prec: Vec<EngramId> = Vec::new();
+                loop {
+                    let (plafond, top) = mesure_plafond(cues, q, b);
+                    cout += b;
+                    let stop = b >= cap
+                        || (b > 25
+                            && match nom {
+                                "A: gain de plafond < 1 pt" => (plafond - plafond_prec) < 0.01,
+                                _ => top == top_prec,
+                            });
+                    if stop {
+                        budgets.push(b as f64);
+                        couts.push(cout as f64);
+                        plafonds.push(plafond);
+                        if plafond + 1e-9 >= plafond_max {
+                            atteint_max += 1;
+                        }
+                        break;
+                    }
+                    plafond_prec = plafond;
+                    top_prec = top;
+                    b *= 2;
+                }
+            }
+            politiques.push(Pol {
+                nom,
+                budgets,
+                couts,
+                plafonds,
+                atteint_max,
+            });
+        }
+
+        let mut plafond_max_moy = Vec::new();
+        for (q, cues) in queries.iter().enumerate() {
+            plafond_max_moy.push(mesure_plafond(cues, q, cap).0);
+        }
+        banc.largeurs_defaut();
+
+        println!(
+            "   plafond@10 au budget {cap} : {:.3} (référence de comparaison)",
+            moyenne(&plafond_max_moy)
+        );
+        println!(
+            "{:<28} {:>12} {:>14} {:>11} {:>13}",
+            "politique", "budget moyen", "candidats vus", "plafond@10", "au max"
+        );
+        for pol in &politiques {
+            println!(
+                "{:<28} {:>12.1} {:>14.1} {:>11.3} {:>10}/{}",
+                pol.nom,
+                moyenne(&pol.budgets),
+                moyenne(&pol.couts),
+                moyenne(&pol.plafonds),
+                pol.atteint_max,
+                N_QUERIES
+            );
+        }
+        for b in [25usize, 50, 100, 200, 400] {
+            let mut plafonds = Vec::new();
+            for (q, cues) in queries.iter().enumerate() {
+                plafonds.push(mesure_plafond(cues, q, b).0);
+            }
+            println!(
+                "{:<28} {:>12} {:>14} {:>11.3} {:>10}",
+                format!("fixe b = {b}"),
+                b,
+                b,
+                moyenne(&plafonds),
+                "—"
+            );
+        }
+        banc.largeurs_defaut();
+        println!("   → compromis MESURÉ, pas politique recommandée : les seuils (1 point de");
+        println!("     plafond, stabilité du top-k) sont des réglages arbitraires. Ce que le test");
+        println!("     montre : le coût, en candidats vus, d'atteindre un plafond donné.");
+    }
+
+    // ---- 8) Distribution RÉELLE, si une base est désignée ----
+    println!("\n-- 8. Distribution réelle (base désignée par variable d'environnement) --");
+    {
+        // Règle du dépôt : aucun chemin n'est deviné. Sans variable, la section est
+        // SAUTÉE et le dit — elle n'est jamais silencieusement absente.
+        match std::env::var_os("OBRAIN_TEST_STORE_REEL_DIR") {
+            None => {
+                println!(
+                    "   SAUTÉE : aucune base désignée (OBRAIN_TEST_STORE_REEL_DIR non posée)."
+                );
+                println!(
+                    "   Le protocole est prêt ; l'exécuter demande de désigner une base, qui est"
+                );
+                println!("   COPIÉE puis ouverte en lecture seule (jamais ouverte en place).");
+                println!("   Les chiffres des sections 1..7 restent donc synthétiques.");
+            }
+            Some(chemin) => {
+                let source = std::path::PathBuf::from(chemin);
+                match obrain_bases_banc::essayer_copie_de(&source, "OBRAIN_TEST_STORE_REEL_DIR") {
+                    Err(refus) => println!("   SAUTÉE : copie refusée — {refus}"),
+                    Ok(copie) => {
+                        // La COPIE est ouverte en écriture, jamais la base désignée : c'est
+                        // une copie jetable, et `open_read_only` refuse une base antérieure
+                        // au verrou `substrate.dirlock` (mesuré : refus explicite). Le mode
+                        // écriture sur la copie ne touche pas la base d'origine.
+                        match obrain_substrate::SubstrateStore::open(copie.chemin()) {
+                            Err(e) => {
+                                println!("   SAUTÉE : ouverture de la COPIE impossible — {e}")
+                            }
+                            Ok(base) => {
+                                let max_id = base.next_engram_id();
+                                let mut ensembles: Vec<Vec<(NodeId, f64)>> = Vec::new();
+                                for id in 0..max_id {
+                                    if let Ok(Some(membres)) = base.engram_members(id) {
+                                        if membres.len() >= 2 {
+                                            ensembles
+                                                .push(membres.iter().map(|n| (*n, 1.0)).collect());
+                                        }
+                                    }
+                                }
+                                let mut tailles: Vec<f64> =
+                                    ensembles.iter().map(|e| e.len() as f64).collect();
+                                tailles.sort_by(|a, b| {
+                                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                                });
+                                let mut popularite: HashMap<NodeId, usize> = HashMap::new();
+                                for e in &ensembles {
+                                    for (n, _) in e {
+                                        *popularite.entry(*n).or_insert(0) += 1;
+                                    }
+                                }
+                                let mut pops: Vec<f64> =
+                                    popularite.values().map(|c| *c as f64).collect();
+                                pops.sort_by(|a, b| {
+                                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                                });
+                                println!(
+                                    "   engrammes réels : {} | vocables : {} | taille médiane {} | p90 {} | max {}",
+                                    ensembles.len(),
+                                    popularite.len(),
+                                    tailles.get(tailles.len() / 2).copied().unwrap_or(0.0),
+                                    tailles
+                                        .get((tailles.len() as f64 * 0.9) as usize)
+                                        .copied()
+                                        .unwrap_or(0.0),
+                                    tailles.last().copied().unwrap_or(0.0)
+                                );
+                                println!(
+                                    "   popularité (ensembles par vocable) : médiane {} | p90 {} | max {}",
+                                    pops.get(pops.len() / 2).copied().unwrap_or(0.0),
+                                    pops.get((pops.len() as f64 * 0.9) as usize)
+                                        .copied()
+                                        .unwrap_or(0.0),
+                                    pops.last().copied().unwrap_or(0.0)
+                                );
+                                if ensembles.len() >= 100 {
+                                    let n_reel = ensembles.len().min(1000);
+                                    let mut rng = Lcg::new(0xA11CE);
+                                    let mut populaires: Vec<(NodeId, usize)> =
+                                        popularite.iter().map(|(n, c)| (*n, *c)).collect();
+                                    populaires
+                                        .sort_by(|a, b| b.1.cmp(&a.1).then(a.0.0.cmp(&b.0.0)));
+                                    let queries_reelles: Vec<Vec<NodeId>> = (0..N_QUERIES)
+                                        .map(|_| {
+                                            let i = rng.below(populaires.len().min(200));
+                                            vec![populaires[i].0]
+                                        })
+                                        .collect();
+                                    let corpus_reel: Vec<Vec<(NodeId, f64)>> =
+                                        ensembles.iter().take(n_reel).cloned().collect();
+                                    let banc_reel = construire(&corpus_reel, &encoder);
+                                    let refs_reelles: Vec<_> = queries_reelles
+                                        .iter()
+                                        .map(|c| reference(&banc_reel.store, c))
+                                        .collect();
+                                    let ctx_reel = Ctx {
+                                        engine: &engine,
+                                        store: &banc_reel.store,
+                                        encoder: &encoder,
+                                        queries: &queries_reelles,
+                                        refs: &refs_reelles,
+                                    };
+                                    banc_reel.largeurs_defaut();
+                                    println!(
+                                        "   {:>26} {:>11} {:>11} {:>7} {:>11} {:>11}",
+                                        "index (engrammes réels)",
+                                        "plafond@10",
+                                        "accord@10",
+                                        "tau",
+                                        "index µs",
+                                        "chemin µs"
+                                    );
+                                    let variantes: [(&str, &dyn VectorIndex); 2] = [
+                                        ("force brute", &banc_reel.brute),
+                                        ("cascade substrate", &banc_reel.cascade),
+                                    ];
+                                    for (nom, idx) in variantes {
+                                        let m = mesurer(&ctx_reel, idx, RecallVariant::Hybrid, 3);
+                                        println!(
+                                            "   {:>26} {:>11.3} {:>11.3} {:>7} {:>11.1} {:>11.1}",
+                                            nom,
+                                            m.q.ceiling,
+                                            m.q.accord,
+                                            if m.q.tau.is_nan() {
+                                                "n/d".to_string()
+                                            } else {
+                                                format!("{:.3}", m.q.tau)
+                                            },
+                                            m.lat_index,
+                                            m.lat_path
+                                        );
+                                    }
+                                } else {
+                                    println!(
+                                        "   AUCUN engramme lisible dans cette base ({} trouvé(s)) : la zone",
+                                        ensembles.len()
+                                    );
+                                    println!(
+                                        "   `substrate.engram_members` est vide ou absente. La distribution"
+                                    );
+                                    println!(
+                                        "   RÉELLE n'est donc pas mesurée — pas « mesurée comme vide » :"
+                                    );
+                                    println!("   la base n'a rien à donner sur ce plan.");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- 9) Ce que ces chiffres ne disent pas ----
+    println!("\n-- 9. Ce que ces chiffres ne disent pas --");
     println!(
-        "   réellement sous-linéaire (graphe navigable, IVF) demanderait un autre banc, avec un"
+        "a. Aucune complexité. L0 balaie tous les vecteurs : c'est linéaire en n, et rien ici"
     );
-    println!("   rappel à budget fixé qui ne s'effondre pas — non mesuré ici.");
+    println!(
+        "   n'est sous-linéaire. Le croisement mesuré est un effet de SEUIL, pas d'asymptote :"
+    );
+    println!("   tant que n ≤ k0 (4 000), L0 garde tout et la cascade est plus LENTE que la force");
+    println!(
+        "   brute en 64d (elle projette en 384) ; au-delà, k0 élague et elle devient ~4× plus"
+    );
+    println!("   rapide à N = 16 000 (568 µs contre 2 387 µs) en payant du plafond. Un index");
+    println!("   réellement sous-linéaire (graphe navigable, IVF) demanderait un autre banc.");
     println!("b. Le cascade est construit EN MÉMOIRE (`SubstrateTieredIndex::new`). Sa");
     println!("   persistance en zones, son chargement mmap et la repermutation de slots ne sont");
     println!("   pas mesurés : le coût d'ouverture d'une base réelle n'entre dans aucun chiffre.");
     println!("c. Signatures 64d, paliers figés à 384 : chaque insertion paie une projection");
-    println!("   128×384 + 512×384 sur un vecteur rembourré — coût de construction qui ne");
-    println!("   index). Un encodeur natif en 384d ne paierait pas ce rembourrage ; nous, si.");
+    println!("   128×384 + 512×384 sur un vecteur rembourré — mesuré 127 µs/vecteur, et À CHAQUE");
+    println!(
+        "   ÉCRITURE : la mise à jour recalcule les paliers (mesuré identique à l'insertion)."
+    );
     println!("d. Le rerank exact NATIF des paliers (`SourceNative`) n'est PAS branché : le score");
     println!("   qui sort du cascade est le cosinus f16 du palier L2, arrondi. Brancher la source");
     println!("   native changerait la fidélité mesurée — non mesuré ici.");
     println!("e. Corpus synthétiques. Une distribution réelle de co-activations n'est ni");
     println!("   clusterisée ni zipf : les valeurs par distribution disent la TENDANCE.");
+    println!("   MESURÉ le 26/11 sur dgx : AUCUNE base de la machine ne porte d'engrammes (zone");
+    println!(
+        "   `substrate.engram_members` vide ou absente dans `~/.obrain/hub.db`, `~/.obrain/db`"
+    );
+    println!("   et `~/bissection/base-50k` ; la seule grosse base fait 967 Gio, donc non");
+    println!("   copiable). La section 8 a bien ouvert une base réelle (copiée en 1,7 s) et n'y a");
+    println!("   trouvé aucun ensemble : la distribution réelle reste NON MESURÉE, pas estimée.");
     println!("f. Latences sur machine partagée, non assertées. La QUALITÉ, elle, est assertée sur");
     println!("   chaque configuration (invariants du chemin + garde-fou de câblage à 0,5).");
     println!("\ndurée totale du banc : {:?}", started.elapsed());
