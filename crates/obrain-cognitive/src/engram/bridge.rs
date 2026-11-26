@@ -935,6 +935,104 @@ mod tests {
             "la double application de obs1 a franchi le seuil de formation (3 activations)"
         );
     }
+
+    /// Le constructeur à erreur de prédiction explicite garde la voie de
+    /// révision DÉSACTIVÉE par défaut (aucune identité forcée sur une formation).
+    #[tokio::test]
+    async fn constructeur_avec_erreur_de_prediction_explicite_desactive_la_revision() {
+        let mgr = manager();
+        let bridge = EngramObservationBridge::with_prediction_error(Arc::clone(&mgr), 0.5);
+        for _ in 0..3 {
+            let out = bridge.observe(&edge_event(1, 1, 2), None);
+            assert!(
+                matches!(
+                    out,
+                    BridgeObservation::ActivationRecorded
+                        | BridgeObservation::FormationSucceeded(_)
+                ),
+                "formation sans identité, reçu {out:?}"
+            );
+        }
+        assert!(mgr.store().count() >= 1, "un engramme a été formé");
+    }
+
+    /// Une erreur de prédiction NON FINIE en révision identifiée est PROPAGÉE
+    /// (jamais assimilée à une révision initiale), même sur un engramme cible.
+    #[tokio::test]
+    async fn erreur_de_prediction_non_finie_en_revision_est_propagee() {
+        let mgr = manager();
+        insert_engram(&mgr, &[1, 2]);
+        let bridge = EngramObservationBridge::with_prediction_error(Arc::clone(&mgr), f64::NAN)
+            .with_experimental_revision(true);
+        let out = bridge.observe(&edge_event(1, 1, 2), Some(ObservationId::from_u128(1)));
+        match out {
+            BridgeObservation::Failed(_) => {}
+            other => panic!("attendu Failed (erreur non finie propagée), reçu {other:?}"),
+        }
+    }
+
+    /// Une erreur de prédiction NON FINIE sans cible (formation identifiée) est
+    /// PROPAGÉE par le refus de la définition, jamais transformée en état.
+    #[tokio::test]
+    async fn erreur_de_prediction_non_finie_sans_cible_est_propagee() {
+        let mgr = manager();
+        let bridge = EngramObservationBridge::with_prediction_error(Arc::clone(&mgr), f64::NAN)
+            .with_experimental_revision(true);
+        // Aucun engramme ne recouvre {10,11} → formation identifiée → définition refusée.
+        let out = bridge.observe(&edge_event(1, 10, 11), Some(ObservationId::from_u128(1)));
+        match out {
+            BridgeObservation::Failed(_) => {}
+            other => panic!("attendu Failed (définition non finie), reçu {other:?}"),
+        }
+    }
+
+    /// Rejeu d'une formation IDENTIFIÉE sans cible : l'identité est déjà traitée
+    /// → Replayed, aucune nouvelle activation.
+    #[tokio::test]
+    async fn rejeu_d_une_formation_identifiee_sans_cible_est_rejoue() {
+        let mgr = manager();
+        let bridge =
+            EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
+        let first = bridge.observe(&edge_event(1, 10, 11), Some(ObservationId::from_u128(1)));
+        assert!(
+            matches!(
+                first,
+                BridgeObservation::ActivationRecorded | BridgeObservation::FormationSucceeded(_)
+            ),
+            "formation identifiée, reçu {first:?}"
+        );
+        assert_eq!(
+            mgr.store().count(),
+            0,
+            "une seule co-activation ne forme pas"
+        );
+        let replay = bridge.observe(&edge_event(1, 10, 11), Some(ObservationId::from_u128(1)));
+        assert_eq!(
+            replay,
+            BridgeObservation::Replayed,
+            "rejeu sans nouvelle activation"
+        );
+    }
+
+    /// Même identité, contenu DIFFÉRENT sur une formation sans cible : le conflit
+    /// d'identité est PROPAGÉE (jamais une formation silencieuse).
+    #[tokio::test]
+    async fn rejeu_d_une_formation_identifiee_avec_contenu_different_est_un_conflit() {
+        let mgr = manager();
+        let bridge =
+            EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
+        bridge.observe(&edge_event(1, 10, 11), Some(ObservationId::from_u128(1)));
+        let out = bridge.observe(&edge_event(2, 10, 12), Some(ObservationId::from_u128(1)));
+        match out {
+            BridgeObservation::Failed(msg) => {
+                assert!(
+                    msg.contains("IdentityConflict"),
+                    "conflit d'identité nommé : {msg}"
+                );
+            }
+            other => panic!("attendu Failed (conflit d'identité), reçu {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
