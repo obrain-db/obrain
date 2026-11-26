@@ -1,0 +1,2609 @@
+warning: found both `noeud` and `nœud` as identifiers, which look alike
+     --> crates/obrain-substrate/src/store.rs:47491:8
+      |
+47491 |     fn nœud(store: &SubstrateStore) -> NodeId {
+      |        ^^^^ this identifier can be confused with `noeud`
+      |
+     ::: crates/obrain-substrate/src/borne_allocation.rs:219:12
+      |
+  219 |     pub fn noeud(&self) -> u64 {
+      |            ----- other identifier used here
+      |
+      = note: `#[warn(confusable_idents)]` on by default
+
+warning: `obrain-substrate` (lib) generated 1 warning
+   Compiling obrain-substrate v0.0.1 (/Users/triviere/projects/obrain/_wt/obrain-334-qualification/crates/obrain-substrate)
+warning: unused import: `GraphStore as _`
+  --> crates/obrain-substrate/tests/contre_epreuves_v2.rs:25:26
+   |
+25 | use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
+   |                          ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `obrain-substrate` (test "contre_epreuves_v2") generated 1 warning (run `cargo fix --test "contre_epreuves_v2" -p obrain-substrate` to apply 1 suggestion)
+warning: unused import: `GraphStore as _`
+  --> crates/obrain-substrate/tests/reference_tentative_externe.rs:16:26
+   |
+16 | use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
+   |                          ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `obrain-substrate` (test "reference_tentative_externe") generated 1 warning (run `cargo fix --test "reference_tentative_externe" -p obrain-substrate` to apply 1 suggestion)
+warning: unused variable: `store1b`
+     --> crates/obrain-substrate/src/store.rs:47869:13
+      |
+47869 |         let store1b = Arc::clone(&store1);
+      |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_store1b`
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `prop_b`
+     --> crates/obrain-substrate/src/store.rs:47902:13
+      |
+47902 |         let prop_b = store.prop_keys.read().lookup("b").unwrap();
+      |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_prop_b`
+
+warning: unused variable: `sa`
+     --> crates/obrain-substrate/src/store.rs:48089:14
+      |
+48089 |         let (sa, sb, sa2, sb2) = {
+      |              ^^ help: if this is intentional, prefix it with an underscore: `_sa`
+
+warning: `obrain-substrate` (lib test) generated 4 warnings (1 duplicate) (run `cargo fix --lib -p obrain-substrate --tests` to apply 3 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3m 00s
+     Running unittests src/lib.rs (target/debug/deps/obrain_substrate-c7785ec49f14c02b)
+
+running 1253 tests
+test blob_column::tests::header_size_matches_constant ... ok
+test blob_column::tests::magic_bytes_are_ascii_blb1 ... ok
+test blob_column::tests::empty_payload_is_rejected ... ok
+test blob_column::tests::slot_stride_matches_constant ... ok
+test blob_column::tests::corrupt_arena_crc_returns_none_on_open ... ok
+test blob_column::tests::roundtrip_many_slots_variable_length ... ok
+test blob_column::tests::empty_zones_return_none_on_open ... ok
+test blob_column::tests::spec_filename_is_deterministic_and_descriptive ... ok
+test blob_column::tests::corrupt_magic_returns_none_on_open ... ok
+test blob_column::tests::finalize_consumes_writer_and_syncs ... ok
+test blob_column::tests::overwrite_appends_new_bytes_and_updates_slot ... ok
+test blob_column::tests::large_payload_roundtrips ... ok
+test blob_column::tests::corrupt_idx_crc_returns_none_on_open ... ok
+test blob_column::tests::roundtrip_single_slot ... ok
+test blob_column::tests::incremental_arena_crc_survives_reopen ... ok
+test blob_column_registry::tests::decode_blob_payload_rejects_unknown_tag_and_bad_utf8 ... ok
+test blob_column_registry::tests::decode_blob_payload_roundtrips_string_and_bytes ... ok
+test blob_column_registry::tests::encode_blob_payload_ignores_other_variants ... ok
+test blob_column::tests::bumped_version_returns_none_on_open ... ok
+test blob_column_registry::tests::encode_blob_payload_routes_big_bytes ... ok
+test blob_column::tests::incremental_arena_crc_matches_full_recompute ... ok
+test blob_column::tests::cold_column_sync_is_a_noop_and_stays_readable ... ok
+test blob_column_registry::tests::encode_blob_payload_rejects_below_threshold ... ok
+test blob_column::tests::node_and_edge_same_key_use_distinct_files ... ok
+test blob_column_registry::tests::encode_blob_payload_routes_big_string ... ok
+test blob_column_registry::tests::iter_props_empty_registry_returns_empty ... ok
+test blob_column::tests::truncated_dat_returns_none_on_open ... ok
+test blob_column::tests::un_ajout_apres_un_arret_sans_sync_n_ecrase_pas_les_octets_d_un_autre_slot ... ok
+test blob_column_registry::tests::overwrite_returns_new_value ... ok
+test blob_column_registry::tests::iter_props_for_entity_round_trip ... ok
+test blob_column_registry::tests::should_route_to_blob_matches_threshold ... ok
+test blob_column::tests::sparse_writes_have_absent_gaps ... ok
+test blob_column_registry::tests::empty_payload_is_rejected ... ok
+test blob_column::tests::une_colonne_synchronisee_rouvre_sans_recalcul ... ok
+test blob_column_registry::tests::threshold_constant_matches_spec ... ok
+test blob_column::tests::truncated_idx_returns_none_on_open ... ok
+test blob_column::tests::une_entree_au_dela_de_n_slots_ressurgit_avec_sa_derniere_valeur_si_n_slots_monte ... ok
+test blob_column_registry::tests::hydrate_tolerates_unknown_prop_key_id ... ok
+test borne_allocation::tests_pages_mp3::les_pages_sont_reservees_de_facon_disjointe_et_le_filigrane_ne_recule_pas ... ok
+test blob_column::tests::writer_reopen_inherits_counters ... ok
+test blob_column_registry::tests::iter_props_for_entity_skips_absent_slots ... ok
+test borne_allocation::tests_verrou_entite::l_empreinte_depend_des_64_bits_du_demarrage ... ok
+test borne_allocation::tests_verrou_entite::les_verrous_tiennent_dans_la_page ... ok
+test borne_allocation::tests_verrou_entite::deux_tranches_distinctes_se_prennent_toutes_les_deux ... ok
+test blob_column::tests::la_reouverture_ne_balaie_pas_l_idx_avant_un_ecrivain ... ok
+test blob_column::tests::writer_sync_then_read_through_fresh_reader ... ok
+test blob_column_registry::tests::read_missing_key_returns_none ... ok
+test blob_column_registry::tests::read_missing_slot_returns_none ... ok
+test borne_allocation::tests_verrou_entite::la_liberation_rend_la_tranche_prenable ... ok
+test borne_allocation::tests_verrou_entite::un_detenteur_mort_est_vole ... ok
+test blob_column_registry::tests::read_value_reconstructs_variant ... ok
+test borne_allocation::tests_verrou_entite::un_detenteur_vivant_n_est_pas_vole ... ok
+test blob_column_registry::tests::specs_snapshot_is_deterministic ... ok
+test borne_allocation::tests_verrou_entite::une_tranche_deja_tenue_est_refusee_au_second_essai ... ok
+test blob_column_registry::tests::hydrate_from_dict_recovers_registered_key ... ok
+test blob_column_registry::tests::node_and_edge_keys_are_independent ... ok
+test blob_column_registry::tests::variable_length_writes_share_one_column ... ok
+test dict::tests::crc_failure_is_detected ... ok
+test dict::tests::default_counters_are_one ... ok
+test dict::tests::magic_mismatch_detected ... ok
+test dict::tests::missing_file_loads_empty ... ok
+test blob_column_registry::tests::write_then_read_node_roundtrip ... ok
+test dict::tests::roundtrip_empty ... ok
+test dict::tests::roundtrip_populated ... ok
+test dict::tests::roundtrip_v3_with_vec_columns ... ok
+test dict::tests::roundtrip_v4_with_blob_columns ... ok
+test dict::tests::stable_bytes_ignore_wal_offset_but_full_bytes_differ ... ok
+test dict::tests::persist_and_load_via_disk ... ok
+test dict::tests::too_many_labels_rejected ... ok
+test borne_allocation::tests_paliers_attente::l_attente_traverse_les_trois_paliers ... ok
+test dict::tests::unknown_version_rejected ... ok
+test blob_column_registry::tests::sync_all_makes_data_durable_to_a_fresh_reader ... ok
+test dict::tests::v1_dict_loads_with_default_next_engram_id ... ok
+test dict::tests::v2_dict_loads_as_v3_with_empty_vec_columns ... ok
+test dict::tests::v2_dict_roundtrips_engram_counter ... ok
+test dict::tests::v3_dict_loads_as_v4_with_empty_blob_columns ... ok
+test dict::tests::v3_zero_engram_counter_rejected ... ok
+test dict::tests::v4_blob_columns_bad_entity_kind_rejected ... ok
+test dict::tests::v4_blob_columns_truncated_body_is_rejected ... ok
+test dict::tests::zero_counter_rejected ... ok
+test degree_column::tests::create_and_read_empty ... ok
+test degree_column::tests::ensure_slot_grows_column ... ok
+test degree_column::tests::open_absent_returns_none ... ok
+test degree_column::tests::incr_and_read ... ok
+test degree_column::tests::persist_and_reopen_roundtrip ... ok
+test degree_column::tests::recreer_sur_un_fichier_existant_remet_a_zero ... ok
+test degree_column::tests::out_and_in_are_independent ... ok
+test degree_column::tests::open_crc_mismatch_returns_none ... ok
+test engram::tests::init_writes_valid_header ... ok
+test engram::tests::clear_engram_with_empty_list ... ok
+test engram::tests::engram_id_zero_rejected ... ok
+test engram::tests::empty_engram_returns_none ... ok
+test engram::tests::many_engrams_grow_zone_logarithmically ... ok
+test checkpoint::tests::checkpoint_persists_zone_data ... ok
+test engram::tests::multiple_engrams_independent ... ok
+test engram_bitset::tests::bit_mask_folds_engram_id_mod_64 ... ok
+test engram_bitset::tests::engram_id_zero_check ... ok
+test engram::tests::set_100_members_roundtrip ... ok
+test engram::tests::close_reopen_preserves_members ... ok
+test engram::tests::init_is_idempotent ... ok
+test checkpoint::tests::checkpoint_marker_file_written ... ok
+test checkpoint::tests::checkpoint_resets_wal ... ok
+test engram::tests::set_and_get_single_engram ... ok
+test engram_bitset::tests::hash_collisions_are_observable ... ok
+test engram_recall::tests::full_query_counts_each_columns_ones ... ok
+test engram_recall::tests::scalar_simd_parity_on_handcrafted ... ok
+test engram_recall::tests::top_k_breaks_ties_by_ascending_idx ... ok
+test engram_recall::tests::top_k_empty_column_yields_empty ... ok
+test engram_recall::tests::top_k_k_zero_yields_empty ... ok
+test engram_recall::tests::top_k_returns_descending_overlap ... ok
+test engram_recall::tests::top_k_with_k_greater_than_nonzero_returns_all_hits ... ok
+test engram_recall::tests::scalar_simd_parity_randomized ... ok
+test engram_recall::tests::top_k_zero_query_yields_empty ... ok
+test engram_recall::tests::zero_query_yields_all_zeros ... ok
+test file::tests::enfant_croissance_concurrente ... ok
+test engram_bitset::tests::as_u64_slice_exposes_column ... ok
+test engram_bitset::tests::empty_slot_returns_zero_bitset ... ok
+test file::tests::create_then_open_roundtrip ... ok
+test engram_bitset::tests::set_and_get_roundtrip ... ok
+test engram_bitset::tests::close_reopen_preserves_bitset ... ok
+test engram::tests::update_orphans_old_snapshot ... ok
+test checkpoint::tests::replay_after_checkpoint_sees_only_marker ... ok
+test file::tests::deux_ecritures_du_meme_chemin_partagent_la_meme_part ... ok
+test file::tests::grow_to_ne_tronque_pas_un_pair_qui_a_deja_grandi ... ok
+test engram_bitset::tests::join_leave_semantics_via_full_rewrite ... ok
+test file::tests::deux_ouvertures_du_meme_repertoire_dans_ce_processus_reussissent ... ok
+test file::tests::mmap_dontneed_sur_zone_vide_est_un_noop ... ok
+test engram_bitset::tests::multiple_slots_independent ... ok
+test file::tests::mmap_ecriture_au_dernier_octet_avant_remap_survit ... ok
+test file::tests::mmap_contenu_survit_a_grow_et_remap ... ok
+test file::tests::mmap_fichier_vide_expose_un_slice_vide_et_pas_de_map ... ok
+test file::tests::mmap_grow_egal_est_un_noop_et_ne_remap_pas ... ok
+test file::tests::croissance_concurrente_ne_tronque_pas ... ok
+test file::tests::mmap_willneed_clampe_les_depassements_sans_paniquer ... ok
+test file::tests::mmap_frontieres_de_page_4k_et_2m_survivent_au_remap ... ok
+test file::tests::mmap_roundtrip_survit_a_reouverture ... ok
+test file::tests::open_nonexistent_fails ... ok
+test file::tests::should_advise_huge_pages_est_pilote_par_le_flag_et_le_seuil ... ok
+test file::tests::sonde_grow_verrou_exterieur ... ok
+test file::tests::sonde_verrou_enfant_exterieur ... ok
+test file::tests::double_create_fails ... ok
+test file::tests::le_verrou_survit_a_la_reecriture_atomique_du_meta ... ok
+test file::tests::open_wrong_magic_fails ... ok
+test file::tests::verrou_partage_ro_coexiste_et_bloque_rw ... ok
+test file::tests::le_verrou_survit_a_la_fermeture_d_une_part_et_tombe_avec_la_derniere ... ok
+test file::tests_memoire::croissance_conserve_le_contenu_et_zero_remplit ... ok
+test file::tests_memoire::deux_poignees_de_la_meme_zone_partagent_les_octets ... ok
+test file::tests_memoire::en_tete_meta_aller_retour ... ok
+test file::tests_memoire::lecture_seule_sur_zone_absente_echoue ... ok
+test file::tests_memoire::le_mode_memoire_ne_sait_pas_encore_checkpointer ... ok
+test file::tests_memoire::zones_de_base_presentes_et_vides ... ok
+test file::tests::tempfile_auto_deletes ... ok
+test file::tests::write_meta_header_persists ... ok
+test file::tests_memoire::store_complet_en_memoire ... ok
+test file::tests_zone_privee::grandir_dans_la_reserve_garde_les_octets_ecrits ... ok
+test file::tests::zonefile_refuses_to_shrink ... ok
+test file::tests::zonefile_grow_and_write ... ok
+test file::tests_zone_privee::grandir_une_zone_privee_ne_touche_pas_au_fichier ... ok
+test file::tests::zones_are_created_empty ... ok
+test file::tests_zone_privee::une_zone_sans_fichier_vit_en_memoire_et_ne_cree_rien ... ok
+test file::tests_zone_privee::rafraichir_reprojette_un_fichier_agrandi_sans_l_ecrire ... ok
+test file::tests_zone_privee::au_dela_du_plafond_la_croissance_est_refusee_par_une_erreur_nommee ... ok
+test file::tests_zone_privee::retrecir_une_zone_privee_est_refuse_par_lecture_seule ... ok
+test file::tests::un_detenteur_exterieur_est_refuse_pendant_qu_une_part_vit ... ok
+test file::tests_zone_privee::zone_privee_suit_l_ecrivain_tant_qu_elle_n_est_pas_ecrite ... ok
+test file::tests::flag_pilote_l_advise_aux_deux_sites ... ok
+test file::tests::huge_pages_enabled_defaut_on_off_sur_zero ... ok
+test file::tests::flag_off_zone_non_advisee_reste_lisible_et_ecrivable ... ok
+test file::tests::flag_on_zone_advisee_reste_lisible_et_ecrivable ... ok
+test file::tests::mmap_contenu_survit_a_grow_a_travers_le_seuil_huge ... ok
+test file::tests::mmap_zone_exactement_au_seuil_huge_reste_lisible_et_ecrivable ... ok
+test file::tests::mmap_dontneed_refault_sans_corruption_et_reste_ecrivable ... ok
+test file::tests::grow_to_attend_un_verrou_exclusif_exterieur ... ok
+test geometric::tests::compute_all_node_curvatures_avertit_une_base_perimee ... ok
+test geometric::tests::compute_for_edge_returns_none_on_tombstoned ... ok
+test geometric::tests::effective_resistance_path_graph_matches_hop_count ... ok
+test geometric::tests::effective_resistance_triangle_is_two_thirds ... ok
+test geometric::tests::bottleneck_nodes_flags_negative_curvature_nodes_on_isthmus ... ok
+test geometric::tests::entrees_du_cache_sont_exercees_et_partagent_le_csr ... ok
+test geometric::tests::effective_resistance_rejects_same_endpoint ... ok
+test geometric::tests::effective_resistance_is_less_than_shortest_path ... ok
+test geometric::tests::hks_degres_chebyshev_aux_trois_echelles ... ok
+test geometric::tests::forman_agrees_in_sign_with_ollivier_on_trefoil ... ok
+test geometric::tests::forman_trefoil_bridges_are_more_negative_than_triangle_interiors ... ok
+test geometric::tests::forman_batch_covers_every_live_edge ... ok
+test geometric::tests::delta_refresh_matches_batch_within_one_q_unit ... ok
+test geometric::tests::geodesic_is_monotone_in_chain_distance ... ok
+test geometric::tests::geodesic_unreachable_returns_none ... ok
+test geometric::tests::geodesic_zero_weight_chain_costs_one_per_hop ... ok
+test geometric::tests::enrich_ricci_persiste_et_idempotent ... ok
+test geometric::tests::heat_step_rejects_undersized_buffer ... ok
+test geometric::tests::heat_step_preserves_mass ... ok
+test geometric::tests::heat_step_weighted_is_a_noop_on_fresh_edges ... ok
+test geometric::tests::heat_step_spreads_dirac_to_neighbours ... ok
+test geometric::tests::isolated_edge_yields_zero ... ok
+test geometric::tests::mark_incident_edges_stale_sets_flag_on_both_directions ... ok
+test geometric::tests::hks_operateur_chebyshev_egal_expm_dense_sur_etoile_40 ... ok
+test geometric::tests::marquer_ricci_formule_a_jour_couvre_les_chemins_d_erreur ... ok
+test geometric::tests::heat_diffusion_on_linear_chain_matches_gaussian_variance ... ok
+test geometric::tests::node_curvature_none_on_isolated_node ... ok
+test heap::tests::append_and_read ... ok
+test heap::tests::crc32_roundtrip ... ok
+test heap::tests::fills_and_rejects ... ok
+test heap::tests::free_offset_corrompu_ne_deborde_pas ... ok
+test heap::tests::heap_page_is_4kib ... ok
+test heap::tests::longueur_corrompue_sous_la_taille_de_page_est_refusee ... ok
+test geometric::tests::karate_brokers_have_more_negative_curvature_than_faction_hubs ... ok
+test heap::tests::read_at_out_of_bounds_returns_none ... ok
+test heap::tests::string_heap_spills_to_new_page ... ok
+test hilbert::tests::average_adjacency_gap_is_small ... ok
+test hilbert::tests::bijection_order_5 ... ok
+test hilbert::tests::consecutive_indices_are_grid_adjacent_order_4 ... ok
+test hilbert::tests::key_from_features_in_range ... ok
+test hilbert::tests::invert_permutation_roundtrip ... ok
+test hilbert::tests::key_respects_centrality_monotonicity_at_fixed_degree ... ok
+test hilbert::tests::key_respects_degree_saturation ... ok
+test hilbert::tests::order_1_is_a_permutation_of_0_3 ... ok
+test hilbert::tests::permutation_groups_same_community ... ok
+test hilbert::tests::permutation_is_a_bijection ... ok
+test geometric::tests::marqueur_de_version_ricci_cycle_de_vie ... ok
+test hilbert::tests::permutation_is_deterministic_on_ties ... ok
+test hilbert::tests::permutation_pushes_tombstones_to_tail ... ok
+test hilbert::tests::zorder_bijection_order_5 ... ok
+test hilbert::tests::zorder_high_prefix_selects_aligned_cell ... ok
+test hilbert::tests::zorder_key_shared_grid_with_hilbert ... ok
+test hilbert::tests::zorder_order1_layout_is_x_then_y ... ok
+test geometric::tests::node_curvature_falls_back_to_unweighted_mean_on_zero_weights ... ok
+test hilbert::tests::zorder_respects_degree_saturation ... ok
+test hilbert::tests::zorder_window_full_grid_is_single_run ... ok
+test hilbert::tests::zorder_window_out_of_grid_clamps ... ok
+test hilbert::tests::zorder_window_ranges_cover_exactly ... ok
+test geometric::tests::refresh_edge_ricci_persists_and_clears_stale_flag ... ok
+test horloge_hybride::tests::derniere_rend_la_derniere_estampille ... ok
+test horloge_hybride::tests::debordement_logique_reporte_sur_la_physique ... ok
+test horloge_hybride::tests::deux_ecrivains_qui_s_observent_convergent ... ok
+test horloge_hybride::tests::estampille_pack_depaquete_roundtrip ... ok
+test horloge_hybride::tests::maintenant_est_strictement_croissant_a_physique_fixe ... ok
+test horloge_hybride::tests::estampille_serialise_et_deserialise ... ok
+test horloge_hybride::tests::maintenant_reinitialise_le_logique_quand_la_physique_avance ... ok
+test horloge_hybride::tests::observer_branche_self_en_avance ... ok
+test horloge_hybride::tests::observer_porte_l_horloge_au_dela_du_distant ... ok
+test horloge_hybride::tests::observer_branche_egalite_physique ... ok
+test horloge_hybride::tests::observer_quand_le_mur_est_en_avance_reinitialise_le_logique ... ok
+test horloge_hybride::tests::observer_reporte_le_debordement_sur_la_physique ... ok
+test horloge_hybride::tests::ordre_total_physique_puis_logique ... ok
+test index_labels::tests::liste_fusion_triee_sans_doublon ... ok
+test index_labels::tests::bits_a_noter_vivant_et_revenant ... ok
+test instantane::tests::round_trip_bit_a_bit_sur_les_zones ... ok
+test instantane::tests::les_stats_se_lisent_sans_restaurer ... ok
+test instantane::tests::le_dictionnaire_voyage_et_se_recharge ... ok
+test jump::tests::empty_zone_invalid ... ok
+test jump::tests::header_roundtrip ... ok
+test instantane::tests::un_instantane_tronque_est_refuse_sans_panique ... ok
+test jump::tests::zone_name_roundtrip ... ok
+test meta::tests::meta_header_blank ... ok
+test meta::tests::meta_header_layout ... ok
+test instantane::tests::un_store_restaure_en_memoire_sait_encore_nommer_ses_labels ... ok
+test meta::tests::meta_header_pod_roundtrip ... ok
+test instantane::tests::un_instantane_corrompu_est_refuse ... ok
+test geometric::tests::refresh_all_ricci_stamps_every_live_edge_on_trefoil ... ok
+test miroir::tests::coupure_avant_publication_garde_l_etat_precedent ... ok
+test miroir::tests::coupure_pendant_la_publication_ne_melange_pas ... ok
+test miroir::tests::crc_faux_est_ignore ... ok
+test miroir::tests::emplacement_dechire_est_ignore ... ok
+test miroir::tests::la_generation_la_plus_recente_gagne ... ok
+test miroir::tests::lire_un_nom_absent_donne_notfound ... ok
+test miroir::tests::publication_puis_relecture ... ok
+test miroir::tests::une_ecriture_non_synchronisee_disparait_a_la_coupure ... ok
+test miroir::tests::une_ecriture_synchronisee_survit_a_la_coupure ... ok
+test miroir::tests_fixture::regenere_fixture ... ok
+test instantane::tests::mesure_octets_par_noeud ... ok
+test miroir::tests_journal::la_partie_non_synchronisee_disparait_a_la_coupure ... ok
+test miroir::tests_journal::toutes_les_operations_se_rejouent_a_la_reouverture ... ok
+test geometric::tests::ricci_k13_centre_feuille_vaut_0_et_pas_un_tiers ... ok
+test miroir::tests_journal::le_store_complet_survit_a_une_reouverture_du_fichier ... ok
+test miroir::tests_journal::un_enregistrement_dechire_en_fin_est_abandonne_et_le_fichier_est_tronque ... ok
+test miroir::tests_journal::les_ecritures_apres_la_publication_n_atteignent_pas_le_journal ... ok
+test miroir::tests_plafond::le_plafond_du_navigateur_est_de_deux_gio ... ok
+test geometric::tests::refresh_stale_edges_picks_up_flagged_edges ... ok
+test miroir::tests_store::ce_qui_n_est_pas_publie_est_perdu_a_la_coupure ... ok
+test miroir::tests_plafond::une_publication_au_dela_du_plafond_est_refusee_et_ne_change_rien ... ok
+test miroir::tests_store::deux_emplacements_corrompus_refusent_le_store_vide ... ok
+test miroir::tests_store::un_miroir_vide_donne_un_store_vide ... ok
+test miroir::tests_store::un_etat_publie_puis_corrompu_refuse_l_ouverture ... ok
+test miroir::tests_store::un_etat_publie_survit_a_la_coupure_et_se_relit ... ok
+test geometric::tests::trefoil_bridges_are_negative_interior_is_positive ... ok
+test miroir::tests_store::une_panne_de_lecture_a_l_ouverture_n_est_pas_un_store_vide ... ok
+test miroir::tests_store::une_publication_ulterieure_remplace_la_precedente ... ok
+test page::tests::all_value_tags_covered_by_cursor ... ok
+test page::tests::codec_arr_i64 ... ok
+test page::tests::codec_arr_f64 ... ok
+test page::tests::codec_arr_string_ref ... ok
+test miroir::tests_journal::chaque_publication_ajoute_deux_images_au_journal ... ok
+test page::tests::codec_bool ... ok
+test page::tests::codec_bytes_ref ... ok
+test page::tests::codec_estampille_roundtrip ... ok
+test geometric::tests::refresh_all_ricci_is_idempotent ... ok
+test miroir::tests_journal::une_corruption_au_milieu_arrete_la_reprise_a_la_fin_valide ... ok
+test page::tests::codec_f64 ... ok
+test page::tests::codec_i64 ... ok
+test page::tests::codec_string_ref ... ok
+test page::tests::codec_null ... ok
+test page::tests::codec_tombstone_estampille_roundtrip ... ok
+test page::tests::crc32_roundtrip ... ok
+test page::tests::crc_detects_entry_tampering ... ok
+test geometric::tests::triangle_interior_matches_jost_liu_closed_form ... ok
+test page::tests::cursor_stops_on_decode_error ... ok
+test page::tests::decode_invalid_array_len ... ok
+test page::tests::decode_truncated_header ... ok
+test page::tests::decode_truncated_payload ... ok
+test page::tests::decode_unknown_tag ... ok
+test page::tests::edge_page_has_distinct_magic ... ok
+test page::tests::fresh_page_has_magic ... ok
+test page::tests::heap_ref_size ... ok
+test page::tests::owner_kind_magic_roundtrip ... ok
+test page::tests::owner_kind_on_uninit_page_is_none ... ok
+test page::tests::page_append_and_cursor ... ok
+test page::tests::page_append_full_returns_err ... ok
+test page::tests::property_page_is_4kib ... ok
+test page::tests::tombstone_roundtrip_and_flag ... ok
+test page::tests::with_owner_matches_specific_constructors ... ok
+test popcount::tests::backend_is_consistent_across_calls ... ok
+test popcount::tests::empty_corpus_is_a_noop ... ok
+test popcount::tests::t0_edge_cases ... ok
+test popcount::tests::t0_dispatched_matches_scalar ... ok
+test popcount::tests::t0_scalar_matches_pairwise_hamming ... ok
+test popcount::tests::t0_scalar_reference_random_4096 ... ok
+test popcount::tests::t1_scalar_matches_pairwise_hamming ... ok
+test geometric::tests::hks_hub_d_etoile_vaut_un_plus_exp_moins_2t_sur_2_independamment_du_degre ... ok
+test popcount::tests::t1_edge_cases ... ok
+test geometric::tests::hks_decays_monotonically_with_time ... ok
+test miroir::tests_journal::une_corruption_au_milieu_efface_les_publications_suivantes ... ok
+test popcount::tests::t1_dispatched_matches_scalar ... ok
+test popcount::tests::t1_scalar_reference_random_4096 ... ok
+test props_codec::tests::empty_list_roundtrips_via_arr_i64_canonical ... ok
+test props_codec::tests::bytes_empty_roundtrips ... ok
+test props_codec::tests::dangling_heap_ref_is_rejected_cleanly ... ok
+test props_codec::tests::homogeneous_float_list_takes_fast_path ... ok
+test props_codec::tests::bytes_roundtrip_preserves_every_byte_including_discriminator ... ok
+test props_codec::tests::float_nan_encodes_but_decode_is_bitwise_distinct ... ok
+test props_codec::tests::duration_falls_back_to_bincode ... ok
+test props_codec::tests::heterogeneous_list_falls_back_to_bincode ... ok
+test props_codec::tests::homogeneous_int_list_takes_fast_path ... ok
+test props_codec::tests::bad_discriminator_is_rejected ... ok
+test geometric::tests::hks_distinguishes_clique_from_tree ... ok
+test props_codec::tests::homogeneous_string_list_takes_fast_path ... ok
+test props_codec::tests::many_values_end_to_end ... ok
+test props_codec::tests::null_roundtrips ... ok
+test props_eq_index::tests::le_hachage_est_stable_d_une_version_a_l_autre ... ok
+test props_codec::tests::vector_is_rejected ... ok
+test props_eq_index::tests::la_serie_traverse_plusieurs_pages_sans_perdre_d_entree ... ok
+test props_eq_index::tests::il_ne_lit_pas_le_fichier_de_l_index_ordonne ... ok
+test props_codec::tests::bool_roundtrips ... ok
+test props_eq_index::tests::les_longs_prefixes_communs_ne_collisionnent_pas ... ok
+test props_eq_index::tests::les_variantes_ne_collisionnent_pas_entre_elles ... ok
+test props_codec::tests::map_falls_back_to_bincode ... ok
+test props_eq_index::tests::fusion_puis_relecture_rend_les_slots_du_hachage_exact ... ok
+test props_eq_index::tests::les_ancres_qui_divergent_rendent_l_index_non_fiable ... ok
+test props_codec::tests::invalid_utf8_string_ref_is_rejected ... ok
+test props_eq_index::tests::la_fusion_refuse_une_serie_non_triee ... ok
+test props_eq_index::tests::les_doublons_de_hachage_rendent_tous_leurs_slots ... ok
+test props_eq_index::tests::un_index_absent_n_est_pas_fiable_et_ne_repond_pas ... ok
+test props_eq_index::tests::une_adoption_d_ancres_survit_a_la_reouverture ... ok
+test props_eq_index::tests::une_fenetre_non_forward_refuse_l_extension ... ok
+test props_eq_index::tests::une_fusion_survit_a_la_reouverture ... ok
+test props_index::tests::entiers_et_flottants_s_intercalent_comme_orderable_value ... ok
+test props_index::tests::la_cle_est_monotone_sur_tout_l_echantillon ... ok
+test props_eq_index::tests::sonde_decompte_et_enumeration_egalent_le_parcours_naif ... ok
+test props_eq_index::tests::une_serie_de_base_corrompue_fait_refuser_l_extension ... ok
+test props_eq_index::tests::une_racine_corrompue_fait_jeter_l_index_entier ... ok
+test props_index::tests::les_chaines_longues_collisionnent_sans_rompre_l_ordre ... ok
+test props_index::tests::les_valeurs_non_ordonnees_sont_refusees ... ok
+test props_index::tests::tous_les_nan_partagent_une_cle_unique_au_sommet_du_groupe_numerique ... ok
+test props_eq_index::tests::une_fenetre_expliquee_etend_l_index_sans_reconstruction ... ok
+test props_eq_index::tests::une_serie_dont_on_doute_ne_se_reporte_pas ... ok
+test props_codec::tests::float64_roundtrips ... ok
+test props_eq_index::tests::une_version_inconnue_au_crc_valide_est_jetee ... ok
+test props_index::tests::la_fusion_refuse_une_serie_non_triee ... ok
+test props_index::tests::fusion_puis_relecture_rend_l_intervalle_exact ... ok
+test props_index::tests::un_index_absent_n_est_pas_fiable_et_ne_repond_pas ... ok
+test props_index::tests::la_serie_traverse_plusieurs_pages_sans_perdre_d_entree ... ok
+test props_index::tests::les_ancres_qui_divergent_rendent_l_index_non_fiable ... ok
+test props_index::tests::zero_negatif_et_zero_positif_ont_la_meme_cle ... ok
+test props_eq_index::tests::une_zone_de_version_1_s_ouvre_comme_heritee ... ok
+test props_index::tests::une_fenetre_non_forward_refuse_l_extension ... ok
+test props_index::tests::une_fusion_survit_a_la_reouverture ... ok
+test props_index::tests::une_fenetre_qui_reécrit_un_slot_remplace_l_ancienne_entree ... ok
+test props_codec::tests::string_roundtrips ... ok
+test props_index::tests::une_fenetre_expliquee_etend_l_index_sans_reconstruction ... ok
+test props_snapshot::tests::corrupt_crc_is_an_error ... ok
+test props_snapshot::tests::corrupt_magic_is_an_error ... ok
+test props_snapshot::tests::missing_file_yields_default ... ok
+test props_index::tests::une_racine_corrompue_fait_jeter_l_index_entier ... ok
+test props_snapshot::tests::roundtrip_empty ... ok
+test props_snapshot::tests::persist_and_load_roundtrip ... ok
+test props_index::tests::une_serie_de_base_corrompue_fait_refuser_l_extension ... ok
+test props_snapshot::tests::roundtrip_with_vector_embedding ... ok
+test props_index::tests::une_serie_dont_on_doute_ne_se_reporte_pas ... ok
+test props_snapshot::tests::streaming_drop_cleans_up_tmp ... ok
+test props_snapshot::tests::streaming_nodes_only_then_finish ... ok
+test props_snapshot::tests::un_snapshot_d_une_autre_version_ou_corrompu_est_une_erreur_pas_un_vide ... ok
+test props_ord_index::tests::premiere_et_derniere_entree_sont_min_et_max ... ok
+test props_ord_index::tests::les_ancres_qui_divergent_rendent_l_index_non_fiable ... ok
+test props_snapshot::tests::streaming_roundtrip ... ok
+test props_ord_index::tests::persiste_verbatim_l_ordre_du_caller_sans_verifier_la_cle ... ok
+test props_snapshot::tests::streaming_matches_batch_format ... ok
+test props_trigram_index::tests::l_index_et_le_tampon_se_reunissent ... ok
+test props_trigram_index::tests::aucune_liste_ne_depasse_le_seuil ... ok
+test props_trigram_index::tests::l_intersection_est_plus_serree_que_la_liste_la_plus_courte ... ok
+test props_trigram_index::tests::les_valeurs_sans_gramme_sont_ignorees_sans_bruit ... ok
+test props_trigram_index::tests::un_etat_vide_se_tait ... ok
+test props_trigram_index::tests::un_gramme_absent_du_corpus_conclut_a_l_absence ... ok
+test props_trigram_index::tests::le_superset_contient_tous_les_vrais ... ok
+test props_trigram_index::tests::un_gramme_repete_ne_compte_qu_une_fois_par_valeur ... ok
+test props_trigram_index::tests::un_seuil_nul_fait_taire_l_index_au_lieu_de_rendre_vide ... ok
+test props_snapshot::tests::streaming_skips_empty_props ... ok
+test props_trigram_index::tests::un_terme_entierement_commun_se_tait_au_lieu_de_conclure ... ok
+test props_trigram_index::tests::une_ecriture_apres_construction_est_trouvee_par_le_tampon ... ok
+test props_trigram_index::tests::un_terme_plus_court_que_la_fenetre_rend_none ... ok
+test props_trigram_index::tests::l_annuaire_est_trie_pour_la_recherche_binaire ... ok
+test props_trigram_index::tests::des_ancres_differentes_font_refuser_le_fichier ... ok
+test props_trigram_index::tests::une_intersection_vide_est_conclusive_et_non_un_silence ... ok
+test props_ord_index::tests::un_index_absent_n_est_pas_fiable_et_ne_repond_pas ... ok
+test props_trigram_index::tests::un_annuaire_corrompu_est_refuse ... ok
+test props_trigram_index::tests::la_persistance_rend_les_memes_candidats ... ok
+test props_trigram_index::tests::une_reecriture_laisse_un_faux_positif_et_jamais_un_manque ... ok
+test props_ord_index::tests::une_fusion_survit_a_la_reouverture_sans_reconstruction ... ok
+test props_ord_index::tests::premiers_slots_bornes_a_k_meme_sur_grande_serie ... ok
+test geometric::tests::ricci_valeurs_exactes_sur_graphes_elementaires ... ok
+test props_codec::tests::int64_roundtrips ... ok
+test props_zone::tests::chain_ordering_newest_first ... ok
+test props_zone::tests::encode_decode_page_id ... ok
+test props_zone::tests::erreur_decode_unite_formate_le_contexte ... ok
+test props_zone::tests::est_plus_recente_compare_les_estampilles ... ok
+test props_zone::tests::est_plus_recente_etat_mixte_invalide ... ok
+test props_zone::tests::debut_chainee_pack_ecrit_control_et_slot ... ok
+test props_zone::tests::append_single_entry_returns_fresh_head ... ok
+test props_ord_index::tests::deux_fusions_du_meme_contenu_sont_identiques_octet_a_octet ... ok
+test props_zone::tests::collect_live_props_by_key_empty_head ... ok
+test props_zone::tests::collect_live_props_by_key_lww_semantics ... ok
+test props_zone::tests::collect_live_props_multi_page_newest_wins ... ok
+test props_zone::tests::edge_append_allocates_distinct_magic ... ok
+test props_zone::tests::back_compat_append_entry_still_allocates_node_kind ... ok
+test props_zone::tests::empty_zone_starts_with_sentinel_slot ... ok
+test props_zone::tests::edge_chain_overflows_and_preserves_entries ... ok
+test props_zone::tests::heap_too_large_entry_rejected ... ok
+test props_zone::tests::overflow_triggers_chain_expansion ... ok
+test props_zone::tests::heap_intern_roundtrip ... ok
+test props_zone::tests::mp3_un_lot_de_tas_n_ecrit_pas_sur_la_page_qu_un_pair_a_recue ... ok
+test props_zone::tests::multiple_entries_fit_on_one_page ... ok
+test props_zone::tests::heap_spills_across_pages ... ok
+test props_zone::tests::node_and_edge_chains_coexist_on_same_zone ... ok
+test props_zone::tests::mp3b_une_reservation_de_tas_ne_livre_pas_sa_queue ... ok
+test record::tests::edge_record_default_has_zero_first_prop_off ... ok
+test record::tests::edge_record_full_byte_roundtrip ... ok
+test record::tests::edge_record_pod_cast ... ok
+test record::tests::edge_record_ricci_accessor ... ok
+test record::tests::edge_record_weight_accessor ... ok
+test record::tests::node_record_centrality_accessor ... ok
+test record::tests::node_record_default_is_zeroed ... ok
+test props_zone::tests::reopen_recovers_state ... ok
+test record::tests::node_record_energy_accessor ... ok
+test record::tests::node_record_pod_cast ... ok
+test record::tests::q1_15_roundtrip ... ok
+test record::tests::scar_util_aff_clips_to_5bits ... ok
+test record::tests::scar_util_aff_pack_roundtrip ... ok
+test record::tests::static_asserts ... ok
+test record::tests::u48_is_zero ... ok
+test record::tests::u48_roundtrip ... ok
+test props_zone::tests::la_recherche_binaire_sous_estime_la_frontiere_si_le_heap_a_un_trou ... ok
+test props_zone::tests::tete_sur_page_reservee_jamais_ecrite_est_refusee_sans_perdre_la_chaine ... ok
+test registres_partages::tests::la_sonde_couvre_toutes_les_cases ... ok
+test props_zone::tests::tete_d_un_autre_genre_alloue_une_page_neuve_sans_toucher_l_autre ... ok
+test props_zone::tests::uses_heap_ref_equality_for_lookup ... ok
+test props_zone::tests::tombstones_skip_on_walk ... ok
+test props_zone::tests::tete_hors_zone_ou_jamais_ecrite_alloue_une_page_neuve ... ok
+test registres_partages::tests::interdire_ne_cree_aucun_nom ... ok
+test registres_partages::tests::collision_d_indice_entre_deux_noms_le_dit ... ok
+test registres_partages::tests::le_hash_est_stable_et_jamais_nul ... ok
+test registres_partages::tests::la_table_survit_a_une_reouverture_du_meme_processus ... ok
+test registres_partages::tests::le_filigrane_ne_suit_pas_le_compteur_de_reservations ... ok
+test registres_partages::tests::la_borne_du_filigrane_suit_les_noms_pas_le_compteur ... ok
+test props_zone::tests::too_large_entry_rejected ... ok
+test props_zone::tests::crash_au_milieu_du_flush_ne_laisse_aucune_reference_pendante ... ok
+test registres_partages::tests::publier_preserve_l_indice_du_dictionnaire ... ok
+test registres_partages::tests::noms_indexes_donne_le_filigrane_et_les_noms ... ok
+test registres_partages::tests::noms_distincts_indices_distincts ... ok
+test registres_partages::tests::meme_nom_meme_indice_et_idempotent ... ok
+test registres_partages::tests::un_nom_de_plus_de_63_octets_est_refuse ... ok
+test registres_partages::tests::un_nom_vide_n_est_pas_un_nom ... ok
+test registres_partages::tests::les_types_et_cles_commencent_a_1 ... ok
+test registres_partages::tests::publier_un_nom_a_un_indice_divergent_le_dit ... ok
+test repair_props::tests::le_crc_des_pages_heap_vivantes_se_verifie ... ok
+test replay::tests::audit_v3_store_neuf_ne_declare_aucune_coquille ... ok
+test repair_props::tests::une_pendante_ensevelie_sous_une_reecriture_saine_n_est_pas_courante ... ok
+test props_zone::tests::round_trip_10k_nodes_mixed_props ... ok
+test props_zone::tests::round_trip_10k_mixed_nodes_and_edges ... ok
+test replay::tests::audit_herite_conserve_le_critere_en_octets ... ok
+test props_zone::tests::reouverture_apres_perte_de_la_queue_du_heap_ecrase_les_pages_vivantes ... ok
+test replay::tests::audit_v2_signale_les_ancres_hors_zone_allouee ... ok
+test replay::tests::audit_v2_signale_toujours_la_signature_de_coquille ... ok
+test retrieval::tests::delete_of_missing_offset_is_noop ... ok
+test retrieval::tests::delete_removes_offset ... ok
+test replay::tests::audit_v2_base_saine_ne_declare_aucune_ancre_pendante ... ok
+test retrieval::tests::determinism_of_ties ... ok
+test retrieval::tests::empty_index_returns_empty_top_k ... ok
+test retrieval::tests::insert_then_self_recall ... ok
+test replay::tests::replay_empty_wal_is_noop ... ok
+test replay::tests::replay_compact_community_partial_apply ... ok
+test retrieval::tests::rebuild_replaces_contents ... ok
+test retrieval::tests::search_top_k_clamps_to_corpus ... ok
+test retrieval::tests::search_top_k_zero_returns_empty ... ok
+test replay::tests::replay_is_idempotent ... ok
+test retrieval::tests::trait_object_is_usable ... ok
+test retrieval::tests::update_in_place_rewrites_fingerprint ... ok
+test retrieval::tests_rerank::depuis_k0_derive_k1_au_dixieme ... ok
+test replay::tests::replay_compact_community_pre_apply ... ok
+test repair_props::tests::l_analyse_trouve_exactement_la_reference_fabriquee_pendante ... ok
+test replay::tests::replay_reapplies_energy_reinforce_and_decay ... ok
+test retrieval::tests_rerank::new_accepte_une_dimension_inferieure_par_identite ... ok
+test retrieval::tests_rerank::new_refuse_au_dela_de_l2_dim - should panic ... ok
+test retrieval::tests::load_from_empty_zones_returns_none ... ok
+test replay::tests::replay_reapplies_synapse_reinforce_and_scar_util ... ok
+test replay::tests::replay_reconstructs_nodes_and_edges ... ok
+test replay::tests::replay_stops_at_crc_boundary ... ok
+test retrieval::tests::persist_empty_index_is_valid ... ok
+test retrieval::tests::persist_load_roundtrip ... ok
+test retrieval::tests_zones_nommees::en_memoire_la_suppression_efface_l_en_tete ... ok
+test replay::tests::replay_compact_community_post_apply_is_idempotent ... ok
+test retrieval::tests_slot_remap::un_index_charge_avant_un_remap_refuse_d_ecraser_la_table ... ok
+test retrieval::tests_zones_nommees::aller_retour_identite_avec_empreinte ... ok
+test retrieval::tests_zones_nommees::deux_index_coexistent_et_la_suppression_ne_touche_que_le_sien ... ok
+test simd::tests::half_factor_halves_every_lane ... ok
+test simd::tests::identity_factor_preserves_high_15_bits ... ok
+test simd::tests::randomized_parity_4096_vectors ... ok
+test simd::tests::saturation_edge_cases_match_scalar ... ok
+test simd::tests::zero_factor_zeros_every_lane ... ok
+test retrieval::tests_zones_nommees::les_zones_non_nommees_restent_intactes ... ok
+test retrieval::tests_zones_nommees::un_crc_corrompu_sur_un_palier_empeche_le_chargement ... ok
+test retrieval::tests_zones_nommees::un_epoch_de_remap_different_empeche_le_chargement ... ok
+test simplex_incidence::tests::append_et_relecture ... ok
+test simplex_incidence::tests::chainage_multi_blocs_et_multi_pages ... ok
+test simplex_incidence::tests::noeud_sans_postings_liste_vide ... ok
+test simplex_incidence::tests::crc_detecte_la_corruption ... ok
+test simplex_passes::tests::cliques_k4_k5_par_extension ... ok
+test simplex_passes::tests::config_encode_decode_roundtrip ... ok
+test simplex_passes::tests::config_version_zero_est_absente_et_inconnue_refusee ... ok
+test simplex_passes::tests::dispatch_groupes_et_union_ensembliste ... ok
+test simplex_passes::tests::triangles_closed_wedge_et_cycle ... ok
+test simplex_passes::tests::triangles_multi_aretes_fusionnees_et_boucles_exclues ... ok
+test simplex_passes::tests::triangles_ordre_lexicographique ... ok
+test simplex_zone::tests::canonicite_tri_et_doublons ... ok
+test simplex_zone::tests::caps_hyperaretes_rejet_entier ... ok
+test simplex_incidence::tests::un_noeud_au_degre_1_coute_un_bloc_pas_une_page ... ok
+test simplex_zone::tests::flags_valides ... ok
+test simplex_incidence::tests::compaction_filtre_et_reste_deterministe ... ok
+test simplex_zone::tests::compaction_purge_les_tombstones ... ok
+test simplex_zone::tests::hyperarete_heap_roundtrip_et_props ... ok
+test simplex_zone::tests::ordered_gele_l_ordre_mais_pas_la_cle ... ok
+test simplex_zone::tests::index_ignore_les_tombstones ... ok
+test simplex_zone::tests::record_est_pod_32_octets ... ok
+test simplex_zone::tests::index_unicite_et_collision_de_hash ... ok
+test simplex_zone::tests::props_interdites_sur_cliques ... ok
+test simplex_zone::tests::tombstone_idempotent_et_pas_de_resurrection ... ok
+test simplex_zone::tests::triangle_inline_roundtrip ... ok
+test simplex_zone::tests::compaction_deterministe_i4 ... ok
+test slot_remap::tests::aucun_chemin_ne_peut_annoncer_sans_pouvoir_effacer ... ok
+test slot_remap::tests::blob_echec_mi_remap_laisse_la_colonne_intacte_et_lisible ... ok
+test slot_remap::tests::la_recommandation_couvre_les_quatre_diagnostics ... ok
+test slot_remap::tests::aucun_temoin_de_l_epoch_annoncee_ne_peut_exister ... ok
+test slot_remap::tests::epoch_zone_roundtrip_et_corruption ... ok
+test slot_remap::tests::crash_entre_la_barriere_et_l_estampillage_des_sidecars ... ok
+test slot_remap::tests::map_slot_values_applies_permutation_to_values ... ok
+test slot_remap::tests::le_refus_nomme_la_commande_de_diagnostic ... ok
+test slot_remap::tests::permute_dense_grows_for_targets_past_current_coverage ... ok
+test slot_remap::tests::permute_dense_identity_is_byte_noop ... ok
+test slot_remap::tests::permute_dense_moves_bytes_and_zeroes_sources ... ok
+test slot_remap::tests::permute_dense_zero_only_payload_keeps_coverage ... ok
+test slot_remap::tests::relocations_build_total_swap_permutation ... ok
+test slot_remap::tests::les_temoins_sont_dates_et_les_anciens_sont_effaces ... ok
+test slot_remap::tests::remap_fichiers_double_application_est_gatee_par_epoch ... ok
+test slot_remap::tests::t2_crash_entre_deux_remaps_puis_rejeu_converge ... ok
+test slot_remap::tests::le_dry_run_et_l_apply_partagent_le_meme_diagnostic ... ok
+test slot_remap::tests::un_echec_apres_la_barriere_laisse_la_base_ouvrable_et_confirmee ... ok
+test slot_remap::tests::un_echec_avant_la_barriere_refuse_et_nomme_le_cote ... ok
+test slot_remap::tests::un_echec_du_constructeur_n_abandonne_pas_une_annonce_posee ... ok
+test slot_remap::tests::un_echec_du_rejeu_apres_mutation_laisse_l_annonce_et_le_suivant_refuse ... ok
+test geometric::tests::hks_hub_reste_fini_et_borne_quelle_que_soit_la_taille ... ok
+test slot_remap::tests::un_echec_du_constructeur_partage_n_abandonne_pas_une_annonce_posee ... ok
+test slot_remap::tests::un_sidecar_estampille_a_l_epoch_annoncee_est_contradictoire ... ok
+test slot_remap::tests::un_echec_du_rejeu_avant_mutation_efface_l_annonce_et_la_base_reste_ouvrable ... ok
+test slot_remap::tests::un_temoin_herite_ne_fait_plus_conclure_a_la_barriere_franchie ... ok
+test slot_remap::tests::une_annonce_liberee_sans_resolution_est_tranchee_par_la_garde ... ok
+test slot_remap::tests::une_annonce_hors_fenetre_de_rejeu_fait_quand_meme_refuser_l_ouverture ... ok
+test slot_remap::tests::une_annonce_sans_confirmation_fait_refuser_le_rejeu ... ok
+test slot_remap::tests::une_annonce_sans_confirmation_fait_refuser_l_ouverture_du_store ... ok
+test slot_remap::tests::resoudre_en_tenant_le_verrou_renonce_au_lieu_de_figer ... ok
+test slot_remap::tests::une_annonce_suivie_d_un_echec_avant_mutation_laisse_la_base_ouvrable ... ok
+test slot_remap::tests::validate_accepts_identity_and_swaps ... ok
+test slot_remap::tests::validate_rejects_moved_sentinel ... ok
+test slot_remap::tests::validate_rejects_non_injective_and_out_of_domain ... ok
+test slot_remap::tests::une_zone_d_epoch_tronquee_mais_non_nulle_est_un_refus ... ok
+test slot_remap::tests::une_version_d_epoch_inconnue_fait_refuser_l_ouverture ... ok
+test slot_remap::tests::une_reparation_appliquee_a_une_base_n_ouvre_pas_une_autre ... ok
+test slot_remap::tests::veccol_crash_mi_remap_reste_absent_jamais_faux ... ok
+test slot_remap::tests::une_zone_d_epoch_illisible_fait_refuser_l_ouverture ... ok
+test store::application_evenement::a_premiere_application_etat_et_preuve_presents ... ok
+test store::application_evenement::c_meme_identite_contenu_different_conflit ... ok
+test store::application_evenement::b_rejeu_identique_aucun_nouvel_effet ... ok
+test store::autorite_revision::horloge_store_avance_mais_globale_pas_par_ressource ... ok
+test store::application_evenement::d_conflit_de_revision_refus ... ok
+test store::concurrence_reelle::changement_de_tete_par_remplissage_via_set_node_property ... ok
+test store::coherence_lecteur_ro::lecteur_ro_n_ecarte_pas_la_transaction_en_vol_d_un_ecrivain_vivant ... ok
+test store::concurrence_reelle::deux_ecrivains_dependance_modifiee_pendant_preparation_conflit ... ok
+test store::concurrence_reelle::deux_ecrivains_ecriture_independante_acceptee_conservation ... ok
+test store::coherence_lecteur_ro::lecteur_ouvert_apres_troncature_ne_voit_pas_moins_qu_un_lecteur_ouvert_avant ... ok
+test store::concurrence_reelle::lecteur_historique_deux_lectures_chevauchent_la_bascule ... ok
+test store::concurrence_reelle::lecteur_sous_verrou_noeud_ne_voit_pas_de_melange ... ok
+test store::contournement_lecture_magasin::lecteur_historique_observe_l_etat_partiel ... ok
+test store::contournement_publication::ecrivain_historique_contourne_le_verrou_de_publication ... ok
+test store::concurrence_reelle::deux_stores_progressent_independamment ... ok
+test store::divergence_evenement::divergence_identite_enregistree_etat_non_applique ... ok
+test store::contournement_lecture_magasin::verrou_publication_est_global_au_processus ... ok
+test store::indice_libre_tests::une_cle_nouvelle_saute_le_trou ... ok
+test store::indice_libre_tests::un_type_nouveau_saute_le_trou_du_dictionnaire ... ok
+test store::indice_libre_tests::une_etiquette_nouvelle_saute_le_trou ... ok
+test store::fenetre_remplacement_blob::deux_valeurs_lisibles_dans_la_fenetre_la_lecture_rend_l_ancienne_puis_la_nouvelle ... ok
+test store::journalisation_stricte::chemin_strict_propage_les_echecs_de_preparation ... ok
+test store::mesure_couts::mesure_capture_preparation_croissance ... ok
+test store::mission1_identite_estampille::lecture_distingue_les_etats ... ok
+test store::course_verification_lecture_seule::un_recomptage_complet_ne_fait_jamais_disparaitre_un_type_d_arete_pour_un_lecteur ... ok
+test store::mission1_identite_estampille::meme_horloge_auteurs_differents_lww ... ok
+test store::mission4_lecture_coherente::capture_sous_verrou_noeud_est_coherente ... ok
+test store::mutation_conditionnelle::echec_preparation_laisse_les_deux_proprietes_intactes ... ok
+test store::mission5_reouverture::suppression_puis_recreation_change_l_estampille_et_survit ... ok
+test store::mutation_conditionnelle::mutation_reussie_publication_coherente ... ok
+test store::preparation_differee::differee_abandon_aucune_croissance ... ok
+test store::preparation_differee::differee_conserve_lien_capture_transformation ... ok
+test store::preparation_differee::differee_publication_heureuse ... ok
+test store::preparation_differee::comparaison_physique_vs_logique ... ok
+test store::preparation_privee_positive::preparation_privee_puis_publication_atomique ... ok
+test store::preparation_differee::physique_abandon_orphelines_persistantes ... ok
+test store::projections_publiees::index_perime_apres_publication_directe ... ok
+test store::publication_conditionnelle_native::dependance_absente_change_conflit ... ok
+test store::projections_publiees::reouverture_sans_recherche_intermediaire ... ok
+test store::publication_atomique::lecteur_coherent_ne_voit_pas_le_melange ... ok
+test store::publication_conditionnelle_native::ecriture_sur_non_dependance_preservee ... ok
+test store::publication_conditionnelle_native::descripteur_etranger_refuse ... ok
+test props_codec::tests::le_repli_bincode_deborde_bien_avant_la_page_de_tas ... ok
+test store::publication_conditionnelle_native::effet_obsolete_pour_ecriture_aveugle ... ok
+test store::publication_conditionnelle_native::ecritures_repetees_sur_une_cle_refusees ... ok
+test store::publication_conditionnelle_native::empreinte_stable_entre_tentatives ... ok
+test store::publication_conditionnelle_native::estampille_distante_superieure_masque_l_effet ... ok
+test store::publication_conditionnelle_native::mesure_10000_conflits_differees ... ok
+test store::publication_conditionnelle_native::lien_entre_capture_et_transformation ... ok
+test miroir::tests_journal::un_persist_coupe_ouvre_une_generation_complete ... ok
+test store::publication_conditionnelle_native::h3_publication_reelle_reponse_perdue ... ok
+test store::publication_conditionnelle_native::mode_strict_dependance_lue_non_dominee_acceptee ... ok
+test store::publication_conditionnelle_native::mode_strict_estampille_maximale_refusee ... ok
+test store::publication_conditionnelle_native::mode_strict_tombstone_estampille_elevee_refuse ... ok
+test store::publication_conditionnelle_native::mode_strict_refuse_ecriture_non_declaree ... ok
+test store::publication_conditionnelle_native::mode_strict_succes_integral ... ok
+test store::publication_conditionnelle_native::mode_strict_tous_effets_canoniques ... ok
+test store::publication_conditionnelle_native::mutation_conditionnelle_ancre_bytes ... ok
+test store::publication_conditionnelle_native::mutation_conditionnelle_recalcul_reel ... ok
+test store::publication_conditionnelle_native::precondition_autre_ressource_refusee ... ok
+test store::publication_conditionnelle_native::publication_apres_suppression_cible ... ok
+test store::publication_conditionnelle_native::precondition_vide_ecriture_aveugle ... ok
+test store::publication_conditionnelle_native::rattachement_a_soi_meme_creerait_un_cycle ... ok
+test store::publication_conditionnelle_native::republication_refusee_garde_anti_cycle ... ok
+test store::publication_conditionnelle_native::resolution_historique_distingue_preparation_et_engagement ... ok
+test store::publication_conditionnelle_native::resolution_multi_effet_est_par_cle ... ok
+test store::publication_conditionnelle_native::scenario_b_mutation_independante_de_c_acceptee ... ok
+test store::publication_conditionnelle_native::scenario_a_mutation_concurrente_de_a_conflit ... ok
+test store::publication_conditionnelle_native::scenario_c_autre_ressource_aucune_invalidation ... ok
+test store::publication_conditionnelle_native::scenario_e_rattachement_conserve_c_apres_changement_de_tete ... ok
+test store::publication_conditionnelle_native::scenario_d_deux_transformations_une_seule_publie ... ok
+test store::publication_conditionnelle_native::scenario_f_publication_naive_perd_c_apres_changement_de_tete ... ok
+test store::publication_conditionnelle_native::transformation_vide_refusee ... ok
+test store::publication_differee::append_est_in_place_pas_de_publication_differee ... ok
+test store::publication_conditionnelle_native::temoin_energetique_conditionnel ... ok
+test store::revision_canonique::tete_inchangee_apres_mutation_historique_in_place ... ok
+test store::refus_lecture_seule::les_ecritures_privees_sont_refusees_par_lecture_seule_et_ne_creent_rien ... ok
+test store::revision_composite::precondition_composite_sur_estampilles ... ok
+test store::sonde_v3_replay::un_noeud_v3_sans_flush_survit_au_rejeu ... ok
+test store::tests::a1_apres_un_kill_l_index_supprime_ne_revient_pas ... ok
+test store::tests::a2_la_construction_recolte_les_instants_des_colonnes_blob ... ok
+test store::tests::a2_un_instant_en_colonne_blob_est_indexe_et_la_recherche_reste_indexee ... ok
+test replay::tests::audit_post_rejeu_borne_a_la_fenetre_rejouee ... ok
+test store::tests::a386_une_ecriture_unitaire_pendant_le_lot_ne_perd_aucune_chaine ... ok
+test store::course_verification_lecture_seule::un_lecteur_de_compteurs_ne_recoit_rien_de_non_verifie_pendant_le_recomptage_differe ... ok
+test store::tests::add_label_adds_only_new_labels ... ok
+test store::tests::a3_un_index_supprime_puis_recree_pendant_un_import_voit_les_noeuds_importes ... ok
+test store::tests::advise_empty_zone_is_noop ... ok
+test store::tests::adjacence_entrante_verifiee_et_ecartee_si_chaine_cassee ... ok
+test store::tests::a_delete_after_snapshot_is_not_resurrected_on_reopen_regime_herite ... ok
+test store::tests::advise_zone_out_of_bounds_is_clamped ... ok
+test store::tests::alloc_engram_id_last_slot_then_poisoned ... ok
+test store::tests::ajouter_un_label_fait_suivre_le_compteur ... ok
+test store::tests::alloc_engram_id_rejects_after_exhaustion ... ok
+test store::tests::a_delete_after_snapshot_is_not_resurrected_on_reopen_regime_v2 ... ok
+test store::tests::alloc_engram_id_starts_at_one_and_increments ... ok
+test store::tests::a_node_created_then_killed_with_zero_flush_is_fully_recovered_regime_herite ... ok
+test store::tests::a_node_created_then_killed_with_zero_flush_is_fully_recovered_regime_v2 ... ok
+test store::tests::a_property_written_then_killed_without_flush_survives_reopen_regime_herite ... ok
+test store::tests::a_property_written_then_killed_without_flush_survives_reopen_regime_v2 ... ok
+test store::tests::an_edge_delete_after_snapshot_is_not_resurrected_regime_herite ... ok
+test store::tests::an_edge_delete_after_snapshot_is_not_resurrected_regime_v2 ... ok
+test store::tests::an_edge_property_survives_a_kill_without_flush_regime_herite ... ok
+test store::tests::an_edge_property_survives_a_kill_without_flush_regime_v2 ... ok
+test store::tests::aucun_interblocage_sur_les_sites_de_construction_index ... ok
+test store::tests::aucune_variante_a_repli_bincode_ne_se_perd_a_la_reouverture ... ok
+test store::tests::b2_une_ecriture_pendant_la_construction_de_son_index_n_est_pas_perdue ... ok
+test store::tests::auto_guerison_restampe_les_chaines_apres_rejeu_remap ... ok
+test store::tests::auto_migrates_legacy_blobs_on_load ... ok
+test store::tests::batch_create_edges_preserves_input_order ... ok
+test store::tests::auto_migrates_legacy_vectors_on_load ... ok
+test store::tests::batch_et_lecture_unitaire_coincident_sur_plusieurs_tranches ... ok
+test store::tests::batch_franchit_les_frontieres_de_tranche ... ok
+test store::tests::batch_rend_les_valeurs_blob_sur_plusieurs_tranches ... ok
+test store::tests::batch_rend_les_valeurs_vectorielles_sur_plusieurs_tranches ... ok
+test store::tests::b1_un_index_supprime_ne_revient_pas_perime_apres_reouverture ... ok
+test store::tests::bulk_import_zone_direct_equivalence ... ok
+test store::tests::c2_stress_deux_ecrivains_concurrents_sur_le_meme_noeud ... ok
+test store::tests::b1_une_recolte_blob_annulee_par_une_requete_ne_tronque_pas_l_index ... ok
+test store::tests::c2_deux_ecrivains_sur_le_meme_noeud_la_valeur_lisible_est_indexee ... ok
+test store::tests::b2_un_blob_instant_ecrit_apres_le_flush_survit_a_un_kill ... ok
+test store::tests::cle_d_index_aux_bornes_de_l_egalite ... ok
+test store::tests::b2_un_index_declare_pendant_un_import_en_lot_voit_les_noeuds_importes ... ok
+test store::tests::coact_reinforce_f32_saturates_and_reads_back ... ok
+test store::tests::coact_type_id_is_interned_lazily_and_persisted ... ok
+test store::tests::colonne_degres_impossible_est_detectee ... ok
+test store::tests::colonne_degres_impossible_est_detectee_a_la_reouverture ... ok
+test store::tests::colonne_degres_juste_nest_pas_reconstruite ... ok
+test store::tests::balayage_v2_non_projetable_et_ecritures_concurrentes ... ok
+test store::tests::community_range_none_for_unknown_cid ... ok
+test store::tests::community_range_separates_communities ... ok
+test store::tests::base_reellement_migree_le_sidecar_perime_n_est_pas_relu ... ok
+test store::tests::community_range_tracks_first_and_last_slot_online ... ok
+test store::tests::compteur_premier_label_egale_le_balayage ... ok
+test store::tests::c1_une_datetime_longue_en_colonne_blob_est_trouvee_par_son_instant ... ok
+test store::tests::compteur_premier_label_reste_juste_apres_reouverture ... ok
+test store::tests::compteurs_et_balayage_s_accordent_apres_reouverture ... ok
+test store::tests::compteurs_justes_apres_annulation_de_transaction ... ok
+test store::tests::compteurs_exacts_apres_reouverture_sur_fenetre_structurelle ... ok
+test store::tests::create_edge_increments_edge_count ... ok
+test store::tests::c3_un_fichier_reecrit_en_version_1_hache_les_dates_comme_l_ancien_binaire ... ok
+test store::tests::create_edge_returns_nonzero_id_and_roundtrips ... ok
+test store::tests::create_node_no_labels ... ok
+test store::tests::create_node_returns_nonzero_increasing_ids ... ok
+test store::tests::carte_hydratee_mais_plus_ecrite_ni_aveugle_ni_perimee_ni_doublonnee ... ok
+test store::tests::concurrent_edge_inserts_same_src_keep_chain_acyclic ... ok
+test store::tests::csr_cache_est_invalide_par_une_mutation ... ok
+test store::tests::decay_all_coact_only_touches_coact_typed_edges ... ok
+test store::tests::delete_edge_is_idempotent_and_missing_returns_false ... ok
+test store::tests::delete_edge_unlinks_from_incoming_chain ... ok
+test store::tests::compteurs_justes_sous_ecritures_concurrentes ... ok
+test store::tests::delete_edge_unlinks_from_outgoing_chain_head ... ok
+test store::tests::checkpoint_truncates_the_wal_without_losing_committed_state ... ok
+test store::tests::des_ancres_divergentes_ne_rendent_jamais_un_resultat_ampute ... ignored, DETTE HERITEE (rouge sur consolidation/tronc-complet-2026-09-13 aussi, verifie 2026-09-15) : l extension de fenetre est REFUSEE a dessein (elle benissait un index incomplet — voir etendre_index_proprietes_depuis_fenetre) et la reconstruction d ouverture ne re-persiste pas la serie etendue. Deblocage = l arbitrage de conception documente dans le refus : une trace durable PAR ecriture de propriete (marqueur compact, tete ecrite inconditionnellement, ou generation par noeud dans l ancre).
+test store::tests::delete_edge_unlinks_from_outgoing_chain_middle ... ok
+test store::tests::delete_node_edges_removes_both_directions ... ok
+test store::tests::delete_node_is_idempotent_and_hides_it ... ok
+test store::tests::detach_delete_handles_self_loop ... ok
+test store::tests::deux_ecrivains_allouent_des_noeuds_distincts ... ok
+test store::tests::close_rend_durable_puis_le_drop_ne_refait_rien ... ok
+test store::tests::dict_is_written_on_flush ... ok
+test store::tests::edge_counts_by_type_egale_le_balayage_qu_elle_remplace ... ok
+test store::tests::ecriture_valeur_lisible_implique_noeud_trouvable_par_l_index ... ok
+test store::tests::edge_endpoints_by_id_round_trip ... ok
+test store::tests::edge_type_is_interned_but_observable ... ok
+test store::tests::edges_from_incoming_returns_all_sources ... ok
+test store::tests::edges_from_both_returns_union ... ok
+
+running 1 test
+test store::tests::edges_from_outgoing_returns_all_targets ... ok
+test store::tests::colonnes_blob_intervalle_et_egalite_voient_les_valeurs_longues ... ok
+test store::tests::enumeration_d_aretes_ne_tronque_pas_sous_insertion_concurrente ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1252 filtered out; finished in 0.55s
+
+test store::tests::enumeration_d_aretes_ne_tronque_pas_sous_insertion_concurrente ... ok
+test retrieval::tests_zones_nommees::projection_absente_ou_de_mauvaise_dimension_empeche_le_chargement ... ok
+test store::tests::creer_index_proprietes_ne_se_bloque_pas_sur_son_propre_verrou ... ok
+test store::tests::existence_par_serie_de_propriete_est_exacte_et_se_tait_sans_declaration ... ok
+test store::tests::existence_voit_les_porteurs_de_valeurs_non_projetables ... ok
+test store::tests::delete_legacy_props_sidecar_refuses_when_edges_would_be_lost ... ok
+test store::tests::filter_visible_exclut_les_noeuds_supprimes_et_garde_l_ordre ... ok
+test store::tests::feature_epoch_ne_voit_pas_les_ecritures_d_un_pair ... ok
+test store::tests::edge_prop_v2_sans_record_wal_survit_au_kill_regime_v2 ... ok
+test store::tests::edge_props_v2_survives_reopen ... ok
+test store::tests::env_slots_512_aretes_packees ... ok
+test store::tests::env_slots_512_chaines_packees_survivent_au_kill_sans_flush ... ok
+test store::tests::find_nodes_by_properties_matches_all_conditions ... ok
+test store::tests::find_nodes_by_property_returns_matches ... ok
+test store::tests::find_nodes_in_range_uses_inclusive_bounds ... ok
+test store::tests::env_slots_512_ecrit_et_relit_des_chaines_packees ... ok
+test store::tests::flush_propre_ne_reecrit_ni_dict_ni_colonnes_typees ... ok
+test store::tests::for_each_live_edge_parcourt_les_vivantes ... ok
+test store::tests::fusionner_noms_etend_l_etendue_au_filigrane_de_la_table ... ok
+test store::tests::fusionner_noms_garde_le_nom_des_locaux_et_ne_remplit_que_les_trous ... ok
+test store::tests::fusionner_noms_refuse_toujours_la_divergence ... ok
+test store::tests::f_une_entree_d_une_cle_a_blob_ne_leve_pas_le_drapeau_de_fusion ... ok
+test store::tests::get_edges_properties_selective_batch_returns_in_order ... ok
+test store::tests::fresh_blob_writes_bypass_sidecar ... ok
+test store::tests::finalize_props_v2_drains_legacy_sidecar_end_to_end ... ok
+test store::tests::finalize_props_v2_errors_when_v2_disabled ... ok
+test store::tests::get_node_property_batch_returns_in_order ... ok
+test store::tests::finalize_props_v2_handles_empty_edges_cleanly ... ok
+test store::tests::finalize_props_v2_preserves_edge_properties ... ok
+test store::tests::flush_sans_ecriture_indexee_ne_reecrit_pas_la_zone ... ok
+test store::tests::get_edge_property_lww_latest_wins ... ok
+test store::tests::get_node_returns_labels_and_empty_props ... ok
+test store::tests::get_node_property_at_epoch_lww_same_page ... ok
+test store::tests::get_node_property_at_epoch_traverse_le_tombstone_comme_get_node_at_epoch ... ok
+test store::tests::get_node_property_falls_back_to_dashmap_when_head_is_zero ... ok
+test store::tests::get_node_property_lww_across_pages ... ok
+test store::tests::get_node_property_lww_same_page ... ok
+test store::tests::get_node_property_tombstone_shadows_older_set ... ok
+test store::tests::get_node_property_tombstone_survives_reopen ... ok
+test store::tests::is_live_edge_on_disk_absent_hors_borne ... ok
+test store::tests::is_live_on_disk_absent_en_memoire ... ok
+test store::tests::is_live_on_disk_absent_hors_borne ... ok
+test store::tests::index_cree_en_session_ne_rend_pas_partielles_les_cles_couvertes ... ok
+test retrieval::tests_zones_nommees::aller_retour_projection_apprise_768 ... ok
+test store::tests::jump_materialize_et_lecture_contigue ... ok
+test store::tests::index_declare_apres_une_ecriture_de_session_voit_la_zone_v2 ... ok
+test store::tests::intervalle_de_noeuds_voit_la_zone_v2 ... ok
+test store::tests::intervalle_v2_ecarte_les_variantes_non_ordonnees ... ok
+test store::tests::intervalle_v2_et_ecritures_concurrentes ... ok
+test store::tests::intervalle_v2_survit_a_une_ecriture_de_session ... ok
+test retrieval::tests_rerank::les_scores_sont_les_cosinus_exacts_en_dimension_native ... ok
+test retrieval::tests_rerank::un_candidat_sans_vecteur_natif_garde_son_score_du_cascade ... ok
+test store::tests::intervalles_indexes_et_ecritures_concurrentes_ne_s_interbloquent_pas ... ok
+test store::tests::la_soixante_cinquieme_etiquette_fait_paniquer_add_label - should panic ... ok
+test store::tests::la_soixante_cinquieme_etiquette_fait_paniquer_create_node - should panic ... ok
+test store::tests::l_annulation_restaure_une_valeur_blob_retiree ... ok
+test store::tests::l_echappatoire_eteint_l_index_sans_changer_le_resultat ... ok
+test store::tests::le_fence_du_dictionnaire_est_un_fichier_dedie_et_stable ... ok
+test store::tests::l_echappatoire_v2_zero_refuse_une_base_amputee ... ok
+test store::tests::l_index_ordonne_rend_exactement_ce_que_rend_le_balayage ... ok
+test store::tests::le_lot_ecrit_la_meme_chose_que_le_chemin_unitaire ... ok
+test store::tests::l_index_ordonne_survit_a_la_fermeture_sans_reconstruction ... ok
+test store::tests::le_lot_sur_colonne_absente_retombe_sans_perdre_de_donnees ... ok
+test store::tests::le_lot_vide_ne_fait_rien ... ok
+test store::tests::la_relecture_attrape_une_propriete_d_arete_presente_et_muette ... ok
+test store::tests::la_relecture_attrape_une_propriete_de_noeud_presente_et_muette ... ok
+test store::tests::la_relecture_couvre_aussi_les_paires_deja_en_v2_d_un_drain_repris ... ok
+test store::tests::la_relecture_est_exhaustive_sur_une_base_sous_le_seuil ... ok
+test store::tests::les_vecteurs_post_flush_survivent_au_kill_lot_unitaire_et_arete ... ok
+test store::tests::lecteur_concurrent_ne_voit_jamais_une_valeur_sans_son_entree_d_index ... ok
+test store::tests::la_relecture_ne_crie_pas_au_loup_sur_les_types_du_sidecar ... ok
+test retrieval::tests_rerank::cout_du_rerank_imprime ... ok
+test store::tests::le_debordement_du_tampon_ne_perd_aucun_resultat ... ok
+test store::tests::le_drop_n_ecrit_rien_et_laisse_le_disque_en_retard ... ok
+test store::tests::le_fence_du_dictionnaire_n_entre_pas_dans_l_instantane ... ok
+test store::tests::le_flush_attend_le_fence_du_dictionnaire ... ok
+test store::tests::le_marqueur_de_migration_n_est_pose_qu_a_la_suppression_du_sidecar ... ok
+test store::tests::le_retrait_n_efface_pas_encore_les_colonnes_vectorielles_denses ... ok
+test store::tests::les_deux_chemins_de_filtre_convergent_sous_v2 ... ok
+test retrieval::tests_rerank::rebuild_parallele_et_insert_sequentiel_donnent_le_meme_index ... ok
+test store::tests::les_compteurs_egalent_le_balayage_sous_mutations_aleatoires ... ok
+test store::tests::load_properties_saute_l_hydratation_quand_la_migration_est_marquee_achevee ... ok
+test store::tests::multiple_edges_between_same_pair_are_independent ... ok
+test retrieval::tests_rerank::le_rerank_exact_atteint_la_porte_de_recall_en_768 ... ok
+test store::tests::load_properties_still_hydrates_edges_when_v2_has_pages ... ok
+test retrieval::tests_rerank::la_largeur_k0_agit_et_passe_par_le_trait ... ok
+test store::tests::load_properties_still_hydrates_when_v2_zone_empty ... ok
+test store::tests::n5_un_drop_intercale_dans_create_property_index_n_est_pas_annule ... ok
+test store::tests::lot_complet_de_proprietes_voit_la_zone_v2 ... ok
+test store::tests::neighbors_is_edges_from_projected ... ok
+test store::tests::node_count_tracks_live_nodes ... ok
+test store::tests::lot_selectif_de_proprietes_d_aretes_voit_la_zone_v2 ... ok
+test store::tests::env_props_v2_deux_fils_paralleles_ne_se_voient_pas ... ok
+test store::tests::node_ids_is_sorted_and_excludes_tombstones ... ok
+test store::tests::nodes_by_label_filters_correctly ... ok
+test store::tests::on_node_activated_resolves_cid_and_prefetches ... ok
+test store::tests::on_node_activated_skips_uncategorized ... ok
+test store::tests::lot_selectif_de_proprietes_voit_la_zone_v2 ... ok
+test store::tests::out_degree_counts_outgoing_only ... ok
+test store::tests::m1_les_entrees_blob_instant_perimees_sont_retirees ... ok
+test store::tests::migration_en_arriere_plan_aucune_reponse_fausse_pendant_la_passe ... ok
+test store::tests::migration_une_zone_v1_est_servie_puis_completee_sans_reconstruction ... ok
+test store::tests::migration_v2_interrompue_les_proprietes_d_aretes_restent_lisibles ... ok
+test store::tests::poser_deux_fois_le_meme_label_ne_compte_qu_une_fois ... ok
+test store::tests::migration_v2_interrompue_toutes_les_proprietes_de_noeud_restent_lisibles ... ok
+test store::tests::prefetch_community_centered_bounds ... ok
+test store::tests::prefetch_does_not_mutate_data ... ok
+test store::tests::prefetch_on_empty_community_is_noop ... ok
+test store::tests::premier_label_suit_ajout_d_un_label_inferieur ... ok
+test store::tests::prefetch_populated_community_succeeds ... ok
+test store::tests::n1_un_import_n_est_pas_perdu_dans_les_deux_fenetres_de_l_amorce ... ok
+test store::tests::premier_label_suit_le_retrait_du_premier ... ok
+test store::tests::procedures_persistent_entre_ouvertures ... ok
+test store::tests::n2_preparer_une_cle_a_colonne_blob_ne_reecrit_pas_la_zone ... ok
+test store::tests::property_map_depuis_ops_respecte_lww_et_tombstones ... ok
+test store::tests::n3_un_store_en_lecture_seule_ne_modifie_ni_zone_ni_catalogue ... ok
+test store::tests::n3b_creer_et_declarer_un_index_en_lecture_seule_n_ecrit_rien ... ok
+test store::tests::n4_une_colonne_blob_orpheline_qui_reapparait_n_est_pas_ignoree_par_l_index ... ok
+test store::tests::n6_l_entree_du_scalaire_court_sort_quand_un_blob_le_remplace ... ok
+test store::tests::node_and_edge_chains_coexist_without_cross_splicing ... ok
+test store::tests::noeud_brut_et_voyage_dans_le_temps_voient_la_zone_v2 ... ok
+test store::tests::ouverture_apres_ecriture_sans_flush_repond_exactement_apres_reconstruction ... ok
+test store::tests::rebuild_degree_columns_heals_stale_sidecars ... ok
+test store::tests::p1_blob_et_scalaire_concurrents_sur_le_meme_noeud_la_valeur_lisible_est_indexee ... ok
+test store::tests::rebuild_edge_chains_casse_un_cycle_et_est_idempotent ... ok
+test store::tests::p2_un_index_declare_pendant_une_ecriture_blob_voit_le_blob ... ok
+test store::tests::rebuild_populates_first_and_last_slot_maps ... ok
+test store::tests::p3_drop_zone_d_abord_un_echec_refuse_le_drop_et_un_kill_entre_deux_est_sur ... ok
+test store::tests::p4_un_drop_pendant_une_fusion_n_ecrit_pas_une_serie_vide ... ok
+test store::tests::persist_properties_skippe_et_reecrit_selon_la_generation ... ok
+test store::tests::preselection_sur_propriete_d_arete_n_ecarte_rien_sous_v2 ... ok
+test store::tests::prop_v2_sans_record_wal_survit_au_kill_regime_v2 ... ok
+test store::tests::properties_survive_reopen ... ok
+test store::tests::props_preservees_apres_repermuter_par_hilbert ... ok
+test store::tests::props_zone_v2_active_par_defaut_sur_base_neuve ... ok
+test store::tests::props_zone_v2_auto_detected_on_reopen ... ok
+test store::tests::props_zone_v2_desactive_quand_l_env_le_refuse ... ok
+test store::tests::recount_ne_rapporte_rien_sur_une_base_saine ... ok
+test store::tests::props_zone_v2_env_enables_creation ... ok
+test store::tests::recount_rapporte_un_type_absent_de_la_table_des_compteurs ... ok
+test store::tests::recount_rapporte_une_derive_du_compteur_d_aretes ... ok
+test store::tests::props_zone_v2_flush_is_noop_in_step_3a ... ok
+test store::tests::recount_rapporte_une_derive_par_type_d_arete ... ok
+test store::tests::recount_repare_un_compteur_qui_a_derive ... ok
+test store::tests::refresh_community_ranges_repairs_after_compaction ... ok
+test store::tests::props_zone_v2_survives_reopen ... ok
+test store::tests::remove_edge_property_returns_previous_value ... ok
+test store::tests::remove_label_returns_true_when_present ... ok
+test store::tests::remove_missing_property_returns_none ... ok
+test store::tests::recherche_d_arete_par_propriete_et_ecritures_concurrentes ... ok
+test store::tests::remove_node_property_returns_previous_value ... ok
+test store::tests::reopen_preserves_edge_type_ids ... ok
+test store::tests::reopen_preserves_incoming_head_order ... ok
+test store::tests::recherche_d_arete_par_propriete_survit_a_une_ecriture_de_session ... ok
+test store::tests::reopen_preserves_label_ids ... ok
+test store::tests::reopen_preserves_slot_allocator ... ok
+test store::tests::reopen_rebuilds_nodes_and_edges_views ... ok
+test store::tests::reopen_skips_tombstoned_slots ... ok
+test store::tests::reouverture_fenetre_propre_paie_zero_scan_plein ... ok
+test store::tests::repair_outgoing_chain_breaks_injected_cycle ... ok
+test store::tests::resolution_selective_dates_distinctes_restent_distinctes_sous_index ... ok
+test store::tests::recherche_indexee_v2_et_ecritures_concurrentes ... ok
+test store::tests::resolution_selective_datetime_trouve_le_meme_instant_dans_les_deux_ordres ... ok
+test store::tests::resolution_selective_entier_trouve_le_flottant_entier_dans_les_deux_ordres ... ok
+test store::tests::resolution_selective_elit_le_plus_petit_ensemble_quel_que_soit_l_ordre ... ok
+test store::tests::recherche_multi_criteres_projetable_survit_a_une_ecriture_de_session ... ok
+test store::tests::resolution_selective_jeu_mixte_sans_index_complet_balaie ... ok
+test store::tests::resolution_selective_n_elit_pas_un_index_en_construction ... ok
+test store::tests::resolution_selective_une_seule_propriete_voit_flottant_et_instant ... ok
+test store::tests::recherche_multi_criteres_sur_valeur_non_projetable_voit_la_zone_v2 ... ok
+test store::tests::resolution_selective_essaie_la_cle_suivante_si_l_elue_disparait ... ok
+test store::tests::retirer_un_label_fait_suivre_le_compteur ... ok
+test store::tests::recherche_non_projetable_survit_a_une_ecriture_de_session ... ok
+test store::tests::scalaires_de_cardinalite_suivent_les_transitions_de_zero ... ok
+test store::tests::recherche_par_propriete_flottante_voit_la_zone_v2 ... ok
+test store::tests::scalaires_de_cardinalite_survivent_a_la_reconstruction ... ok
+test store::tests::seed_engram_empty_members_allocates_id_only ... ok
+test store::tests::recherche_par_propriete_liste_voit_la_zone_v2 ... ok
+test store::tests::seed_engram_membership_persists_across_reopen ... ok
+test store::tests::seed_engram_persists_allocator_across_reopen ... ok
+test store::tests::seed_engram_rejects_out_of_range_node ... ok
+test store::tests::seed_engram_rejects_null_node_zero ... ok
+test store::tests::seed_engram_writes_members_and_bitset ... ok
+test store::tests::recherche_par_propriete_nulle_voit_la_zone_v2 ... ok
+test store::tests::seed_engrams_batch_allocates_distinct_ids_in_order ... ok
+test store::tests::set_and_get_edge_property ... ok
+test store::tests::set_and_get_node_property ... ok
+test store::tests::set_overwrites_existing_property ... ok
+test store::tests::recherche_par_propriete_projetable_ne_regresse_pas_sous_v2 ... ok
+test store::tests::set_property_on_deleted_edge_is_ignored ... ok
+test store::tests::set_property_on_deleted_node_is_ignored ... ok
+test store::tests::soixante_quatre_etiquettes_passent_et_sont_comptees_juste ... ok
+test store::tests::recherche_projetable_survit_a_une_ecriture_de_session ... ok
+test store::tests::store_is_usable_as_dyn_graphstore ... ok
+test store::tests::sorted_view_invalidated_by_feature_mutation ... ok
+test store::tests::recherches_simultanees_sur_une_cle_a_batir_font_une_seule_passe ... ok
+test store::tests::t17b_deleted_node_leaves_index_results ... ok
+test store::tests::reecriture_meme_page_de_tete_est_retrouvee_apres_mort_brutale_v2 ... ok
+test store::tests::t17b_index_built_after_writes_matches_scan ... ok
+test store::tests::regime_herite_un_index_en_cours_de_remplissage_n_est_pas_cru ... ok
+test store::tests::t17b_index_maintained_by_write_hooks ... ok
+test store::tests::t17b_multi_condition_uses_index_and_verifies_rest ... ok
+test store::tests::selecteur_adaptatif_resultats_identiques_quel_que_soit_le_chemin ... ok
+test store::tests::remove_edge_property_emits_tombstone_and_shadows_read ... ok
+test store::tests::t17b_non_indexable_value_falls_back_and_drop_unregisters ... ok
+test store::tests::typed_degree_read_only_heals_in_memory_when_stale ... ok
+test store::tests::typed_degree_reliable_healthy_store_is_noop ... ok
+test store::tests::reouverture_fenetre_proprietes_seules_paie_zero_scan_plein ... ok
+test store::tests::typed_degree_heal_concurrent_writers_no_lost_increment ... ok
+test store::tests::typed_degree_stays_healthy_across_live_writes_after_heal ... ok
+test store::tests::typed_degrees_decrement_on_delete ... ok
+test store::tests::typed_degrees_sum_equals_total ... ok
+test store::tests::typed_degrees_rebuild_from_scan ... ok
+test store::tests::typed_degrees_survive_reopen ... ok
+test store::tests::resolution_selective_cle_canonique_survit_a_la_reouverture ... ok
+test store::tests::un_compteur_faux_persiste_ne_survit_pas_a_la_reouverture ... ok
+test store::tests::retrait_de_propriete_d_arete_rend_la_valeur_v2_et_l_annulation_la_restaure ... ok
+test store::tests::retrait_de_propriete_de_noeud_purge_l_index_sous_v2 ... ok
+test store::tests::un_trou_de_slot_community_est_compte_comme_un_noeud_vivant ... ok
+test store::tests::retrait_de_propriete_de_noeud_rend_la_valeur_v2_et_l_annulation_la_restaure ... ok
+test store::tests::reverse_part_of_exact_et_incremental ... ok
+test store::tests::set_edge_property_writes_to_props_zone_v2 ... ok
+test store::tests::set_node_property_writes_to_props_zone_v2 ... ok
+test store::tests::sous_v2_une_ecriture_de_session_ne_touche_plus_la_dashmap ... ok
+test store::tests::suppression_versionnee_annulee_restaure_les_proprietes_v2 ... ok
+test store::tests::une_dimension_divergente_ne_contamine_pas_le_lot ... ok
+test store::tests::suppression_versionnee_d_arete_annulee_restaure_les_proprietes_v2 ... ok
+test store::tests::temoin_herite_intervalle_de_noeuds ... ok
+test store::tests::un_checkpoint_ne_perime_pas_l_index_ordonne ... ok
+test store::tests::un_dict_en_retard_sur_le_wal_ne_passe_pas_pour_une_base_vierge ... ok
+test store::tests::une_prop_ecrite_apres_un_remap_de_slot_ne_perd_pas_la_chaine ... ignored, CONSTAT 2026-09-06 : après un remap de slots, la 1re écriture sur un nœud déplacé détache sa chaîne v2 (perte des props pré-remap). Fix = rafraîchir les owner stamps des chaînes déplacées dans repermuter_par_hilbert (P0).
+test store::tests::un_drain_v2_interrompu_se_reprend_sans_reecrire_ce_qui_est_deja_la ... ok
+test store::tests::un_index_ordonne_corrompu_ne_ment_pas ... ok
+test store::tests::un_noeud_mort_dans_le_sidecar_ne_fait_pas_echouer_la_relecture ... ok
+test store::tests::un_retrait_de_propriete_efface_bien_la_colonne_blob ... ok
+test store::tests::un_store_sans_ecriture_ne_flushe_pas_a_la_fermeture ... ok
+test store::tests::un_vecteur_ne_satisfait_jamais_un_intervalle ... ok
+test store::tests::valeur_en_colonne_blob_existence_muette_et_egalite_juste ... ok
+test store::tests::valeurs_egales_gql_court_circuit_egale_le_comparateur_canonique ... ok
+test store::tests::un_zero_negatif_est_trouve_par_un_intervalle_borne_a_zero ... ok
+test store::tests::vector_properties_roundtrip_via_vec_columns_after_reopen ... ok
+test store::tests::une_base_héritée_n_est_pas_marquée_à_tort_et_garde_ses_propriétés ... ok
+test store::tests::une_base_vierge_naît_marquée_v2_et_le_reste_après_écriture ... ok
+test store::tests::une_carte_enorme_part_en_colonne_blob_au_lieu_du_filet_dashmap ... ok
+test store::tests::window_2d_property_oracle_aleatoire ... ok
+test store::tests::window_sorted_falls_back_to_scan_without_sort ... ok
+test store::tests::une_carte_qui_deborde_la_page_de_tas_survit_a_la_reouverture ... ok
+test store::tests::zgrid_absent_returns_none ... ok
+test store::tests::zgrid_roundtrip ... ok
+test store::tests::zgrid_survives_reopen ... ok
+test store::tests::window_sorted_zruns_equals_scan_after_bulk_sort ... ok
+test store::tests::une_ecriture_posterieure_a_la_fusion_est_vue_par_l_intervalle ... ok
+test store::visibilite_transactionnelle::mutation_versionnee_est_visible_avant_commit ... ok
+test store::wal_erreur_memorisee::apres_reparation_la_valeur_survit_au_kill ... ok
+test store::tests::une_fenetre_inexpliquee_garde_la_reconstruction_et_l_exactitude ... ok
+test store::wal_erreur_memorisee::chemin_sain_inchange ... ok
+test store::wal_erreur_memorisee::echec_append_blob_remonte_au_flush_wal ... ok
+test store::tests::zrows_cache_invalidated_on_allocation ... ok
+test store::wal_erreur_memorisee::echec_append_scalaire_remonte_au_flush_wal ... ok
+test store::wal_erreur_memorisee::echec_commit_remonte_et_reste_memorise ... ok
+test store::wal_erreur_memorisee::erreur_memorisee_persiste_entre_deux_flush_wal ... ok
+test synapse_incidence::tests::append_and_postings_roundtrip ... ok
+test synapse_incidence::tests::append_crosses_block_boundary ... ok
+test store::tests::une_migration_interrompue_n_est_pas_marquée_par_le_contrôle_de_virginité ... ok
+test synapse_incidence::tests::compact_keeps_only_live ... ok
+test tier_persist::tests::flag_has_slot_to_offset_round_trips ... ok
+test tier_persist::tests::empty_zone_file_returns_none ... ok
+test tier_persist::tests::header_size_matches_constant ... ok
+test tier_persist::tests::magic_bytes_are_ascii ... ok
+test tier_persist::tests::corrupt_crc_returns_none ... ok
+test store::wal_erreur_memorisee::flush_complet_leve_lerreur_et_ecriture_suivante_est_ok ... ok
+test tier_persist::tests::roundtrip_tier0_with_slot_to_offset ... ok
+test tier_persist::tests::roundtrip_empty ... ok
+test tier_persist::tests::roundtrip_tier1_no_slot_to_offset ... ok
+test tier_persist::tests::roundtrip_tier2 ... ok
+test tier_persist::tests::wrong_magic_returns_none ... ok
+test tier_persist::tests::truncated_payload_returns_none ... ok
+test tier_persist::tests::wrong_version_returns_none ... ok
+test tier_persist::tests_v2::l_empreinte_et_l_epoch_font_l_aller_retour ... ok
+test tier_persist::tests_v2::sans_empreinte_le_drapeau_est_bas ... ok
+test tier_persist::tests_v2::une_version_inconnue_est_refusee ... ok
+test tiered_scan::tests::cascade_is_deterministic ... ok
+test tiered_scan::tests::cascade_widths_clamp_correctly ... ok
+test tiered_scan::tests::cascade_recovers_self_for_every_node ... ok
+test store::tests::une_ouverture_propre_ne_reconstruit_rien ... ok
+test tiered_scan::tests::empty_corpus_yields_empty_top_k ... ok
+test tiers::tests::cosine_identical_vectors ... ok
+test tiers::tests::cosine_orthogonal_vectors ... ok
+test tier_persist::tests_v2::une_zone_v1_se_lit_encore_sans_empreinte ... ok
+test tiers::tests::hamming_all_different_bits ... ok
+test tiers::tests::f16_f32_roundtrip_basic ... ok
+test tiers::tests::hamming_zero_on_equal ... ok
+test tiers::tests::l0_builder_batch_matches_individual_projection ... ok
+test tiers::tests::l0_builder_default_seed_is_stable ... ok
+test tiers::tests::l0_builder_close_inputs_have_low_hamming ... ok
+test tiers::tests::l0_builder_is_deterministic ... ok
+test tiers::tests::l0_builder_negation_yields_complement ... ok
+test tiers::tests::l0_builder_zero_embedding_hashes_to_all_ones ... ok
+test tiers::tests::l0_builder_rejects_wrong_dim - should panic ... ok
+test tiers::tests::l1_builder_default_seed_is_stable ... ok
+test tiers::tests::l1_builder_batch_matches_individual_projection ... ok
+test tiers::tests::l1_builder_negation_yields_complement ... ok
+test tiers::tests::l1_builder_rejects_wrong_dim - should panic ... ok
+test tiers::tests::l1_builder_zero_embedding_hashes_to_all_ones ... ok
+test tiers::tests::l1_builder_is_deterministic ... ok
+test tiers::tests::l2_builder_batch_matches_individual_projection ... ok
+test tiers::tests::l2_builder_is_scale_invariant ... ok
+test tiers::tests::l2_builder_produces_unit_norm ... ok
+test tiers::tests::l1_default_seed_is_independent_from_l0 ... ok
+test tiers::tests::l1_rank_correlates_with_cosine_on_sample ... ok
+test tiers::tests::l2_builder_rejects_wrong_dim - should panic ... ok
+test tiers::tests::l2_builder_zero_input_yields_zero_output ... ok
+test tiers::tests::sizes_match_spec ... ok
+test tiers::tests::splitmix64_is_deterministic ... ok
+test tiers::tests::splitmix64_pm1_is_balanced ... ok
+test tiers::tests::topk_returns_sorted_ascending ... ok
+test tiers::tests::l2_cosine_matches_f32_cosine_under_quantisation_floor ... ok
+test unite::tests::adresses_invalides_refusees ... ok
+test unite::tests::carrier_alloue_7_owners_et_isole_les_slots ... ok
+test unite::tests::carrier_controle_reserve_7_unites ... ok
+test unite::tests::encode_decode_slot_roundtrip ... ok
+test unite::tests::geometrie_slots ... ok
+test unite::tests::slot_append_remplit_puis_plein ... ok
+test tiers::tests::l2_top100_ranking_preserved ... ok
+test tiered_scan::tests::dispatched_matches_scalar_small ... ok
+test vec_column::tests::dtype_roundtrips_through_u8_and_suffix ... ok
+test tier_persist::tests::roundtrip_tier0_avec_n_slots_impair ... ok
+test vec_column::tests::corrupt_magic_returns_none_on_open ... ok
+test vec_column::tests::bumped_version_returns_none_on_open ... ok
+test vec_column::tests::header_size_matches_constant ... ok
+test vec_column::tests::edge_kind_has_distinct_filename_from_node_kind ... ok
+test vec_column::tests::magic_bytes_are_ascii_vec1 ... ok
+test vec_column::tests::corrupt_payload_crc_returns_none_on_open ... ok
+test vec_column::tests::empty_column_finalise_has_zero_crc ... ok
+test vec_column::tests::empty_zone_returns_none_on_open ... ok
+test vec_column::tests::mismatching_spec_returns_none_on_open ... ok
+test vec_column::tests::spec_filename_is_deterministic_and_descriptive ... ok
+test vec_column::tests::roundtrip_many_slots_dense ... ok
+test vec_column::tests::roundtrip_single_slot_f32 ... ok
+test vec_column::tests::sparse_writes_are_zero_filled_between ... ok
+test vec_column::tests::writer_read_slot_rejects_wrong_dtype ... ok
+test vec_column::tests::u8_dtype_roundtrip ... ok
+test vec_column::tests::writer_read_slot_matches_written_bytes ... ok
+test vec_column::tests::truncated_file_returns_none_on_open ... ok
+test vec_column::tests::writer_reopen_inherits_n_slots ... ok
+test vec_column::tests::wrong_stride_in_write_is_rejected ... ok
+test vec_column::tests::writer_sync_makes_new_reader_valid_without_dropping ... ok
+test vec_column::tests::zero_dim_spec_is_rejected ... ok
+test vec_column_registry::tests::iter_props_empty_registry_returns_empty ... ok
+test vec_column_registry::tests::dim_mismatch_is_rejected ... ok
+test store::tests::une_propriete_non_declaree_passe_par_le_balayage ... ok
+test vec_column_registry::tests::empty_vector_is_rejected ... ok
+test vec_column_registry::tests::hydrate_from_dict_recovers_registered_key ... ok
+test vec_column_registry::tests::iter_props_for_entity_skips_absent_slots ... ok
+test vec_column_registry::tests::iter_props_for_entity_round_trip ... ok
+test vec_column_registry::tests::read_missing_key_returns_none ... ok
+test vec_column_registry::tests::read_missing_slot_returns_none ... ok
+test vec_column_registry::tests::node_and_edge_keys_are_independent ... ok
+test vec_projection::tests::ajuster_refuse_les_entrees_invalides ... ok
+test vec_column_registry::tests::sync_all_makes_data_durable_to_a_fresh_reader ... ok
+test vec_column_registry::tests::specs_snapshot_is_deterministic ... ok
+test vec_projection::tests::identite_copie_et_complete_de_zeros ... ok
+test vec_projection::tests::identite_refuse_hors_bornes_et_mauvaise_longueur ... ok
+test vec_projection::tests::noms_de_fichiers_echappes_et_injectifs ... ok
+test vec_column_registry::tests::write_then_read_node_roundtrip ... ok
+test store::tests::une_propriete_supprimee_sort_de_l_intervalle_indexe ... ok
+test store::tests::une_valeur_blob_ne_masque_pas_une_reecriture_plus_courte ... ok
+test wal::tests::all_kinds_roundtrip ... ok
+test wal::tests::crc_une_passe_egale_le_crc_en_deux_tranches ... ok
+test wal::tests::encode_decode_roundtrip ... ok
+test wal::tests::encode_into_bit_identical_to_encode ... ok
+test wal::tests::encode_multiple_and_decode_sequence ... ok
+test wal::tests::flag_sync_attendu_n_est_pas_persiste ... ok
+test wal::tests::indice_serde_de_prop_set_inline_est_celui_de_l_enum ... ok
+test wal::tests::les_variantes_anterieures_gardent_leur_indice ... ok
+test wal::tests::payload_emprunte_encode_les_memes_octets ... ok
+test wal::tests::short_tail_returns_short_read ... ok
+test wal::tests::tampered_header_fails_crc ... ok
+test wal::tests::tampered_payload_fails_crc ... ok
+test wal::tests::trames_noeud_v3_roundtrip_et_anciennes_stables ... ok
+test wal::tests::v2_repermutations_roundtrip ... ok
+test wal_io::tests::des_zeros_jusqu_a_la_fin_sont_une_fin_normale ... ok
+test wal_io::tests::empty_wal_reads_nothing ... ok
+test wal_io::tests::fsync_every_commit_sets_durability ... ok
+test wal_io::tests::reader_iterates_writer_output ... ok
+test wal_io::tests::reader_starts_from_nonzero_offset ... ok
+test wal_io::tests::reader_stops_at_crc_corruption ... ok
+test wal_io::tests::reader_stops_cleanly_when_a_length_field_is_absurd ... ok
+test store::tests::une_valeur_reecrite_ne_laisse_pas_de_faux_positif_indexe ... ok
+test wal_io::tests::t4_reparation_de_queue_puis_reprise_propre ... ok
+test wal_io::tests::un_crc_faux_sur_un_kind_inconnu_n_est_pas_un_opcode_inconnu ... ok
+test wal_io::tests::un_entete_nul_jusqu_a_la_fin_est_une_preallocation ... ok
+test wal_io::tests::un_opcode_inconnu_entier_est_nomme_avec_son_offset_absolu ... ok
+test wal_io::tests::un_pair_qui_ecrit_entre_deux_lectures_n_est_pas_une_troncature ... ok
+test wal_io::tests::truncate_resets_offset ... ok
+test wal_io::tests::un_wal_deja_troue_se_relit_en_entier ... ok
+test wal_io::tests::une_frame_d_opcode_inconnu_dechiree_reste_une_queue_incomplete ... ok
+test wal_io::tests::une_queue_de_zeros_ne_leve_pas_le_drapeau ... ok
+test wal_io::tests::un_troncage_par_autrui_ne_laisse_aucun_trou ... ok
+test wal_io::tests::une_vraie_troncature_reste_avérée ... ok
+test wal_io::tests::une_trame_abimee_reste_une_frontiere ... ok
+test wal_presence::tests::le_processus_courant_est_vivant_avec_sa_propre_identite ... ok
+test wal_presence::tests::un_pid_reattribue_avec_un_autre_demarrage_est_mort ... ok
+test wal_io::tests::writer_appends_and_tracks_offset ... ok
+test wal_presence::tests::un_processus_termine_et_recolte_est_mort ... ok
+test wal_presence::tests_empreinte::un_pid_hors_type_ou_nul_est_mort ... ok
+test store::tests::une_valeur_reecrite_ne_laisse_pas_de_perime_dans_l_intervalle ... ok
+test wal_presence::tests_empreinte::une_empreinte_qui_ne_correspond_pas_trahit_une_reutilisation_de_pid ... ok
+test wal_registre::tests_presence::sans_annonce_aucun_pair_vivant ... ok
+test wal_presence::tests_empreinte::un_pid_qui_n_existe_plus_est_mort ... ok
+test wal_registre::tests_presence::un_emplacement_libere_ne_bloque_plus ... ok
+test wal_registre::tests_presence::un_emplacement_de_pair_mort_est_repris ... ok
+test wal_registre::tests_presence::un_pair_vivant_qui_a_annonce_sa_plage_bloque_la_recuperation ... ok
+test writer::offset_arete_tests::bornes_de_la_zone ... ok
+test writer::offset_arete_tests::contre_exemple_addition_qui_deborde ... ok
+test writer::offset_arete_tests::valeurs_extremes_sans_panique ... ok
+test wal_registre::tests_presence::un_pair_mort_qui_a_annonce_sa_plage_ne_bloque_pas ... ok
+test writer::tests::add_engram_bit_ors_in_mask ... ok
+test writer::tests::add_engram_bit_rejects_zero_engram_id ... ok
+test writer::tests::centrality_batch_updates_and_clears_stale_flag ... ok
+test writer::tests::coact_reinforce_at_saturates_and_persists ... ok
+test writer::tests::coact_decay_wal_replay_roundtrip ... ok
+test wal_presence::tests::un_zombie_non_recolte_est_mort ... ok
+test store::tests::une_valeur_reecrite_sous_v2_ne_laisse_pas_la_dashmap_perimee ... ok
+test writer::tests::community_batch_assigns_and_persists ... ok
+test writer::tests::community_batch_empty_is_noop ... ok
+test writer::tests::decay_all_coact_only_touches_coact_typed_edges ... ok
+test writer::tests::community_batch_wal_replay_round_trip ... ok
+test writer::tests::decay_all_coact_skips_tombstoned ... ok
+test writer::tests::decay_all_synapse_multiplies_every_live_edge ... ok
+test writer::tests::decay_all_energy_multiplies_every_live_slot ... ok
+test writer::tests::deux_lectures_tiennent_la_zone_en_meme_temps ... ok
+test writer::tests::compact_community_uses_real_out_degree_in_keys ... ok
+test writer::tests::engram_bitset_wal_rebuild_after_zone_wipe ... ok
+test writer::tests::engram_members_sans_poids_legacy_se_recharge_sans_erreur ... ok
+test writer::tests::engram_members_rebuild_from_wal_after_zone_wipe ... ok
+test writer::tests::engram_state_wal_rebuild_atomic ... ok
+test writer::tests::ensure_room_grows_exponentially ... ok
+test writer::tests::engram_weights_wal_rebuild_after_zone_wipe ... ok
+test writer::tests::hopfield_recall_empty_query_yields_empty ... ok
+test store::tests::voyage_dans_le_temps_d_arete_voit_les_proprietes_v2 ... ok
+test writer::tests::hopfield_recall_k_zero_yields_empty ... ok
+test writer::tests::reinforce_synapse_updates_weight_column ... ok
+test writer::tests::hopfield_recall_returns_top_k_by_bitset_overlap ... ok
+test writer::tests::set_engram_bitset_roundtrip_via_writer ... ok
+test writer::tests::reinforce_energy_mutates_column_and_logs_wal ... ok
+test writer::tests::set_engram_members_close_reopen_roundtrip ... ok
+test writer::tests::set_engram_members_walks_and_mutates_zone ... ok
+test writer::tests::set_scar_util_affinity_roundtrip ... ok
+test writer::tests::set_engram_weights_close_reopen_roundtrip ... ok
+test writer::tests::sync_mode_every_commit_fsyncs_on_commit ... ok
+test store::tests::wal_replay_is_last_write_wins_over_the_snapshot_regime_herite ... ok
+test writer::tests::update_edge_first_prop_off_mutates_only_the_head_pointer ... ok
+test writer::tests::update_edge_first_prop_off_replays_after_mmap_wipe ... ok
+test writer::tests::update_node_first_prop_off_mutates_only_the_head_pointer ... ok
+test writer::tests::update_scar_field_preserves_other_fields ... ok
+test writer::tests::update_utility_and_affinity_fields_are_orthogonal ... ok
+test writer::tests::update_node_first_prop_off_replays_after_mmap_wipe ... ok
+test writer_id::tests::fichier_corrompu_refuse ... ok
+test writer::tests::wal_contains_every_mutation ... ok
+test writer_id::tests::deux_ecrivains_sur_le_meme_store_restent_distincts ... ok
+test writer_id::tests::repertoire_inexistant_rend_une_erreur ... ok
+test writer_id::tests::meme_repertoire_meme_writer_id ... ok
+test writer_id::tests::un_repertoire_a_la_place_du_fichier_rend_une_erreur ... ok
+test writer_id::tests::valeur_reservee_refusee ... ok
+test writer_id::tests::repertoires_distincts_writer_ids_distincts ... ok
+test writer::tests::write_node_then_read_back_from_mmap ... ok
+test tiered_scan::tests::dispatched_matches_scalar_above_parallel_threshold ... ok
+test writer::tests::write_edge_persists_via_zone_file ... ok
+test store::tests::wal_replay_is_last_write_wins_over_the_snapshot_regime_v2 ... ok
+test store::tests::zone_devenue_non_fiable_en_session_les_cles_couvertes_restent_justes ... ok
+test vec_projection::tests::octet_corrompu_signature_ou_version_inconnue_sont_des_erreurs ... ok
+test vec_projection::tests::composantes_orthonormees ... ok
+test vec_projection::tests::variance_expliquee_sur_vecteurs_structures ... ok
+test vec_projection::tests::projeter_renormalise_et_respecte_la_dimension ... ok
+test vec_projection::tests::aller_retour_octets_identique_au_bit_pres ... ok
+test vec_projection::tests::ecrire_lire_et_absent ... ok
+test vec_projection::tests::ajuster_est_deterministe ... ok
+
+test result: ok. 1251 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 101.04s
+
+     Running tests/aretes_vivantes_slots_reserves.rs (target/debug/deps/aretes_vivantes_slots_reserves-ca3877536d1f496c)
+
+running 2 tests
+test l_iterateur_vivant_rend_exactement_edge_count_meme_apres_reouverture ... ok
+test une_arete_tombstonee_n_est_pas_rendue_mais_les_autres_le_restent ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests/atomicite_proprietes_tx.rs (target/debug/deps/atomicite_proprietes_tx-d0aed66edce922d4)
+
+running 7 tests
+test un_scellement_echoue_ne_laisse_pas_la_restauration_ecraser_une_ecriture_posterieure ... ok
+test une_ecriture_hors_transaction_apres_une_tx_en_vol_survit_a_la_restauration ... ok
+test un_retrait_hors_transaction_apres_une_tx_en_vol_survit_a_la_restauration ... ok
+test sans_transaction_en_vol_une_ecriture_hors_transaction_n_ajoute_aucune_trame ... ok
+test une_tx_d_ecriture_partagee_ne_bloque_pas_le_checkpoint ... ok
+test la_borne_mp8_se_leve_au_rollback ... ok
+test la_borne_mp8_est_exactement_la_premiere_valeur_d_avant_puis_se_leve_au_commit ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+
+     Running tests/autorite_etat_engram.rs (target/debug/deps/autorite_etat_engram-69b3015937168088)
+
+running 8 tests
+test enfant_ecrit_l_etat_puis_meurt_dans_la_fenetre ... ok
+test un_journal_portant_l_engramme_nul_fait_refuser_le_rejeu ... ok
+test un_engramme_nul_refuse_ne_bloque_pas_la_reouverture ... ok
+test un_refus_ne_laisse_aucune_trace_durable ... ok
+test l_ordre_du_journal_est_l_ordre_d_application ... ok
+test une_suppression_est_un_etat_durable_qui_ne_ressuscite_pas ... ok
+test l_etat_reconstruit_egale_l_etat_ecrit_et_se_rejoue_deux_fois ... ok
+test le_couple_membres_poids_survit_a_une_panne_dans_la_fenetre ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+
+     Running tests/base_heritee_shared_write.rs (target/debug/deps/base_heritee_shared_write-c8b25dd7be76f628)
+
+running 3 tests
+
+running 1 test
+
+running 1 test
+test base_heritee_open_shared_write_refuse_nommee_sans_modifier ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.13s
+
+test base_heritee_open_shared_write_refuse_nommee_sans_modifier ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.13s
+
+test base_neuve_open_shared_write_reste_ouverte ... ok
+test base_heritee_reste_ouvrable_en_exclusif ... ok
+test base_heritee_open_shared_write_refuse_nommee_sans_modifier ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/community_crash_safety.rs (target/debug/deps/community_crash_safety-fdf526675eeadddd)
+
+running 5 tests
+test interleaved_node_insert_and_community_assign ... ok
+test repeated_community_replay_is_idempotent ... ok
+test dropped_writer_community_replay_reconstructs ... ok
+test ldleiden_like_burst_then_crash ... ok
+test torn_wal_community_replay_halts_cleanly ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.94s
+
+     Running tests/community_local_insert.rs (target/debug/deps/community_local_insert-a13d2c149b6886f4)
+
+running 3 tests
+test online_insert_invalidates_hilbert_sorted_flag ... ok
+test multi_community_pages_are_not_interleaved ... ok
+test single_community_packs_within_budget ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.74s
+
+     Running tests/community_warden.rs (target/debug/deps/community_warden-76173e51303b23e8)
+
+running 3 tests
+test warden_is_noop_on_well_packed_store ... ok
+test warden_respects_custom_trigger ... ok
+test warden_compacts_fragmented_communities ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.78s
+
+     Running tests/contrat_j5_props_truncate.rs (target/debug/deps/contrat_j5_props_truncate-c85e4949000b050c)
+
+running 1 test
+test open_close_ne_tronque_ni_ne_perd_les_props ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/contrat_public_bytes.rs (target/debug/deps/contrat_public_bytes-977c7c045c7681ad)
+
+running 1 test
+test contrat_public_mutation_conditionnelle_bytes_32 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/contre_epreuves_v2.rs (target/debug/deps/contre_epreuves_v2-142b0cabdd8f3727)
+
+running 7 tests
+test la_reference_ne_porte_pas_l_identite_logique_k ... ok
+test engage_est_historique_et_ne_qualifie_pas_le_contenu ... ok
+test suppression_d_une_cle_rend_integrale_une_tentative_incomplete ... ok
+test preparation_differee_refuse_une_reference ... ok
+test substitution_par_une_reference_authentique_est_valide_pour_le_store ... ok
+test alteration_partielle_est_signalee_comme_partielle ... ok
+test l_autorite_backend_est_l_auteur_persiste ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+     Running tests/convergence_proprietes.rs (target/debug/deps/convergence_proprietes-e594847d6b687f57)
+
+running 2 tests
+test deux_repliques_convergent_quel_que_soit_l_ordre ... ignored, rouge par construction tant que #334 étape 3 n'est pas faite : « dernier dans le WAL gagne », sans auteur ni horodatage
+test meme_ordre_meme_etat ... ok
+
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/crash_safety.rs (target/debug/deps/crash_safety-69c42dc5bd037099)
+
+running 5 tests
+test repeated_replay_is_stable ... ok
+test une_queue_coupee_au_milieu_d_un_enregistrement_est_comptee ... ok
+test dropped_writer_replay_reconstructs ... ok
+test torn_wal_plus_wiped_zones_reconstructs_prefix ... ok
+test torn_wal_replay_halts_cleanly ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.62s
+
+     Running tests/csr_cache_aretes.rs (target/debug/deps/csr_cache_aretes-7adbdfe2a79dce33)
+
+running 2 tests
+test une_suppression_d_arete_invalide_le_cache ... ok
+test une_insertion_entre_noeuds_existants_invalide_le_cache ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/csr_cache_memoire.rs (target/debug/deps/csr_cache_memoire-18e73a17b6cc330d)
+
+running 9 tests
+test chaque_famille_d_ecriture_fait_avancer_la_revision ... ok
+test mise_a_jour_d_arete_poids ... ok
+test suppression_d_arete_puis_reactivation ... ok
+test suppression_d_arete ... ok
+test graphe_inchange_reutilise_le_meme_csr ... ok
+test ecriture_de_poids_reinforce_synapse ... ok
+test ecriture_de_poids_coact_reinforce_at ... ok
+test suppression_de_noeud ... ok
+test ecriture_de_poids_decay_all_coact ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running tests/csr_cache_partage.rs (target/debug/deps/csr_cache_partage-3f492910e2fd90a6)
+
+running 2 tests
+test sans_ecriture_le_cache_sert_le_meme_arc ... ok
+test une_ecriture_d_un_pair_invalide_le_cache ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+
+     Running tests/degrees_zone_sans_surallocation.rs (target/debug/deps/degrees_zone_sans_surallocation-a12e06882d7579e4)
+
+running 1 test
+test la_zone_des_degres_fait_exactement_64_plus_8_par_slot ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+
+     Running tests/egalite_canonique_bornes.rs (target/debug/deps/egalite_canonique_bornes-adf646bef5995c7a)
+
+running 4 tests
+test dates_distinctes_restent_distinctes ... ok
+test entier_et_flottant_entier_dans_les_deux_ordres ... ok
+test meme_instant_sous_deux_ecritures ... ok
+test existence_voit_tous_les_porteurs ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/entite_du_pair_387.rs (target/debug/deps/entite_du_pair_387-86b725cc3dddefc0)
+
+running 2 tests
+test noeud_du_pair_accepte_une_propriete ... ok
+test noeud_du_pair_hors_projection_accepte_une_propriete ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/extedges_recovery.rs (target/debug/deps/extedges_recovery-ce4b6bdb544a6457)
+
+running 6 tests
+test le_filigrane_d_ids_est_restaure_au_rejeu ... ok
+test les_aretes_externes_survivent_au_kill_sans_flush ... ok
+test delete_edge_route_le_bit_haut_vers_le_registre_externe ... ok
+test detach_delete_emporte_les_externes_sortantes_et_survit_au_kill ... ok
+test une_suppression_apres_flush_ne_ressuscite_pas_au_rejeu ... ok
+test le_sidecar_seul_suffit_apres_flush_et_checkpoint ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+     Running tests/filtre_principal.rs (target/debug/deps/filtre_principal-5337304fd6f07456)
+
+running 8 tests
+test principal_immuable_une_fois_pose_et_sentinelle_irrecevable ... ok
+test sans_principal_tout_visible_sauf_sentinelle ... ok
+test mvcc_meme_verdict_cartes_vides_ou_peuplees ... ok
+test plafond_sous_filtre_sans_sous_livraison ... ok
+test ecritures_gatees_fail_closed_sur_autrui ... ok
+test scans_et_seeks_depuis_chaque_point_de_vue ... ok
+test cascade_aretes_et_reancrage_entrant ... ok
+test les_trois_routes_indexees_ne_fuient_pas ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
+
+     Running tests/fragmentation_soak.rs (target/debug/deps/fragmentation_soak-fad33b320de8603f)
+
+running 1 test
+test fragmentation_soak_recovers_under_warden ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.07s
+
+     Running tests/grow_policy.rs (target/debug/deps/grow_policy-79b8cf092b96c9f0)
+
+running 2 tests
+test remap_count_is_logarithmic ... ok
+test bulk_insert_triggers_log_remaps ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/hilbert_bulk_sort.rs (target/debug/deps/hilbert_bulk_sort-25e4e78a3bf9e50c)
+
+running 3 tests
+test second_sort_is_a_noop ... ok
+test tombstones_sink_to_tail ... ok
+test bulk_sort_groups_communities_and_remaps_edges ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/identity_recall.rs (target/debug/deps/identity_recall-414bcc47ba63e8f7)
+
+running 2 tests
+test engram_id_allocator_is_monotonic_across_reopen ... ok
+test cross_session_identity_recall_via_engram_bitset ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/index_labels.rs (target/debug/deps/index_labels-9dfb095ba79f7ddd)
+
+running 6 tests
+test enfant_ecrivain_partage ... ok
+test chaque_chemin_apres_construction ... ok
+test import_en_bloc_et_repermutation ... ok
+test lecteur_read_only_pendant_qu_un_ecrivain_ajoute_des_labels ... ok
+test compaction_des_perimes ... ok
+test index_egal_au_balayage_sur_sequences_aleatoires ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.09s
+
+     Running tests/ingestion_aretes_en_lot.rs (target/debug/deps/ingestion_aretes_en_lot-f10042502e4f81ad)
+
+running 3 tests
+test une_arete_qui_porte_deja_des_valeurs_garde_les_siennes_et_la_derniere_gagne ... ok
+test une_arete_absente_ne_recoit_rien_et_le_lot_ne_plante_pas ... ok
+test le_lot_d_aretes_relit_toutes_les_valeurs_apres_reouverture ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.16s
+
+     Running tests/ingestion_props_en_lot.rs (target/debug/deps/ingestion_props_en_lot-b35d5641423614c7)
+
+running 11 tests
+test le_lot_de_blobs_refuse_une_base_ouverte_en_lecture_seule - should panic ... ok
+test le_lot_refuse_une_base_ouverte_en_lecture_seule - should panic ... ok
+test le_vidage_par_blocs_des_pages_ne_perd_rien ... ok
+test le_vidage_par_blocs_du_tas_ne_perd_rien ... ok
+test une_cle_blob_indexee_garde_le_chemin_unitaire ... ok
+test le_lot_n_ecrit_qu_un_marqueur_vectoriel_par_cle_au_wal ... ok
+test l_index_d_egalite_se_batit_sur_une_base_ingeree_en_lot ... ok
+test apres_un_lot_une_ecriture_ordinaire_n_ecrase_rien ... ok
+test un_import_en_lot_tient_un_index_d_egalite_deja_declare ... ok
+test le_lot_n_ecrit_qu_une_trame_blob_par_cle_au_wal ... ok
+test le_lot_relit_exactement_comme_l_unitaire_apres_reouverture ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.89s
+
+     Running tests/label_scan_cap_bench.rs (target/debug/deps/label_scan_cap_bench-d848ba92acd2ebcc)
+
+running 1 test
+test label_scan_capped_vs_full ... ignored, bench on prod base — read-only
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/lecture_seule_contrat.rs (target/debug/deps/lecture_seule_contrat-dc4189d64899dba3)
+
+running 17 tests
+test enfant ... ok
+test sidecar_herite_scalaire_est_lu_sans_rien_ecrire ... ok
+test sidecar_herite_avec_vecteur_a_migrer_fait_echouer_l_ouverture_sans_migrer ... ok
+test les_mutations_sont_refusees_par_une_erreur_nommee_et_n_ecrivent_rien ... ok
+test le_substrat_refuse_un_dossier_sans_substrate_meta_par_une_erreur_nommee_et_ne_cree_rien ... ok
+test dictionnaire_sans_histogrammes_est_complete_en_memoire_sans_flush ... ok
+test sans_fichier_de_verrou_l_ouverture_est_refusee_et_ne_le_cree_pas ... ok
+test temporaires_de_remap_orphelins_ne_sont_pas_supprimes ... ok
+test fichiers_absents_ne_sont_pas_crees ... ok
+test base_propre_ouverte_lue_fermee_reste_identique_a_l_octet ... ok
+test base_non_inscriptible_s_ouvre_et_repond_en_lecture_seule ... ok
+test ancre_du_wal_absente_n_est_pas_republiee ... ok
+test ecrivain_tue_avant_flush_le_wal_est_rejoue_en_memoire_pas_dans_les_zones ... ok
+test degres_au_crc_perime_sont_recalcules_en_memoire_le_fichier_reste_tel_quel ... ok
+test degres_absents_sont_calcules_en_memoire_aucun_fichier_n_est_cree ... ok
+test ecrivain_partage_vivant_le_lecteur_ne_touche_a_rien_et_l_ecrivain_garde_sa_vue ... ok
+test graphe_nomme_s_ouvre_lui_aussi_en_lecture_seule ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.30s
+
+     Running tests/lecture_seule_ouverture_o1.rs (target/debug/deps/lecture_seule_ouverture_o1-5774d762de43c920)
+
+running 10 tests
+test les_degres_de_la_chaine_sont_ceux_de_la_fabrication ... ok
+test une_borne_d_allocation_en_retard_est_vue_et_les_noeuds_restent_visibles ... ok
+test des_compteurs_persistes_faux_ne_sont_jamais_servis ... ok
+test ouvrir_une_base_propre_ne_lance_aucune_verification_pleine ... ok
+test une_colonne_de_degres_corrompue_est_vue_au_premier_degre_lu ... ok
+test une_base_saine_de_2000_noeuds_n_est_pas_dite_tronquee ... ok
+test une_zone_de_noeuds_absente_fait_echouer_l_ouverture ... ok
+test une_zone_d_aretes_tronquee_fait_echouer_l_ouverture_par_une_erreur_nommee ... ok
+test une_zone_de_noeuds_tronquee_fait_echouer_l_ouverture_par_une_erreur_nommee ... ok
+test chaque_lecteur_de_compteurs_declenche_la_verification ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.83s
+
+     Running tests/lot_ne_detache_pas_386.rs (target/debug/deps/lot_ne_detache_pas_386-76af5ea9daa8104b)
+
+running 4 tests
+test un_lot_sur_des_entites_neuves_ecrit_tout ... ok
+test l_ecrivain_unitaire_apres_le_lot_ne_perd_rien ... ok
+test le_lot_leve_l_ombre_blob_de_la_valeur_longue_ecrite_avant_lui ... ok
+test le_lot_ne_detache_pas_la_chaine_ecrite_avant_lui ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.81s
+
+     Running tests/migration_versionnee.rs (target/debug/deps/migration_versionnee-6178c75dc91414f5)
+
+running 8 tests
+test enfant_migration_lente ... ok
+test version_ancienne_sans_etape_refusee_a_l_ouverture ... ok
+test version_future_refusee_proprement ... ok
+test ouverture_read_only_ne_migre_jamais ... ok
+test store_neuf_version_courante_et_migrer_noop ... ok
+test chaine_simulee_migre_et_une_seule_fois ... ok
+test etape_dechiree_ne_bump_pas_puis_reprise_aboutit ... ok
+test kill_9_pendant_migration_puis_reprise ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/mp8_fenetre_rejeu.rs (target/debug/deps/mp8_fenetre_rejeu-e4c8ec022adfe6fd)
+
+running 2 tests
+test le_flush_d_un_pair_ne_publie_pas_la_transaction_en_vol_du_mort ... ok
+test le_checkpoint_d_un_pair_ne_tronque_pas_la_transaction_en_vol_du_mort ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+
+     Running tests/multi_writer_wal.rs (target/debug/deps/multi_writer_wal-538bd80361b48924)
+
+running 2 tests
+test append_multithread_ordre_physique_egal_ordre_lsn_zero_perte ... ok
+test append_multithread_contre_reader_concurrent ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/mw_interprocess_append.rs (target/debug/deps/mw_interprocess_append-2a8653548485f543)
+
+running 8 tests
+test debit_a_n_ecrivains_la_fifo_scale ... ignored, sensible au temps ou au debit : deterministe en local, flake sur runner partage
+test t3_kill_pendant_l_append_le_dechirement_n_existe_qu_a_la_queue ... ignored, sensible au temps ou au debit : deterministe en local, flake sur runner partage
+test t4_reparation_de_queue_par_un_autre_processus_puis_100_appends ... ignored, sensible au temps ou au debit : deterministe en local, flake sur runner partage
+test t7_deux_processus_en_lots_zero_perte_et_ordre_interne_preserve ... ok
+test t2c_lsn_exact_malgre_recuperations_forcees ... ok
+test t2b_lsn_exact_par_verrou_d_append ... ok
+test t2_six_processus_zero_perte_eof_exact ... ok
+test t2d_pair_lent_apres_reservation_est_attendu_pas_reancre ... ok
+
+test result: ok. 5 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.88s
+
+     Running tests/mw_interprocess_checkpoint_elu.rs (target/debug/deps/mw_interprocess_checkpoint_elu-7fb78b11e6dc762a)
+
+running 2 tests
+test t5_un_seul_checkpointeur_a_la_fois ... ok
+test t2_checkpoint_d_un_processus_ne_perd_pas_l_append_de_l_autre ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.57s
+
+     Running tests/mw_interprocess_phase_b.rs (target/debug/deps/mw_interprocess_phase_b-941945327cedd9a2)
+
+running 11 tests
+test t6_deux_checkpoints_ne_font_pas_reculer_l_ancre ... ok
+test t4b_le_filigrane_est_repare_des_zones ... ok
+test t3_l_allocation_survit_a_un_kill_9 ... ok
+test t9b_deux_processus_martelent_la_meme_cle_puis_le_dernier_ecrivain_gagne ... ok
+test t1_deux_processus_allouent_des_ids_distincts ... ok
+test t8_deux_processus_posent_des_proprietes_sans_ecraser_de_page ... ok
+test t4a_le_checkpoint_d_un_pair_ne_fait_pas_reculer_le_filigrane_persiste ... ok
+test t8c_un_import_en_lot_et_un_ecrivain_unitaire_ne_s_ecrasent_pas ... ok
+test t8b_les_pages_d_un_ecrivain_tue_restent_reservees_et_un_troisieme_alloue_au_dela ... ok
+test t9c_un_detenteur_tue_est_vole_par_son_pair ... ok
+test t7_checkpoint_concurrent_ne_laisse_ni_trou_ni_frame_illisible ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.79s
+
+     Running tests/mw_interprocess_preuve.rs (target/debug/deps/mw_interprocess_preuve-486b987afeac1d45)
+
+running 1 test
+test t2_zero_perte_inter_processus ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/mw_interprocess_probe.rs (target/debug/deps/mw_interprocess_probe-ed2fb45137a330a3)
+
+running 3 tests
+test p2_lsn_par_instance_se_duplique_entre_processus ... ok
+test p1_deux_processus_ecrivent_au_meme_offset ... ok
+test p3_deux_processus_shared_write_coexistent ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+     Running tests/mw_registres_r1.rs (target/debug/deps/mw_registres_r1-394e62420fdc35e1)
+
+running 1 test
+test r1_deux_processus_internant_des_noms_differents_obtiennent_des_bits_differents ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests/mw_registres_r2.rs (target/debug/deps/mw_registres_r2-cde557350d4db176)
+
+running 1 test
+test r2_le_meme_nom_donne_le_meme_bit_dans_les_deux_processus ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/mw_registres_r3.rs (target/debug/deps/mw_registres_r3-71cedbb7447fb691)
+
+running 1 test
+test r3_l_indice_survit_a_un_kill_9 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s
+
+     Running tests/navigateur_opfs.rs (target/debug/deps/navigateur_opfs-35cba015397dbde9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/operators_expand.rs (target/debug/deps/operators_expand-1753fcc0e4e291a3)
+
+running 10 tests
+test test_expand_empty_input ... ok
+test test_expand_name ... ok
+test test_expand_no_edges ... ok
+test test_expand_reset ... ok
+test test_expand_incoming ... ok
+test test_expand_multiple_source_nodes ... ok
+test test_expand_edge_type_case_insensitive ... ok
+test test_expand_outgoing ... ok
+test test_expand_with_chunk_capacity ... ok
+test test_expand_with_edge_type_filter ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/operators_factorized_expand.rs (target/debug/deps/operators_factorized_expand-68f25b93c4d8260a)
+
+running 11 tests
+test chaine_paresseuse_source_vide_reste_vide_apres_reset ... ok
+test test_factorized_chain_two_hop ... ok
+test test_factorized_expand_no_edges ... ok
+test test_factorized_expand_basic ... ok
+test test_factorized_vs_flat_equivalence ... ok
+test chaine_paresseuse_rejouee_en_mode_factorise ... ok
+test chaine_paresseuse_incomplete_ne_rend_aucune_ligne_aplatie ... ok
+test test_factorized_memory_savings ... ok
+test chaine_paresseuse_rejouee_apres_reset_rend_le_meme_resultat ... ok
+test chaine_paresseuse_reset_avant_toute_lecture_ne_vide_pas ... ok
+test test_factorized_expand_multi_edge_type_filter ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+
+     Running tests/operators_factorized_filter.rs (target/debug/deps/operators_factorized_filter-09258d977e12b440)
+
+running 16 tests
+test test_property_predicate_float ... ok
+test test_property_predicate_batch_invalid_level ... ok
+test test_property_predicate_target_level ... ok
+test test_property_predicate_invalid_column ... ok
+test test_property_predicate_type_mismatch ... ok
+test test_property_predicate_lt_le_ge ... ok
+test test_property_predicate_missing_property ... ok
+test test_property_predicate_bool ... ok
+test test_property_predicate_batch ... ok
+test test_property_predicate_wrong_level ... ok
+test test_property_predicate_eq_int ... ok
+test test_property_predicate_batch_invalid_column ... ok
+test test_property_predicate_ne ... ok
+test test_property_predicate_gt_int ... ok
+test test_property_predicate_batch_wrong_level ... ok
+test test_property_predicate_string ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+
+     Running tests/operators_filter.rs (target/debug/deps/operators_filter-d0e7796a4573d6e8)
+
+running 111 tests
+test test_comparison_with_boundary_values ... ok
+test test_comparison_bool ... ok
+test test_comparison_float64 ... ok
+test test_comparison_string ... ok
+test test_eval_binary_addition_int ... ok
+test test_cross_type_int_float_stays_exact ... ok
+test test_case_expression_simple ... ok
+test test_case_expression_searched ... ok
+test test_cross_type_string_int_equality ... ok
+test test_arithmetic_operators ... ok
+test test_eval_binary_modulo_int ... ok
+test test_eval_binary_subtraction_int ... ok
+test test_eval_case_falls_to_else ... ok
+test test_coalesce_function ... ok
+test test_cross_type_string_float_equality ... ok
+test test_cross_type_string_numeric_ordering ... ok
+test test_eval_binary_division_int ... ok
+test test_eval_binary_multiplication_int ... ok
+test test_cross_type_string_numeric_equality_is_unknown ... ok
+test test_cross_type_string_numeric_ordering_is_unknown ... ok
+test test_eval_comparison_gt ... ok
+test test_eval_case_no_else_returns_null ... ok
+test test_eval_case_simple ... ok
+test test_eval_concat_null ... ok
+test test_eval_concat_strings ... ok
+test test_eval_concat_int_with_string ... ok
+test test_eval_in_operator_strings ... ok
+test test_eval_in_operator ... ok
+test test_eval_concat_string_with_int ... ok
+test test_eval_is_null_on_missing_variable ... ok
+test test_eval_comparison_eq ... ok
+test test_eval_comparison_lt ... ok
+test test_eval_comparison_ne ... ok
+test test_eval_like_null ... ok
+test test_eval_list_index_access ... ok
+test test_eval_list_comprehension_with_filter ... ok
+test test_eval_ends_with ... ok
+test test_eval_contains ... ok
+test test_eval_list_negative_index ... ok
+test test_eval_exists_function ... ok
+test test_eval_is_not_null ... ok
+test test_eval_list_predicate_all ... ok
+test test_eval_is_null ... ok
+test test_eval_list_predicate_any ... ok
+test test_eval_list_predicate_none ... ok
+test test_eval_list_predicate_single ... ok
+test test_eval_modulo_float ... ok
+test test_eval_map_key_access ... ok
+test test_eval_like_single_char ... ok
+test test_eval_reduce_product ... ok
+test test_eval_reverse_string ... ok
+test test_eval_comparison_le_ge ... ok
+test test_eval_reduce_sum ... ok
+test test_eval_reverse_list ... ok
+test test_eval_logical_and ... ok
+test test_eval_logical_or ... ok
+test test_eval_simple_case_with_operand ... ok
+test test_eval_string_add_bool ... ok
+test test_eval_logical_xor ... ok
+test test_eval_modulo_by_zero ... ok
+test test_eval_modulo_mixed ... ok
+test test_eval_string_add_int ... ok
+test test_eval_string_add_null ... ok
+test test_eval_nullif_via_case ... ok
+test test_eval_string_concatenation ... ok
+test test_eval_string_negative_index ... ok
+test test_eval_string_index_access ... ok
+test test_eval_string_slice ... ok
+test test_filter_comparison ... ok
+test test_filter_empty_result ... ok
+test test_filter_operator_reset ... ok
+test test_filter_with_all_rows_matching ... ok
+test test_eval_tofloat ... ok
+test test_filter_with_sparse_data ... ok
+test test_eval_like_wildcard ... ok
+test test_eval_toboolean ... ok
+test test_eval_starts_with ... ok
+test test_eval_tostring_types ... ok
+test test_eval_tointeger_from_float ... ok
+test test_might_match_chunk_equality_match ... ok
+test test_might_match_chunk_equality_no_match ... ok
+test test_eval_type_coercion_int_lt_float ... ok
+test test_might_match_chunk_greater_than_match ... ok
+test test_eval_type_coercion_float_minus_int ... ok
+test test_might_match_chunk_greater_than_no_match ... ok
+test test_eval_type_coercion_int_eq_float ... ok
+test test_might_match_chunk_less_than_match ... ok
+test test_might_match_chunk_less_than_no_match ... ok
+test test_might_match_chunk_no_hints ... ok
+test test_might_match_chunk_not_equal_always_conservative ... ok
+test test_predicate_on_wrong_column_returns_empty ... ok
+test test_stacked_filters_respect_selection_vector ... ok
+test test_eval_type_coercion_int_plus_float ... ok
+test test_eval_type_coercion_int_mul_float ... ok
+test test_eval_string_comparison ... ok
+test test_zone_map_allows_matching_chunk ... ok
+test test_expression_predicate_with_labels_function ... ok
+test test_index_access_list ... ok
+test test_in_operator ... ok
+test test_list_functions ... ok
+test test_map_expression ... ok
+test test_logical_operators ... ok
+test test_mixed_type_comparison_int_float ... ok
+test test_pow_operator ... ok
+test test_regex_operator ... ok
+test test_string_operators ... ok
+test test_slice_access ... ok
+test test_type_conversion_functions ... ok
+test test_unary_operators ... ok
+test test_eval_unary_neg ... ok
+test test_eval_unary_not ... ok
+
+test result: ok. 111 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.14s
+
+     Running tests/operators_horizontal_aggregate.rs (target/debug/deps/operators_horizontal_aggregate-913d431c1256221a)
+
+running 11 tests
+test test_horizontal_empty_list_returns_null ... ok
+test test_horizontal_name ... ok
+test test_horizontal_empty_list_sum_profil_open_cypher ... ok
+test test_horizontal_child_returns_none ... ok
+test test_horizontal_sum_over_nodes ... ok
+test test_horizontal_non_list_column_returns_null ... ok
+test test_horizontal_avg_over_edges ... ok
+test test_horizontal_multiple_rows ... ok
+test test_horizontal_reset ... ok
+test test_horizontal_sum_over_edges ... ok
+test test_horizontal_min_max_over_edges ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+     Running tests/operators_merge.rs (target/debug/deps/operators_merge-a631b73e6faf09f3)
+
+running 5 tests
+test test_merge_creates_new_node ... ok
+test test_merge_matches_existing_node ... ok
+test test_merge_with_on_match ... ok
+test test_merge_with_on_create ... ok
+test t17b_merge_uses_property_index_and_stays_correct ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+     Running tests/operators_mutation.rs (target/debug/deps/operators_mutation-ca0687f3e9c3986f)
+
+running 29 tests
+test test_add_label_no_input_returns_none ... ok
+test test_create_edge ... ok
+test test_add_label ... ok
+test test_delete_edge_no_input_returns_none ... ok
+test test_add_label_type_mismatch ... ok
+test test_create_node_with_constraint_validator ... ok
+test test_add_multiple_labels ... ok
+test test_create_node_standalone ... ok
+test test_add_label_multiple_rows_with_null ... ok
+test test_create_node_reset_allows_re_execution ... ok
+test test_create_node_with_input_operator ... ok
+test test_create_edge_with_properties_and_output_column ... ok
+test test_delete_node ... ok
+test test_delete_edge ... ok
+test test_delete_node_detach ... ok
+test test_delete_multiple_edges ... ok
+test test_operator_names ... ok
+test test_property_source_property_access ... ok
+test test_remove_label ... ok
+test test_delete_node_without_detach_errors_when_edges_exist ... ok
+test test_remove_label_type_mismatch ... ok
+test test_set_property_no_input_returns_none ... ok
+test test_set_edge_property ... ok
+test test_remove_nonexistent_label ... ok
+test test_set_property_map_replace ... ok
+test test_set_node_property_constant ... ok
+test test_set_node_property_from_column ... ok
+test test_set_multiple_properties ... ok
+test test_set_property_map_merge ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.24s
+
+     Running tests/operators_parallel_source.rs (target/debug/deps/operators_parallel_source-8e551e1aa086261e)
+
+running 3 tests
+test test_parallel_node_scan_partition ... ok
+test test_parallel_node_scan_source ... ok
+test test_parallel_node_scan_morsels ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/operators_project.rs (target/debug/deps/operators_project-5ce0990ed345bf92)
+
+running 10 tests
+test test_project_column_not_found ... ok
+test test_project_identity ... ok
+test test_project_name ... ok
+test test_project_select_columns ... ok
+test test_project_empty_input ... ok
+test test_project_multiple_constants ... ok
+test test_project_constant ... ok
+test test_project_resolve_missing_entity ... ok
+test test_project_node_resolve ... ok
+test test_project_edge_resolve ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/operators_scan.rs (target/debug/deps/operators_scan-918d0e34e4a0898d)
+
+running 4 tests
+test test_scan_reset ... ok
+test test_full_scan ... ok
+test test_scan_filtre_bien_par_epoque ... ok
+test test_scan_by_label ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/operators_shortest_path.rs (target/debug/deps/operators_shortest_path-912f6f2d74e24289)
+
+running 21 tests
+test test_all_shortest_paths_no_path ... ok
+test test_all_shortest_paths_same_node ... ok
+test test_all_shortest_paths_single_path ... ok
+test test_find_shortest_path_no_path ... ok
+test test_bidirectional_bfs_has_backward_adjacency ... ok
+test test_bidirectional_bfs_prefers_shorter ... ok
+test test_bidirectional_bfs_diamond ... ok
+test test_empty_input ... ok
+test test_bidirectional_bfs_no_path ... ok
+test test_bidirectional_bfs_same_node ... ok
+test test_find_shortest_path_prefers_shorter ... ok
+test test_find_shortest_path_same_node ... ok
+test test_bidirectional_bfs_long_chain ... ok
+test test_all_shortest_paths_multiple_paths ... ok
+test test_find_shortest_path_direct ... ok
+test test_bidirectional_bfs_with_edge_type_filter ... ok
+test test_operator_name ... ok
+test test_find_shortest_path_with_edge_type_filter ... ok
+test test_find_shortest_path_two_hops ... ok
+test test_multiple_pairs_in_chunk ... ok
+test test_operator_reset ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running tests/operators_typed_degree_topk.rs (target/debug/deps/operators_typed_degree_topk-2a2be466ea72dc94)
+
+running 9 tests
+test typed_degree_topk_unknown_type_is_empty ... ok
+test typed_degree_topk_outgoing_only ... ok
+test typed_degree_topk_reset_replays ... ok
+test typed_degree_topk_k_larger_than_label_set ... ok
+test typed_degree_topk_respects_edge_type_filter ... ok
+test typed_degree_topk_separate_reset_replays ... ok
+test typed_degree_topk_both_directions ... ok
+test typed_degree_topk_separate_outputs_out_and_in ... ok
+test typed_degrees_concurrent_init_no_double_count ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+     Running tests/operators_variable_length_expand.rs (target/debug/deps/operators_variable_length_expand-5c423a7152661a35)
+
+running 13 tests
+test test_variable_length_expand_empty_input ... ok
+test test_variable_length_expand_name ... ok
+test test_variable_length_expand_single_hop ... ok
+test test_variable_length_expand_diamond ... ok
+test test_variable_length_expand_with_chunk_capacity ... ok
+test test_variable_length_expand_chain ... ok
+test test_variable_length_expand_reset ... ok
+test test_acyclic_mode_no_repeated_nodes ... ok
+test test_variable_length_expand_with_path_length ... ok
+test test_trail_mode_no_repeated_edges ... ok
+test test_variable_length_expand_min_hops ... ok
+test test_variable_length_expand_no_matching_edges ... ok
+test test_zero_hop_path_is_emitted ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+     Running tests/prefetch_page_faults.rs (target/debug/deps/prefetch_page_faults-21aeb6e36c2c8393)
+
+running 1 test
+test prefetch_on_warm_cache_is_cheap ... ignored, sensible au temps ou au debit : deterministe en local, flake sur runner partage
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/publication_conditionnelle_durabilite_kill9.rs (target/debug/deps/publication_conditionnelle_durabilite_kill9-c795695a1269a913)
+
+running 4 tests
+test enfant_publication_durabilite ... ok
+test kill9_apres_bascule_de_tete_sans_close ... ok
+test kill9_apres_preparation_tete_non_basculee ... ok
+test kill9_apres_close_propre ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s
+
+     Running tests/records.rs (target/debug/deps/records-e6cec1a2cfe8e1e2)
+
+running 7 tests
+test edge_record_layout_roundtrip ... ok
+test meta_header_size ... ok
+test property_page_crc_and_cast ... ok
+test node_record_layout_roundtrip_via_bytemuck ... ok
+test tiers_size_check ... ok
+test wal_sequence_replay_simulation ... ok
+test string_heap_large_workload ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/reference_tentative_externe.rs (target/debug/deps/reference_tentative_externe-aefbe2fef3979318)
+
+running 5 tests
+test reference_alteree_ne_produit_jamais_engage ... ok
+test decodage_controle_refuse_les_octets_invalides ... ok
+test preparation_differee_refuse_une_reference ... ok
+test reference_survit_a_la_perte_de_reponse_et_au_masquage ... ok
+test reference_etrangere_ne_produit_jamais_engage ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+
+     Running tests/replay_en_vol_ne_ressuscite_pas.rs (target/debug/deps/replay_en_vol_ne_ressuscite_pas-2c5823744e0c941b)
+
+running 1 test
+test un_rejeu_ne_rend_jamais_vivante_l_entite_d_une_transaction_en_vol ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/replay_en_vol_variantes.rs (target/debug/deps/replay_en_vol_variantes-395dec6f41b11f3b)
+
+running 4 tests
+test anciennes_trames_noeud_ne_ressuscitent_pas_une_entite_en_vol ... ok
+test ancienne_trame_edge_update_ne_ressuscite_pas_une_arete_en_vol ... ok
+test une_arete_supprimee_n_est_plus_en_vol ... ok
+test le_lecteur_ro_n_ecarte_pas_la_transaction_en_vol ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+
+     Running tests/reprojection_zone.rs (target/debug/deps/reprojection_zone-798162445a842b09)
+
+running 1 test
+test un_lecteur_voit_ce_qu_un_ecrivain_ecrit_apres_son_ouverture ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+     Running tests/resolution_h3_kill9.rs (target/debug/deps/resolution_h3_kill9-8fbe8d577dd60135)
+
+running 3 tests
+test enfant_h3_resolution ... ok
+test h3_kill9_avant_publication ... ok
+test h3_kill9_apres_publication ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running tests/revue_101_sondes.rs (target/debug/deps/revue_101_sondes-0728445b6b7d5afb)
+
+running 5 tests
+test s2_drop_cle_blob_kill_entre_zone_et_catalogue ... ok
+test s1_durabilite_blob_et_court_meme_cle_apres_kill ... ok
+test s3b_drop_pendant_construction ... ok
+test s3a_ecritures_pendant_construction_scalaire_et_blob ... ok
+test s5_la_reconstruction_d_une_cle_a_blob_est_payee_une_fois_par_processus ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.11s
+
+     Running tests/scan_plafonne.rs (target/debug/deps/scan_plafonne-2f5ffcb7362ebf21)
+
+running 9 tests
+test capped_au_dela_du_compte_rend_tout_sans_rembourrage ... ok
+test store_vide_rend_vide_et_ne_boucle_pas ... ok
+test visibilite_triviale_sur_une_base_sans_transaction ... ok
+test capped_reste_un_prefixe_meme_troue_en_alternance ... ok
+test le_plafond_compte_les_vivants_pas_les_slots_parcourus ... ok
+test capped_est_le_prefixe_exact_de_node_ids ... ok
+test le_plafond_traverse_le_cimetiere_sans_le_compter_comme_resultat ... ok
+test capped_lit_un_nombre_de_slots_proportionnel_a_k_pas_a_n ... ok
+test capped_ne_parcourt_pas_tout_pour_decouper_ensuite ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.88s
+
+     Running tests/simplex_durability.rs (target/debug/deps/simplex_durability-391c3f69e5713fa6)
+
+running 7 tests
+test enfant_ecrit_des_simplexes_en_boucle ... ok
+test rejeu_repose_l_incidence_d_un_record_deja_present ... ok
+test double_rejeu_idempotent ... ok
+test drop_sans_flush_rejeu_reconstruit ... ok
+test rejeu_reconstruit_bit_a_bit_depuis_le_wal_seul ... ok
+test kill_9_pendant_ecriture_reouverture_saine ... ok
+test wal_dechire_arret_propre ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.50s
+
+     Running tests/simplex_incidence_perf.rs (target/debug/deps/simplex_incidence_perf-2c4cfeab74785ab0)
+
+running 4 tests
+test cascade_i5_suppression_de_noeud ... ok
+test octets_par_simplexe_mesures ... ok
+test gate_ouverture_112_ms_avec_zones_peuplees ... ok
+test micro_banc_incidence_o_degre ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.96s
+
+     Running tests/simplex_passes_materialisation.rs (target/debug/deps/simplex_passes_materialisation-c33947f7329484b1)
+
+running 15 tests
+test byte_identical_corpus ... ignored, byte-identical corpus — CORPUS_A/CORPUS_B requis (copiés, non modifiés)
+test mesures_corpus ... ignored, mesures corpus — CORPUS_DB requis (copié, non modifié)
+test erreur_enseignante_sans_configuration ... ok
+test clustering_noeud_et_global ... ok
+test emission_lexicographique_ids_croissants ... ok
+test dispatch_bornes_i3_groupe_jete_entier ... ok
+test incremental_suppression_noeud_cascade ... ok
+test passe_triangles_closed_wedge_et_cyclic ... ok
+test passe_avec_filtre_de_labels ... ok
+test passe_idempotente_puis_reparatrice_sur_graphe_retreci ... ok
+test faces_orientees_et_navigation_0_simplexes ... ok
+test passe_cliques_et_hyperedges_dispatch ... ok
+test configuration_persistante_au_reopen ... ok
+test incremental_converge_vers_le_rebuild ... ok
+test byte_identical_deux_publications_du_meme_graphe ... ok
+
+test result: ok. 13 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running tests/slot_remap_sidecars.rs (target/debug/deps/slot_remap_sidecars-78c870b0a1067df8)
+
+running 14 tests
+test un_index_tiered_non_lie_refuse_de_persister_apres_un_remap ... ok
+test cas_limites_store_vide_et_singleton ... ok
+test compact_community_relocations_partielles_remappe_les_sidecars ... ok
+test veccol_slot_sans_embedding_n_herite_jamais_de_la_donnee_d_autrui ... ok
+test sentinelle_d_absence_blob_voyage_avec_le_noeud ... ok
+test apres_la_passe_epoch_durable_et_flag_sont_coherents ... ok
+test second_tri_est_un_noop_et_les_sidecars_restent_corrects ... ok
+test tombstones_ne_decalent_pas_la_donnee_des_vivants ... ok
+test t3_veccol_suit_bulk_sort ... ok
+test rejeu_depuis_offset_de_checkpoint_apres_un_tri_termine ... ok
+test t4_golden_vector_top_k_avant_apres ... ok
+test colonnes_multiples_suivent_et_colonne_arete_reste_intacte ... ok
+test rejeu_multi_generations_deux_tris_successifs ... ok
+test t1_propriete_la_donnee_suit_le_noeud ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.81s
+
+     Running tests/t17i_edge_label_histogram.rs (target/debug/deps/t17i_edge_label_histogram-57ffac64d78317ad)
+
+running 5 tests
+test edge_target_labels_on_homogeneous_graph ... ok
+test edge_target_labels_unknown_type_is_empty ... ok
+test edge_target_labels_on_mixed_graph ... ok
+test edge_target_labels_decrement_on_delete ... ok
+test edge_target_labels_survive_reopen ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/t17j_t5_chain_repair.rs (target/debug/deps/t17j_t5_chain_repair-8c016027bad9b1b2)
+
+running 2 tests
+test repair_reconciles_chain_to_rec_src ... ok
+test repair_is_idempotent_on_healthy_store ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/t17k_get_node_bulk_hydrate.rs (target/debug/deps/t17k_get_node_bulk_hydrate-32c913f35fc422b4)
+
+running 5 tests
+test get_node_hydrates_blob_strings ... ok
+test get_node_tombstone_removes_key ... ok
+test get_node_hydrates_small_scalar_props_via_v2 ... ok
+test get_node_lww_ordering_across_zones ... ok
+test get_node_hydrates_vector_80_dim ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/t5_batch_wal_crash_safety.rs (target/debug/deps/t5_batch_wal_crash_safety-5f05ddc8bb0ffcd6)
+
+running 2 tests
+test group_mode_without_fsync_replay_is_clean ... ok
+test group_mode_periodic_fsync_bounds_the_loss_window ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/tenant_colonne.rs (target/debug/deps/tenant_colonne-32fe851e5f4c52da)
+
+running 10 tests
+test enfant_migration_2v3_lente ... ok
+test migration_store_reel_par_copie ... ok
+test layout_40_octets_512_par_page_zero_slack ... ok
+test writers_posent_tenant_public_et_readers_le_rendent ... ok
+test sentinelle_slot_zero_invisible_des_la_creation ... ok
+test migration_2_vers_3_idempotente_octet_pour_octet ... ok
+test chaine_complete_v1_vers_v3_en_une_ouverture ... ok
+test migration_2_vers_3_pose_tenant_zero_partout_et_declare_public ... ok
+test props_aretes_et_wal_intacts_a_travers_la_migration ... ok
+test kill_9_pendant_reecriture_2v3_puis_reprise_par_ouverture ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+     Running tests/tier_persistence.rs (target/debug/deps/tier_persistence-57e2d173e6e8c0ab)
+
+running 6 tests
+test zone_variants_exist ... ok
+test load_from_empty_substrate_returns_none ... ok
+test truncated_tier1_returns_none ... ok
+test mismatched_n_slots_returns_none ... ok
+test persist_and_reload_round_trip ... ok
+test corrupted_tier0_payload_returns_none ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/trigrammes_bout_en_bout.rs (target/debug/deps/trigrammes_bout_en_bout-9ccc1dcf71f9f15f)
+
+running 5 tests
+test la_premiere_demande_ne_construit_pas_l_index ... ok
+test une_ecriture_apres_construction_est_trouvee ... ok
+test une_reecriture_donne_un_resultat_exact ... ok
+test le_chemin_indexe_rend_exactement_les_memes_noeuds_que_le_balayage ... ok
+test les_deux_silences_ne_se_confondent_pas ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+     Running tests/trous_allocated.rs (target/debug/deps/trous_allocated-5df4ffaf2e75bb8e)
+
+running 7 tests
+test enfant_migration_1v2_lente ... ok
+test tombstone_reste_alloue_et_invisible ... ok
+test noeud_nu_communaute_zero_discernable_dun_trou ... ok
+test dix_crees_dix_lisibles_dix_comptes ... ok
+test migration_1_vers_2_idempotente_octet_pour_octet ... ok
+test store_v1_migre_a_l_ouverture_compte_juste ... ok
+test kill_9_pendant_migration_1v2_puis_reprise_par_ouverture ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/vector_accessor.rs (target/debug/deps/vector_accessor-22774acaeda2332d)
+
+running 2 tests
+test test_closure_accessor ... ok
+test test_property_vector_accessor ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/vector_top_k_exact.rs (target/debug/deps/vector_top_k_exact-e7439ee8af2727e6)
+
+running 11 tests
+test k_superieur_aux_candidats ... ok
+test tie_break_deterministe ... ok
+test veccol_tout_zero_sans_liste_est_absent ... ok
+test tout_zero_avec_liste_rend_zero_fini ... ok
+test dimensions_mixtes_emises_dans_le_bloc_null_de_tete ... ok
+test similarite_non_finie_dans_le_bloc_null_deterministe ... ok
+test filtre_identique_des_deux_cotes ... ok
+test cles_distinctes_embedding_vec_et_embedding ... ok
+test parallele_egale_reference_serie ... ok
+test embeddings_en_liste_non_migres_sont_couverts ... ok
+test etat_mixte_veccol_et_liste_aucun_noeud_manque ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/verif_extedges_adversarial.rs (target/debug/deps/verif_extedges_adversarial-ec1aa0f2d4403b82)
+
+running 6 tests
+test p4_insert_puis_delete_dans_la_meme_fenetre_wal ... ok
+test p4_double_rejeu_idempotent_ids_et_filigrane ... ok
+test p4_sidecar_bruit_jamais_fatal ... ok
+test p4_detach_delete_apres_flush_kill_l_arete_ne_revient_pas ... ok
+test p4_sidecar_tronque_jamais_fatal ... ok
+test p4_filigrane_depuis_le_sidecar_seul ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+
+     Running tests/verrou_apres_drop.rs (target/debug/deps/verrou_apres_drop-5d0e299e6786348c)
+
+running 2 tests
+test un_refus_de_verrou_nomme_le_detenteur ... ok
+test le_verrou_est_rendu_immediatement_apres_le_drop ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.38s
+
+     Running tests/wal_append_syscalls.rs (target/debug/deps/wal_append_syscalls-5371a5c452f9ef61)
+
+running 3 tests
+test sonde_aucune ... ignored, sonde de mesure : à lancer sous strace -c (voir l'en-tête)
+test sonde_oappend ... ignored, sonde de mesure : à lancer sous strace -c (voir l'en-tête)
+test sonde_verrou ... ignored, sonde de mesure : à lancer sous strace -c (voir l'en-tête)
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/wal_append_unite.rs (target/debug/deps/wal_append_unite-6ef153ead6a01cbf)
+
+running 9 tests
+test enospc_zero_octet_le_refus_est_propre_et_ne_repare_rien ... ok
+test un_trou_de_zeros_est_nomme_et_la_reparation_refuse_de_trancher ... ok
+test queue_dechiree_tout_append_est_refuse_jusqu_a_reparation ... ok
+test cas_1_ancre_adoptee_aucun_lsn_reemis ... ok
+test t7_group_commit_un_seul_write_et_ordre_preserve ... ok
+test t7_lot_refuse_entierement_quand_une_frame_depasse_la_borne ... ok
+test cas_2_reancrage_en_avant_quand_le_side_car_manque ... ok
+test cas_3_troncature_etrangere_nommee_a_l_ouverture ... ok
+test t6_offset_bit_identique_et_ancre_de_durabilite ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/wal_chaine_cas.rs (target/debug/deps/wal_chaine_cas-84112c89c7ea05ce)
+
+running 8 tests
+test t0_la_taille_d_entete_est_inchangee ... ok
+test t6_sans_registre_le_chemin_d_avant_est_repris ... ok
+test t5_le_tampon_groupe_reserve_sa_plage_par_un_seul_cas ... ok
+test t3_troncature_etrangere_annoncee_le_pair_se_reancre_sans_attendre ... ok
+test t2_ecrivain_tue_apres_reservation_bloque_la_tete_puis_recuperation_froide ... ok
+test t4_le_chemin_chaud_ne_paie_aucune_mesure ... ok
+test t1_quatre_processus_lsn_exact_et_ordre_physique ... ok
+test la_creation_du_registre_ne_devance_pas_une_publication ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.17s
+
+     Running tests/wal_checkpoint.rs (target/debug/deps/wal_checkpoint-18da359a22a099b7)
+
+running 4 tests
+test seuil_a_zero_desactive_le_checkpoint ... ok
+test le_shrink_zone_v2_ne_perd_pas_de_proprietes ... ok
+test le_checkpoint_tronque_le_wal_sans_perdre_de_donnees ... ok
+test checkpoint_concurrent_aux_ecritures ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.27s
+
+     Running tests/wal_ecriture_courte.rs (target/debug/deps/wal_ecriture_courte-2b28195464fd57f4)
+
+running 1 test
+test ecriture_courte_le_quota_dechire_la_frame_et_l_append_l_annule ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/wal_fsync_partage.rs (target/debug/deps/wal_fsync_partage-3d96bfc0aa640ece)
+
+running 2 tests
+test chaque_commit_du_store_est_couvert_par_la_ligne_durable ... ok
+test commit_rendu_seulement_une_fois_ses_octets_fsynces ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.16s
+
+     Running tests/wal_group_commit_debit.rs (target/debug/deps/wal_group_commit_debit-5fb6db61bb8dbe27)
+
+running 1 test
+test debit_du_chemin_reel_writer_commit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.30s
+
+     Running tests/wal_group_commit_needle.rs (target/debug/deps/wal_group_commit_needle-848413ecd32b47b0)
+
+running 10 tests
+test needle_un_record_a_exigence_de_sync_force_le_flush_immediat ... ok
+test needle_une_queue_dechiree_refuse_aussi_la_pose_du_tampon ... ok
+test needle_un_pair_ecrivain_force_le_re_estampillage_du_tampon ... ok
+test needle_le_drop_pose_le_tampon_sans_perte ... ok
+test needle_la_fenetre_de_perte_est_bornee_par_le_seuil_de_temps ... ok
+test needle_la_troncature_compte_le_tampon_et_ne_reeemet_aucun_lsn ... ok
+test needle_le_seuil_d_octets_declenche_avant_le_seuil_de_records ... ok
+test needle_le_fsync_est_indexe_sur_la_needle_pas_sur_les_lots ... ok
+test needle_group_commit_eteint_garde_le_chemin_d_aujourd_hui ... ok
+test needle_le_group_commit_ecrit_les_memes_octets_que_n_appends ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+     Running tests/wal_latence_append.rs (target/debug/deps/wal_latence_append-29569f275e9bfdb6)
+
+running 1 test
+test latence_append_mono_ecrivain ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+     Running tests/wal_opcode_inconnu.rs (target/debug/deps/wal_opcode_inconnu-436c4a8eba413b50)
+
+running 3 tests
+test une_queue_dechiree_avant_le_kind_reste_une_frontiere_de_crash ... ok
+test une_frame_inconnue_tronquee_apres_le_kind_reste_une_frontiere_de_crash ... ok
+test un_opcode_inconnu_refuse_l_ouverture_en_le_nommant_et_laisse_le_wal_intact ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s
+
+     Running tests/wal_pieces_2_3_micro.rs (target/debug/deps/wal_pieces_2_3_micro-7d92df288682aeca)
+
+running 3 tests
+test mesure_piece_2_allocations_du_payload ... ignored, mesure de performance : 207,5 ns contre un budget de 200 ns sur un runner partagé ; à lancer en --ignored ou dans un job dédié
+test mesure_piece_2_vec_du_lot_unitaire ... ignored, mesure de performance : 207,5 ns contre un budget de 200 ns sur un runner partagé ; à lancer en --ignored ou dans un job dédié
+test mesure_piece_3_crc ... ignored, mesure de performance : 207,5 ns contre un budget de 200 ns sur un runner partagé ; à lancer en --ignored ou dans un job dédié
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/wal_recovery_reelle.rs (target/debug/deps/wal_recovery_reelle-5235b746e636e92c)
+
+running 3 tests
+test une_base_rouverte_retrouve_ses_noeuds_et_leurs_proprietes ... ok
+test base_jamais_checkpointee_reste_ouvrable ... ok
+test apres_checkpoint_le_rejeu_recupere_les_ecritures_suivantes ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+     Running tests/window_query_2d.rs (target/debug/deps/window_query_2d-2e9bda90cc074dd1)
+
+running 2 tests
+test window_query_2d_community_isolation ... ok
+test window_query_2d_matches_bruteforce ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests/writer_node_count_partage.rs (target/debug/deps/writer_node_count_partage-240a0c4fbb807744)
+
+running 1 test
+test bulk_sort_perime_ne_reduit_pas_node_count_du_pair ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running tests/zero_copy_suite.rs (target/debug/deps/zero_copy_suite-117fb374ec7ddfc8)
+
+running 11 tests
+test resultbuf_contenu_et_clear_sans_dealloc ... ok
+test vue_arete_non_string_cle_et_arete_absentes ... ok
+test arete_lww_tombstone_et_arete_morte ... ok
+test balayage_egal_boucle_par_noeud ... ok
+test vue_arete_blob_pour_plus_de_256_octets ... ok
+test balayage_break_arrete_net ... ok
+test balayage_filtre_par_label ... ok
+test balayage_survit_a_la_reouverture ... ok
+test vue_arete_zone_egale_valeur_possedee ... ok
+test vue_arete_survit_a_la_reouverture ... ok
+test collect_into_egal_balayage_et_amortit ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
+     Running tests/zero_copy_views.rs (target/debug/deps/zero_copy_views-e3f7a6251dd82aa7)
+
+running 9 tests
+test golden_le_entree_index_blob ... ok
+test golden_le_prefixe_longueur_du_heap ... ok
+test alignement_verifie_jamais_suppose ... ok
+test derniere_ecriture_gagne_sous_la_vue ... ok
+test lecture_possedee_pendant_vue_tenue ... ok
+test vue_zone_egale_valeur_possedee ... ok
+test valeur_non_string_et_cle_absente_rendent_none ... ok
+test tombstone_et_noeud_mort_rendent_none ... ok
+test vue_blob_pour_chaine_de_plus_de_256_octets ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/zones_simplex_initialisation_partielle.rs (target/debug/deps/zones_simplex_initialisation_partielle-b47cdbbb96239feb)
+
+running 1 test
+test un_echec_d_ouverture_ne_laisse_pas_un_cache_a_moitie_rempli ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+   Doc-tests obrain_substrate
+warning: found both `noeud` and `nœud` as identifiers, which look alike
+     --> crates/obrain-substrate/src/store.rs:47491:8
+      |
+47491 |     fn nœud(store: &SubstrateStore) -> NodeId {
+      |        ^^^^ this identifier can be confused with `noeud`
+      |
+     ::: crates/obrain-substrate/src/borne_allocation.rs:219:12
+      |
+  219 |     pub fn noeud(&self) -> u64 {
+      |            ----- other identifier used here
+      |
+      = note: `#[warn(confusable_idents)]` on by default
+
+warning: 1 warning emitted
+
+
+running 4 tests
+test crates/obrain-substrate/src/blob_column.rs - blob_column::ZEROS_MI (line 270) ... ignored
+test crates/obrain-substrate/src/retrieval.rs - retrieval (line 24) ... ignored
+test crates/obrain-substrate/src/vec_column.rs - vec_column::VecColumnWriter (line 410) ... ignored
+test crates/obrain-substrate/src/result_buf.rs - result_buf::ResultBuf (line 28) ... ok
+
+test result: ok. 1 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+test crates/obrain-substrate/src/view.rs - view (line 27) - compile fail ... ok
+test crates/obrain-substrate/src/store.rs - store::SubstrateStore::for_each_node_prop_str_view (line 14633) - compile fail ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+all doctests ran in 1.43s; merged doctests compilation took 1.05s
+EXIT=0

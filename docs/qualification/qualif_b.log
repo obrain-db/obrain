@@ -1,0 +1,50 @@
+warning: found both `noeud` and `nœud` as identifiers, which look alike
+     --> crates/obrain-substrate/src/store.rs:46997:8
+      |
+46997 |     fn nœud(store: &SubstrateStore) -> NodeId {
+      |        ^^^^ this identifier can be confused with `noeud`
+      |
+     ::: crates/obrain-substrate/src/borne_allocation.rs:219:12
+      |
+  219 |     pub fn noeud(&self) -> u64 {
+      |            ----- other identifier used here
+      |
+      = note: `#[warn(confusable_idents)]` on by default
+
+warning: `obrain-substrate` (lib) generated 1 warning
+   Compiling obrain-substrate v0.0.1 (/Users/triviere/projects/obrain/_wt/obrain-334-qualification/crates/obrain-substrate)
+warning: unused variable: `store1b`
+     --> crates/obrain-substrate/src/store.rs:47375:13
+      |
+47375 |         let store1b = Arc::clone(&store1);
+      |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_store1b`
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `prop_b`
+     --> crates/obrain-substrate/src/store.rs:47408:13
+      |
+47408 |         let prop_b = store.prop_keys.read().lookup("b").unwrap();
+      |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_prop_b`
+
+warning: unused variable: `sa`
+     --> crates/obrain-substrate/src/store.rs:47595:14
+      |
+47595 |         let (sa, sb, sa2, sb2) = {
+      |              ^^ help: if this is intentional, prefix it with an underscore: `_sa`
+
+warning: `obrain-substrate` (lib test) generated 4 warnings (1 duplicate) (run `cargo fix --lib -p obrain-substrate --tests` to apply 3 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 31s
+     Running unittests src/lib.rs (target/debug/deps/obrain_substrate-c7785ec49f14c02b)
+
+running 6 tests
+test store::concurrence_reelle::lecteur_historique_deux_lectures_chevauchent_la_bascule ... ok
+test store::concurrence_reelle::deux_ecrivains_ecriture_independante_acceptee_conservation ... ok
+test store::concurrence_reelle::changement_de_tete_par_remplissage_via_set_node_property ... ok
+test store::concurrence_reelle::lecteur_sous_verrou_noeud_ne_voit_pas_de_melange ... ok
+test store::concurrence_reelle::deux_ecrivains_dependance_modifiee_pendant_preparation_conflit ... ok
+test store::concurrence_reelle::deux_stores_progressent_independamment ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 1233 filtered out; finished in 0.23s
+
+EXIT=0
