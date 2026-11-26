@@ -48527,3 +48527,323 @@ mod projections_publiees {
         assert_eq!(cherche_40, vec![id], "réouverture retrouve 40 sans recherche intermédiaire");
     }
 }
+
+#[cfg(test)]
+mod concurrence_reelle {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    /// Pose le drapeau d'arrêt à la sortie de portée (y compris en cas de
+    /// panic dans le fil principal) : un lecteur en spin ne reste jamais
+    /// orphelin à consommer un cœur.
+    struct RelacheArret(Arc<AtomicBool>);
+    impl Drop for RelacheArret {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    /// Adresse brute de la tête canonique d'un nœud (page de tête PropsZone).
+    fn tete(store: &SubstrateStore, id: NodeId) -> u64 {
+        store
+            .writer
+            .read_node(id.0 as u32)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64()
+    }
+
+    /// Lit un Int64 via le chemin historique ; -1 si absent ou non-Int64.
+    fn lire_i64(store: &SubstrateStore, id: NodeId, cle: &str) -> i64 {
+        match store.get_node_property(id, &PropertyKey::new(cle)) {
+            Some(Value::Int64(v)) => v,
+            _ => -1,
+        }
+    }
+
+    fn base(store: &SubstrateStore) -> NodeId {
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        store.set_node_property(id, "c", Value::Int64(3));
+        id
+    }
+
+    /// 1a — Deux écrivains sur le MÊME nœud : la dépendance « a » est modifiée
+    /// par l'écrivain historique ENTRE la préparation et la publication (ordre
+    /// imposé par des canaux bornés) → ConflitPrecondition, aucun effet publié.
+    #[test]
+    fn deux_ecrivains_dependance_modifiee_pendant_preparation_conflit() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = base(&store);
+
+        let (tx_prepare, rx_prepare) = mpsc::channel::<()>();
+        let (tx_ecrit, rx_ecrit) = mpsc::channel::<()>();
+
+        let s1 = Arc::clone(&store);
+        let h1 = thread::spawn(move || {
+            let pre = s1.capturer_precondition(id, &["a", "b"]).unwrap();
+            let prep = s1
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
+            tx_prepare.send(()).unwrap();
+            rx_ecrit
+                .recv_timeout(Duration::from_secs(5))
+                .expect("borne : attente de l'écriture historique");
+            s1.publier_si_precondition_intacte(prep).unwrap()
+        });
+
+        let s2 = Arc::clone(&store);
+        let h2 = thread::spawn(move || {
+            rx_prepare
+                .recv_timeout(Duration::from_secs(5))
+                .expect("borne : attente de la préparation");
+            s2.set_node_property(id, "a", Value::Int64(99));
+            tx_ecrit.send(()).unwrap();
+        });
+
+        let r = h1.join().expect("écrivain conditionnel");
+        h2.join().expect("écrivain historique");
+
+        assert_eq!(r, IssuePublication::ConflitPrecondition, "a modifiée → conflit");
+        assert_eq!(lire_i64(&store, id, "a"), 99, "l'écriture historique de a est conservée");
+        assert_eq!(lire_i64(&store, id, "b"), 2, "b inchangée : aucun effet publié");
+        eprintln!("CONCUR_1a_OK : dépendance modifiée pendant la préparation → conflit");
+    }
+
+    /// 1b — Écriture indépendante (autre clé « c ») pendant la préparation →
+    /// publication acceptée, c conservé, a/b intégralement publiés.
+    #[test]
+    fn deux_ecrivains_ecriture_independante_acceptee_conservation() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = base(&store);
+
+        let (tx_prepare, rx_prepare) = mpsc::channel::<()>();
+        let (tx_ecrit, rx_ecrit) = mpsc::channel::<()>();
+
+        let s1 = Arc::clone(&store);
+        let h1 = thread::spawn(move || {
+            let pre = s1.capturer_precondition(id, &["a", "b"]).unwrap();
+            let prep = s1
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
+            tx_prepare.send(()).unwrap();
+            rx_ecrit
+                .recv_timeout(Duration::from_secs(5))
+                .expect("borne : attente de l'écriture indépendante");
+            s1.publier_si_precondition_intacte(prep).unwrap()
+        });
+
+        let s2 = Arc::clone(&store);
+        let h2 = thread::spawn(move || {
+            rx_prepare
+                .recv_timeout(Duration::from_secs(5))
+                .expect("borne : attente de la préparation");
+            s2.set_node_property(id, "c", Value::Int64(30));
+            tx_ecrit.send(()).unwrap();
+        });
+
+        let r = h1.join().expect("écrivain conditionnel");
+        h2.join().expect("écrivain historique");
+
+        assert_eq!(r, IssuePublication::PublieIntegrale, "écriture indépendante n'invalide pas");
+        assert_eq!(lire_i64(&store, id, "a"), 10);
+        assert_eq!(lire_i64(&store, id, "b"), 20);
+        assert_eq!(lire_i64(&store, id, "c"), 30, "c conservé malgré le rattachement");
+        eprintln!("CONCUR_1b_OK : écriture indépendante acceptée, c conservé");
+    }
+
+    /// 2 — Changement de tête H0→H1 provoqué par `set_node_property` (remplissage
+    /// d'une page → allocation d'une nouvelle page de tête), PAS par manipulation
+    /// directe du Writer. La publication conditionnelle doit rattacher sa chaîne
+    /// privée à la tête courante et conserver toutes les écritures intermédiaires.
+    #[test]
+    fn changement_de_tete_par_remplissage_via_set_node_property() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let prep = store
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
+            .unwrap();
+
+        let h0 = tete(&store, id);
+        // Remplit la page de tête via le chemin PUBLIC jusqu'à ce qu'une nouvelle
+        // page soit allouée (la tête change). Borne haute : 512 écritures.
+        let mut h1 = h0;
+        let mut i = 0usize;
+        while h1 == h0 && i < 512 {
+            store.set_node_property(id, &format!("bourrage{i}"), Value::Int64(i as i64));
+            h1 = tete(&store, id);
+            i += 1;
+        }
+        assert_ne!(h1, h0, "le remplissage via set_node_property a forcé une nouvelle page de tête");
+        assert!(i > 0, "au moins une écriture de bourrage");
+
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale, "rattachement → publication intégrale");
+        assert_eq!(lire_i64(&store, id, "a"), 10);
+        assert_eq!(lire_i64(&store, id, "b"), 20);
+        assert_eq!(lire_i64(&store, id, "c"), 3, "c de la chaîne H0 conservé");
+        let derniere = i - 1;
+        assert_eq!(
+            lire_i64(&store, id, &format!("bourrage{derniere}")),
+            derniere as i64,
+            "la dernière écriture de bourrage est conservée (pas perdue par le rattachement)"
+        );
+        eprintln!("CONCUR_2_OK : H0→H1 via set_node_property ({i} écritures), rattachement conserve tout");
+    }
+
+    /// 3 — Lecteur concurrent SOUS le verrou d'écriture de nœud (la même autorité
+    /// que prend la publication) : il ne voit que V0=(1,2) ou V1=(10,20), jamais
+    /// le mélange, pendant préparation → publication.
+    #[test]
+    fn lecteur_sous_verrou_noeud_ne_voit_pas_de_melange() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let vus = Arc::new(Mutex::new(Vec::<(i64, i64)>::new()));
+
+        let s_lecteur = Arc::clone(&store);
+        let stop_l = Arc::clone(&stop);
+        let vus_l = Arc::clone(&vus);
+        let lecteur = thread::spawn(move || {
+            let mut dernier = None;
+            while !stop_l.load(Ordering::Acquire) {
+                let (a, b) = {
+                    let _g = s_lecteur.verrou_ecriture_noeud(id).lock();
+                    (lire_i64(&s_lecteur, id, "a"), lire_i64(&s_lecteur, id, "b"))
+                };
+                if dernier != Some((a, b)) {
+                    vus_l.lock().unwrap().push((a, b));
+                    dernier = Some((a, b));
+                }
+                thread::yield_now();
+            }
+        });
+        // En cas de panic du fil principal, le lecteur reçoit l'arrêt et sort.
+        let _arret = RelacheArret(Arc::clone(&stop));
+
+        // publication conditionnelle pendant que le lecteur tourne
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+
+        stop.store(true, Ordering::Release);
+        lecteur.join().expect("lecteur");
+
+        assert_eq!(r, IssuePublication::PublieIntegrale);
+        let vus = vus.lock().unwrap();
+        for &(a, b) in vus.iter() {
+            assert!(
+                (a == 1 && b == 2) || (a == 10 && b == 20),
+                "mélange V0/V1 observé par le lecteur verrouillé : (a={a}, b={b})"
+            );
+        }
+        eprintln!("CONCUR_3_OK : lecteur sous verrou de nœud n'a vu que V0/V1 ; états = {vus:?}");
+    }
+
+    /// 3b — CONTRE-ÉPREUVE documentée : le lecteur historique (`get_node_property`,
+    /// deux lectures séparées, SANS verrou) peut chevaucher la bascule de tête et
+    /// observer le mélange V0/V1. Déterminé par l'ordre des appels, pas un aléa.
+    #[test]
+    fn lecteur_historique_deux_lectures_chevauchent_la_bascule() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+
+        // lecteur historique : lit a AVANT la bascule, puis b APRÈS la bascule
+        let a_avant = lire_i64(&store, id, "a");
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        let b_apres = lire_i64(&store, id, "b");
+
+        assert_eq!(r, IssuePublication::PublieIntegrale);
+        assert_eq!(a_avant, 1, "a lu avant la bascule = V0");
+        assert_eq!(b_apres, 20, "b lu après la bascule = V1");
+        eprintln!(
+            "CONCUR_3b_OK : deux lectures historiques séparées chevauchent la bascule → (a={a_avant}, b={b_apres}) est le mélange V0/V1"
+        );
+    }
+
+    /// 4 — Deux stores simultanés progressent indépendamment : chacun fait sa
+    /// propre publication conditionnelle sur son propre nœud, sans se bloquer.
+    /// (La suspension d'écriture est déjà PAR STORE — champ `suspension` ; on
+    /// vérifie ici qu'aucun verrou GLOBAL ne fige un store à cause de l'autre.)
+    #[test]
+    fn deux_stores_progressent_independamment() {
+        let td_a = tempfile::tempdir().unwrap();
+        let td_b = tempfile::tempdir().unwrap();
+        let store_a = Arc::new(SubstrateStore::create(td_a.path().join("ka")).unwrap());
+        let store_b = Arc::new(SubstrateStore::create(td_b.path().join("kb")).unwrap());
+        let id_a = base(&store_a);
+        let id_b = base(&store_b);
+
+        let (tx_a, rx_a) = mpsc::channel::<IssuePublication>();
+        let (tx_b, rx_b) = mpsc::channel::<IssuePublication>();
+
+        let sa = Arc::clone(&store_a);
+        let ha = thread::spawn(move || {
+            let pre = sa.capturer_precondition(id_a, &["a", "b"]).unwrap();
+            let prep = sa
+                .preparer_transformation(id_a, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+                .unwrap();
+            tx_a.send(sa.publier_si_precondition_intacte(prep).unwrap()).unwrap();
+        });
+        let sb = Arc::clone(&store_b);
+        let hb = thread::spawn(move || {
+            let pre = sb.capturer_precondition(id_b, &["a", "b"]).unwrap();
+            let prep = sb
+                .preparer_transformation(id_b, &[("a", Value::Int64(100)), ("b", Value::Int64(200))], &pre, ModePublication::Lww)
+                .unwrap();
+            tx_b.send(sb.publier_si_precondition_intacte(prep).unwrap()).unwrap();
+        });
+
+        let ra = rx_a.recv_timeout(Duration::from_secs(5)).expect("borne : store A");
+        let rb = rx_b.recv_timeout(Duration::from_secs(5)).expect("borne : store B");
+        ha.join().expect("store A");
+        hb.join().expect("store B");
+
+        assert_eq!(ra, IssuePublication::PublieIntegrale);
+        assert_eq!(rb, IssuePublication::PublieIntegrale);
+        assert_eq!(lire_i64(&store_a, id_a, "a"), 10);
+        assert_eq!(lire_i64(&store_b, id_b, "a"), 100);
+        assert_eq!(lire_i64(&store_a, id_a, "b"), 20);
+        assert_eq!(lire_i64(&store_b, id_b, "b"), 200);
+        eprintln!("CONCUR_4_OK : deux stores progressent indépendamment, sans blocage croisé");
+    }
+}
