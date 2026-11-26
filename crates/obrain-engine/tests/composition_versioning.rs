@@ -2,8 +2,6 @@
 //! arêtes absentes) est détectée — pas de réutilisation silencieuse. Les arêtes
 //! flottantes / occurrences réifiées non rattachées ne sont pas qualifiées.
 
-use std::collections::BTreeSet;
-
 use obrain_common::types::{NodeId, Value};
 use obrain_engine::ObrainDB;
 use obrain_engine::composition::{ChildRef, Composition, KnowledgeSpec, Relation, ResolveError};

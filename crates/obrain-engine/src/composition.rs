@@ -342,7 +342,7 @@ impl<'a> Composition<'a> {
             .properties
             .get(&PropertyKey::from(KEY_REL_TYPE))
             .and_then(|v| v.as_str().map(|s| s.to_string()))
-            .ok_or_else(|| ResolveError::MissingRelationType)?;
+            .ok_or(ResolveError::MissingRelationType)?;
         let role = match node.properties.get(&PropertyKey::from(KEY_ROLE)) {
             None => None,
             Some(v) => match v.as_str() {
@@ -379,8 +379,8 @@ impl<'a> Composition<'a> {
                 _ => {}
             }
         }
-        let src = src.ok_or_else(|| ResolveError::MissingSource)?;
-        let dst = dst.ok_or_else(|| ResolveError::MissingDestination)?;
+        let src = src.ok_or(ResolveError::MissingSource)?;
+        let dst = dst.ok_or(ResolveError::MissingDestination)?;
         Ok(Relation {
             rel_type,
             src,

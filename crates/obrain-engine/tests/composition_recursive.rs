@@ -2,6 +2,9 @@
 //! contextuels et relation interne. Vérifie les références DIRECTES
 //! (identité + multiplicité) PUIS la projection transitive (resolve).
 
+// Noms à un caractère = notation A/B/C/D de l'expérience compositionnelle.
+#![allow(clippy::many_single_char_names)]
+
 use std::collections::BTreeSet;
 
 use obrain_common::types::NodeId;
