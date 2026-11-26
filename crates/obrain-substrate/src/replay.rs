@@ -1696,6 +1696,7 @@ fn apply(
                 apply_engram_states(
                     substrate,
                     engram_members_zone,
+                    engram_weights_zone,
                     engram_bitset_zone,
                     engram_members,
                     engram_bitsets,
@@ -1778,6 +1779,7 @@ fn apply(
             apply_engram_states(
                 substrate,
                 engram_members_zone,
+                engram_weights_zone,
                 engram_bitset_zone,
                 engram_members,
                 engram_bitsets,
@@ -1997,6 +1999,7 @@ fn apply(
 fn apply_engram_states(
     substrate: &SubstrateFile,
     engram_members_zone: &mut Option<ZoneFile>,
+    engram_weights_zone: &mut Option<ZoneFile>,
     engram_bitset_zone: &mut Option<ZoneFile>,
     members: &[(u16, Vec<u32>)],
     bitsets: &[(u32, u64)],
@@ -2005,9 +2008,17 @@ fn apply_engram_states(
         if engram_members_zone.is_none() {
             *engram_members_zone = Some(substrate.open_zone(Zone::EngramMembers)?);
         }
-        let zf = engram_members_zone.as_mut().unwrap();
+        if engram_weights_zone.is_none() {
+            *engram_weights_zone = Some(substrate.open_zone(Zone::EngramWeights)?);
+        }
+        let mz = engram_members_zone.as_mut().unwrap();
+        let wz = engram_weights_zone.as_mut().unwrap();
         for (engram_id, list) in members {
-            crate::engram::EngramZone::set_members_raw(zf, *engram_id, list)?;
+            crate::engram::EngramZone::set_members_raw(mz, *engram_id, list)?;
+            // (V4) Même contrat que le chemin vif (`Writer`), le rejeu du
+            // remap doit ré-attacher les poids LIÉS : sans cela, l'empreinte
+            // périmée rendrait `read_engram_state` → `EngramIncoherent`.
+            crate::engram::EngramZone::rebind_weights_after_remap(wz, *engram_id, list)?;
         }
     }
     if !bitsets.is_empty() {
@@ -3005,5 +3016,69 @@ mod tests {
             "seuls les {fenetre} nœuds de la fenêtre portent la signature de coquille"
         );
         assert_eq!(stats.dangling_prop_anchors, 0, "aucune ancre non nulle ici");
+    }
+
+    /// Le rejeu d'un record `HilbertRepermuteV2` (remap physique des slots)
+    /// doit ré-attacher les poids LIÉS d'un engramme pondéré : sans cela,
+    /// l'empreinte périmée rendrait `read_engram_state` → `EngramIncoherent`
+    /// après reconstruction, et l'engramme serait mis en quarantaine.
+    ///
+    /// Crash simulé entre le fsync du record V2 et la moindre mutation de
+    /// zone (ni permutation, ni états engram, ni epoch confirmé) : le rejeu
+    /// tombe dans le cas 3 du bras et ré-applique permutation + états
+    /// engram, y compris le ré-attachement des poids.
+    #[test]
+    fn replay_remap_rebind_les_poids_lies() {
+        let dir = tempdir().unwrap();
+        let sub_path = dir.path().join("kb");
+        // Bijection totale sur [0, 6), sentinelle épinglée : i → 6 - i.
+        let perm: Vec<u32> = vec![0, 5, 4, 3, 2, 1];
+        let members: Vec<u32> = vec![1, 2, 3];
+        let weights: Vec<f32> = vec![0.25, 0.5, 0.25];
+        let mapped: Vec<u32> = members.iter().map(|&m| perm[m as usize]).collect();
+
+        let baseline;
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            for i in 1..6u32 {
+                w.write_node(i, n(i, 1)).unwrap();
+            }
+            w.set_engram_state(1, members.clone(), weights.clone())
+                .unwrap();
+            w.commit().unwrap();
+            w.msync_zones().unwrap();
+            // Baseline de production : tout ce qui précède est durable ; le
+            // rejeu repartira d'ici (le point exact du flush du store).
+            baseline = w.wal().offset();
+            w.note_durable_baseline(baseline);
+
+            // Record V2 journalisé + fsync, puis « crash ».
+            let rec = WalRecord {
+                lsn: 0,
+                timestamp: 0,
+                flags: 0,
+                payload: WalPayload::HilbertRepermuteV2 {
+                    permutation: perm.clone(),
+                    epoch: 1,
+                    engram_members: vec![(1u16, mapped.clone())],
+                    engram_bitsets: Vec::new(),
+                },
+            };
+            w.wal().append(rec).unwrap();
+            w.wal().fsync().unwrap();
+        }
+
+        let sub = SubstrateFile::open(&sub_path).unwrap();
+        let stats = replay_from(&sub, baseline).unwrap();
+        assert_eq!(stats.decode_errors, 0, "frame indécodable au rejeu");
+        let w = Writer::new(sub, SyncMode::Never).unwrap();
+        let (got_members, got_weights) = w.read_engram_state(1).unwrap().expect("engram disparu");
+        assert_eq!(got_members, mapped, "membres non remappés au rejeu");
+        assert_eq!(
+            got_weights.as_deref(),
+            Some(weights.as_slice()),
+            "poids altérés ou non ré-attachés au rejeu"
+        );
     }
 }

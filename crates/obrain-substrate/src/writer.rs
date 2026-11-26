@@ -2335,9 +2335,21 @@ impl Writer {
         bitset_updates: &[(u32, u64)],
     ) -> SubstrateResult<()> {
         if !member_updates.is_empty() {
-            self.with_engram_zone(|zf| {
+            self.with_engram_state_zones(|mz, wz| {
                 for (engram_id, members) in member_updates {
-                    crate::engram::EngramZone::set_members_raw(zf, *engram_id, members)?;
+                    crate::engram::EngramZone::set_members_raw(mz, *engram_id, members)?;
+                    // (V4) Le remap réécrit les membres : ré-attache les
+                    // poids LIÉS (recalcul de l'empreinte) pour que la
+                    // lecture reste cohérente. Les poids positionnels ne
+                    // changent pas (ordre préservé), seule l'identité des
+                    // membres a changé. Sans cela, l'empreinte périmée
+                    // rendrait `read_engram_state` → `EngramIncoherent`
+                    // et l'engramme serait mis en quarantaine au rechargement.
+                    crate::engram::EngramZone::rebind_weights_after_remap(
+                        wz,
+                        *engram_id,
+                        members,
+                    )?;
                 }
                 Ok(())
             })?;
