@@ -4,9 +4,9 @@
 
 use std::collections::BTreeSet;
 
-use obrain_common::types::NodeId;
+use obrain_common::types::{NodeId, Value};
 use obrain_engine::ObrainDB;
-use obrain_engine::composition::{Composition, KnowledgeSpec, Relation};
+use obrain_engine::composition::{Composition, KnowledgeSpec, Relation, ResolveError};
 
 fn spec(members: &[u64], children: &[u64], relations: &[Relation]) -> KnowledgeSpec {
     KnowledgeSpec {
@@ -87,10 +87,13 @@ fn reconstruction_relationnelle_apres_reouverture() {
     db2.close().unwrap();
 }
 
-/// Corruption ciblée : une occurrence à DEUX sources est refusée (jamais
-/// simplifiée silencieusement en connaissance valide).
+/// Corruption discriminante : une structure VALIDE (vraie clé canonique) est
+/// lue OK, PUIS une 2e source est ajoutée à l'occurrence — l'erreur est
+/// `MultipleSources` (multiplicité), PAS `KeyDivergence`. L'ancien test posait
+/// une clé factice « x » et acceptait n'importe quelle InvalidStructure : il
+/// pouvait passer pour la mauvaise raison (divergence de clé).
 #[test]
-fn corruption_relationnelle_refusee() {
+fn corruption_relationnelle_discriminante() {
     let td = tempfile::tempdir().unwrap();
     let path = td.path().join("kb");
     let db = ObrainDB::open_substrate(&path).unwrap();
@@ -98,26 +101,25 @@ fn corruption_relationnelle_refusee() {
     let a = db.create_node(&["fn"]);
     let b = db.create_node(&["fn"]);
 
+    // Structure VALIDE : vraie clé canonique, arêtes constitutives complètes.
+    let valid = spec(&[a.0, b.0], &[], &[rel("appelle", a.0, b.0, None)]);
     let k = db.create_node(&["structure"]);
-    db.set_node_property(k, "canonical_key", obrain_common::types::Value::from("x"));
+    db.set_node_property(k, "canonical_key", Value::from(valid.structural_key()));
     db.create_edge(k, a, "member");
     db.create_edge(k, b, "member");
     let occ = db.create_node(&["relation_occurrence"]);
-    db.set_node_property(
-        occ,
-        "rel_type",
-        obrain_common::types::Value::from("appelle"),
-    );
+    db.set_node_property(occ, "rel_type", Value::from("appelle"));
     db.create_edge(occ, a, "src");
-    db.create_edge(occ, b, "src"); // DEUX sources — corruption
     db.create_edge(occ, b, "dst");
     db.create_edge(k, occ, "relation");
 
-    assert!(matches!(
-        comp.read_spec(k),
-        Err(obrain_engine::composition::ResolveError::InvalidStructure(
-            _
-        ))
-    ));
+    // Valide : read_spec OK avant corruption.
+    comp.read_spec(k).expect("structure valide lue avant corruption");
+
+    // Corruption ciblée : une 2e source.
+    db.create_edge(occ, b, "src");
+
+    // L'erreur est la MULTIPLICITÉ, pas une divergence de clé.
+    assert_eq!(comp.read_spec(k), Err(ResolveError::MultipleSources));
     db.close().unwrap();
 }

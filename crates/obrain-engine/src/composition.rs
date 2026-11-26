@@ -155,8 +155,22 @@ pub enum ResolveError {
     Cycle(Vec<NodeId>),
     /// Profondeur de résolution dépassée (garde anti-épuisement de pile).
     DepthExceeded,
-    /// Structure incohérente (occurrence mal formée, clé divergente...).
-    InvalidStructure(String),
+    /// Occurrence relationnelle à plusieurs sources.
+    MultipleSources,
+    /// Occurrence relationnelle à plusieurs destinations.
+    MultipleDestinations,
+    /// Occurrence relationnelle sans source.
+    MissingSource,
+    /// Occurrence relationnelle sans destination.
+    MissingDestination,
+    /// Nœud référencé sans label `relation_occurrence`.
+    WrongRelationLabel,
+    /// Occurrence relationnelle sans type.
+    MissingRelationType,
+    /// Rôle présent mais non textuel.
+    NonTextualRole,
+    /// Clé recalculée ≠ clé persistée (corruption ou structure incomplète).
+    KeyDivergence,
 }
 
 /// Interface compositionnelle sur le graphe natif (construire, résoudre).
@@ -273,9 +287,7 @@ impl<'a> Composition<'a> {
         };
         let recomputed = spec.structural_key();
         if self.structural_key_of(id).as_deref() != Some(recomputed.as_str()) {
-            return Err(ResolveError::InvalidStructure(
-                "divergence entre clé recalculée et clé persistée".into(),
-            ));
+            return Err(ResolveError::KeyDivergence);
         }
         Ok(spec)
     }
@@ -287,20 +299,18 @@ impl<'a> Composition<'a> {
             .get_node(occ)
             .ok_or(ResolveError::MissingReference(occ))?;
         if !node.labels.iter().any(|l| l.as_str() == LABEL_RELATION) {
-            return Err(ResolveError::InvalidStructure(
-                "nœud référencé sans label relation_occurrence".into(),
-            ));
+            return Err(ResolveError::WrongRelationLabel);
         }
         let rel_type = node
             .properties
             .get(&PropertyKey::from(KEY_REL_TYPE))
             .and_then(|v| v.as_str().map(|s| s.to_string()))
-            .ok_or_else(|| ResolveError::InvalidStructure("occurrence sans type".into()))?;
+            .ok_or_else(|| ResolveError::MissingRelationType)?;
         let role = match node.properties.get(&PropertyKey::from(KEY_ROLE)) {
             None => None,
             Some(v) => match v.as_str() {
                 Some(s) => Some(s.to_string()),
-                None => return Err(ResolveError::InvalidStructure("rôle non textuel".into())),
+                None => return Err(ResolveError::NonTextualRole),
             },
         };
         let mut src: Option<NodeId> = None;
@@ -313,7 +323,7 @@ impl<'a> Composition<'a> {
             match edge.edge_type.as_str() {
                 EDGE_SRC => {
                     if src.is_some() {
-                        return Err(ResolveError::InvalidStructure("multiples sources".into()));
+                        return Err(ResolveError::MultipleSources);
                     }
                     if self.db.get_node(target).is_none() {
                         return Err(ResolveError::MissingParticipant(target));
@@ -322,9 +332,7 @@ impl<'a> Composition<'a> {
                 }
                 EDGE_DST => {
                     if dst.is_some() {
-                        return Err(ResolveError::InvalidStructure(
-                            "multiples destinations".into(),
-                        ));
+                        return Err(ResolveError::MultipleDestinations);
                     }
                     if self.db.get_node(target).is_none() {
                         return Err(ResolveError::MissingParticipant(target));
@@ -335,9 +343,9 @@ impl<'a> Composition<'a> {
             }
         }
         let src =
-            src.ok_or_else(|| ResolveError::InvalidStructure("occurrence sans source".into()))?;
+            src.ok_or_else(|| ResolveError::MissingSource)?;
         let dst = dst
-            .ok_or_else(|| ResolveError::InvalidStructure("occurrence sans destination".into()))?;
+            .ok_or_else(|| ResolveError::MissingDestination)?;
         Ok(Relation {
             rel_type,
             src,
