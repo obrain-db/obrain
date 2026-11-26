@@ -32,7 +32,16 @@ pub use types::*;
 #[cfg(feature = "engram")]
 mod store;
 #[cfg(feature = "engram")]
-pub use store::{EngramStore, StoreError};
+pub use store::{EngramStore, LoadReport, RejectCause, StoreError};
+
+#[cfg(feature = "engram")]
+mod observation;
+#[cfg(feature = "engram")]
+pub use observation::{
+    AbandonOutcome, AtomicEventLedger, CognitiveObservationAdapter, InMemoryAtomicEventLedger,
+    LedgerOutcome, ObservationDefinition, ObservationId, ObservationOutcome, ResolvedState,
+    ResultingState, SourceRevision,
+};
 
 #[cfg(feature = "engram")]
 mod formation;

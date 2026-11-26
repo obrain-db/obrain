@@ -25,6 +25,7 @@ gds-refresh = ["fabric", "dep:obrain-adapters"]
 
 # Engram subsystem (Layer 0: Hebbian + FSRS)
 engram = []
+fault-injection = []
 
 # Stigmergy (Layer 2: diffuse memory on edges)
 stigmergy = []

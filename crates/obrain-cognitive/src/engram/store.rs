@@ -44,6 +44,7 @@ use super::types::{Engram, EngramId};
 use obrain_substrate::{
     SubstrateError, SubstrateResult, Writer as SubstrateWriter, engram_bit_mask,
 };
+#[cfg(feature = "substrate")]
 use parking_lot::RwLock as PlRwLock;
 
 /// Label used for engram nodes in the backing graph store.
@@ -89,6 +90,30 @@ pub struct EngramStore {
     /// Optional substrate writer for side-table + bitset mirror (T7 Step 2).
     #[cfg(feature = "substrate")]
     substrate: PlRwLock<Option<Arc<SubstrateWriter>>>,
+    /// Injection de faute (test) : fait échouer `add_engram_bit` APRÈS un
+    /// `set_engram_state` réussi — reproduit l'écriture partielle du substrat.
+    #[cfg(feature = "fault-injection")]
+    fail_bit_after_state: std::sync::atomic::AtomicBool,
+    /// Injection de faute (test) : fait échouer la RÉPARATION au chargement
+    /// (`ensure_engram_bit`) — reproduit un échec d'écriture du bitset pendant
+    /// le balayage, qui laisse l'engramme DÉGRADÉ (bit manquant). Feature
+    /// DÉDIÉE, absente de la production.
+    #[cfg(feature = "fault-injection")]
+    fail_repair_bit: std::sync::atomic::AtomicBool,
+    /// Injection de faute (test) : fait échouer la MATÉRIALISATION dans le
+    /// cache (`revise_with_id`, après l'application au registre) — expose
+    /// l'incohérence registre-Appliqué / store-non-matérialisé.
+    #[cfg(feature = "fault-injection")]
+    fail_materialise: std::sync::atomic::AtomicBool,
+    /// Injection (test) : la prochaine matérialisation rend `Conflict`
+    /// (connaissance avancée hors verrou), au lieu d'appliquer.
+    #[cfg(feature = "fault-injection")]
+    fail_materialize_conflict: std::sync::atomic::AtomicBool,
+    /// Registre des engrammes dont une projection (bitset) est dégradée.
+    /// Sert au repli du rappel natif sur l'état canonique. Effacé à chaque
+    /// chargement : reflète l'état courant, pas une seconde autorité.
+    #[cfg(feature = "substrate")]
+    degraded: PlRwLock<HashSet<EngramId>>,
 }
 
 impl std::fmt::Debug for EngramStore {
@@ -103,12 +128,66 @@ impl std::fmt::Debug for EngramStore {
     }
 }
 
+/// Bilan structuré d'un chargement depuis le substrate : distingue les
+/// engrammes cohérents, les états canoniques valides dont une projection est
+/// dégradée, et les états canoniques invalides écartés (id réservés).
+/// Cause d'un rejet d'engramme au chargement : distingue corruption locale
+/// (lecture), incohérence de longueurs, et échec de validation canonique.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RejectCause {
+    /// Erreur de LECTURE locale d'un engramme (corruption de son entrée).
+    ReadError(String),
+    /// Longueurs incohérentes entre membres et poids.
+    InconsistentWeights {
+        /// Nombre de membres lus.
+        members: usize,
+        /// Nombre de poids lus.
+        weights: usize,
+    },
+    /// Échec de validation canonique (doublon, valeur non représentable…).
+    Validation(String),
+}
+
+/// Bilan structuré d'un chargement depuis le substrate : cohérents, dégradés
+/// (projection bitset incomplète), rejetés (id + cause), et défaillance globale.
+#[derive(Debug, Clone, Default)]
+pub struct LoadReport {
+    /// Nombre d'engrammes chargés cohérents.
+    pub coherent: usize,
+    /// Engrammes chargés dont la projection bitset reste dégradée (id, cause).
+    pub degraded: Vec<(EngramId, String)>,
+    /// Engrammes rejetés, avec leur identifiant ET la cause.
+    pub rejected: Vec<(EngramId, RejectCause)>,
+    /// Défaillance GLOBALE de la zone d'engrammes (magic/version/taille
+    /// invalides) : le chargement s'est arrêté SANS balayer les 65 535
+    /// identifiants. En sa présence, `rejected` est VIDE (une zone morte n'est
+    /// pas un rejet individuel par identifiant — cela épuiserait l'espace
+    /// d'identifiants). Une défaillance globale n'est JAMAIS présentée comme
+    /// un chargement sain.
+    pub global_failure: Option<String>,
+}
+
+/// Issue d'une matérialisation d'observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterializeOutcome {
+    /// Contenu + révision écrits ensemble.
+    Applied,
+    /// La connaissance a avancé : conflit qualifié, rien n'est écrit.
+    Conflict {
+        /// Révision EFFECTIVEMENT courante de la connaissance.
+        current_revision: u64,
+    },
+}
+
 /// Erreur de mutation du store : distingue absence et échec de persistance
 /// (au lieu d'un échec silencieux journalisé).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
+    /// L'engramme demandé n'existe pas.
     EngramAbsent(EngramId),
+    /// Le candidat a échoué la validation canonique.
     ValidationFailed(String),
+    /// Échec de la persistance (miroir substrat, stockage…).
     PersistenceFailed(String),
 }
 
@@ -129,7 +208,77 @@ impl EngramStore {
             projection: PlRwLock::new(None),
             #[cfg(feature = "substrate")]
             substrate: PlRwLock::new(None),
+            #[cfg(feature = "substrate")]
+            degraded: PlRwLock::new(HashSet::new()),
+            #[cfg(feature = "fault-injection")]
+            fail_bit_after_state: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "fault-injection")]
+            fail_repair_bit: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "fault-injection")]
+            fail_materialise: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "fault-injection")]
+            fail_materialize_conflict: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Injection de faute (test) : TANT QUE ce drapeau est actif, le miroir
+    /// retourne une erreur APRÈS `set_engram_state` et AVANT le premier appel
+    /// réel à `add_engram_bit` — reproduit l'écriture partielle du substrat
+    /// (membres+poids persistés, bitset non posé). Feature DÉDIÉE, absente de
+    /// la production. Le drapeau reste actif jusqu'à désactivation explicite.
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn set_fail_bit_after_state(&self, fail: bool) {
+        self.fail_bit_after_state
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Injection de faute (test) : TANT QUE ce drapeau est actif, la
+    /// RÉPARATION du bitset au chargement (`ensure_engram_bit`) échoue —
+    /// l'engramme est chargé avec une projection DÉGRADÉE (bit manquant), ce
+    /// qui exerce le repli du rappel natif sur l'état canonique. Feature
+    /// DÉDIÉE, absente de la production.
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn set_fail_repair_bit(&self, fail: bool) {
+        self.fail_repair_bit
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Injection de faute (test) : TANT QUE ce drapeau est actif, `mutate`
+    /// échoue AVANT de committer le candidat au cache — reproduit l'échec de
+    /// matérialisation APRÈS que le registre d'observation a dit `Applied`.
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn set_fail_materialise(&self, fail: bool) {
+        self.fail_materialise
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Vrai si la faute de matérialisation est armée (consommée par le manager).
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn set_fail_materialize_conflict(&self, fail: bool) {
+        self.fail_materialize_conflict
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Vrai si la faute de conflit de matérialisation est armée (consommée).
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn take_fail_materialize_conflict(&self) -> bool {
+        self.fail_materialize_conflict
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Vrai si la faute de matérialisation est armée (consommée).
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fn take_fail_materialise(&self) -> bool {
+        self.fail_materialise
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Attach a substrate writer. After this call every subsequent
@@ -199,7 +348,6 @@ impl EngramStore {
         props
     }
 
-    /// Inserts an engram into the cache and writes through to storage.
     /// Injecte la projection (signature = f(ensemble)). N'impose AUCUN encodeur
     /// particulier : toute projection future peut s'y brancher. Sans projection,
     /// le store reste neutre (aucun recalcul).
@@ -221,6 +369,7 @@ impl EngramStore {
         }
     }
 
+    /// Inserts an engram into the cache and writes through to storage.
     pub fn insert(&self, mut engram: Engram) {
         self.apply_projection(&mut engram);
         self.revision.fetch_add(1, Ordering::Relaxed);
@@ -356,11 +505,25 @@ impl EngramStore {
     /// 1..=65535 (les slots vides sont des `None` rapides) et réhydrate
     /// le cache. La signature spectrale est re-encodée au prochain rappel.
     #[cfg(feature = "substrate")]
-    pub fn load_from_substrate(&self) -> usize {
+    pub fn load_from_substrate(&self) -> LoadReport {
+        let mut report = LoadReport::default();
         let Some(writer) = self.substrate_writer() else {
-            return 0;
+            return report;
         };
-        let mut loaded = 0usize;
+        // NOTE (convergence #418) : le contrôle de défaillance GLOBALE
+        // (`Writer::validate_engram_zones`) n'est PAS encore disponible dans le
+        // substrat de cette branche (primitive #418, portée par T6/T4). Le champ
+        // `global_failure` reste donc toujours `None` : une zone morte serait
+        // balayée identifiant par identifiant (rejets locaux) au lieu d'être
+        // refusée d'un bloc.
+        // CONTRAT DE CONCURRENCE (publication registre+cache au chargement) :
+        // le registre dégradé est construit dans un ensemble LOCAL pendant le
+        // balayage, puis publié d'un bloc à la fin (swap atomique). Jamais un
+        // état intermédiaire « effacé puis repeuplé progressivement »
+        // observable : un recall() concurrent pendant le chargement voit
+        // l'ANCIEN registre jusqu'au swap final, puis le NOUVEAU. Le cache,
+        // lui, croît de façon monotone (même contrat que load_from_graph).
+        let mut degraded_local: HashSet<EngramId> = HashSet::new();
         let mut max_id: u64 = 0;
         for eid_u16 in 1u16..=u16::MAX {
             // Lecture COHÉRENTE membres+poids sous un même verrou (pas de
@@ -377,6 +540,10 @@ impl EngramStore {
                         "état d'engramme illisible : identifiant réservé, engramme en quarantaine"
                     );
                     max_id = max_id.max(eid_u16 as u64);
+                    report.rejected.push((
+                        EngramId(eid_u16 as u64),
+                        RejectCause::ReadError(e.to_string()),
+                    ));
                     continue;
                 }
             };
@@ -408,17 +575,63 @@ impl EngramStore {
                         poids = ws.len(),
                         "incohérence membres/poids : engramme en quarantaine (aucun poids inventé)"
                     );
+                    report.rejected.push((
+                        EngramId(eid_u16 as u64),
+                        RejectCause::InconsistentWeights {
+                            members: members.len(),
+                            weights: ws.len(),
+                        },
+                    ));
                     continue;
                 }
             };
             let mut engram = Engram::new(eid, ensemble);
+            // VALIDATION de l'état canonique AVANT toute réparation/publication :
+            // unicité des membres + poids finis (validate_candidate). Un état
+            // invalide est écarté (id déjà réservé), pas réparé ni publié.
+            if let Err(e) = self.validate_candidate(&engram) {
+                tracing::error!(engram_id = eid_u16, error = ?e, "engramme invalide au chargement : écarté");
+                report
+                    .rejected
+                    .push((eid, RejectCause::Validation(format!("{:?}", e))));
+                continue;
+            }
+            // RÉPARATION des projections : reconstruire le bitset depuis les
+            // membres validés, sans écriture inutile (add_engram_bit OR idempotent si
+            // le bit est déjà posé). Un échec marque la projection DÉGRADÉE mais
+            // l'état canonique reste valide et publié.
+            let mut degraded: Option<String> = None;
+            for (nid, _) in &engram.ensemble {
+                #[cfg(feature = "fault-injection")]
+                let repair = if self
+                    .fail_repair_bit
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    Err(SubstrateError::WalBadFrame(
+                        "injected add_engram_bit failure (repair)".into(),
+                    ))
+                } else {
+                    writer.add_engram_bit(nid.0 as u32, eid_u16)
+                };
+                #[cfg(not(feature = "fault-injection"))]
+                let repair = writer.add_engram_bit(nid.0 as u32, eid_u16);
+                if let Err(e) = repair {
+                    tracing::error!(engram_id = eid_u16, node_id = nid.0, error = %e, "projection bitset dégradée");
+                    degraded = Some(e.to_string());
+                }
+            }
             // Signature spectrale : re-encodée paresseusement par le manager
             // (le rappel spectral l'utilise ; ici on la laisse vide, le
             // vecteur index sera ré-upserté au prochain `recall`).
             engram.spectral_signature = Vec::new();
             self.cache.insert(eid, engram);
             max_id = max_id.max(eid.0);
-            loaded += 1;
+            if let Some(cause) = degraded {
+                report.degraded.push((eid, cause));
+                degraded_local.insert(eid);
+            } else {
+                report.coherent += 1;
+            }
         }
         // Avance le compteur d'ids au-dessus du max chargé.
         if max_id > 0 {
@@ -437,8 +650,11 @@ impl EngramStore {
         // cache rendait donc l'état D'AVANT le chargement : les engrams chargés
         // étaient invisibles jusqu'à la mutation suivante. On incrémente ici,
         // comme partout ailleurs où le contenu change.
+        // Publication ATOMIQUE du registre dégradé (remplacement d'un bloc) :
+        // aucun lecteur ne voit un registre à moitié repeuplé.
+        *self.degraded.write() = degraded_local;
         self.revision.fetch_add(1, Ordering::Relaxed);
-        loaded
+        report
     }
 
     /// Returns a snapshot of all engrams currently in the cache.
@@ -524,7 +740,10 @@ impl EngramStore {
     ///    collisions are filtered out here.
     ///
     /// Returns the verified engram ids in ascending order. An empty
-    /// bitset short-circuits to an empty result.
+    /// bitset (== 0) short-circuits to an empty result : c'est une ABSENCE
+    /// légitime (aucun engramme ne revendique le nœud), pas une erreur.
+    /// Une erreur de LECTURE du bitset (zone corrompue) est PROPAGÉE en
+    /// `Err` — jamais assimilée à une absence normale de connaissance.
     #[cfg(feature = "substrate")]
     pub fn recall(&self, query_nid: NodeId) -> SubstrateResult<Vec<EngramId>> {
         let writer = self
@@ -534,29 +753,44 @@ impl EngramStore {
             SubstrateError::WalBadFrame("node id overflows u32 substrate addressing".into())
         })?;
         let bitset = writer.engram_bitset(nid_u32)?;
-        if bitset == 0 {
-            return Ok(Vec::new());
-        }
-
-        // Two-tier filter: collect cached engrams whose bit is set, then
-        // verify via the substrate members snapshot.
         let mut candidates: Vec<EngramId> = Vec::new();
-        for entry in &self.cache {
-            let eid = *entry.key();
-            let Some(eid_u16) = Self::engram_id_to_u16(eid) else {
-                continue;
-            };
-            if bitset & engram_bit_mask(eid_u16) == 0 {
-                continue;
+        if bitset != 0 {
+            // Two-tier filter: collect cached engrams whose bit is set, then
+            // verify via the substrate members snapshot.
+            for entry in &self.cache {
+                let eid = *entry.key();
+                let Some(eid_u16) = Self::engram_id_to_u16(eid) else {
+                    continue;
+                };
+                if bitset & engram_bit_mask(eid_u16) == 0 {
+                    continue;
+                }
+                // Bitset says "maybe" — verify against the members table.
+                match writer.engram_members(eid_u16)? {
+                    Some(members) if members.contains(&nid_u32) => candidates.push(eid),
+                    _ => {}
+                }
             }
-            // Bitset says "maybe" — verify against the members table.
-            match writer.engram_members(eid_u16)? {
-                Some(members) if members.contains(&nid_u32) => candidates.push(eid),
-                _ => {}
+        }
+        // Repli sur l'état canonique des engrammes DÉGRADÉS (bitset incomplet) :
+        // l'appartenance est vérifiée sur l'ensemble pondéré, même si le bit
+        // manque. Ne présente pas une projection dégradée comme une absence.
+        for eid in self.degraded.read().iter() {
+            if let Some(engram) = self.cache.get(eid)
+                && engram.ensemble.iter().any(|(n, _)| *n == query_nid)
+                && !candidates.contains(eid)
+            {
+                candidates.push(*eid);
             }
         }
         candidates.sort_by_key(|eid| eid.0);
         Ok(candidates)
+    }
+
+    /// Engrammes dont une projection (bitset) est dégradée.
+    #[cfg(feature = "substrate")]
+    pub fn degraded_engrams(&self) -> Vec<EngramId> {
+        self.degraded.read().iter().copied().collect()
     }
 
     /// Read the members snapshot for `eid` directly from the substrate
@@ -621,17 +855,18 @@ impl EngramStore {
     /// verrou d'entrée du cache, persiste membres+poids (substrate) et
     /// write-through DANS la même section critique, puis n'incrémente la
     /// révision qu'APRÈS. Propage les erreurs de persistance.
-    pub fn mutate(
-        &self,
-        id: EngramId,
-        f: impl FnOnce(&mut Engram),
-    ) -> Result<(), StoreError> {
+    pub fn mutate(&self, id: EngramId, f: impl FnOnce(&mut Engram)) -> Result<(), StoreError> {
         let Some(mut entry) = self.cache.get_mut(&id) else {
             return Err(StoreError::EngramAbsent(id));
         };
         // ÉTAT CANDIDAT : clone, applique, valide — SANS muter l'état publié.
         let mut candidate = entry.value().clone();
         f(&mut candidate);
+        // RÉVISION CANONIQUE : toute mutation qui change l'état avance la
+        // révision de CETTE connaissance (autorité unique du contrat
+        // d'observation, quel que soit le chemin : revise, revise_with_id,
+        // mutate, formation, update...).
+        candidate.revision = candidate.revision.saturating_add(1);
         // CONTRAT DE PROJECTION : recalcul (POIDS COMPRIS), pas de comparaison
         // de vecteurs. La signature est toujours dérivée de l'ensemble final.
         self.apply_projection(&mut candidate);
@@ -663,6 +898,95 @@ impl EngramStore {
         Ok(())
     }
 
+    /// MATÉRIALISE l'état canonique d'une observation, sous le verrou qui
+    /// protège la mutation, avec CONTRÔLE ATOMIQUE de la précondition :
+    /// `expected_revision` doit être la révision COURANTE, sinon la connaissance
+    /// a avancé et l'on rend `Conflict` (jamais d'écrasement d'un état plus
+    /// récent par un candidat calculé sur une révision périmée).
+    ///
+    /// Le contenu ET la révision avancent ENSEMBLE ; la signature spectrale est
+    /// remplacée (plus de projection périmée).
+    #[allow(clippy::too_many_arguments)]
+    pub fn materialize_state(
+        &self,
+        id: EngramId,
+        expected_revision: u64,
+        ensemble: Vec<(NodeId, f64)>,
+        strength: f64,
+        recall_count: u32,
+        spectral_signature: Vec<f64>,
+        new_revision: u64,
+    ) -> Result<MaterializeOutcome, StoreError> {
+        let Some(mut entry) = self.cache.get_mut(&id) else {
+            return Err(StoreError::EngramAbsent(id));
+        };
+        let live = entry.value().revision;
+        // Injection (test) : conflit DÉTERMINISTE (connaissance avancée hors
+        // verrou). L'effet a déjà été enregistré au registre.
+        #[cfg(feature = "fault-injection")]
+        if self.take_fail_materialize_conflict() {
+            return Ok(MaterializeOutcome::Conflict {
+                current_revision: live.saturating_add(1),
+            });
+        }
+        if live != expected_revision {
+            return Ok(MaterializeOutcome::Conflict {
+                current_revision: live,
+            });
+        }
+        if new_revision <= expected_revision {
+            return Err(StoreError::ValidationFailed(format!(
+                "révision non croissante : {new_revision} ≤ {expected_revision}"
+            )));
+        }
+        let mut candidate = entry.value().clone();
+        candidate.ensemble = ensemble;
+        candidate.strength = strength;
+        candidate.recall_count = recall_count;
+        candidate.spectral_signature = spectral_signature;
+        candidate.revision = new_revision;
+        self.validate_candidate(&candidate)?;
+        #[cfg(feature = "substrate")]
+        self.mirror_substrate_insert(&candidate)?;
+        *entry.value_mut() = candidate;
+        drop(entry);
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        Ok(MaterializeOutcome::Applied)
+    }
+
+    /// RÉPARATION : n'écrit que si la connaissance est EN RETARD sur la révision
+    /// enregistrée. Ne régresse jamais et n'écrase jamais un état plus récent.
+    /// Rend `true` si une réparation a eu lieu.
+    pub fn repair_state(
+        &self,
+        id: EngramId,
+        recorded_revision: u64,
+        ensemble: Vec<(NodeId, f64)>,
+        strength: f64,
+        recall_count: u32,
+        spectral_signature: Vec<f64>,
+    ) -> Result<bool, StoreError> {
+        let Some(mut entry) = self.cache.get_mut(&id) else {
+            return Err(StoreError::EngramAbsent(id));
+        };
+        if entry.value().revision >= recorded_revision {
+            return Ok(false);
+        }
+        let mut candidate = entry.value().clone();
+        candidate.ensemble = ensemble;
+        candidate.strength = strength;
+        candidate.recall_count = recall_count;
+        candidate.spectral_signature = spectral_signature;
+        candidate.revision = recorded_revision;
+        self.validate_candidate(&candidate)?;
+        #[cfg(feature = "substrate")]
+        self.mirror_substrate_insert(&candidate)?;
+        *entry.value_mut() = candidate;
+        drop(entry);
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        Ok(true)
+    }
+
     /// Validation d'un candidat AVANT mutation : représentabilité u16/u32 et
     /// poids finis. Aucun chemin silencieux.
     fn validate_candidate(&self, e: &Engram) -> Result<(), StoreError> {
@@ -675,7 +999,9 @@ impl EngramStore {
                 return Err(StoreError::ValidationFailed(format!("poids non fini: {w}")));
             }
             if !seen.insert(*n) {
-                return Err(StoreError::ValidationFailed(format!("membre dupliqué: {n:?}")));
+                return Err(StoreError::ValidationFailed(format!(
+                    "membre dupliqué: {n:?}"
+                )));
             }
         }
         Ok(())
@@ -696,7 +1022,9 @@ impl EngramStore {
         let mut weights = Vec::with_capacity(engram.ensemble.len());
         for (n, w) in &engram.ensemble {
             let Some(nu32) = Self::node_id_to_u32(*n) else {
-                return Err(StoreError::ValidationFailed(format!("NodeId non-u32: {n:?}")));
+                return Err(StoreError::ValidationFailed(format!(
+                    "NodeId non-u32: {n:?}"
+                )));
             };
             let wf32 = *w as f32;
             if !wf32.is_finite() {
@@ -712,11 +1040,26 @@ impl EngramStore {
         writer
             .set_engram_state(eid_u16, members.clone(), weights)
             .map_err(|e| StoreError::PersistenceFailed(e.to_string()))?;
+        // Point d'injection : échec AVANT add_engram_bit, après set_engram_state.
+        #[cfg(feature = "fault-injection")]
+        if self
+            .fail_bit_after_state
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(StoreError::PersistenceFailed(
+                "injected add_engram_bit failure".into(),
+            ));
+        }
         for nid in &members {
             writer
                 .add_engram_bit(*nid, eid_u16)
                 .map_err(|e| StoreError::PersistenceFailed(e.to_string()))?;
         }
+        // Miroir complet RÉUSSI (membres + tous les bits posés) : la projection
+        // n'est plus dégradée. On efface le marqueur — le registre dégradé ne
+        // devient jamais une autorité périmée qui survivrait à une réparation
+        // effective.
+        self.degraded.write().remove(&engram.id);
         Ok(())
     }
 
@@ -725,6 +1068,9 @@ impl EngramStore {
     /// false positives resolved by `recall` via the members lookup.
     #[cfg(feature = "substrate")]
     fn mirror_substrate_remove(&self, id: EngramId) {
+        // L'engramme disparaît : son éventuel marqueur dégradé n'a plus lieu
+        // d'être (pas de registre périmé pointant vers un id disparu).
+        self.degraded.write().remove(&id);
         let Some(writer) = self.substrate_writer() else {
             return;
         };
@@ -836,5 +1182,36 @@ mod tests {
         let c = store.next_id();
         assert!(a.0 < b.0);
         assert!(b.0 < c.0);
+    }
+}
+
+#[cfg(test)]
+mod tests_rehydratation {
+    use super::*;
+
+    /// `rehydrate_signature` reconstruit la projection DÉRIVÉE (signature
+    /// spectrale) sans muter l'état canonique : elle invalide le cache
+    /// Hopfield (révision +1) mais ne déclenche aucun write-through. Un id
+    /// absent est un no-op silencieux.
+    #[test]
+    fn rehydrate_signature_reconstruit_la_projection_sans_reviser_l_engramme() {
+        let store = EngramStore::new(None);
+        let id = store.next_id();
+        store.insert(Engram::new(id, vec![(NodeId(1), 1.0), (NodeId(2), 0.5)]));
+        let rev_avant = store.revision();
+
+        let sig = vec![0.1, 0.2, 0.3];
+        store.rehydrate_signature(id, sig.clone());
+        assert_eq!(store.get(id).unwrap().spectral_signature, sig);
+        assert_eq!(
+            store.revision(),
+            rev_avant + 1,
+            "le cache Hopfield est invalidé"
+        );
+
+        // Id absent : no-op, sans panique ni révision supplémentaire.
+        let rev_apres = store.revision();
+        store.rehydrate_signature(EngramId(999_999), vec![9.9]);
+        assert_eq!(store.revision(), rev_apres);
     }
 }

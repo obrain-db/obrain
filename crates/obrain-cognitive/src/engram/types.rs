@@ -77,6 +77,13 @@ pub struct Engram {
     /// Number of times this engram has been recalled.
     pub recall_count: u32,
 
+    /// Revision canonique PERSISTANTE de CETTE connaissance (autorite unique du
+    /// contrat d identite d observation). Avancee par toute mutation qui change
+    /// l etat canonique (voir EngramStore::mutate). serde(default) = 0 pour
+    /// les engrams anterieurs au champ.
+    #[serde(default)]
+    pub revision: u64,
+
     /// Source databases that contributed nodes to this engram's ensemble.
     /// When an engram is formed from nodes across multiple knowledge bases,
     /// this tracks which databases were involved (e.g., ["megalaw", "chess-kb"]).
@@ -121,6 +128,7 @@ impl Engram {
             last_activated: now,
             fsrs_state: FsrsState::default(),
             recall_count: 0,
+            revision: 0,
             db_sources: Vec::new(),
             structural_key: None,
             structural_key_stale: false,
