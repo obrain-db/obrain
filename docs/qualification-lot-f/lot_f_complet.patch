@@ -1,0 +1,266 @@
+diff --git i/crates/obrain-substrate/src/store.rs w/crates/obrain-substrate/src/store.rs
+index aec05190..62ea5b22 100644
+--- i/crates/obrain-substrate/src/store.rs
++++ w/crates/obrain-substrate/src/store.rs
+@@ -48925,13 +48925,15 @@ mod publication_conditionnelle_native {
+         eprintln!("COPIE_OK : la copie de base résout la référence (writer_id+horloge = tentative, pas base)");
+     }
+ 
+-    /// P0 — CONTRE-ÉPREUVE DISCRIMINANTE : interleaving DÉTERMINISTE entre les
+-    /// observations des deux clés. V0=(a=10,b=20) publié, référence cible (a,b).
+-    /// La résolution suspend après la PREMIÈRE clé (hook) ; une mutation V1=(30,40)
+-    /// tente de publier pendant la suspension. L'implémentation COHÉRENTE tient le
+-    /// verrou pendant TOUTE la résolution → V1 est BLOQUÉE → les deux estampilles
+-    /// restent V0 (jamais un mélange d'un état jamais publié). L'ancienne (verrou
+-    /// par clé) aurait laissé V1 s'intercaler → mélange V0/V1.
++    /// P0 — CONTRE-ÉPREUVE DISCRIMINANTE (protocole try_lock) : interleaving
++    /// DÉTERMINISTE entre les observations des deux clés. V0=(a=10,b=20) publié,
++    /// référence cible (a,b). La résolution suspend après la PREMIÈRE clé (hook) ;
++    /// pendant la suspension, la mutation V1 SONDE le verrou de nœud par
++    /// `try_lock()` (sans bloquer, sans sleep). L'implémentation COHÉRENTE tient
++    /// le verrou pendant TOUTE la résolution → try_lock ÉCHOUE (None) → les deux
++    /// estampilles restent V0. L'ancienne (verrou par clé) laisse le verrou LIBRE
++    /// entre les clés → try_lock RÉUSSIT (Some) → le test est ROUGE. Le verrou
++    /// acquis est libéré immédiatement.
+     #[test]
+     fn resolution_multi_cles_interleaving_deterministe() {
+         let td = tempfile::tempdir().unwrap();
+@@ -48952,7 +48954,21 @@ mod publication_conditionnelle_native {
+         let resolvant = std::thread::spawn(move || store2.resoudre_reference(&ref_resolvant).unwrap());
+         store.suspension.attendre_suspension();
+ 
+-        // mutation V1 tente de publier PENDANT la suspension
++        // SONDE DÉTERMINISTE (sans sleep ni try_recv) : pendant la suspension,
++        // la mutation V1 tente le verrou de nœud SANS bloquer. Implémentation
++        // COHÉRENTE → verrou DÉTENU par la résolution → try_lock échoue (None).
++        // Ancienne (verrou par clé) → verrou LIBRE entre les clés → try_lock
++        // réussit (Some). Libère immédiatement si le verrou a été acquis.
++        let sonde = store.verrou_ecriture_noeud(id).try_lock();
++        let verrou_detenu = sonde.is_none();
++        drop(sonde);
++        assert!(
++            verrou_detenu,
++            "verrou de nœud DÉTENU pendant TOUTE la résolution → instantané cohérent (try_lock échoue)"
++        );
++
++        // mutation V1 : publie APRÈS la libération du verrou (bloquée sur le
++        // verrou de nœud dans l'implémentation cohérente)
+         let store3 = Arc::clone(&store);
+         let (tx, rx) = std::sync::mpsc::channel();
+         let mutant = std::thread::spawn(move || {
+@@ -48963,23 +48979,33 @@ mod publication_conditionnelle_native {
+             let r = store3.publier_si_precondition_intacte(prep1).unwrap();
+             tx.send(r).unwrap();
+         });
+-        // pendant la suspension, V1 ne doit PAS avoir publié (bloquée sur le verrou)
+-        std::thread::sleep(std::time::Duration::from_millis(80));
+-        assert!(
+-            rx.try_recv().is_err(),
+-            "la mutation V1 est BLOQUÉE pendant la résolution cohérente"
+-        );
++
+         store.suspension.relacher();
+         let res = resolvant.join().unwrap();
+-        let _ = rx.recv().unwrap();
++        let r1 = rx.recv().unwrap();
+         mutant.join().unwrap();
+ 
++        // POSITIF : V1 a publié APRÈS la libération du verrou — la valeur
++        // canonique finale est V1 (30/40), pas V0.
++        assert_eq!(r1, IssuePublication::PublieIntegrale, "V1 publiée intégralement après libération");
++        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(30)));
++        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(40)));
++
+         // DISCRIMINANT : les deux clés portent la MÊME estampille courante (V0)
+         let s0 = res.par_cle[0].estampille_courante;
+         let s1 = res.par_cle[1].estampille_courante;
+         assert_eq!(s0, s1, "jamais un mélange de deux états qui n'ont pas coexisté");
+         assert_eq!(s0, Some((reference.auteur(), reference.horloge())), "V0, pas V1");
+-        eprintln!("INTERLEAVING_OK : V1 bloquée, instantané cohérent V0 pour les deux clés");
++
++        // ESTAMPILLES OBSERVÉES : V0 (résolue, les deux clés) puis V1 (canonique finale).
++        let stamp_v0 = (reference.auteur(), reference.horloge());
++        let stamp_v1_final = {
++            let s = stamp(&store, id, "a");
++            (s.auteur, s.horloge)
++        };
++        eprintln!("ESTAMPILLES V0={stamp_v0:?} V1_finale={stamp_v1_final:?}");
++        assert_ne!(stamp_v1_final, stamp_v0, "V1 a masqué V0 (estampille distincte)");
++        eprintln!("INTERLEAVING_OK : try_lock échoue (verrou détenu), instantané V0 cohérent, V1 publiée après libération");
+     }
+ 
+     /// P0 — OBSERVATION VALEUR+ESTAMPILLE sous UNE lecture : `resoudre_reference`
+diff --git i/crates/obrain-substrate/tests/resolution_h3_kill9.rs w/crates/obrain-substrate/tests/resolution_h3_kill9.rs
+index 18bc9c5b..5eb24922 100644
+--- i/crates/obrain-substrate/tests/resolution_h3_kill9.rs
++++ w/crates/obrain-substrate/tests/resolution_h3_kill9.rs
+@@ -2,6 +2,19 @@
+ //! publication en sous-processus, `kill -9` avant/après la bascule, réouverture
+ //! en processus indépendant, résolution SANS republier. `Indetermine` ne devient
+ //! jamais une absence définitive.
++//!
++//! TROIS INTERRUPTIONS DISTINGUÉES :
++//! 1. INTERRUPTION DE PROCESSUS (testée) — `kill -9` à un point arbitraire du
++//!    déroulement (avant bascule / après bascule), la base est rouverte en
++//!    processus indépendant et l'état est relu/contrôlé.
++//! 2. INTERRUPTION AU POINT DE SCELLEMENT (non testée ici) — un `kill -9` PENDANT
++//!    le scellement WAL (`seal_commit`) est une fenêtre différente : on ne la
++//!    qualifie pas dans ce banc (le marqueur `closed` est posé APRÈS `close()`,
++//!    jamais pendant).
++//! 3. PERTE ÉLECTRIQUE (NON revendiquée) — `ecrire_fichier` est un tmp+rename
++//!    SANS fsync : la visibilité entre processus vient du cache de pages partagé,
++//!    pas d'une durabilité physique. La résistance à la coupure électrique n'est
++//!    pas qualifiée ici.
+ 
+ use std::os::unix::process::ExitStatusExt;
+ use std::path::{Path, PathBuf};
+@@ -18,6 +31,10 @@ use obrain_substrate::{
+ const ENV_DIR: &str = "H3_RES_DIR";
+ const ENV_PHASE: &str = "H3_RES_PHASE";
+ const TEST_ENFANT: &str = "enfant_h3_resolution";
++/// Marqueur POSITIF écrit À L'INTÉRIEUR de la boucle infinie `dormir_jusqua_kill` :
++/// le parent l'attend avant de tuer, ce qui PROUVE que l'enfant est réellement en
++/// train de tourner dans la boucle (donc `store.close()` inatteignable).
++const MARQUEUR_BOUCLE: &str = "dans_la_boucle";
+ 
+ #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+ enum Phase {
+@@ -51,8 +68,15 @@ fn ecrire_fichier(dir: &Path, nom: &str, contenu: &[u8]) {
+     std::fs::rename(&tmp, &fin).unwrap();
+ }
+ 
+-fn dormir_jusqua_kill() -> ! {
++/// Boucle infinie DIVERGENTE : tourne jusqu'au `kill -9`. Écrit un MARQUEUR
++/// POSITIF À L'INTÉRIEUR de la boucle (atomique, tmp+rename) : le parent attend
++/// CE marqueur avant de tuer, ce qui PROUVE que l'enfant est réellement EN train
++/// de tourner ici — donc que `store.close()` est INATTEIGNABLE — et pas
++/// simplement qu'il a dépassé la phase. Ce n'est PAS un fsync : la résistance à
++/// la coupure électrique n'est pas qualifiée ici.
++fn dormir_jusqua_kill(dir: &Path) -> ! {
+     loop {
++        ecrire_fichier(dir, MARQUEUR_BOUCLE, b"1");
+         std::thread::sleep(Duration::from_secs(3600));
+     }
+ }
+@@ -74,6 +98,21 @@ fn enfant_h3_resolution() {
+     ecrire_fichier(&dir, "node_id", id.0.to_string().as_bytes());
+ 
+     let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
++    // ESTAMPILLES INITIALES EXACTES (auteur + horloge) des valeurs d'origine,
++    // capturées AVANT publication : après kill -9 avant bascule, le parent doit
++    // les retrouver À L'IDENTIQUE (l'état initial est CONSERVÉ, pas seulement
++    // « différent de la tentative »).
++    let stamp_a = pre.estampille_capturee("a").expect("a présente");
++    let stamp_b = pre.estampille_capturee("b").expect("b présente");
++    ecrire_fichier(
++        &dir,
++        "estampilles_initiales",
++        format!(
++            "{} {} {} {}",
++            stamp_a.auteur, stamp_a.horloge, stamp_b.auteur, stamp_b.horloge
++        )
++        .as_bytes(),
++    );
+     let prep = store
+         .preparer_transformation(
+             id,
+@@ -88,7 +127,7 @@ fn enfant_h3_resolution() {
+ 
+     poser_marqueur(&dir, Phase::Avant.nom());
+     if phase == Phase::Avant.nom() {
+-        dormir_jusqua_kill();
++        dormir_jusqua_kill(&dir);
+     }
+ 
+     let issue = store.publier_si_precondition_intacte(prep).unwrap();
+@@ -96,13 +135,13 @@ fn enfant_h3_resolution() {
+ 
+     poser_marqueur(&dir, Phase::Apres.nom());
+     if phase == Phase::Apres.nom() {
+-        dormir_jusqua_kill();
++        dormir_jusqua_kill(&dir);
+     }
+ 
+     store.close().unwrap();
+     poser_marqueur(&dir, "closed");
+     if phase == "closed" {
+-        dormir_jusqua_kill();
++        dormir_jusqua_kill(&dir);
+     }
+ }
+ 
+@@ -165,12 +204,27 @@ fn node_id(dir: &Path) -> NodeId {
+     NodeId(s.trim().parse().unwrap())
+ }
+ 
++/// Estampilles initiales EXACTES (auteur, horloge) des valeurs d'origine,
++/// relues depuis ce que l'enfant a persisté AVANT publication.
++fn estampilles_initiales(dir: &Path) -> ((u64, u64), (u64, u64)) {
++    let s = std::fs::read_to_string(dir.join("estampilles_initiales")).unwrap();
++    let mut it = s.split_whitespace().map(|t| t.parse::<u64>().unwrap());
++    let a = (it.next().unwrap(), it.next().unwrap());
++    let b = (it.next().unwrap(), it.next().unwrap());
++    (a, b)
++}
++
+ /// H3 — kill -9 AVANT publication : référence persistée, tête jamais basculée.
+ /// Résolution Indéterminée (pas une absence définitive), état initial conservé.
+ #[test]
+ fn h3_kill9_avant_publication() {
+     let (td, mut child) = lancer(Phase::Avant);
++    // MARQUEUR POSITIF : l'enfant est DANS la boucle infinie (close() inatteignable),
++    // pas simplement passé devant elle. Le marqueur de phase garantit déjà que la
++    // référence et le node_id sont persistés ; le marqueur de boucle prouve que
++    // l'enfant n'a PAS pu franchir close().
+     attendre_marqueur(td.path(), Phase::Avant.nom(), &mut child);
++    attendre_marqueur(td.path(), MARQUEUR_BOUCLE, &mut child);
+     tuer_9(&mut child);
+ 
+     let store = SubstrateStore::open(td.path().join("kb")).unwrap();
+@@ -185,16 +239,33 @@ fn h3_kill9_avant_publication() {
+     );
+     assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)));
+     assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
++    // IDENTITÉ EXACTE : l'estampille initiale (auteur + horloge) est CONSERVÉE
++    // À L'IDENTIQUE après kill -9 avant bascule — pas seulement « différente de
++    // la tentative ».
++    let (estamp_a, estamp_b) = estampilles_initiales(td.path());
+     for e in &res.par_cle {
+         assert_eq!(e.etat, ResolutionEffet::Indetermine, "chaque clé est indéterminée");
+-        // estampille COURANTE = valeur initiale (jamais remplacée par la tentative)
++        let attendu = if e.cle == "a" {
++            estamp_a
++        } else if e.cle == "b" {
++            estamp_b
++        } else {
++            panic!("clé inattendue {}", e.cle);
++        };
++        assert_eq!(
++            e.estampille_courante,
++            Some(attendu),
++            "l'estampille initiale de {} est CONSERVÉE à l'identique (auteur + horloge)",
++            e.cle
++        );
++        // la tentative n'a jamais remplacé l'état initial
+         assert_ne!(
+             e.estampille_courante,
+             Some((reference.auteur(), reference.horloge())),
+             "l'estampille de la tentative n'est PAS la courante (jamais engagée)"
+         );
+     }
+-    eprintln!("H3_KILL9_AVANT_OK : résolution indéterminée sans republication");
++    eprintln!("H3_KILL9_AVANT_OK : résolution indéterminée sans republication, estampille initiale conservée");
+ }
+ 
+ /// H3 — kill -9 APRÈS publication : réponse perdue, réouverture en processus
+@@ -202,7 +273,10 @@ fn h3_kill9_avant_publication() {
+ #[test]
+ fn h3_kill9_apres_publication() {
+     let (td, mut child) = lancer(Phase::Apres);
++    // MARQUEUR POSITIF : l'enfant est DANS la boucle infinie APRÈS publication
++    // (close() inatteignable) — la réponse est perdue par le kill, pas par close().
+     attendre_marqueur(td.path(), Phase::Apres.nom(), &mut child);
++    attendre_marqueur(td.path(), MARQUEUR_BOUCLE, &mut child);
+     tuer_9(&mut child);
+ 
+     let store = SubstrateStore::open(td.path().join("kb")).unwrap();

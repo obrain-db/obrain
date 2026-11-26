@@ -1,0 +1,92 @@
+diff --git i/crates/obrain-substrate/src/store.rs w/crates/obrain-substrate/src/store.rs
+index aec05190..62ea5b22 100644
+--- i/crates/obrain-substrate/src/store.rs
++++ w/crates/obrain-substrate/src/store.rs
+@@ -48925,13 +48925,15 @@ mod publication_conditionnelle_native {
+         eprintln!("COPIE_OK : la copie de base résout la référence (writer_id+horloge = tentative, pas base)");
+     }
+ 
+-    /// P0 — CONTRE-ÉPREUVE DISCRIMINANTE : interleaving DÉTERMINISTE entre les
+-    /// observations des deux clés. V0=(a=10,b=20) publié, référence cible (a,b).
+-    /// La résolution suspend après la PREMIÈRE clé (hook) ; une mutation V1=(30,40)
+-    /// tente de publier pendant la suspension. L'implémentation COHÉRENTE tient le
+-    /// verrou pendant TOUTE la résolution → V1 est BLOQUÉE → les deux estampilles
+-    /// restent V0 (jamais un mélange d'un état jamais publié). L'ancienne (verrou
+-    /// par clé) aurait laissé V1 s'intercaler → mélange V0/V1.
++    /// P0 — CONTRE-ÉPREUVE DISCRIMINANTE (protocole try_lock) : interleaving
++    /// DÉTERMINISTE entre les observations des deux clés. V0=(a=10,b=20) publié,
++    /// référence cible (a,b). La résolution suspend après la PREMIÈRE clé (hook) ;
++    /// pendant la suspension, la mutation V1 SONDE le verrou de nœud par
++    /// `try_lock()` (sans bloquer, sans sleep). L'implémentation COHÉRENTE tient
++    /// le verrou pendant TOUTE la résolution → try_lock ÉCHOUE (None) → les deux
++    /// estampilles restent V0. L'ancienne (verrou par clé) laisse le verrou LIBRE
++    /// entre les clés → try_lock RÉUSSIT (Some) → le test est ROUGE. Le verrou
++    /// acquis est libéré immédiatement.
+     #[test]
+     fn resolution_multi_cles_interleaving_deterministe() {
+         let td = tempfile::tempdir().unwrap();
+@@ -48952,7 +48954,21 @@ mod publication_conditionnelle_native {
+         let resolvant = std::thread::spawn(move || store2.resoudre_reference(&ref_resolvant).unwrap());
+         store.suspension.attendre_suspension();
+ 
+-        // mutation V1 tente de publier PENDANT la suspension
++        // SONDE DÉTERMINISTE (sans sleep ni try_recv) : pendant la suspension,
++        // la mutation V1 tente le verrou de nœud SANS bloquer. Implémentation
++        // COHÉRENTE → verrou DÉTENU par la résolution → try_lock échoue (None).
++        // Ancienne (verrou par clé) → verrou LIBRE entre les clés → try_lock
++        // réussit (Some). Libère immédiatement si le verrou a été acquis.
++        let sonde = store.verrou_ecriture_noeud(id).try_lock();
++        let verrou_detenu = sonde.is_none();
++        drop(sonde);
++        assert!(
++            verrou_detenu,
++            "verrou de nœud DÉTENU pendant TOUTE la résolution → instantané cohérent (try_lock échoue)"
++        );
++
++        // mutation V1 : publie APRÈS la libération du verrou (bloquée sur le
++        // verrou de nœud dans l'implémentation cohérente)
+         let store3 = Arc::clone(&store);
+         let (tx, rx) = std::sync::mpsc::channel();
+         let mutant = std::thread::spawn(move || {
+@@ -48963,23 +48979,33 @@ mod publication_conditionnelle_native {
+             let r = store3.publier_si_precondition_intacte(prep1).unwrap();
+             tx.send(r).unwrap();
+         });
+-        // pendant la suspension, V1 ne doit PAS avoir publié (bloquée sur le verrou)
+-        std::thread::sleep(std::time::Duration::from_millis(80));
+-        assert!(
+-            rx.try_recv().is_err(),
+-            "la mutation V1 est BLOQUÉE pendant la résolution cohérente"
+-        );
++
+         store.suspension.relacher();
+         let res = resolvant.join().unwrap();
+-        let _ = rx.recv().unwrap();
++        let r1 = rx.recv().unwrap();
+         mutant.join().unwrap();
+ 
++        // POSITIF : V1 a publié APRÈS la libération du verrou — la valeur
++        // canonique finale est V1 (30/40), pas V0.
++        assert_eq!(r1, IssuePublication::PublieIntegrale, "V1 publiée intégralement après libération");
++        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(30)));
++        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(40)));
++
+         // DISCRIMINANT : les deux clés portent la MÊME estampille courante (V0)
+         let s0 = res.par_cle[0].estampille_courante;
+         let s1 = res.par_cle[1].estampille_courante;
+         assert_eq!(s0, s1, "jamais un mélange de deux états qui n'ont pas coexisté");
+         assert_eq!(s0, Some((reference.auteur(), reference.horloge())), "V0, pas V1");
+-        eprintln!("INTERLEAVING_OK : V1 bloquée, instantané cohérent V0 pour les deux clés");
++
++        // ESTAMPILLES OBSERVÉES : V0 (résolue, les deux clés) puis V1 (canonique finale).
++        let stamp_v0 = (reference.auteur(), reference.horloge());
++        let stamp_v1_final = {
++            let s = stamp(&store, id, "a");
++            (s.auteur, s.horloge)
++        };
++        eprintln!("ESTAMPILLES V0={stamp_v0:?} V1_finale={stamp_v1_final:?}");
++        assert_ne!(stamp_v1_final, stamp_v0, "V1 a masqué V0 (estampille distincte)");
++        eprintln!("INTERLEAVING_OK : try_lock échoue (verrou détenu), instantané V0 cohérent, V1 publiée après libération");
+     }
+ 
+     /// P0 — OBSERVATION VALEUR+ESTAMPILLE sous UNE lecture : `resoudre_reference`
