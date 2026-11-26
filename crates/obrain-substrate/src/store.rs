@@ -3199,6 +3199,17 @@ pub enum ResolutionEffet {
     Indetermine,
 }
 
+/// Référence de TENTATIVE : l'identité physique d'une tentative de publication
+/// (`auteur` = writer_id du backend, `horloge` = estampille HLC attribuée à la
+/// préparation). À conserver AVANT la publication pour résoudre un effet dont la
+/// réponse a été perdue. Ce n'est PAS une identité logique durable K (pas
+/// d'idempotence) ni une preuve de compatibilité de contenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferenceTentative {
+    pub auteur: u64,
+    pub horloge: u64,
+}
+
 /// Mode de publication : détermine si les propriétés ÉCRITES mais non DÉCLARÉES
 /// comme dépendances sont permises (LWW) ou refusées (Strict).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3244,6 +3255,9 @@ pub struct TransformationPrete {
     /// Estampille HLC (composante horloge) attribuée à TOUTES les écritures à
     /// la préparation. L'auteur est le `writer_id` du store.
     horloge_effet: u64,
+    /// Auteur (writer_id) des écritures de la tentative — conservé pour exposer
+    /// la référence de tentative publique.
+    auteur: u64,
     /// Tête canonique au moment de la préparation (H0).
     tete_origine: u64,
     /// Page privée dont `next_page` pointe `tete_origine` — le point de
@@ -3254,6 +3268,16 @@ pub struct TransformationPrete {
 }
 
 impl TransformationPrete {
+    /// Référence de TENTATIVE (opaque) à conserver AVANT la publication, pour
+    /// résoudre l'effet via `resoudre_effet_historique_par_reference` après une
+    /// éventuelle perte de réponse.
+    pub fn reference_tentative(&self) -> ReferenceTentative {
+        ReferenceTentative {
+            auteur: self.auteur,
+            horloge: self.horloge_effet,
+        }
+    }
+
     /// Empreinte expérimentale du CONTENU (signature de transformation),
     /// PAS une identité logique durable : `DefaultHasher` + `Debug` ne sont pas
     /// stables entre versions et peuvent entrer en collision. À ne pas utiliser
@@ -3437,6 +3461,18 @@ impl SubstrateStore {
         })
     }
 
+    /// Résolution historique PAR RÉFÉRENCE DE TENTATIVE (contrat public) : un
+    /// consommateur externe conserve [`ReferenceTentative`] avant la publication
+    /// puis résout l'effet après réouverture, sans republier.
+    pub fn resoudre_effet_historique_par_reference(
+        &self,
+        cible: NodeId,
+        key: &str,
+        reference: ReferenceTentative,
+    ) -> SubstrateResult<ResolutionEffet> {
+        self.resoudre_effet_historique(cible, key, reference.auteur, reference.horloge)
+    }
+
     /// Capture COHÉRENTE de plusieurs propriétés d'un nœud sous le verrou
     /// d'écriture du nœud (l'autorité commune des écrivains) : un écrivain
     /// concurrent ne peut pas intercaler une écriture entre deux lectures.
@@ -3589,6 +3625,7 @@ impl SubstrateStore {
             precondition: precondition.clone(),
             ecritures: nouvelles.iter().map(|(c, _)| (*c).to_string()).collect(),
             horloge_effet: horloge,
+            auteur,
             mode,
             empreinte: empreinte_de(cible, mode, precondition, nouvelles),
             tete_origine,

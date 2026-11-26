@@ -172,7 +172,7 @@ pub use store::{
     BLOB_WAL_MAX_BYTES, DeclarationIndex, DeclarationProcedure, EdgePropsV2FinalizeStats,
     PropsV2FinalizeStats, SKIP_ON_LOAD_PROP_KEYS, StoreMutationObserver, SubstrateStore,
     noeuds_hydrates, EstampilleComplete, EtatPropriete, IssuePublication, ModePublication,
-    Precondition, PreparationDifferee, ResolutionEffet, TransformationPrete,
+    Precondition, PreparationDifferee, ReferenceTentative, ResolutionEffet, TransformationPrete,
 };
 pub use tiers::{
     L0_BITS, L1_BITS, L2_DIM, Tier0, Tier1, Tier2, f16_to_f32, f32_to_f16, tier0_hamming,
