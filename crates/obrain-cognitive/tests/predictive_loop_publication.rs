@@ -1,10 +1,11 @@
 //! CONTRE-ÉPREUVE de publication : `reconsolidate`/`reconsolidate_adaptive`
 //! reçoivent `&mut Engram` et NE PUBLIENT RIEN eux-mêmes. C'est l'appelant qui
-//! prend l'objet modifié et le publie. On identifie le chemin RÉEL qui publie
-//! SANS recalculer la projection, et on audite `record_activation`.
+//! prend l'objet modifié et le publie. Le chemin RÉEL qui publiait SANS recalculer
+//! la projection (`store.update(reconsolidate)`) est désormais REJETÉ par
+//! l'enforcement de l'invariant de projection (dans `store.mutate`).
 //!
 //! Invariants distingués : ÉTAT CANONIQUE (id, membres, poids), PROJECTION
-//! (signature spectrale), HISTORIQUE (recall_count, recall_history).
+//! (signature spectrale, désormais ENFORCÉE), HISTORIQUE (recall_count).
 
 #![cfg(feature = "engram")]
 
@@ -38,23 +39,21 @@ fn contre_preuve_publication_sans_recalcul_projection() {
         "formation : signature cohérente (encode uniforme)"
     );
 
-    // reconsolidate reçoit &mut Engram, le MUTe, et ne publie rien ; c'est
-    // store.update qui publie, SANS recalcul de projection.
+    // reconsolidate reçoit &mut Engram, le MUTe, et ne publie rien. Le chemin
+    // direct store.update(reconsolidate) est REJETÉ par l'enforcement de
+    // l'invariant de projection (au niveau de l'autorité qui accepte le
+    // résultat du mutateur) : l'engramme reste INCHANGÉ.
     m.store().update(eid, |e| reconsolidate(e, &[c], 0.5));
     let after = m.store().get(eid).unwrap();
     assert!(
-        after.node_ids().contains(&c),
-        "l'ensemble a bien changé (c ajouté) : {:?}",
-        after.node_ids()
+        !after.node_ids().contains(&c),
+        "le contournement est REJETÉ (c n'est pas ajouté)"
     );
     assert_eq!(
         after.spectral_signature, sig_before,
-        "CONTRE-ÉPREUVE : la signature n'a PAS été recalculée (périmée)"
+        "la signature n'a pas bougé (aucune publication périmée)"
     );
-    eprintln!(
-        "[publication] chemin direct : ensemble {:?} -> signature INCHANGÉE (périmée)",
-        after.node_ids()
-    );
+    eprintln!("[publication] chemin direct REJETÉ : engramme inchangé");
 
     // --- Chemin CANONIQUE : revise recalcule la projection ---
     let m2 = manager();
@@ -123,14 +122,14 @@ fn invariants_trois_categories() {
     let e2 = m.store().get(eid).unwrap();
     assert!(e2.recall_count > r0, "recall_count croît");
 
-    // VIOLATION de (2) par le chemin direct (documentée, pas corrigée ici) :
+    // Le chemin direct est désormais REJETÉ : l'invariant de projection est
+    // ENFORCÉ au niveau de l'autorité (store.mutate) qui accepte le mutateur.
     let m2 = manager();
     let eid2 = m2.form_observation(&[a, b]);
     let sig = m2.store().get(eid2).unwrap().spectral_signature.clone();
     m2.store().update(eid2, |e| reconsolidate(e, &[c], 0.5));
-    assert_eq!(
-        m2.store().get(eid2).unwrap().spectral_signature, sig,
-        "projection PÉRIMÉE : l'invariant de projection est VIOLABLE par store.update(reconsolidate)"
-    );
-    eprintln!("[invariants] canonique=OK, projection=VIOLABLE (chemin direct), historique=monotone");
+    let e3 = m2.store().get(eid2).unwrap();
+    assert!(!e3.node_ids().contains(&c), "contournement rejeté : c non ajouté");
+    assert_eq!(e3.spectral_signature, sig, "signature inchangée (pas de publication périmée)");
+    eprintln!("[invariants] canonique=OK, projection=ENFORCÉE (contournement rejeté), historique=monotone");
 }

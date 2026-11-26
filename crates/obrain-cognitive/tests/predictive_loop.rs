@@ -21,7 +21,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use obrain_cognitive::engram::{reconsolidate, EngramStore};
+use obrain_cognitive::engram::{reconsolidate, EngramStore, SpectralEncoder};
 use obrain_common::types::NodeId;
 use obrain_substrate::{SubstrateFile, SyncMode, Writer as SubstrateWriter};
 
@@ -128,7 +128,12 @@ fn adaptive_step(
     let missing: Vec<NodeId> = observed.difference(&predicted).copied().collect();
     if !missing.is_empty() {
         match *last_eid {
-            Some(eid) => store.update(eid, |e| reconsolidate(e, &missing, m.miss)),
+            Some(eid) => store.update(eid, |e| {
+                reconsolidate(e, &missing, m.miss);
+                // ENFORCEMENT de l invariant de projection : recalculer la
+                // signature apres reconsolidation.
+                e.spectral_signature = SpectralEncoder::new().encode(&e.ensemble);
+            }),
             None => {
                 let all: Vec<NodeId> = observed.iter().copied().collect();
                 *last_eid = Some(store.form(&all).expect("form engramme a échoué"));
