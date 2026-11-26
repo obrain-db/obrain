@@ -340,3 +340,99 @@ fn restauration_depuis_sauvegarde_perd_les_ecritures_posterieures() {
 
     eprintln!("RESTAURATION_OK : écriture pré-sauvegarde Engage, post-sauvegarde Indetermine ; auteur inchangé");
 }
+
+// ── Scénario 5 : CONTRE-ÉPREUVE — même CONTENU (même valeur) ──────────────
+//
+// La contre-épreuve manquante : deux bases INDÉPENDANTES partageant `writer.id`
+// publient le MÊME contenu (la MÊME valeur) sous la MÊME horloge forcée. Les
+// références sont byte-identiques ET les valeurs relues sont identiques : le
+// faux positif croisé devient TOTALEMENT indétectable — aucune observation
+// (ni les octets de la référence, ni la valeur courante relue, ni l'auteur
+// résolvant) ne sépare la tentative de A de celle de B.
+//
+// Ceci démontre que la COMPARAISON DE VALEURS ne se substitue PAS à l'identité :
+// c'est au contraire le cas où l'ambiguïté est maximale, car le seul écart
+// observable du scénario 1 (valeurs 10 vs 20) a disparu. L'identité d'une
+// tentative ne porte que l'estampille `(auteur, horloge)` LOCALE à une base —
+// et cette localité n'est pas portée par la référence.
+#[test]
+fn collision_hlc_contenu_identique_faux_positif_indetectable() {
+    let td = tempfile::tempdir().unwrap();
+    let base_a = td.path().join("a");
+    let base_b = td.path().join("b");
+
+    // base A : writer.id propre, premier nœud, propriété initiale.
+    let cible_a = {
+        let store = SubstrateStore::create(&base_a).unwrap();
+        let id = store.create_node(&["n"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.close().unwrap();
+        id
+    };
+
+    // base B : neuve, puis ÉCRASER son writer.id par celui de A (partage).
+    {
+        let store = SubstrateStore::create(&base_b).unwrap();
+        store.close().unwrap();
+    }
+    copier_writer_id(&base_a, &base_b);
+    assert_eq!(lire_writer_id(&base_a), lire_writer_id(&base_b), "writer.id partagé byte-à-byte");
+
+    // Dans CHAQUE base : MÊME contenu (valeur 42), MÊME horloge forcée.
+    let ref_a = {
+        let store = SubstrateStore::open(&base_a).unwrap();
+        let r = publier_avec_horloge_forcee(&store, cible_a, "a", 42);
+        store.close().unwrap();
+        r
+    };
+    let (ref_b, cible_b) = {
+        let store = SubstrateStore::open(&base_b).unwrap();
+        let id = store.create_node(&["n"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        let r = publier_avec_horloge_forcee(&store, id, "a", 42);
+        store.close().unwrap();
+        (r, id)
+    };
+
+    // Références BYTE-IDENTIQUES (même auteur, même horloge, même cible, mêmes effets).
+    assert_eq!(ref_a.cible(), cible_b, "chaque base alloue son premier nœud à NodeId(1)");
+    assert_eq!(ref_a.to_bytes(), ref_b.to_bytes(), "références BYTE-IDENTIQUES");
+
+    // résolution dans chaque base
+    let store_a = SubstrateStore::open(&base_a).unwrap();
+    let store_b = SubstrateStore::open(&base_b).unwrap();
+    let r_aa = store_a.resoudre_reference(&ref_a).unwrap();
+    let r_ab = store_b.resoudre_reference(&ref_a).unwrap();
+
+    // (1) la MÊME référence résout Engage dans les DEUX bases : faux positif croisé.
+    assert_eq!(r_aa.integrite, IntegriteTentative::Integrale);
+    assert_eq!(r_ab.integrite, IntegriteTentative::Integrale);
+    assert_eq!(r_aa.par_cle[0].etat, ResolutionEffet::Engage);
+    assert_eq!(r_ab.par_cle[0].etat, ResolutionEffet::Engage);
+
+    // (2) les valeurs relues sont IDENTIQUES : l'écart observable du scénario 1 a disparu.
+    assert_eq!(r_aa.par_cle[0].valeur_courante, Some(Value::Int64(42)));
+    assert_eq!(r_ab.par_cle[0].valeur_courante, Some(Value::Int64(42)));
+
+    // (3) auteur_resolvant identique : writer.id ne discrimine PAS les bases.
+    assert_eq!(r_aa.auteur_resolvant, r_ab.auteur_resolvant);
+
+    // (4) les deux tentatives physiques sont DISTINCTES mais indistinguables par
+    //     toute observation disponible : ni les octets de la référence, ni la
+    //     valeur courante, ni l'auteur résolvant. La comparaison de valeurs ne
+    //     se substitue pas à l'identité de domaine — elle la rend même inopérante.
+    assert_eq!(
+        r_aa.par_cle[0].valeur_courante,
+        r_ab.par_cle[0].valeur_courante,
+        "même valeur relue : aucun écart observable ne sépare la tentative de A de celle de B"
+    );
+
+    eprintln!(
+        "CONTRE_EPREUVE_OK : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A ET B ; \
+         valeur IDENTIQUE A=42 B=42 — la comparaison de valeurs ne substitue pas l'identité, \
+         elle rend le faux positif indétectable",
+        ref_a.auteur(),
+        ref_a.horloge(),
+        ref_a.cible().as_u64()
+    );
+}
