@@ -672,8 +672,10 @@ pub fn reconsolidate(engram: &mut Engram, new_nodes: &[NodeId], prediction_error
 /// RETIRES sous un plancher), les noeuds observes sont renforces. La vitesse
 /// d alignement suit l erreur de prediction (erreur forte = adaptation forte).
 /// L historique (strength, recall_count) est preserve ; aucune categorie fixe.
+/// BRIQUE INTERNE : suppose des parametres deja valides (voir
+/// `EngramManager::revise_adaptive_with`). Non re-exportee publiquement.
 #[allow(dead_code)]
-pub fn reconsolidate_adaptive(
+pub(crate) fn reconsolidate_adaptive(
     engram: &mut Engram,
     observed: &[NodeId],
     prediction_error: f64,

@@ -307,29 +307,116 @@ fn j_parametres_invalides_rejetes_avant_calcul() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn k_duplicats_sur_les_poids() {
+fn k_duplicats_sur_les_poids_non_satures() {
     let (a, b) = (NodeId(1), NodeId(2));
-    let weight_of_a = |observed: &[NodeId]| -> f64 {
-        let m = manager();
-        let eid = m.form_observation(&[a, b]);
-        let _ = m
-            .revise_adaptive(eid, observed, 0.5, ObservationScope::DeclaredPartial)
-            .expect("révision");
-        m.store()
-            .get(eid)
-            .unwrap()
-            .ensemble
-            .iter()
-            .find(|(n, _)| *n == a)
-            .map(|(_, w)| *w)
-            .unwrap()
+    // Poids NON saturé (w=0.2) et lr=0.5 (erreur 0.4 -> lr = 0.3 + 0.4*0.5 = 0.5).
+    // 1 renforcement : 0.2*0.5 + 0.5 = 0.6 ; 3 renforcements : 0.9.
+    let set_w = |m: &EngramManager, eid| {
+        m.store().update(eid, |e| {
+            if let Some((_, w)) = e.ensemble.iter_mut().find(|(n, _)| *n == a) {
+                *w = 0.2;
+            }
+        });
     };
-    let w_dup = weight_of_a(&[a, a, a, b]);
-    let w_uniq = weight_of_a(&[a, b]);
-    eprintln!("[K] poids de a — dupliqué={w_dup:.9} unique={w_uniq:.9}");
+    let snap = |m: &EngramManager, eid| {
+        let e = m.store().get(eid).unwrap();
+        let w = e.ensemble.iter().find(|(n, _)| *n == a).map(|(_, w)| *w).unwrap();
+        (w, e.recall_count, e.spectral_signature.clone(), m.store().revision())
+    };
+
+    // (i) DUPLICAT DANS UNE SEULE OBSERVATION {a,a,a,b} -> UN seul renforcement.
+    let m = manager();
+    let eid = m.form_observation(&[a, b]);
+    set_w(&m, eid);
+    let (w0, c0, _s0, r0) = snap(&m, eid);
+    let _ = m
+        .revise_adaptive(eid, &[a, a, a, b], 0.4, ObservationScope::DeclaredPartial)
+        .unwrap();
+    let (w_dup, c_dup, s_dup, r_dup) = snap(&m, eid);
+
+    // (ii) REJEU de l'occurrence ENTIÈRE {a,b} TROIS fois -> TROIS renforcements.
+    let m2 = manager();
+    let eid2 = m2.form_observation(&[a, b]);
+    set_w(&m2, eid2);
+    let (_w0b, _c0b, _s0b, r0b) = snap(&m2, eid2);
+    for _ in 0..3 {
+        let _ = m2
+            .revise_adaptive(eid2, &[a, b], 0.4, ObservationScope::DeclaredPartial)
+            .unwrap();
+    }
+    let (w_replay, c_replay, s_replay, r_replay) = snap(&m2, eid2);
+
+    eprintln!(
+        "[K] poids de a — départ={w0:.6} ; duplicat 1 obs={w_dup:.6} (compteur {c_dup}) ; rejeu 3 obs={w_replay:.6} (compteur {c_replay})"
+    );
+    assert!((w_dup - 0.6).abs() < 1e-9, "duplicat dans UNE observation = 1 renforcement -> 0.6, obtenu {w_dup}");
+    assert!((w_replay - 0.9).abs() < 1e-9, "rejeu 3 occurrences = 3 renforcements -> 0.9, obtenu {w_replay}");
+    assert!(w_dup < w_replay, "un duplicat DANS une observation n'est PAS un rejeu");
+    // COMPTEURS
+    assert_eq!(c_dup, c0 + 1, "1 révision -> recall_count +1");
+    assert_eq!(c_replay, c0 + 3, "3 révisions -> recall_count +3");
+    // SIGNATURES (projections) : différentes car poids 0.6 vs 0.9
+    assert_ne!(s_dup, s_replay, "signatures différentes (poids 0.6 vs 0.9)");
+    // VERSIONS : 1 vs 3 incréments de la révision globale
+    assert_eq!(r_dup - r0, 1, "1 révision -> révision globale +1");
+    assert_eq!(r_replay - r0b, 3, "3 révisions -> révision globale +3");
+}
+
+// ---------------------------------------------------------------------------
+// N (réserve 3) — déduplication avec une clé marquée PÉRIMÉE.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn n_deduplication_avec_cle_perimee() {
+    let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
+    let m = manager();
+    let e1 = m.form_observation_with(&[a, b], Some("def:a-b"));
+    // Révision des participants -> clé PÉRIMÉE.
+    let _ = m
+        .revise_adaptive(e1, &[a, b, c], 0.9, ObservationScope::DeclaredPartial)
+        .unwrap();
+    assert!(m.store().get(e1).unwrap().structural_key_stale);
+    let before = m.store().count();
+    // Reformer les participants COURANTS {a,b,c} avec la MÊME clé PÉRIMÉE : la
+    // clé périmée ne sert PAS d'identité de déduplication -> NOUVEL engramme.
+    let e2 = m.form_observation_with(&[a, b, c], Some("def:a-b"));
+    assert_ne!(e1, e2, "une clé périmée ne déduplique PAS : nouvel engramme");
+    assert_eq!(m.store().count(), before + 1);
+    assert!(!m.store().get(e2).unwrap().structural_key_stale);
+    // set_structural_key RE-DÉCLARE (sans vérifier) -> la clé redevient valide.
+    m.set_structural_key(e1, Some("def:a-b-c"));
+    assert!(!m.store().get(e1).unwrap().structural_key_stale);
+    eprintln!("[N] clé périmée -> nouvel engramme ; set_structural_key re-déclare (sans vérifier)");
+}
+
+// ---------------------------------------------------------------------------
+// O (réserve 4) — union identique mais rôles/ordre différents.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn o_information_residuelle_union_identique() {
+    let (x, y, z) = (NodeId(1), NodeId(2), NodeId(3));
+    let m = manager();
+    let _eid = m.form_observation(&[x, y, z]);
+    // Cas A : contexte=x, issue précédente={y,z}. Cas B : contexte=y, issue={z,x}.
+    // L'UNION est identique ({x,y,z}) mais les RÔLES diffèrent.
+    let cue_a: Ep = vec![x, y, z];
+    let cue_b: Ep = vec![y, z, x];
+    let pa = m.predict(&cue_a, 8).expect("pred A");
+    let pb = m.predict(&cue_b, 8).expect("pred B");
+    let err = m.prediction_error(&pa.predicted, &pb.predicted).expect("dim");
+    eprintln!(
+        "[O] union identique, rôles différents -> distance des prédictions = {err:.12} ; attention A={:?} B={:?}",
+        pa.attention, pb.attention
+    );
     assert!(
-        (w_dup - w_uniq).abs() < 1e-12,
-        "deux occurrences du même NodeId ne renforcent PAS doublement ({w_dup} vs {w_uniq})"
+        err < 1e-12,
+        "Obrain ne reçoit que l'UNION (ensemble) : il ne distingue PAS rôles/ordre (distance {err})"
+    );
+    assert_ne!(
+        (x, vec![y, z]),
+        (y, vec![z, x]),
+        "le témoin (ctx, prev), lui, voit deux cas distincts"
     );
 }
 

@@ -58,9 +58,12 @@ pub use spectral::SpectralEncoder;
 mod recall;
 #[cfg(feature = "engram")]
 pub use recall::{
-    ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig, WarmupSelector,
-    reconsolidate, reconsolidate_adaptive,
+    reconsolidate, ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig,
+    WarmupSelector,
 };
+// NOTE : `reconsolidate_adaptive` n'est PAS re-exporte. C'est une brique interne
+// qui suppose des parametres DEJA valides ; le point d'entree public est
+// `EngramManager::revise_adaptive_with` (valide les parametres avant tout calcul).
 
 #[cfg(feature = "engram")]
 mod hopfield;
