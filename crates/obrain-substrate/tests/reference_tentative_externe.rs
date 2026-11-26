@@ -105,7 +105,7 @@ fn reference_survit_a_la_perte_de_reponse_et_au_masquage() {
     let a = res2.par_cle.iter().find(|e| e.cle == "a").unwrap();
     assert_eq!(a.etat, ResolutionEffet::Engage);
     assert_ne!(
-        a.estampille_courante,
+        a.estampille_courante(),
         Some((auteur, horloge)),
         "l'estampille courante est celle du masqueur, pas celle de la tentative"
     );

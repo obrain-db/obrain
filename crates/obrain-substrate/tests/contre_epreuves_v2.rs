@@ -222,7 +222,7 @@ fn engage_est_historique_et_ne_qualifie_pas_le_contenu() {
     let avant = store.resoudre_reference(&enr.reference).unwrap();
     let a_avant = avant.par_cle.iter().find(|e| e.cle == "a").unwrap();
     assert_eq!(
-        a_avant.estampille_courante,
+        a_avant.estampille_courante(),
         Some((enr.reference.auteur(), enr.reference.horloge()))
     );
 
@@ -232,7 +232,7 @@ fn engage_est_historique_et_ne_qualifie_pas_le_contenu() {
     let a_apres = apres.par_cle.iter().find(|e| e.cle == "a").unwrap();
     assert_eq!(a_apres.etat, ResolutionEffet::Engage, "toujours engagé");
     assert_ne!(
-        a_apres.estampille_courante,
+        a_apres.estampille_courante(),
         Some((enr.reference.auteur(), enr.reference.horloge())),
         "l'estampille courante est celle du masqueur"
     );

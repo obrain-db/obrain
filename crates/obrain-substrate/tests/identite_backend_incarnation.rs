@@ -121,8 +121,8 @@ fn copie_puis_divergence_resout_selon_les_donnees_reelles() {
     assert_eq!(r_orig_b.integrite, IntegriteTentative::Integrale);
 
     // (2) mais l'estampille COURANTE a divergé : chaque base a masqué H0 avec SA écriture.
-    assert_ne!(r_orig_a.par_cle[0].estampille_courante, Some((auteur, horloge_orig)));
-    assert_ne!(r_orig_b.par_cle[0].estampille_courante, Some((auteur, horloge_orig)));
+    assert_ne!(r_orig_a.par_cle[0].estampille_courante(), Some((auteur, horloge_orig)));
+    assert_ne!(r_orig_b.par_cle[0].estampille_courante(), Some((auteur, horloge_orig)));
 
     // (3) pas de fausse confirmation croisée : chaque divergence ne résout QUE chez elle.
     assert_eq!(r_diva_a.integrite, IntegriteTentative::Integrale);
@@ -289,7 +289,7 @@ fn reference_engagee_avant_suppression_est_indeterminee() {
     );
     assert_eq!(apres.par_cle[0].etat, ResolutionEffet::Indetermine);
     assert_eq!(
-        apres.par_cle[0].estampille_courante, None,
+        apres.par_cle[0].estampille_courante(), None,
         "nœud non vivant → aucune estampille courante"
     );
     // Distingue « nœud non vivant » de « entrée compactée sur un nœud vivant » :

@@ -253,14 +253,14 @@ fn h3_kill9_avant_publication() {
             panic!("clé inattendue {}", e.cle);
         };
         assert_eq!(
-            e.estampille_courante,
+            e.estampille_courante(),
             Some(attendu),
             "l'estampille initiale de {} est CONSERVÉE à l'identique (auteur + horloge)",
             e.cle
         );
         // la tentative n'a jamais remplacé l'état initial
         assert_ne!(
-            e.estampille_courante,
+            e.estampille_courante(),
             Some((reference.auteur(), reference.horloge())),
             "l'estampille de la tentative n'est PAS la courante (jamais engagée)"
         );
@@ -294,7 +294,7 @@ fn h3_kill9_apres_publication() {
     for e in &res.par_cle {
         assert_eq!(e.etat, ResolutionEffet::Engage, "chaque clé est engagée");
         assert_eq!(
-            e.estampille_courante,
+            e.estampille_courante(),
             Some((reference.auteur(), reference.horloge())),
             "IDENTITÉ exacte de l'estampille (auteur + horloge), pas seulement son existence"
         );
