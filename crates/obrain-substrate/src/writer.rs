@@ -2864,6 +2864,29 @@ impl Writer {
         })
     }
 
+    /// Contrôle de santé STRUCTUREL des zones d'engrammes (magic + version),
+    /// SANS balayer les 65 535 identifiants. Une zone vide (base legacy sans
+    /// cette colonne) est une ABSENCE légitime, pas une corruption : Ok(()).
+    ///
+    /// Destiné au chargement cognitif : distinguer une défaillance GLOBALE de
+    /// la zone (magic/version/taille invalides — refuser le chargement) d'une
+    /// corruption LOCALE (une entrée de répertoire qui pointe hors zone —
+    /// réserver l'identifiant et continuer). Un balayage naïf transformerait
+    /// une zone morte en 65 535 rejets artificiels et épuiserait l'espace
+    /// d'identifiants.
+    pub fn validate_engram_zones(&self) -> SubstrateResult<()> {
+        self.with_engram_state_zones(|mz, wz| {
+            if mz.is_empty() {
+                return Ok(());
+            }
+            crate::engram::EngramZone::validate_header(mz)?;
+            if !wz.is_empty() {
+                crate::engram::EngramZone::validate_header(wz)?;
+            }
+            Ok(())
+        })
+    }
+
     // ==================================================================
     // Engram bitset column (T7 Step 1)
     // ==================================================================
@@ -2909,6 +2932,34 @@ impl Writer {
             };
             self.wal.append(rec)?;
             crate::engram_bitset::EngramBitsetColumn::set_raw(zf, node_id, new_bits)
+        })
+    }
+
+    /// Ensure `engram_id`'s bit is set in `node_id`'s bitset, WITHOUT any WAL
+    /// nor zone write when the bit is already present. The check-and-set is
+    /// atomic under the zone lock. Returns `Ok(true)` when a write happened,
+    /// `Ok(false)` when the bit was already present.
+    pub fn ensure_engram_bit(&self, node_id: u32, engram_id: u16) -> SubstrateResult<bool> {
+        crate::engram_bitset::check_nonzero_engram_id(engram_id)?;
+        let mask = crate::engram_bitset::engram_bit_mask(engram_id);
+        self.with_engram_bitset_zone(|zf| {
+            let current = crate::engram_bitset::EngramBitsetColumn::get(zf, node_id);
+            if current & mask != 0 {
+                return Ok(false); // déjà présent : aucune écriture
+            }
+            let new_bits = current | mask;
+            let rec = WalRecord {
+                lsn: 0,
+                timestamp: unix_micros(),
+                flags: 0,
+                payload: WalPayload::EngramBitsetSet {
+                    node_id,
+                    bitset: new_bits,
+                },
+            };
+            self.wal.append(rec)?;
+            crate::engram_bitset::EngramBitsetColumn::set_raw(zf, node_id, new_bits)?;
+            Ok(true)
         })
     }
 

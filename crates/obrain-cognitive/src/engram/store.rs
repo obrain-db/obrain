@@ -510,12 +510,20 @@ impl EngramStore {
         let Some(writer) = self.substrate_writer() else {
             return report;
         };
-        // NOTE (convergence #418) : le contrôle de défaillance GLOBALE
-        // (`Writer::validate_engram_zones`) n'est PAS encore disponible dans le
-        // substrat de cette branche (primitive #418, portée par T6/T4). Le champ
-        // `global_failure` reste donc toujours `None` : une zone morte serait
-        // balayée identifiant par identifiant (rejets locaux) au lieu d'être
-        // refusée d'un bloc.
+        // DÉFAILLANCE GLOBALE : la zone d'engrammes est structurellement
+        // invalide (magic/version/taille). On REFUSE le chargement SANS balayer
+        // les 65 535 identifiants : un balayage transformerait une zone morte
+        // en 65 535 rejets artificiels et épuiserait l'espace d'identifiants.
+        // Une défaillance globale n'est JAMAIS présentée comme un chargement
+        // sain (ni comme une série de rejets locaux).
+        if let Err(e) = writer.validate_engram_zones() {
+            tracing::error!(
+                error = %e,
+                "zone d'engrammes structurellement invalide : chargement refusé (défaillance globale)"
+            );
+            report.global_failure = Some(e.to_string());
+            return report;
+        }
         // CONTRAT DE CONCURRENCE (publication registre+cache au chargement) :
         // le registre dégradé est construit dans un ensemble LOCAL pendant le
         // balayage, puis publié d'un bloc à la fin (swap atomique). Jamais un
@@ -597,7 +605,7 @@ impl EngramStore {
                 continue;
             }
             // RÉPARATION des projections : reconstruire le bitset depuis les
-            // membres validés, sans écriture inutile (add_engram_bit OR idempotent si
+            // membres validés, sans écriture inutile (ensure_engram_bit no-op si
             // le bit est déjà posé). Un échec marque la projection DÉGRADÉE mais
             // l'état canonique reste valide et publié.
             let mut degraded: Option<String> = None;
@@ -608,13 +616,13 @@ impl EngramStore {
                     .load(std::sync::atomic::Ordering::Relaxed)
                 {
                     Err(SubstrateError::WalBadFrame(
-                        "injected add_engram_bit failure (repair)".into(),
+                        "injected ensure_engram_bit failure (repair)".into(),
                     ))
                 } else {
-                    writer.add_engram_bit(nid.0 as u32, eid_u16)
+                    writer.ensure_engram_bit(nid.0 as u32, eid_u16)
                 };
                 #[cfg(not(feature = "fault-injection"))]
-                let repair = writer.add_engram_bit(nid.0 as u32, eid_u16);
+                let repair = writer.ensure_engram_bit(nid.0 as u32, eid_u16);
                 if let Err(e) = repair {
                     tracing::error!(engram_id = eid_u16, node_id = nid.0, error = %e, "projection bitset dégradée");
                     degraded = Some(e.to_string());

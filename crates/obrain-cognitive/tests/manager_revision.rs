@@ -571,7 +571,6 @@ fn reouverture_apres_ecriture_partielle() {
 /// quand le bit est déjà présent (retourne Ok(false)). Une réouverture saine ne
 /// réécrit donc pas les bitsets.
 #[test]
-#[ignore = "bloqué : Writer::ensure_engram_bit (primitive substrate #418) absente — portée T6/T4"]
 fn reouverture_saine_ne_reecrit_pas_les_bitsets() {
     let td = tempfile::tempdir().unwrap();
     let path = td.path().join("kb");
@@ -589,17 +588,23 @@ fn reouverture_saine_ne_reecrit_pas_les_bitsets() {
         id = manager.store().form(&[a, b]).unwrap();
         // après form, les bits A/B sont posés.
     }
-    // BLOQUÉ (convergence #418) : `Writer::ensure_engram_bit` (idempotence du
-    // bitset) est une primitive substrate #418 absente de cette branche — son
-    // port relève de T6/T4. Le témoin est conservé, marqué #[ignore].
-    let _ = (id, a, b);
+    // Réouverture saine : les bits sont déjà présents → ensure renvoie false.
+    let sub = SubstrateFile::open(&path).unwrap();
+    let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
+    assert!(
+        !writer.ensure_engram_bit(a.0 as u32, id.0 as u16).unwrap(),
+        "bit A déjà présent : aucune écriture"
+    );
+    assert!(
+        !writer.ensure_engram_bit(b.0 as u32, id.0 as u16).unwrap(),
+        "bit B déjà présent : aucune écriture"
+    );
 }
 
 /// Qualification WAL : une réouverture SAINE ne produit aucune écriture de
 /// bitset (ensure_engram_bit no-op sur bits présents). Mesure offset, records
 /// écrits et records en tampon autour du chargement réel (attach_substrate).
 #[test]
-#[ignore = "bloqué : require ensure_engram_bit idempotent (aucune écriture) — T6/T4"]
 fn chargement_sain_sans_amplification_wal() {
     let td = tempfile::tempdir().unwrap();
     let path = td.path().join("kb");
@@ -687,7 +692,6 @@ fn base_vide_charge_sainement() {
 /// un balayage de 65 535 rejets. Le chargement refuse SANS réserver aucun
 /// identifiant, et n'est jamais présenté comme sain.
 #[test]
-#[ignore = "bloqué : Writer::validate_engram_zones (primitive substrate #418) absente — portée T6/T4"]
 fn zone_inaccessible_est_une_defaillance_globale() {
     let td = tempfile::tempdir().unwrap();
     let path = td.path().join("kb");
@@ -998,7 +1002,6 @@ fn reparation_bit_manquant_mesuree_wal() {
 /// Réouverture SUIVANTE (après réparation) : les bits sont présents, aucune
 /// écriture supplémentaire (offset et records inchangés).
 #[test]
-#[ignore = "bloqué : require ensure_engram_bit idempotent (aucune écriture) — T6/T4"]
 fn reouverture_suivante_apres_reparation_saine() {
     let td = tempfile::tempdir().unwrap();
     let path = td.path().join("kb");
