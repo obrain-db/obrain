@@ -120,19 +120,24 @@ pub fn read_anchor_state(sub: &SubstrateStore, node_id: NodeId) -> AnchorState {
 pub enum EnergyRead {
     /// Ancre valide : énergie effective calculable, exploitable.
     Effective(f64),
-    /// Ancre corrompue : énergie stockée consultable (diagnostic), NON exploitable.
-    Corrupted { stored: f64 },
-    /// Pas d'ancre : temporalité inconnue, colonne héritée (diagnostic).
-    UnknownTemporal { stored: f64 },
-    /// Pas d'ancre et colonne nulle (ou nœud absent — le substrat ne distingue
-    /// pas encore ces deux causes : limite documentée).
+    /// Ancre corrompue : miroir consultable (diagnostic), NON exploitable.
+    /// `stored: None` = miroir lui-même indisponible (erreur de lecture).
+    Corrupted { stored: Option<f64> },
+    /// Pas d'ancre (temporalité inconnue) : colonne héritée. `stored: None` =
+    /// miroir indisponible. Un nœud vivant sans ancre et colonne nulle est ici,
+    /// PAS dans `Absent`.
+    Unanchored { stored: Option<f64> },
+    /// Nœud réellement absent (ou tombstoné) : `get_node_energy_f32` rend `Ok(None)`.
     Absent,
+    /// Lecture en erreur : `get_node_energy_f32` rend `Err` — PAS une absence
+    /// certaine, PAS un zéro.
+    Unqualified,
 }
 
-/// Lecture qualifiée de l'énergie d'un nœud. `Absent` couvre « nœud absent » et
-/// « sans ancre + colonne nulle » (l'API historique `Option` ne les distingue
-/// pas) ; une lecture en erreur y est aussi rabattue — à qualifier avec les
-/// primitives versionnées avant d'affirmer une absence certaine.
+/// Lecture qualifiée. Préserve les distinctions disponibles dans
+/// `get_node_energy_f32 -> SubstrateResult<Option<f32>>` : `Err` (lecture en
+/// erreur) n'est pas rabattue en absence ni en zéro ; `Ok(None)` (nœud absent
+/// ou tombstoné) n'est pas confondu avec un nœud vivant sans ancre.
 pub fn read_energy_qualified(
     sub: &SubstrateStore,
     node_id: NodeId,
@@ -142,28 +147,20 @@ pub fn read_energy_qualified(
     match read_anchor_state(sub, node_id) {
         AnchorState::Valid(_) => match energy_at(sub, node_id, law, now_micros) {
             Some(e) => EnergyRead::Effective(e),
-            None => EnergyRead::Absent,
+            None => EnergyRead::Unqualified,
         },
-        AnchorState::Corrupted => {
-            let stored = sub
-                .get_node_energy_f32(node_id)
-                .ok()
-                .flatten()
-                .unwrap_or(0.0) as f64;
-            EnergyRead::Corrupted { stored }
-        }
-        AnchorState::Absent => {
-            let stored = sub
-                .get_node_energy_f32(node_id)
-                .ok()
-                .flatten()
-                .unwrap_or(0.0) as f64;
-            if stored > 0.0 {
-                EnergyRead::UnknownTemporal { stored }
-            } else {
-                EnergyRead::Absent
-            }
-        }
+        AnchorState::Corrupted => EnergyRead::Corrupted {
+            stored: match sub.get_node_energy_f32(node_id) {
+                Ok(Some(v)) => Some(v as f64),
+                Ok(None) => None,
+                Err(_) => None,
+            },
+        },
+        AnchorState::Absent => match sub.get_node_energy_f32(node_id) {
+            Ok(Some(v)) => EnergyRead::Unanchored { stored: Some(v as f64) },
+            Ok(None) => EnergyRead::Absent,
+            Err(_) => EnergyRead::Unqualified,
+        },
     }
 }
 
