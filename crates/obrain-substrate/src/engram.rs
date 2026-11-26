@@ -241,26 +241,55 @@ impl EngramZone {
     /// poids suit son membre logique — seule l'empreinte (dérivée des
     /// valeurs de membres) est recalculée, jamais les poids eux-mêmes.
     ///
-    /// Formes traitées :
-    /// * LIÉ (`len == membres + 2`) → recalcul de l'empreinte, poids conservés ;
+    /// IDENTITÉ, pas cardinalité. Avant de recalculer l'empreinte, la forme
+    /// LIÉE est vérifiée contre les membres PRÉ-remap (`old_members`) — jamais
+    /// contre la seule longueur. Trois états explicites :
+    ///
+    /// * INTERMÉDIAIRE (ou AVANT) — `empreinte == fp(old_members)` : le
+    ///   snapshot était cohérent AVANT le remap, le ré-attachement est
+    ///   légitime → empreinte recalculée sur `new_members`, poids conservés ;
+    /// * APRÈS — `empreinte == fp(new_members)` : déjà rebondi, no-op
+    ///   idempotent (un rejeu répété ne re-casse ni ne re-blanchit rien) ;
+    /// * DIVERGENT — toute autre empreinte : l'association était déjà
+    ///   incohérente AVANT le remap. REFUS : laissé intact, on ne recertifie
+    ///   JAMAIS des poids dont l'identité n'a pas été vérifiée.
+    ///
+    /// Formes non LIÉES :
     /// * NON LIÉ legacy (`len == membres`) → laissé intact (on ne certifie pas
     ///   rétroactivement une association positionnelle jamais vérifiée) ;
+    /// * cardinalité incohérente → laissé intact ;
     /// * absent (aucune entrée) → no-op.
     pub fn rebind_weights_after_remap(
         zf: &mut ZoneFile,
         engram_id: u16,
+        old_members: &[u32],
         new_members: &[u32],
     ) -> SubstrateResult<()> {
         let Some(bits) = Self::members(zf, engram_id)? else {
             return Ok(());
         };
-        if bits.len() == new_members.len() + Self::WEIGHTS_FP_U32S {
+        // LIÉ seulement si la cardinalité correspond (empreinte + poids) ;
+        // toute autre forme (legacy non lié, cardinalité incohérente) est
+        // laissée intacte — jamais certifiée rétroactivement.
+        if bits.len() != new_members.len() + Self::WEIGHTS_FP_U32S {
+            return Ok(());
+        }
+        let stored_fp = (bits[0] as u64) | ((bits[1] as u64) << 32);
+        let fp_old = Self::fingerprint_members(old_members);
+        let fp_new = Self::fingerprint_members(new_members);
+        if stored_fp == fp_old {
+            // INTERMÉDIAIRE (ou AVANT) : cohérent avant remap → ré-attache.
             let weights: Vec<f32> = bits[Self::WEIGHTS_FP_U32S..]
                 .iter()
                 .map(|b| f32::from_bits(*b))
                 .collect();
             Self::set_weights_bound(zf, engram_id, new_members, &weights)?;
+        } else if stored_fp == fp_new {
+            // APRÈS : déjà rebondi, no-op idempotent (un rejeu répété ne
+            // re-casse ni ne re-blanchit rien).
         }
+        // DIVERGENT : toute autre empreinte — association corrompue AVANT le
+        // remap, laissée intacte (jamais blanchie).
         Ok(())
     }
 

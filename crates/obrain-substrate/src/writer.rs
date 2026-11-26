@@ -2337,17 +2337,15 @@ impl Writer {
         if !member_updates.is_empty() {
             self.with_engram_state_zones(|mz, wz| {
                 for (engram_id, members) in member_updates {
+                    // (V4) Lire les membres PRÉ-remap AVANT de les réécrire :
+                    // le ré-attachement vérifie l'empreinte stockée contre
+                    // cette identité (jamais contre la seule cardinalité).
+                    let old_members = crate::engram::EngramZone::members(mz, *engram_id)?;
                     crate::engram::EngramZone::set_members_raw(mz, *engram_id, members)?;
-                    // (V4) Le remap réécrit les membres : ré-attache les
-                    // poids LIÉS (recalcul de l'empreinte) pour que la
-                    // lecture reste cohérente. Les poids positionnels ne
-                    // changent pas (ordre préservé), seule l'identité des
-                    // membres a changé. Sans cela, l'empreinte périmée
-                    // rendrait `read_engram_state` → `EngramIncoherent`
-                    // et l'engramme serait mis en quarantaine au rechargement.
                     crate::engram::EngramZone::rebind_weights_after_remap(
                         wz,
                         *engram_id,
+                        old_members.as_deref().unwrap_or(&[]),
                         members,
                     )?;
                 }
