@@ -3481,6 +3481,13 @@ impl SubstrateStore {
         // Publication : bascule de tête (WAL NodePropHeadUpdate puis mmap).
         self.writer
             .update_node_first_prop_off(slot, crate::record::U48::from_u64(prep.tete_privee))?;
+        // La publication a écrit DIRECTEMENT dans PropsZone (chaîne privée),
+        // sans `prop_index_insert` : l'index d'égalité ne borne plus les
+        // porteurs. On retire les marqueurs de complétude (même invariant que
+        // `bulk_import_node_props`) pour que la prochaine recherche rebâtisse
+        // l'index depuis les chaînes — qui, elles, portent tout.
+        self.index_batis_depuis_v2.clear();
+        self.egalite_couverte.clear();
         // Vérification de l'INTÉGRALITÉ de l'effet : relire l'estampille de
         // chaque propriété écrite ; si l'une ne porte plus NOTRE estampille
         // (une écriture concurrente plus récente l'a masquée), l'application
@@ -48112,19 +48119,17 @@ mod projections_publiees {
             eprintln!("APRES_PUBLICATION age=30 -> {cherche_30:?} ; age=40 -> {cherche_40:?}");
             // age=30 est revérifié exactement : le nœud porte 40, donc exclu.
             assert!(cherche_30.is_empty(), "30 n'est plus porté (revérifié exact)");
-            // DÉFAUT MESURÉ : l'index ne connaît pas 40 (crochet d'indexation contourné).
-            assert!(cherche_40.is_empty(), "DÉFAUT : l'index ignore la valeur publiée");
+            // CORRIGÉ : l'index a été invalidé, la recherche rebâtit et trouve 40.
+            assert_eq!(cherche_40, vec![id], "l'index retrouve 40 après invalidations");
             store.close().unwrap();
             id
         };
-        // réouverture : la lecture directe conserve 40 (durabilité propre), mais
-        // l'index reste PÉRIMÉ — la reconstruction ne récupère pas la valeur
-        // publiée par la primitive (le défaut persiste après réouverture).
+        // réouverture : la lecture directe ET la recherche retrouvent 40.
         let store2 = SubstrateStore::open(&chemin).unwrap();
         let direct = store2.get_node_property(id, &PropertyKey::new("age"));
         let cherche_40 = store2.find_nodes_by_property("age", &Value::Int64(40));
         eprintln!("APRES_REOUVERTURE direct={direct:?} age=40 -> {cherche_40:?}");
         assert_eq!(direct, Some(Value::Int64(40)), "lecture directe après réouverture : 40 conservé");
-        assert!(cherche_40.is_empty(), "DÉFAUT : l'index reste périmé après réouverture");
+        assert_eq!(cherche_40, vec![id], "après réouverture, l'index retrouve 40");
     }
 }
