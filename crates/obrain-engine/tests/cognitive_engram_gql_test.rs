@@ -7,7 +7,7 @@
 //! ordinaires (CREATE + co-activations), via la même chaîne observée qu'un
 //! utilisateur réel (CognitiveObserver -> MutationBus -> Scheduler -> bridge).
 
-#![cfg(feature = "cognitive-engram")]
+#![cfg(all(feature = "cognitive-engram", feature = "algos"))]
 
 use std::time::Duration;
 
