@@ -1226,7 +1226,11 @@ mod tests {
                 &HybridRecallConfig::default(),
             )
             .expect("store vide : pas une erreur");
-        assert!(outcome.hits.is_empty());
+        assert_eq!(
+            outcome.hits.len(),
+            0,
+            "store vide : aucun hit, et ce n'est pas une anomalie"
+        );
         assert_eq!(outcome.stats.index_calls, 0, "aucun appel d'index inutile");
     }
 
