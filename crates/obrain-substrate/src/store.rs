@@ -2842,6 +2842,11 @@ pub struct SubstrateStore {
     props_zone: Option<RwLock<PropsZone>>,
     /// Identité stable de l'écrivain (writer.id, #343) — auteur des estampilles.
     writer_id: u64,
+    /// Identité persistante de DOMAINE (`domaine.id`, #334) — identifie la BASE
+    /// (le répertoire de stockage), distincte de `writer_id` (un écrivain) et
+    /// de `ReferenceTentative` (une tentative). Métadonnée de BACKEND, lue
+    /// hors-bande par le consommateur. `RwLock` : `forker_domaine` la réécrit.
+    domaine_id: RwLock<u128>,
     /// Horloge hybride locale (HLC) pour estampiller les écritures (#334).
     horloge: Mutex<crate::horloge_hybride::HorlogeHybride>,
     /// Seam de test/diagnostic : horloge HLC FORCÉE pour la prochaine
@@ -8682,6 +8687,33 @@ impl SubstrateStore {
         self.read_only.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Identité persistante de DOMAINE (`domaine.id`, #334) — la BASE, pas
+    /// l'écrivain ni la tentative. Stable à travers fermeture/réouverture et
+    /// déplacement du répertoire ; ne change que par [`Self::forker_domaine`].
+    pub fn domaine_id(&self) -> u128 {
+        *self.domaine_id.read()
+    }
+
+    /// Fork DÉCLARÉ du domaine : tire et persiste un NOUVEAU `domaine_id`
+    /// (`domaine.id`), distinct de l'actuel. C'est l'opération explicite qui
+    /// distingue un fork d'une simple copie du répertoire (laquelle partage le
+    /// MÊME identifiant — limite assumée, voir le RFC identité de domaine §5).
+    /// Refusée en lecture seule. Rend le nouvel identifiant.
+    pub fn forker_domaine(&self) -> SubstrateResult<u128> {
+        self.exiger_ecriture("forker_domaine")?;
+        let nouveau = {
+            let sub = self.substrate.lock();
+            if sub.is_memory() {
+                // Mode mémoire : pas de répertoire, identité éphémère régénérée.
+                crate::domaine_id::tirer()
+            } else {
+                crate::domaine_id::forker(sub.path())?
+            }
+        };
+        *self.domaine_id.write() = nouveau;
+        Ok(nouveau)
+    }
+
     /// Refuse `operation` par [`SubstrateError::LectureSeule`] si ce store est
     /// ouvert en lecture seule. Appelé en tête de chaque opération qui écrit
     /// ailleurs que dans une zone (les zones, elles, sont privées).
@@ -9571,6 +9603,20 @@ impl SubstrateStore {
         // (obrain#164) Écriture partagée : décidée ici, comme la lecture seule.
         let ecriture_partagee = sub.est_ecriture_partagee() && !lecture_seule;
         let writer_id = crate::writer_id::writer_id(sub.path()).unwrap_or(0);
+        // Identité de DOMAINE (#334) : fichier `domaine.id` SÉPARÉ, jamais dans
+        // le WAL ni dans une zone. `create` comme `open` passent ici : absence
+        // = matérielisation (base neuve OU legacy sans identité), corruption =
+        // refus explicite. Le mode mémoire n'a pas de répertoire : identité
+        // éphémère. La lecture seule ne matérialise PAS (contrat RO).
+        let domaine_id = {
+            if sub.is_memory() {
+                crate::domaine_id::tirer()
+            } else if lecture_seule {
+                crate::domaine_id::lire(sub.path())?.unwrap_or_else(crate::domaine_id::tirer)
+            } else {
+                crate::domaine_id::lire_ou_materieliser(sub.path())?
+            }
+        };
         // ══════ GARDE D'INTEGRITE DE LA REPERMUTATION ══════
         //
         // Deux refus, tous deux places ICI et non sur le resultat du
@@ -10110,6 +10156,7 @@ impl SubstrateStore {
             blob_columns: Arc::new(BlobColumnRegistry::new()),
             props_zone,
             writer_id,
+            domaine_id: RwLock::new(domaine_id),
             horloge: Mutex::new(crate::horloge_hybride::HorlogeHybride::nouvelle()),
             #[cfg(test)]
             horloge_forcee: Mutex::new(None),

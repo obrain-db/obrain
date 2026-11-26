@@ -35,6 +35,7 @@ pub mod checkpoint;
 pub mod compteurs;
 pub mod degree_column;
 pub mod dict;
+pub mod domaine_id;
 pub mod engram;
 pub mod engram_bitset;
 pub mod engram_recall;
@@ -100,6 +101,7 @@ pub use blob_column::{
 pub use blob_column_registry::BLOB_COLUMN_THRESHOLD_BYTES;
 pub use checkpoint::{CheckpointStats, checkpoint};
 pub use dict::DictSnapshot;
+pub use domaine_id::{FICHIER_DOMAINE_ID, forker};
 pub use engram::{
     ENGRAM_HEADER_SIZE, ENGRAM_MAGIC, ENGRAM_ZONE_VERSION, EngramZone, MAX_ENGRAM_ID,
 };
