@@ -81,7 +81,12 @@
 //!   tentative. Idempotente par le marqueur de slot 0 ; kill-sure : avant
 //!   le rename c'est l'ancienne zone qui fait foi, apres c'est la nouvelle,
 //!   et la version ne bumpe qu'en dernier.
+//! * **3 → 4** (jalon 3, protection V4 des poids d'engramme) : CLASSE les
+//!   poids V3 sans rien reecrire — absence legitime / provenance verifiable /
+//!   ambigu (preserve, jamais certifie) / corrompu (REFUS nomme). Idempotente
+//!   (lecture seule) ; s'execute sous le verrou natif de repertoire exclusif.
 
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
@@ -113,6 +118,11 @@ pub fn table() -> &'static [Migration] {
             de: 2,
             vers: 3,
             etape: migration_2_vers_3,
+        },
+        Migration {
+            de: 3,
+            vers: 4,
+            etape: migration_3_vers_4,
         },
     ]
 }
@@ -252,6 +262,83 @@ fn migration_2_vers_3(dir: &Path) -> SubstrateResult<()> {
     // OR idempotent, apres la bascule de zone — un kill entre les deux
     // rejoue l'etape (marqueur v3 -> reecriture no-op, drapeau repose).
     poser_drapeau_meta(dir, meta_flags::MONO_TENANT_PUBLIC)
+}
+
+/// Lit les octets bruts d'une zone d'engramme — `Ok(Vec::new())` si le
+/// fichier est absent (zone jamais matérialisée = absence légitime).
+fn lire_zone_engram(dir: &Path, name: &str) -> SubstrateResult<Vec<u8>> {
+    let chemin = dir.join(name);
+    if !chemin.exists() {
+        return Ok(Vec::new());
+    }
+    Ok(std::fs::read(&chemin)?)
+}
+
+// ---------------------------------------------------------------------------
+// Etape 3 → 4 (jalon 3) : protection de format V4 des poids d'engramme
+// ---------------------------------------------------------------------------
+
+/// Jalon 3 — classification des poids d'engramme V3, SANS réécrire aucune
+/// donnée. Quatre cas distingués pour chaque engramme dont la zone de poids
+/// porte une entrée non vide :
+///
+/// * **V3 sans poids** (legacy légitime) : aucune entrée dans la zone de
+///   poids. Rien à faire — la lecture rendra `None`.
+/// * **V3 pondéré à provenance vérifiable** : `[fp_lo, fp_hi, w1..wN]` dont
+///   l'empreinte coïncide avec les membres courants. Déjà conforme V4 —
+///   rien à faire.
+/// * **V3 pondéré ambigu** : `[w1..wN]` (non lié, positionnel). PRÉSERVÉ tel
+///   quel — on ne certifie PAS rétroactivement l'association (aucune
+///   empreinte fabriquée). La lecture V4 le refusera
+///   (`EngramIncoherent`), l'application devra le ré-écrire lié.
+/// * **V3 corrompu** : cardinalité incohérente, ou empreinte en contradiction
+///   avec les membres. REFUS nommé — le store n'est pas ouvert en V4 avec une
+///   corruption silencieuse.
+///
+/// L'étape est IDEMPOTENTE et n'écrit RIEN : elle se contente de lire les
+/// deux zones et de refuser le cas corrompu. La version meta n'est bumpée
+/// qu'après son succès (machine). Elle s'exécute SOUS le verrou natif de
+/// répertoire exclusif (acquis par `SubstrateFile::open_inner` avant tout
+/// appel de migration) : jamais de migration pendant une détention
+/// incompatible du verrou (partagé ou exclusif d'un autre processus).
+fn migration_3_vers_4(dir: &Path) -> SubstrateResult<()> {
+    use crate::engram::EngramZone;
+
+    let membres_octets = lire_zone_engram(dir, zone::ENGRAM_MEMBERS)?;
+    let poids_octets = lire_zone_engram(dir, zone::ENGRAM_WEIGHTS)?;
+
+    let mut membres: HashMap<u16, Vec<u32>> = HashMap::new();
+    for (id, lanes) in crate::engram::EngramZone::all_entries(&membres_octets)? {
+        membres.insert(id, lanes);
+    }
+
+    for (id, bits) in crate::engram::EngramZone::all_entries(&poids_octets)? {
+        let m = membres.get(&id).map(|v| v.as_slice()).unwrap_or(&[]);
+        let m_len = m.len();
+
+        // AMBIGU (non lié, positionnel) : préservé, jamais certifié.
+        if bits.len() == m_len {
+            continue;
+        }
+        // VÉRIFIABLE (lié, empreinte cohérente) : déjà conforme V4.
+        if bits.len() == m_len + EngramZone::WEIGHTS_FP_U32S {
+            let stored = (bits[0] as u64) | ((bits[1] as u64) << 32);
+            let actual = EngramZone::fingerprint_members(m);
+            if stored == actual {
+                continue;
+            }
+        }
+        // CORROMPU : cardinalité incohérente ou empreinte en contradiction.
+        return Err(SubstrateError::EngramIncoherent {
+            engram_id: id,
+            raison: format!(
+                "migration V3→V4 : poids d'engramme corrompus ({} membres, {} lanes)",
+                m_len,
+                bits.len()
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Le corps de la reecriture 2→3, avec une pause optionnelle toutes les

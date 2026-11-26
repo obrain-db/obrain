@@ -1290,6 +1290,19 @@ fn apply(
             }
             let zf = engram_members_zone.as_mut().unwrap();
             crate::engram::EngramZone::set_members_raw(zf, *engram_id, members)?;
+            // (V4) Une suppression LOGIQUE (membres vides) invalide AUSSI les
+            // poids, exactement comme l'écriture directe : sans cela, un rejeu
+            // après vidage/repeuplement ressusciterait des poids périmés.
+            if members.is_empty() {
+                if engram_weights_zone.is_none() {
+                    *engram_weights_zone = Some(substrate.open_zone(Zone::EngramWeights)?);
+                }
+                crate::engram::EngramZone::set_members_raw(
+                    engram_weights_zone.as_mut().unwrap(),
+                    *engram_id,
+                    &[],
+                )?;
+            }
             Ok(Applied::Yes)
         }
 
@@ -1957,15 +1970,19 @@ fn apply(
             if engram_weights_zone.is_none() {
                 *engram_weights_zone = Some(substrate.open_zone(Zone::EngramWeights)?);
             }
+            // (V4) Le rejeu ré-écrit les poids LIÉS à l'IDENTITÉ des membres,
+            // jamais un fallback positionnel : après wipe+rejeu, la protection
+            // (empreinte) est RESTAURÉE, pas dégradée en réassociation.
             let ws: Vec<f32> = weights.iter().map(|b| f32::from_bits(*b)).collect();
             crate::engram::EngramZone::set_members_raw(
                 engram_members_zone.as_mut().unwrap(),
                 *engram_id,
                 members,
             )?;
-            crate::engram::EngramZone::set_weights_raw(
+            crate::engram::EngramZone::set_weights_bound(
                 engram_weights_zone.as_mut().unwrap(),
                 *engram_id,
+                members,
                 &ws,
             )?;
             Ok(Applied::Yes)

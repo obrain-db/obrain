@@ -230,11 +230,6 @@ impl EngramZone {
         Self::set_members_raw(zf, engram_id, &payload)
     }
 
-    /// Lire les poids (f32) d'un engramme, dans le même ordre que les membres.
-    pub fn weights(zf: &ZoneFile, engram_id: u16) -> SubstrateResult<Option<Vec<f32>>> {
-        Ok(Self::members(zf, engram_id)?.map(|ids| ids.into_iter().map(f32::from_bits).collect()))
-    }
-
     /// Return the membership list for `engram_id`, or `None` if the engram
     /// has no members (either never set or explicitly cleared).
     ///
@@ -270,6 +265,67 @@ impl EngramZone {
         let (chunks, _) = raw.as_chunks::<4>();
         let ids: Vec<u32> = chunks.iter().map(|c| u32::from_le_bytes(*c)).collect();
         Ok(Some(ids))
+    }
+
+    /// Parse the RAW bytes of an engram zone (header + directory + payload) into
+    /// `(engram_id, lanes)` for every directory slot with a non-empty payload.
+    ///
+    /// Returns `Ok(vec![])` for an empty file (never initialised / absent zone).
+    /// Used by the V3→V4 migration to classify weight states WITHOUT a live
+    /// [`ZoneFile`] (the migration runs before the store is constructed). A
+    /// truncated directory or a payload pointer past the end is a named refusal,
+    /// never a silent skip.
+    pub(crate) fn all_entries(bytes: &[u8]) -> SubstrateResult<Vec<(u16, Vec<u32>)>> {
+        if bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        if bytes.len() < ENGRAM_HEADER_SIZE {
+            return Err(SubstrateError::WalBadFrame(format!(
+                "engram zone too short: {} < {}",
+                bytes.len(),
+                ENGRAM_HEADER_SIZE
+            )));
+        }
+        let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        if magic != ENGRAM_MAGIC {
+            return Err(SubstrateError::BadMagic);
+        }
+        let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        if version != ENGRAM_ZONE_VERSION {
+            return Err(SubstrateError::UnsupportedVersion(
+                version,
+                ENGRAM_ZONE_VERSION,
+            ));
+        }
+        let mut out = Vec::new();
+        for id in 1..DIRECTORY_SLOTS {
+            let slot = ENGRAM_HEADER_SIZE + id * DIRECTORY_ENTRY_SIZE;
+            if slot + DIRECTORY_ENTRY_SIZE > bytes.len() {
+                break; // directory truncated — treat the rest as absent (defensive)
+            }
+            let offset =
+                u32::from_le_bytes(bytes[slot..slot + 4].try_into().unwrap()) as usize;
+            let len = u32::from_le_bytes(bytes[slot + 4..slot + 8].try_into().unwrap()) as usize;
+            if len == 0 {
+                continue;
+            }
+            let start = PAYLOAD_OFFSET + offset;
+            let byte_len = len * 4;
+            if start + byte_len > bytes.len() {
+                return Err(SubstrateError::WalBadFrame(format!(
+                    "engram {} dir points past zone end: start={} len={} zone_len={}",
+                    id,
+                    start,
+                    byte_len,
+                    bytes.len()
+                )));
+            }
+            let raw = &bytes[start..start + byte_len];
+            let (chunks, _) = raw.as_chunks::<4>();
+            let lanes: Vec<u32> = chunks.iter().map(|c| u32::from_le_bytes(*c)).collect();
+            out.push((id as u16, lanes));
+        }
+        Ok(out)
     }
 
     /// Count the number of engrams currently with non-empty members. O(65_536),
