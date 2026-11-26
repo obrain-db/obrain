@@ -114,6 +114,59 @@ pub fn read_anchor_state(sub: &SubstrateStore, node_id: NodeId) -> AnchorState {
     decode_anchor_state(&sub.get_node_property(node_id, &cle_ancre()))
 }
 
+/// Lecture énergétique QUALIFIÉE : distingue les états que `get_energy` (f64)
+/// confond. Contrat minimal consommé par les chemins décisionnels.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EnergyRead {
+    /// Ancre valide : énergie effective calculable, exploitable.
+    Effective(f64),
+    /// Ancre corrompue : énergie stockée consultable (diagnostic), NON exploitable.
+    Corrupted { stored: f64 },
+    /// Pas d'ancre : temporalité inconnue, colonne héritée (diagnostic).
+    UnknownTemporal { stored: f64 },
+    /// Pas d'ancre et colonne nulle (ou nœud absent — le substrat ne distingue
+    /// pas encore ces deux causes : limite documentée).
+    Absent,
+}
+
+/// Lecture qualifiée de l'énergie d'un nœud. `Absent` couvre « nœud absent » et
+/// « sans ancre + colonne nulle » (l'API historique `Option` ne les distingue
+/// pas) ; une lecture en erreur y est aussi rabattue — à qualifier avec les
+/// primitives versionnées avant d'affirmer une absence certaine.
+pub fn read_energy_qualified(
+    sub: &SubstrateStore,
+    node_id: NodeId,
+    law: &DecayLaw,
+    now_micros: i64,
+) -> EnergyRead {
+    match read_anchor_state(sub, node_id) {
+        AnchorState::Valid(_) => match energy_at(sub, node_id, law, now_micros) {
+            Some(e) => EnergyRead::Effective(e),
+            None => EnergyRead::Absent,
+        },
+        AnchorState::Corrupted => {
+            let stored = sub
+                .get_node_energy_f32(node_id)
+                .ok()
+                .flatten()
+                .unwrap_or(0.0) as f64;
+            EnergyRead::Corrupted { stored }
+        }
+        AnchorState::Absent => {
+            let stored = sub
+                .get_node_energy_f32(node_id)
+                .ok()
+                .flatten()
+                .unwrap_or(0.0) as f64;
+            if stored > 0.0 {
+                EnergyRead::UnknownTemporal { stored }
+            } else {
+                EnergyRead::Absent
+            }
+        }
+    }
+}
+
 /// État typé de l'ancre composite : distingue ABSENCE légitime, VALIDITÉ et
 /// CORRUPTION. Une corruption ne doit jamais être confondue avec une absence.
 #[derive(Debug, Clone, PartialEq)]

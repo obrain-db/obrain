@@ -392,6 +392,14 @@ impl EnergyStore {
     /// persisted epoch anchor — so the decay is correct even if no tick ran,
     /// even across a restart. Returns `0.0` if the node has never been tracked
     /// (or has tombstoned / missing column).
+    /// Lecture énergétique QUALIFIÉE : l'autorité décisionnelle (le f64 de
+    /// `get_energy` reste une projection appauvrie, jamais une autorité).
+    #[cfg(feature = "substrate")]
+    pub fn read_qualified(&self, node_id: NodeId) -> crate::decay_clock::EnergyRead {
+        let law = DecayLaw::new(self.config.default_half_life);
+        crate::decay_clock::read_energy_qualified(self.substrate.as_ref().unwrap(), node_id, &law, self.now_eff())
+    }
+
     pub fn get_energy(&self, node_id: NodeId) -> f64 {
         // Substrate-backed: column = E_ref, property = t_ref.
         #[cfg(feature = "substrate")]
