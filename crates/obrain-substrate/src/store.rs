@@ -48844,6 +48844,58 @@ mod publication_conditionnelle_native {
         }
     }
 
+    /// P0 — RECRÉATION DE CIBLE : la référence vise une incarnation morte.
+    #[test]
+    fn resolution_apres_recreation_de_cible_indeterminee() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
+            .unwrap();
+        let reference = prep.reference_tentative();
+        store.delete_node(id);
+        let _id2 = store.create_node(&["ressource"]);
+        let res = store.resoudre_reference(&reference).unwrap();
+        assert_eq!(res.integrite, IntegriteTentative::Indeterminee, "cible recréée → indéterminé");
+        eprintln!("RECREATION_OK : la référence d'une incarnation morte est indéterminée");
+    }
+
+    /// P0 — COPIE DE BASE : writer_id + horloge identifient la TENTATIVE, pas la
+    /// base. Une copie byte-à-byte résout la référence (mêmes données) : la copie
+    /// est indistinguable de l'originale — le writer_id n'est pas une identité de base.
+    #[test]
+    fn resolution_dans_copie_de_base() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin_orig = td.path().join("orig");
+        let reference_bytes = {
+            let store = SubstrateStore::create(&chemin_orig).unwrap();
+            let id = store.create_node(&["ressource"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            let pre = store.capturer_precondition(id, &["a"]).unwrap();
+            let prep = store
+                .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
+                .unwrap();
+            let reference = prep.reference_tentative();
+            store.publier_si_precondition_intacte(prep).unwrap();
+            let bytes = reference.to_bytes();
+            store.close().unwrap();
+            bytes
+        };
+        let chemin_copie = td.path().join("copie");
+        std::fs::create_dir_all(&chemin_copie).unwrap();
+        for entree in std::fs::read_dir(&chemin_orig).unwrap() {
+            let e = entree.unwrap();
+            std::fs::copy(e.path(), chemin_copie.join(e.file_name())).unwrap();
+        }
+        let store_copie = SubstrateStore::open(&chemin_copie).unwrap();
+        let reference = ReferenceTentative::from_bytes(&reference_bytes).unwrap();
+        let res = store_copie.resoudre_reference(&reference).unwrap();
+        assert_eq!(res.integrite, IntegriteTentative::Integrale, "la copie porte les mêmes données");
+        eprintln!("COPIE_OK : la copie de base résout la référence (writer_id+horloge = tentative, pas base)");
+    }
+
     fn f64_de_capture(pre: &Precondition) -> f64 {
         match pre.etat_dependance(0) {
             EtatPropriete::Presente { valeur, .. } => match valeur {
