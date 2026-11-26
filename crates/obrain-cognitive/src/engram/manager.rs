@@ -626,7 +626,13 @@ impl EngramManager {
         for e in self.store.list() {
             let mut k: Vec<u64> = e.node_ids().iter().map(|n| n.0).collect();
             k.sort_unstable();
-            if k == key && e.structural_key.as_deref() == structural_key {
+            // Une cle PERIMEE ne decrit plus la definition : elle ne peut PAS
+            // servir d'identite de deduplication (sinon on reutilise un engramme
+            // dont la cle ne correspond plus aux participants).
+            if k == key
+                && e.structural_key.as_deref() == structural_key
+                && !e.structural_key_stale
+            {
                 return e.id;
             }
         }
@@ -642,8 +648,13 @@ impl EngramManager {
         id
     }
 
-    /// (Re)definit la cle structurelle d un engramme et levee l etat PERIME.
-    /// A appeler apres une revision qui a change les participants.
+    /// (Re)DECLARE la cle structurelle d un engramme et leve l etat PERIME.
+    ///
+    /// Ce n est PAS une verification : la cle reste une etiquette opaque
+    /// fournie par l appelant. Lever `stale` signifie « l appelant re-declare
+    /// cette cle pour les participants COURANTS », PAS « la cle est prouvee ».
+    /// L autorite de DEFINITION reste #416 (Composition) ; ce champ ne la
+    /// remplace pas et ne cree pas d autorite parallele.
     pub fn set_structural_key(&self, engram_id: EngramId, key: Option<&str>) {
         self.store.update(engram_id, |e| {
             e.structural_key = key.map(|s| s.to_string());
