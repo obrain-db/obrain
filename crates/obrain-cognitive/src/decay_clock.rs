@@ -38,7 +38,9 @@ use std::time::Duration;
 
 use obrain_common::types::{NodeId, PropertyKey, Value};
 use obrain_core::graph::{GraphStore, GraphStoreMut};
-use obrain_substrate::SubstrateStore;
+use obrain_substrate::{
+    IssuePublication, ModePublication, Precondition, SubstrateResult, SubstrateStore,
+};
 
 use crate::decay_law::{
     DecayLaw, EnergyAnchor, elapsed_monotonic, elapsed_since, epoch_secs_to_micros,
@@ -193,27 +195,79 @@ pub fn legacy_anchor(store: &dyn GraphStoreMut, node_id: NodeId) -> Option<i64> 
         .map(crate::decay_law::epoch_secs_to_micros)
 }
 
-/// Écrit l'ancre composite d'un nœud. `half_life == Duration::ZERO` signifie
-/// « non figée » : la lecture utilisera la loi passée par l'appelant.
+/// Écrit l'ancre composite d'un nœud SOUS L'AUTORITÉ CONDITIONNELLE NATIVE.
+///
+/// `pre` est la précondition CAPTURÉE qui a servi au calcul (même lecture, même
+/// estampille HLC) — l'ordre est : capturer → calculer → préparer → publier.
+/// `half_life == Duration::ZERO` signifie « non figée » : la lecture utilisera
+/// la loi passée par l'appelant.
+///
+/// Cycle `Strict` : [`SubstrateStore::preparer_transformation`] puis
+/// [`SubstrateStore::publier_si_precondition_intacte`]. Rend
+/// `ConflitPrecondition` si l'ancre a changé depuis la capture — l'appelant
+/// doit alors re-capturer et RECALCULER `e_courante` depuis la nouvelle ancre,
+/// JAMAIS re-publier un delta additif aveugle.
 fn write_anchor(
     sub: &SubstrateStore,
     node_id: NodeId,
+    a: &EnergyAnchor,
+    pre: &Precondition,
+) -> SubstrateResult<IssuePublication> {
+    let prep = sub.preparer_transformation(
+        node_id,
+        &[(PROP_ENERGY_ANCHOR, encode_anchor(a))],
+        pre,
+        ModePublication::Strict,
+    )?;
+    sub.publier_si_precondition_intacte(prep)
+}
+
+/// Ancre composite CAPTURÉE sous l'autorité conditionnelle : distingue validité,
+/// absence et corruption depuis la VALEUR capturée (jamais une seconde lecture).
+#[derive(Debug, Clone, PartialEq)]
+enum AncreCapturee {
+    Valid(EnergyAnchor),
+    Absente,
+    Corrompue,
+}
+
+/// Capture l'ancre composite (valeur + estampille HLC) liée au store et au
+/// nœud, prête à servir au calcul PUIS à la publication conditionnelle.
+fn capturer_ancre(
+    sub: &SubstrateStore,
+    node_id: NodeId,
+) -> SubstrateResult<(Precondition, AncreCapturee)> {
+    let pre = sub.capturer_precondition(node_id, &[PROP_ENERGY_ANCHOR])?;
+    let etat = match pre.valeur_capturee(PROP_ENERGY_ANCHOR) {
+        Some(v) => match decode_anchor(v) {
+            Some(a) => AncreCapturee::Valid(a),
+            None => AncreCapturee::Corrompue,
+        },
+        None => AncreCapturee::Absente,
+    };
+    Ok((pre, etat))
+}
+
+/// Construit une ancre composite en bornant le high-water mark (jamais en-deçà
+/// de `t_ref`).
+fn construire_ancre(
     e_ref: f64,
     t_ref_micros: i64,
     t_hi_micros: i64,
     half_life: Duration,
-) {
-    let a = EnergyAnchor {
+) -> EnergyAnchor {
+    EnergyAnchor {
         e_ref,
         t_ref_micros,
         t_hi_micros: t_hi_micros.max(t_ref_micros),
         half_life,
-    };
-    sub.set_node_property(node_id, PROP_ENERGY_ANCHOR, encode_anchor(&a));
+    }
 }
 
 /// Helper de test/migration : écrit une ancre composite EXPLICITE
-/// `(e_ref, t_ref, H)`, high-water mark = t_ref.
+/// `(e_ref, t_ref, H)`, high-water mark = t_ref. Publie sous l'autorité
+/// conditionnelle ; sur conflit, re-capture et re-publie la MÊME ancre (valeurs
+/// fixes, aucun recalcul).
 #[doc(hidden)]
 pub fn persist_anchor_explicit(
     sub: &SubstrateStore,
@@ -222,19 +276,39 @@ pub fn persist_anchor_explicit(
     t_ref_micros: i64,
     half_life: Duration,
 ) {
-    write_anchor(sub, node_id, e_ref, t_ref_micros, t_ref_micros, half_life);
+    let a = construire_ancre(e_ref, t_ref_micros, t_ref_micros, half_life);
+    loop {
+        let Ok((pre, _)) = capturer_ancre(sub, node_id) else {
+            return;
+        };
+        match write_anchor(sub, node_id, &a, &pre) {
+            Ok(IssuePublication::PublieIntegrale) => return,
+            Ok(IssuePublication::ConflitPrecondition) => continue,
+            Ok(IssuePublication::PubliePartielle) | Err(_) => return,
+        }
+    }
 }
 
 /// Écrit l'ancre physique d'un nœud (micros Unix) en conservant la colonne
 /// comme énergie de référence et SANS figer la demi-vie (`H = 0`). Réservé aux
 /// chemins de test et de ré-ancrage où la loi est connue de l'appelant.
 pub fn persist_anchor(sub: &SubstrateStore, node_id: NodeId, micros: i64) {
-    let e_ref = sub
-        .get_node_energy_f32(node_id)
-        .ok()
-        .flatten()
-        .unwrap_or(0.0) as f64;
-    write_anchor(sub, node_id, e_ref, micros, micros, Duration::ZERO);
+    loop {
+        let Ok((pre, _)) = capturer_ancre(sub, node_id) else {
+            return;
+        };
+        let e_ref = sub
+            .get_node_energy_f32(node_id)
+            .ok()
+            .flatten()
+            .unwrap_or(0.0) as f64;
+        let a = construire_ancre(e_ref, micros, micros, Duration::ZERO);
+        match write_anchor(sub, node_id, &a, &pre) {
+            Ok(IssuePublication::PublieIntegrale) => return,
+            Ok(IssuePublication::ConflitPrecondition) => continue,
+            Ok(IssuePublication::PubliePartielle) | Err(_) => return,
+        }
+    }
 }
 
 /// Énergie d'un nœud à `now`, sans rien écrire.
@@ -288,8 +362,13 @@ pub fn current_energy(sub: &SubstrateStore, node_id: NodeId, law: &DecayLaw) -> 
 }
 
 /// Matérialise un nœud : applique la décroissance écoulée, ajoute `delta`,
-/// écrit l'ancre composite (une seule mutation atomique), puis reflète la
-/// colonne. Rend la valeur écrite.
+/// publie l'ancre composite SOUS l'autorité conditionnelle (Strict), puis
+/// reflète la colonne miroir. Rend la valeur écrite.
+///
+/// Ordre : capturer → calculer sur la valeur CAPTURÉE (avec son estampille HLC)
+/// → préparer → publier. Sur `ConflitPrecondition`, re-capture et RECALCULE
+/// `e_courante` depuis la nouvelle ancre — JAMAIS de re-publication aveugle du
+/// delta additif (absence de double renforcement).
 pub fn reinforce(
     sub: &SubstrateStore,
     node_id: NodeId,
@@ -298,39 +377,89 @@ pub fn reinforce(
     max_energy: f64,
     now_micros: i64,
 ) -> Option<f64> {
-    // Temps logique de la mutation : τ = max(now, t_hi, t_ref) lu depuis
-    // l'ancre PERSISTÉE. L'autorité temporelle ne dépend ni du chemin d'accès
-    // ni du session_hi volatil du wrapper.
-    let (tau, h) = match read_anchor_state(sub, node_id) {
-        AnchorState::Valid(a) => (
-            now_micros.max(a.t_hi_micros).max(a.t_ref_micros),
-            if a.half_life.is_zero() {
-                law.half_life()
-            } else {
-                a.half_life
-            },
-        ),
-        // Absence légitime : migration (ancrage à now).
-        AnchorState::Absent => (now_micros, law.half_life()),
-        // Corruption : PAS de restauration implicite. Le renforcement ne peut
-        // pas réparer une ancre temporellement invalide.
-        AnchorState::Corrupted => return None,
-    };
-    // L'énergie est calculée au MÊME temps logique τ auquel l'ancre est ancrée :
-    // jamais de décroissance entre le calcul et l'ancrage.
-    let e_courante = energy_at(sub, node_id, law, tau)?;
-    let plafond = max_energy.min(1.0);
-    let nouvelle = (e_courante + delta).clamp(0.0, plafond);
+    loop {
+        let (pre, capture) = capturer_ancre(sub, node_id).ok()?;
+        // Temps logique de la mutation : τ = max(now, t_hi, t_ref) lu depuis
+        // l'ancre CAPTURÉE (valeur + estampille HLC). L'autorité temporelle ne
+        // dépend ni du chemin d'accès ni du session_hi volatil du wrapper.
+        let (tau, h) = match &capture {
+            AncreCapturee::Valid(a) => (
+                now_micros.max(a.t_hi_micros).max(a.t_ref_micros),
+                if a.half_life.is_zero() {
+                    law.half_life()
+                } else {
+                    a.half_life
+                },
+            ),
+            // Absence légitime : migration (ancrage à now).
+            AncreCapturee::Absente => (now_micros, law.half_life()),
+            // Corruption : PAS de restauration implicite. Le renforcement ne peut
+            // pas réparer une ancre temporellement invalide.
+            AncreCapturee::Corrompue => return None,
+        };
+        // L'énergie est calculée au MÊME temps logique τ auquel l'ancre est
+        // ancrée, DEPUIS la valeur capturée : jamais de décroissance entre le
+        // calcul et l'ancrage, jamais une seconde lecture indépendante.
+        let e_courante = match e_courante_depuis_capture(sub, node_id, &capture, law, tau) {
+            Some(e) => e,
+            None => return None,
+        };
+        let plafond = max_energy.min(1.0);
+        let nouvelle = (e_courante + delta).clamp(0.0, plafond);
 
-    // UNE mutation atomique porte tout l'état temporel, ancrée à τ.
-    write_anchor(sub, node_id, nouvelle, tau, tau, h);
-    // Point d'injection (test de durabilité) : un SIGKILL ICI laisse l'ancre
-    // écrite mais pas le miroir — la lecture expose alors 0,5 ou 0,75, jamais
-    // une ancre déchirée (0,375 / 1,0).
-    obrain_common::utils::panne::point_entre_ancre_et_miroir();
-    // Miroir de colonne, best-effort : la lecture ne dépend pas de lui.
-    let _ = sub.set_node_energy_f32(node_id, nouvelle as f32);
-    Some(nouvelle)
+        let a = construire_ancre(nouvelle, tau, tau, h);
+        match write_anchor(sub, node_id, &a, &pre) {
+            Ok(IssuePublication::PublieIntegrale) => {
+                // Point d'injection (test de durabilité) : un SIGKILL ICI laisse
+                // l'ancre publiée mais pas le miroir — la lecture expose alors
+                // 0,5 ou 0,75, jamais une ancre déchirée (0,375 / 1,0).
+                obrain_common::utils::panne::point_entre_ancre_et_miroir();
+                // Miroir de colonne, best-effort : la lecture ne dépend pas de
+                // lui. Écrit APRÈS l'ancre (autorité), jamais avant.
+                let _ = sub.set_node_energy_f32(node_id, nouvelle as f32);
+                return Some(nouvelle);
+            }
+            // Conflit : une ancre PLUS RÉCENTE existe. Re-capturer et RECALCULER
+            // depuis elle — surtout ne PAS re-publier `delta` aveuglément (le
+            // chemin boost est le plus exposé au double renforcement).
+            Ok(IssuePublication::ConflitPrecondition) => continue,
+            Ok(IssuePublication::PubliePartielle) | Err(_) => return None,
+        }
+    }
+}
+
+/// Énergie d'un nœud calculée DEPUIS l'ancre CAPTURÉE (pas une relecture).
+/// `Absente` : colonne héritée (migration) — E_ref = colonne, t_ref = ancre
+/// héritée.
+fn e_courante_depuis_capture(
+    sub: &SubstrateStore,
+    node_id: NodeId,
+    capture: &AncreCapturee,
+    law: &DecayLaw,
+    tau: i64,
+) -> Option<f64> {
+    match capture {
+        AncreCapturee::Valid(a) => Some(if a.half_life.is_zero() {
+            law.energy_at(
+                a.e_ref,
+                elapsed_monotonic(a.t_ref_micros, tau, a.t_hi_micros),
+            )
+        } else {
+            a.energy_at(tau)
+        }),
+        AncreCapturee::Corrompue => None,
+        AncreCapturee::Absente => {
+            // Donnée héritée (absence légitime) : colonne = E_ref.
+            let e_ref = sub.get_node_energy_f32(node_id).ok().flatten()? as f64;
+            if e_ref <= 0.0 {
+                return Some(0.0);
+            }
+            match legacy_anchor(sub, node_id) {
+                Some(t_ref) => Some(law.energy_at(e_ref, elapsed_since(t_ref, tau))),
+                None => Some(e_ref),
+            }
+        }
+    }
 }
 
 /// Comptes d'une avance de tique.
@@ -359,13 +488,16 @@ pub struct DecayAdvance {
 ///
 /// Les nœuds sans ancre (ancienne base) sont ANCRÉS à `now` — migration
 /// explicite, dans le chemin d'écriture — au lieu d'être remis à zéro
-/// silencieusement à la lecture.
+/// silencieusement à la lecture. Toute écriture d'ancre passe par l'autorité
+/// conditionnelle native (Strict) ; un conflit (ancre changée depuis la capture)
+/// reporte le nœud à la tique suivante (décroissance re-capturable, jamais un
+/// delta additif à re-publier).
 pub fn advance_all(
     sub: &SubstrateStore,
     law: &DecayLaw,
     max_nodes: usize,
     now_micros: i64,
-) -> obrain_substrate::SubstrateResult<DecayAdvance> {
+) -> SubstrateResult<DecayAdvance> {
     let mut stats = DecayAdvance::default();
     let slots = sub.iter_live_node_energies()?;
     stats.scanned = slots.len() as u64;
@@ -374,10 +506,10 @@ pub fn advance_all(
     let ancres = sub.get_node_property_batch(&ids, &cle_ancre());
 
     // Assemble les nœuds vivants avec leur clé de vieillesse `(t_hi, t_ref)`.
-    // Les dormants (colonne ≤ 0) sont comptés et écartés du tri : la loi y est
-    // un point fixe, aucune ancre à écrire.
-    let mut candidats: Vec<((i64, i64, NodeId), f64, Option<EnergyAnchor>, Option<i64>)> =
-        Vec::new();
+    // Les dormants (colonne ≤ 0) et les ancres corrompues sont comptés et
+    // écartés du tri. Le calcul et l'écriture, eux, re-capturent l'ancre sous
+    // l'autorité conditionnelle au moment de la mutation.
+    let mut candidats: Vec<((i64, i64, NodeId), f64)> = Vec::new();
     for ((node_id, e_ref_col), ancre) in slots.into_iter().zip(ancres) {
         let e_ref_col = e_ref_col as f64;
         let ancre_etat = decode_anchor_state(&ancre);
@@ -409,78 +541,142 @@ pub fn advance_all(
                 None => (i64::MIN, i64::MIN),
             },
         };
-        candidats.push(((t_hi, t_ref, node_id), e_ref_col, ancre_dec, legacy));
+        candidats.push(((t_hi, t_ref, node_id), e_ref_col));
     }
 
     // Tri par ancienneté : `t_hi` asc (le nœud le moins avancé d'abord), puis
-    // `t_ref` asc, puis `node_id` — déterministe. La « position de reprise »
-    // est implicite via le high-water mark : un nœud fraîchement avancé a un
-    // `t_hi` plus grand et repart en fond de file ; pas de curseur de slot
-    // fragile qui affamerait les nœuds de tête en permanence.
-    candidats.sort_by_key(|(cle, _, _, _)| *cle);
+    // `t_ref` asc, puis `node_id` — déterministe.
+    candidats.sort_by_key(|(cle, _)| *cle);
 
-    for ((_t_hi, _t_ref, node_id), e_ref_col, ancre_dec, legacy) in candidats {
+    for ((_t_hi, _t_ref, node_id), _e_ref_col) in candidats {
         if max_nodes != 0 && stats.advanced as usize >= max_nodes {
             stats.deferred += 1;
             continue;
         }
+        avancer_un_noeud(sub, node_id, law, now_micros, &mut stats)?;
+    }
+    Ok(stats)
+}
 
-        let (e_ref, t_ref, t_hi, h_frozen) = match ancre_dec {
-            Some(a) => (a.e_ref, a.t_ref_micros, a.t_hi_micros, a.half_life),
-            None => match legacy {
-                // Hérité (propriété f64 séparée) : E_ref = colonne.
-                Some(t_ref) => (e_ref_col, t_ref, t_ref, Duration::ZERO),
-                None => {
-                    // Aucune ancre : ancrage de migration à now (point 4).
-                    write_anchor(
-                        sub,
-                        node_id,
-                        e_ref_col,
-                        now_micros,
-                        now_micros,
-                        law.half_life(),
-                    );
-                    stats.unanchored += 1;
-                    continue;
+/// Avance UN nœud sous l'autorité conditionnelle. Mutations d'ancre en `Strict` :
+/// capture → calcul → préparation → publication. Un conflit re-capture et
+/// recalcule (décroissance re-capturable) — jamais de re-publication additive.
+fn avancer_un_noeud(
+    sub: &SubstrateStore,
+    node_id: NodeId,
+    law: &DecayLaw,
+    now_micros: i64,
+    stats: &mut DecayAdvance,
+) -> SubstrateResult<()> {
+    loop {
+        let (pre, capture) = capturer_ancre(sub, node_id)?;
+        match capture {
+            AncreCapturee::Corrompue => {
+                stats.corrupted += 1;
+                return Ok(());
+            }
+            AncreCapturee::Absente => {
+                let e_ref_col = sub.get_node_energy_f32(node_id)?.unwrap_or(0.0) as f64;
+                if e_ref_col <= 0.0 {
+                    stats.dormant += 1;
+                    return Ok(());
                 }
-            },
-        };
-        let h = if h_frozen.is_zero() {
-            law.half_life()
-        } else {
-            h_frozen
-        };
-        // Le calcul et l'ancrage utilisent le MÊME temps logique (high-water).
-        let now_eff = now_micros.max(t_hi);
-        let dt = elapsed_monotonic(t_ref, now_eff, t_hi);
-        let nouvelle = DecayLaw::new(h).energy_at(e_ref, dt);
-        // Deux décisions SÉPARÉES : (1) matérialisation canonique ; (2)
-        // réconciliation du miroir.
-        let changement_canonique = (nouvelle as f32) != (e_ref as f32);
-        let miroir_attendu = obrain_substrate::record::q1_15_to_f32(
-            obrain_substrate::record::f32_to_q1_15(nouvelle as f32),
-        );
-        // Une erreur de LECTURE du miroir n'est pas une divergence : on ne
-        // réconcilie pas sans preuve.
-        let miroir_stocke = match sub.get_node_energy_f32(node_id) {
-            Ok(Some(v)) => Some(v),
-            Ok(None) | Err(_) => None,
-        };
-        let miroir_obsolete = miroir_stocke.is_some() && miroir_stocke != Some(miroir_attendu);
-        if !changement_canonique && !miroir_obsolete {
-            continue;
-        }
-        if changement_canonique {
-            write_anchor(sub, node_id, nouvelle, now_eff, t_hi, h);
-            stats.advanced += 1;
-        }
-        if miroir_obsolete {
-            if sub.set_node_energy_f32(node_id, nouvelle as f32).is_ok() {
-                stats.reconciled += 1;
+                match legacy_anchor(sub, node_id) {
+                    // Hérité (propriété f64 séparée) : E_ref = colonne, t_ref
+                    // hérité, H non figée — on décroît depuis l'ancre héritée.
+                    Some(t_ref) => {
+                        let now_eff = now_micros.max(t_ref);
+                        let dt = elapsed_monotonic(t_ref, now_eff, t_ref);
+                        let nouvelle = law.energy_at(e_ref_col, dt);
+                        let changement_canonique = (nouvelle as f32) != (e_ref_col as f32);
+                        let miroir_attendu = obrain_substrate::record::q1_15_to_f32(
+                            obrain_substrate::record::f32_to_q1_15(nouvelle as f32),
+                        );
+                        let miroir_stocke = match sub.get_node_energy_f32(node_id) {
+                            Ok(Some(v)) => Some(v),
+                            Ok(None) | Err(_) => None,
+                        };
+                        let miroir_obsolete =
+                            miroir_stocke.is_some() && miroir_stocke != Some(miroir_attendu);
+                        if !changement_canonique && !miroir_obsolete {
+                            return Ok(());
+                        }
+                        if changement_canonique {
+                            let a = construire_ancre(nouvelle, now_eff, t_ref, law.half_life());
+                            match write_anchor(sub, node_id, &a, &pre)? {
+                                IssuePublication::PublieIntegrale => {
+                                    stats.advanced += 1;
+                                }
+                                IssuePublication::ConflitPrecondition => continue,
+                                IssuePublication::PubliePartielle => {}
+                            }
+                        }
+                        if miroir_obsolete {
+                            if sub.set_node_energy_f32(node_id, nouvelle as f32).is_ok() {
+                                stats.reconciled += 1;
+                            }
+                        }
+                        return Ok(());
+                    }
+                    None => {
+                        // Aucune ancre : ancrage de migration à now (point 4).
+                        let a = construire_ancre(e_ref_col, now_micros, now_micros, law.half_life());
+                        match write_anchor(sub, node_id, &a, &pre)? {
+                            IssuePublication::PublieIntegrale => {
+                                stats.unanchored += 1;
+                                return Ok(());
+                            }
+                            IssuePublication::ConflitPrecondition => continue,
+                            IssuePublication::PubliePartielle => return Ok(()),
+                        }
+                    }
+                }
+            }
+            AncreCapturee::Valid(a) => {
+                let h = if a.half_life.is_zero() {
+                    law.half_life()
+                } else {
+                    a.half_life
+                };
+                // Le calcul et l'ancrage utilisent le MÊME temps logique (high-water).
+                let now_eff = now_micros.max(a.t_hi_micros);
+                let dt = elapsed_monotonic(a.t_ref_micros, now_eff, a.t_hi_micros);
+                let nouvelle = DecayLaw::new(h).energy_at(a.e_ref, dt);
+                // Deux décisions SÉPARÉES : (1) matérialisation canonique ; (2)
+                // réconciliation du miroir.
+                let changement_canonique = (nouvelle as f32) != (a.e_ref as f32);
+                let miroir_attendu = obrain_substrate::record::q1_15_to_f32(
+                    obrain_substrate::record::f32_to_q1_15(nouvelle as f32),
+                );
+                // Une erreur de LECTURE du miroir n'est pas une divergence.
+                let miroir_stocke = match sub.get_node_energy_f32(node_id) {
+                    Ok(Some(v)) => Some(v),
+                    Ok(None) | Err(_) => None,
+                };
+                let miroir_obsolete =
+                    miroir_stocke.is_some() && miroir_stocke != Some(miroir_attendu);
+                if !changement_canonique && !miroir_obsolete {
+                    return Ok(());
+                }
+                if changement_canonique {
+                    let a_nouvelle = construire_ancre(nouvelle, now_eff, a.t_hi_micros, h);
+                    match write_anchor(sub, node_id, &a_nouvelle, &pre)? {
+                        IssuePublication::PublieIntegrale => {
+                            stats.advanced += 1;
+                        }
+                        IssuePublication::ConflitPrecondition => continue,
+                        IssuePublication::PubliePartielle => {}
+                    }
+                }
+                if miroir_obsolete {
+                    if sub.set_node_energy_f32(node_id, nouvelle as f32).is_ok() {
+                        stats.reconciled += 1;
+                    }
+                }
+                return Ok(());
             }
         }
     }
-    Ok(stats)
 }
 
 /// Énergie courante à partir des pièces déjà lues en lot (colonne, ancre
