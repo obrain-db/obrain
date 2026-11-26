@@ -48740,6 +48740,150 @@ mod publication_conditionnelle_native {
         eprintln!("MULTI_EFFET_OK : la résolution est par clé, l'intégralité exige chaque clé");
     }
 
+    fn f64_de_capture(pre: &Precondition) -> f64 {
+        match pre.etat_dependance(0) {
+            EtatPropriete::Presente { valeur, .. } => match valeur {
+                Value::Float64(v) => *v,
+                autre => panic!("attendu Float64, lu {autre:?}"),
+            },
+            autre => panic!("attendu présente, lu {autre:?}"),
+        }
+    }
+
+    /// P0-A — MUTATION CONDITIONNELLE avec RECALCUL RÉEL : les valeurs ne sont
+    /// PAS prédéterminées, elles sont calculées depuis la valeur capturée.
+    #[test]
+    fn mutation_conditionnelle_recalcul_reel() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["energie"]);
+        store.set_node_property(id, "energie", Value::Float64(0.2));
+
+        // capture initiale : la valeur EST lue, pas prédéterminée
+        let pre = store.capturer_precondition(id, &["energie"]).unwrap();
+        let e0 = f64_de_capture(&pre);
+        assert!((e0 - 0.2).abs() < 1e-9);
+
+        // A et B calculent depuis la MÊME capture : e0 + 0.1
+        let a = e0 + 0.1;
+        let b = e0 + 0.1;
+
+        let prep_a = store
+            .preparer_transformation(id, &[("energie", Value::Float64(a))], &pre, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_a).unwrap(), IssuePublication::PublieIntegrale);
+
+        let prep_b = store
+            .preparer_transformation(id, &[("energie", Value::Float64(b))], &pre, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(
+            store.publier_si_precondition_intacte(prep_b).unwrap(),
+            IssuePublication::ConflitPrecondition,
+            "B refusée sur précondition obsolète"
+        );
+
+        // recapture de la valeur COURANTE (0.3), puis recalcul de B
+        let pre2 = store.capturer_precondition(id, &["energie"]).unwrap();
+        let e1 = f64_de_capture(&pre2);
+        let b2 = e1 + 0.1;
+        let prep_b2 = store
+            .preparer_transformation(id, &[("energie", Value::Float64(b2))], &pre2, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_b2).unwrap(), IssuePublication::PublieIntegrale);
+
+        let resultat = f64_de_capture(&store.capturer_precondition(id, &["energie"]).unwrap());
+        assert!((resultat - 0.4).abs() < 1e-9, "résultat proche de 0.4, lu {resultat}");
+        eprintln!("RECALCUL_OK : e0={e0} → A={a} engagée → B={b} refusée → recapture e1={e1} → B'={b2} → {resultat}");
+    }
+
+    /// P0-A — ANCRE Bytes versionnée : la capture préserve contenu + estampille
+    /// d'une ancre encodée en octets ; la mutation conditionnelle s'y applique.
+    #[test]
+    fn mutation_conditionnelle_ancre_bytes() {
+        use std::sync::Arc;
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["energie"]);
+        let enc = |v: f64| -> Value { Value::Bytes(Arc::from(v.to_le_bytes().to_vec())) };
+        store.set_node_property(id, "ancre", enc(0.2));
+
+        let pre = store.capturer_precondition(id, &["ancre"]).unwrap();
+        let e0 = match pre.etat_dependance(0) {
+            EtatPropriete::Presente { valeur: Value::Bytes(b), .. } => f64::from_le_bytes(b[..8].try_into().unwrap()),
+            autre => panic!("attendu Bytes, lu {autre:?}"),
+        };
+        assert!((e0 - 0.2).abs() < 1e-9);
+
+        let a = e0 + 0.1;
+        let prep_a = store
+            .preparer_transformation(id, &[("ancre", enc(a))], &pre, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_a).unwrap(), IssuePublication::PublieIntegrale);
+
+        // B depuis la même capture (obsolète)
+        let prep_b = store
+            .preparer_transformation(id, &[("ancre", enc(e0 + 0.1))], &pre, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_b).unwrap(), IssuePublication::ConflitPrecondition);
+
+        // recapture + recalcul → 0.4
+        let pre2 = store.capturer_precondition(id, &["ancre"]).unwrap();
+        let e1 = match pre2.etat_dependance(0) {
+            EtatPropriete::Presente { valeur: Value::Bytes(b), .. } => f64::from_le_bytes(b[..8].try_into().unwrap()),
+            autre => panic!("attendu Bytes, lu {autre:?}"),
+        };
+        let prep_b2 = store
+            .preparer_transformation(id, &[("ancre", enc(e1 + 0.1))], &pre2, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_b2).unwrap(), IssuePublication::PublieIntegrale);
+        eprintln!("BYTES_OK : ancre Bytes versionnée, capture+recalcul → 0.4");
+    }
+
+    /// P0-B — MESURE des 10 000 conflits différés : abandon volontaire (0 page)
+    /// vs publication refusée sur précondition obsolète (matérialisation AVANT
+    /// validation → amplification de pages).
+    #[test]
+    fn mesure_10000_conflits_differees() {
+        use std::time::Instant;
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        let pre = store.capturer_precondition(id, &["a"]).unwrap();
+        // rend la précondition obsolète (a=2), pour que la publication soit refusée
+        store.set_node_property(id, "a", Value::Int64(2));
+
+        let pz = store.props_zone.as_ref().unwrap();
+        let n = 10_000;
+
+        // scénario 1 : préparations LOGIQUES abandonnées (jamais publiées)
+        let avant = pz.read().allocated_page_count();
+        let t = Instant::now();
+        for _ in 0..n {
+            store.preparer_transformation_differee(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict).unwrap();
+        }
+        let abandon_pages = pz.read().allocated_page_count() - avant;
+        let abandon_ns = t.elapsed().as_nanos() as f64 / n as f64;
+
+        // scénario 2 : publications différées REFUSÉES (matérialisation précède la validation)
+        let avant2 = pz.read().allocated_page_count();
+        let t = Instant::now();
+        for _ in 0..n {
+            let prep = store.preparer_transformation_differee(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict).unwrap();
+            let r = store.publier_si_precondition_intacte_differee(prep).unwrap();
+            assert_eq!(r, IssuePublication::ConflitPrecondition);
+        }
+        let conflit_pages = pz.read().allocated_page_count() - avant2;
+        let conflit_ns = t.elapsed().as_nanos() as f64 / n as f64;
+
+        eprintln!(
+            "CONFLITS abandon={abandon_pages} pages ({abandon_ns:.0} ns/prép) ;              refus={conflit_pages} pages ({conflit_ns:.0} ns/pub)"
+        );
+        assert_eq!(abandon_pages, 0, "l'abandon logique n'alloue aucune page");
+        // DÉFAUT MESURÉ : chaque refus matérialise AVANT validation → au moins n pages
+        assert!(conflit_pages >= n as u32, "amplification : matérialisation avant validation");
+    }
+
     /// P0 — écriture répétée d'une même clé : refusée à la préparation.
     #[test]
     fn ecritures_repetees_sur_une_cle_refusees() {
