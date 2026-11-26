@@ -225,6 +225,17 @@ jobs:
   # faite par couverture-badge.yml (workflow_run), pas ici : ce workflow reste en
   # `contents: read` et n'a aucun droit d'écriture, y compris quand release.yml
   # l'appelle.
+  performance:
+    name: Performance (Hilbert — seuil 5 s, sans instrumentation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      # Le test perf est #[ignore] : il doit être exécuté EXPLICITEMENT ici, sans
+      # instrumentation, pour ne pas être désactivé silencieusement.
+      - name: Hilbert — borne de latence (sans instrumentation)
+        run: cargo test -p obrain-adapters --lib test_hilbert_features_perf_1000_nodes --features full -- --ignored --nocapture
+
   couverture:
     name: Couverture (code neuf ≥ 95 %, plancher global)
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
