@@ -3156,6 +3156,19 @@ pub enum IssuePublication {
     ConflitPrecondition,
 }
 
+/// Mode de publication : détermine si les propriétés ÉCRITES mais non DÉCLARÉES
+/// comme dépendances sont permises (LWW) ou refusées (Strict).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModePublication {
+    /// Écritures aveugles permises : une propriété écrite non déclarée est LWW
+    /// (une écriture concurrente plus récente peut la masquer).
+    Lww,
+    /// Toute propriété ÉCRITE doit être DÉCLARÉE comme dépendance : la
+    /// précondition la valide, donc TOUS les effets écrits deviennent
+    /// canoniques (aucun effet partiellement masqué). Refus sinon.
+    Strict,
+}
+
 /// Transformation préparée hors de la tête canonique : une chaîne de pages
 /// privées (invisible des lecteurs) prête à être publiée par une seule bascule
 /// de tête. Descripteur OPAQUE et CONSOMMABLE : non `Copy`/`Clone`, champs
@@ -3167,6 +3180,11 @@ pub enum IssuePublication {
 pub struct TransformationPrete {
     incarnation: u64,
     cible: NodeId,
+    /// Précondition CAPTURÉE qui a servi à calculer la transformation — LIÉE
+    /// à la préparation : `publier_si_precondition_intacte` la relit telle
+    /// quelle, l'appelant ne peut pas en substituer une autre (lien explicite
+    /// préparation ↔ capture).
+    precondition: Precondition,
     /// Tête canonique au moment de la préparation (H0).
     tete_origine: u64,
     /// Page privée dont `next_page` pointe `tete_origine` — le point de
@@ -3282,8 +3300,34 @@ impl SubstrateStore {
     pub fn preparer_transformation(
         &self,
         cible: NodeId,
-        nouvelles: &[(u16, Value)],
+        nouvelles: &[(&str, Value)],
+        precondition: &Precondition,
+        mode: ModePublication,
     ) -> SubstrateResult<TransformationPrete> {
+        // Liaison de la précondition à CE store et à CETTE cible (même
+        // incarnation, même ressource) — refus précoce.
+        if precondition.incarnation != self.incarnation {
+            return Err(SubstrateError::Internal(
+                "preparer_transformation : précondition d'un autre store".to_string(),
+            ));
+        }
+        if precondition.cible != cible {
+            return Err(SubstrateError::Internal(
+                "preparer_transformation : précondition d'une autre cible".to_string(),
+            ));
+        }
+        // MODE STRICT : toute propriété ÉCRITE doit être DÉCLARÉE comme
+        // dépendance — sinon la précondition ne la validerait pas, et son effet
+        // ne serait pas garanti canonique (elle resterait une écriture aveugle).
+        if mode == ModePublication::Strict {
+            for (cle, _) in nouvelles {
+                if !precondition.dependances.iter().any(|d| d.cle == *cle) {
+                    return Err(SubstrateError::Internal(format!(
+                        "preparer_transformation : écriture de {cle} non déclarée en mode strict"
+                    )));
+                }
+            }
+        }
         let Some(pz_lock) = self.props_zone.as_ref() else {
             return Err(SubstrateError::Internal(
                 "preparer_transformation : pas de props_zone".to_string(),
@@ -3298,10 +3342,18 @@ impl SubstrateStore {
         let millis = crate::horloge_hybride::horloge_murale_millis();
         let horloge = self.horloge.lock().maintenant(millis).pack();
 
+        // Interner les clés AVANT de prendre le verrou de zone (même ordre de
+        // verrous que set_node_property).
+        let mut entrees: Vec<(u16, &Value)> = Vec::with_capacity(nouvelles.len());
+        for (cle, valeur) in nouvelles {
+            let prop_key_id = self.interner_cle_journalisee(cle)?;
+            entrees.push((prop_key_id, valeur));
+        }
+
         let mut pz = pz_lock.write();
         let mut point_attache = 0u64;
         let mut tete_privee = 0u64;
-        for (i, (prop_key_id, valeur)) in nouvelles.iter().enumerate() {
+        for (i, (prop_key_id, valeur)) in entrees.iter().enumerate() {
             let pv = encode_value(&mut pz, valeur)?;
             let entry = PropertyEntry::new_stamped(*prop_key_id, pv, auteur, horloge);
             if i == 0 {
@@ -3325,6 +3377,7 @@ impl SubstrateStore {
         Ok(TransformationPrete {
             incarnation: self.incarnation,
             cible,
+            precondition: precondition.clone(),
             tete_origine,
             point_attache,
             tete_privee,
@@ -3351,18 +3404,13 @@ impl SubstrateStore {
     pub fn publier_si_precondition_intacte(
         &self,
         prep: TransformationPrete,
-        precondition: &Precondition,
     ) -> SubstrateResult<IssuePublication> {
-        // Liaison : la précondition et la transformation doivent appartenir à
-        // CE store (même incarnation) et viser la MÊME cible.
-        if prep.incarnation != self.incarnation || precondition.incarnation != self.incarnation {
+        // Liaison au store : même incarnation. La précondition est LIÉE à la
+        // transformation (stockée à la préparation) — l'appelant ne peut pas en
+        // substituer une autre.
+        if prep.incarnation != self.incarnation {
             return Err(SubstrateError::Internal(
                 "publier_si_precondition_intacte : descripteur d'un autre store".to_string(),
-            ));
-        }
-        if prep.cible != precondition.cible {
-            return Err(SubstrateError::Internal(
-                "publier_si_precondition_intacte : précondition d'une autre cible".to_string(),
             ));
         }
         if prep.tete_privee == 0 {
@@ -3394,8 +3442,9 @@ impl SubstrateStore {
                 "publier_si_precondition_intacte : transformation déjà publiée".to_string(),
             ));
         }
-        // Validation : la précondition capturée est relue telle quelle.
-        for dep in &precondition.dependances {
+        // Validation : la précondition LIÉE (capturée à la préparation) est
+        // relue telle quelle.
+        for dep in &prep.precondition.dependances {
             let courante = self.lire_etat_propriete(prep.cible, &dep.cle)?;
             if !etat_correspond(&courante, &dep.etat) {
                 return Ok(IssuePublication::ConflitPrecondition);
@@ -47372,6 +47421,7 @@ mod revision_composite {
 
 
 
+
 #[cfg(test)]
 mod publication_conditionnelle_native {
     use super::*;
@@ -47397,13 +47447,6 @@ mod publication_conditionnelle_native {
         store.capturer_precondition(id, &["a", "b"]).unwrap()
     }
 
-    fn pa(store: &SubstrateStore) -> u16 {
-        store.prop_keys.read().lookup("a").unwrap()
-    }
-    fn pb(store: &SubstrateStore) -> u16 {
-        store.prop_keys.read().lookup("b").unwrap()
-    }
-
     /// MISSION 2 — A : mutation concurrente de a (dépendance) → conflit.
     #[test]
     fn scenario_a_mutation_concurrente_de_a_conflit() {
@@ -47412,10 +47455,10 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[(pa(&store), Value::Int64(10)), (pb(&store), Value::Int64(20))])
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
             .unwrap();
         store.set_node_property(id, "a", Value::Int64(99));
-        let r = store.publier_si_precondition_intacte(prep, &pre).unwrap();
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
         assert_eq!(r, IssuePublication::ConflitPrecondition, "A : conflit explicite");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(99)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
@@ -47430,10 +47473,10 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[(pa(&store), Value::Int64(10)), (pb(&store), Value::Int64(20))])
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
             .unwrap();
         store.set_node_property(id, "c", Value::Int64(30));
-        let r = store.publier_si_precondition_intacte(prep, &pre).unwrap();
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
         assert_eq!(r, IssuePublication::Publie, "B : acceptée");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
@@ -47451,10 +47494,10 @@ mod publication_conditionnelle_native {
         store.set_node_property(id2, "z", Value::Int64(9));
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[(pa(&store), Value::Int64(10)), (pb(&store), Value::Int64(20))])
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
             .unwrap();
         store.set_node_property(id2, "z", Value::Int64(99));
-        let r = store.publier_si_precondition_intacte(prep, &pre).unwrap();
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
         assert_eq!(r, IssuePublication::Publie, "C : acceptée");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         assert_eq!(store.get_node_property(id2, &PropertyKey::new("z")), Some(Value::Int64(99)));
@@ -47468,10 +47511,10 @@ mod publication_conditionnelle_native {
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
         let pre = precond(&store, id);
-        let prep1 = store.preparer_transformation(id, &[(pa(&store), Value::Int64(10))]).unwrap();
-        let prep2 = store.preparer_transformation(id, &[(pa(&store), Value::Int64(20))]).unwrap();
-        let r1 = store.publier_si_precondition_intacte(prep1, &pre).unwrap();
-        let r2 = store.publier_si_precondition_intacte(prep2, &pre).unwrap();
+        let prep1 = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        let prep2 = store.preparer_transformation(id, &[("a", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        let r1 = store.publier_si_precondition_intacte(prep1).unwrap();
+        let r2 = store.publier_si_precondition_intacte(prep2).unwrap();
         assert_eq!(r1, IssuePublication::Publie, "D : première publiée");
         assert_eq!(r2, IssuePublication::ConflitPrecondition, "D : seconde refusée");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
@@ -47487,7 +47530,7 @@ mod publication_conditionnelle_native {
         let pc = store.prop_keys.read().lookup("c").unwrap();
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[(pa(&store), Value::Int64(10)), (pb(&store), Value::Int64(20))])
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
             .unwrap();
         let slot = id.0 as u32;
         let auteur = store.writer_id;
@@ -47500,10 +47543,9 @@ mod publication_conditionnelle_native {
             pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_c).unwrap()
         };
         store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(h1)).unwrap();
-        // estampilles a,b inchangées
         assert_eq!(stamp(&store, id, "a"), pre.estampille_dependance(0), "a inchangé");
         assert_eq!(stamp(&store, id, "b"), pre.estampille_dependance(1), "b inchangé");
-        let r = store.publier_si_precondition_intacte(prep, &pre).unwrap();
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
         assert_eq!(r, IssuePublication::Publie, "validation logique réussit");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
@@ -47511,16 +47553,16 @@ mod publication_conditionnelle_native {
         eprintln!("E_OK : rattachement conserve c après changement de tête");
     }
 
-    /// MISSION 3 — CONTRE-ÉPREUVE : publication naïve perd c (chaîne privée
-    /// référence encore H0, la nouvelle tête H1 devient orpheline).
+    /// MISSION 3 — CONTRE-ÉPREUVE : publication naïve perd c.
     #[test]
     fn scenario_f_publication_naive_perd_c_apres_changement_de_tete() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
         let pc = store.prop_keys.read().lookup("c").unwrap();
+        let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[(pa(&store), Value::Int64(10)), (pb(&store), Value::Int64(20))])
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
             .unwrap();
         let slot = id.0 as u32;
         let auteur = store.writer_id;
@@ -47533,7 +47575,6 @@ mod publication_conditionnelle_native {
             pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_c).unwrap()
         };
         store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(h1)).unwrap();
-        // publication NAIVE : bascule sur tete_privee sans rattacher.
         store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(prep.tete_privee_pour_test())).unwrap();
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
@@ -47541,21 +47582,20 @@ mod publication_conditionnelle_native {
         eprintln!("F_OK : publication naive perd c — le rattachement est nécessaire");
     }
 
-    /// P0-1 : transformation vide → refusée (aucune page allouée).
+    /// P0-1 : transformation vide → refusée.
     #[test]
     fn transformation_vide_refusee() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
         let pre = precond(&store, id);
-        let prep = store.preparer_transformation(id, &[]).unwrap();
-        let r = store.publier_si_precondition_intacte(prep, &pre);
+        let prep = store.preparer_transformation(id, &[], &pre, ModePublication::Lww).unwrap();
+        let r = store.publier_si_precondition_intacte(prep);
         assert!(r.is_err(), "transformation vide → erreur");
         eprintln!("VIDE_OK : transformation vide refusée");
     }
 
-    /// P0-1 : précondition vide = écriture aveugle (aucune dépendance vérifiée,
-    /// mais le rattachement préserve toujours les écritures indépendantes).
+    /// P0-1 : précondition vide = écriture aveugle.
     #[test]
     fn precondition_vide_ecriture_aveugle() {
         let td = tempfile::tempdir().unwrap();
@@ -47563,38 +47603,32 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = store.capturer_precondition(id, &[]).unwrap();
         let prep = store
-            .preparer_transformation(id, &[(pa(&store), Value::Int64(10)), (pb(&store), Value::Int64(20))])
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
             .unwrap();
-        let r = store.publier_si_precondition_intacte(prep, &pre).unwrap();
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
         assert_eq!(r, IssuePublication::Publie, "écriture aveugle publiée");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
         eprintln!("AVEUGLE_OK : précondition vide = écriture aveugle, publiée");
     }
 
-    /// P0-1 : re-publication → refusée par la garde anti-cycle (la chaîne
-    /// privée est déjà la tête canonique). Borné : aucun lecteur ne boucle.
+    /// P0-1 : re-publication → refusée par la garde anti-cycle.
     #[test]
     fn republication_refusee_garde_anti_cycle() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
         let pre = precond(&store, id);
-        let prep = store
-            .preparer_transformation(id, &[(pa(&store), Value::Int64(10))])
-            .unwrap();
+        let prep = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
         let slot = id.0 as u32;
-        // simule « déjà publié » en basculant la tête sur la chaîne privée.
         store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(prep.tete_privee_pour_test())).unwrap();
-        let r = store.publier_si_precondition_intacte(prep, &pre);
-        assert!(r.is_err(), "re-publication refusée (chaîne déjà canonique)");
+        let r = store.publier_si_precondition_intacte(prep);
+        assert!(r.is_err(), "re-publication refusée");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         eprintln!("REPUBLICATION_OK : garde anti-cycle refuse sans boucler");
     }
 
-    /// P0-1 — CONTRE-ÉPREUVE BORNÉE : le rattachement naïf à soi-même crée un
-    /// cycle. On le détecte par une marche bornée (visités + plafond), jamais
-    /// par un parcours non borné.
+    /// P0-1 — CONTRE-ÉPREUVE BORNÉE : le rattachement naïf à soi-même crée un cycle.
     #[test]
     fn rattachement_a_soi_meme_creerait_un_cycle() {
         let td = tempfile::tempdir().unwrap();
@@ -47615,11 +47649,9 @@ mod publication_conditionnelle_native {
             let p = pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_a).unwrap();
             let e_b = PropertyEntry::new_stamped(prop_b, PropertyValue::I64(20), auteur, horloge);
             let p2 = pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(p), &e_b).unwrap();
-            // cycle : P.next_page = P2 (au lieu de H0)
             pz.rattacher_page_privee(p, p2).unwrap();
             (p, p2)
         };
-        // marche bornée : P2 -> P -> P2 -> P -> …
         let pz_lock = store.props_zone.as_ref().unwrap();
         let pz = pz_lock.read();
         let mut visites: HashSet<u64> = HashSet::new();
@@ -47639,7 +47671,7 @@ mod publication_conditionnelle_native {
         }
         assert!(cyclique, "le rattachement naïf à soi-même crée un cycle");
         assert!(visites.contains(&p) && visites.contains(&p2));
-        eprintln!("CYCLE_OK : cycle détecté par marche bornée (jamais un lecteur non borné)");
+        eprintln!("CYCLE_OK : cycle détecté par marche bornée");
     }
 
     /// P0-1 : publication après suppression de la cible → refus.
@@ -47649,15 +47681,14 @@ mod publication_conditionnelle_native {
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
         let pre = precond(&store, id);
-        let prep = store.preparer_transformation(id, &[(pa(&store), Value::Int64(10))]).unwrap();
+        let prep = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
         assert!(store.delete_node(id), "suppression effective");
-        let r = store.publier_si_precondition_intacte(prep, &pre);
+        let r = store.publier_si_precondition_intacte(prep);
         assert!(r.is_err(), "cible supprimée → refus");
         eprintln!("SUPPRESSION_OK : publication sur cible supprimée refusée");
     }
 
-    /// P0-1 : publication d'un descripteur préparé sur un AUTRE store → refus
-    /// (incarnation différente).
+    /// P0-1 : descripteur préparé sur un AUTRE store → refus (incarnation).
     #[test]
     fn descripteur_etranger_refuse() {
         let td = tempfile::tempdir().unwrap();
@@ -47666,14 +47697,13 @@ mod publication_conditionnelle_native {
         let id_a = base(&store_a);
         let _id_b = base(&store_b);
         let pre = precond(&store_a, id_a);
-        let prep = store_a.preparer_transformation(id_a, &[(pa(&store_a), Value::Int64(10))]).unwrap();
-        // publier sur le store B : incarnation différente (NodeId(1) y existe aussi)
-        let r = store_b.publier_si_precondition_intacte(prep, &pre);
+        let prep = store_a.preparer_transformation(id_a, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        let r = store_b.publier_si_precondition_intacte(prep);
         assert!(r.is_err(), "descripteur étranger refusé");
         eprintln!("ETRANGER_OK : descripteur d'un autre store refusé (incarnation)");
     }
 
-    /// P0-3 : précondition capturée sur une AUTRE ressource → refus (cible liée).
+    /// P0 : précondition capturée sur une AUTRE ressource → refus à la préparation.
     #[test]
     fn precondition_autre_ressource_refusee() {
         let td = tempfile::tempdir().unwrap();
@@ -47683,14 +47713,12 @@ mod publication_conditionnelle_native {
         store.set_node_property(id2, "a", Value::Int64(1));
         store.set_node_property(id2, "b", Value::Int64(2));
         let pre = precond(&store, id1); // capturée sur id1
-        let prep = store.preparer_transformation(id2, &[(pa(&store), Value::Int64(10))]).unwrap();
-        let r = store.publier_si_precondition_intacte(prep, &pre);
+        let r = store.preparer_transformation(id2, &[("a", Value::Int64(10))], &pre, ModePublication::Lww);
         assert!(r.is_err(), "précondition d'une autre cible refusée");
         eprintln!("AUTRE_CIBLE_OK : précondition d'une autre ressource refusée");
     }
 
-    /// P0-3 : écriture sur une propriété NON dépendante → non invalidante,
-    /// préservée (contrat d'écriture aveugle sur la dépendance nommée).
+    /// P0 : écriture sur une propriété NON dépendante → préservée (LWW).
     #[test]
     fn ecriture_sur_non_dependance_preservee() {
         let td = tempfile::tempdir().unwrap();
@@ -47698,45 +47726,88 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = precond(&store, id); // dépendances : a, b — PAS d
         let prep = store
-            .preparer_transformation(id, &[(pa(&store), Value::Int64(10)), (pb(&store), Value::Int64(20))])
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
             .unwrap();
-        store.set_node_property(id, "d", Value::Int64(7)); // non dépendante
-        let r = store.publier_si_precondition_intacte(prep, &pre).unwrap();
+        store.set_node_property(id, "d", Value::Int64(7));
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
         assert_eq!(r, IssuePublication::Publie, "écriture non dépendante n'invalide pas");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("d")), Some(Value::Int64(7)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         eprintln!("NON_DEP_OK : écriture sur propriété non dépendante préservée");
     }
 
-    /// P0 — EFFET RÉELLEMENT PUBLIÉ : une écriture AVEUGLE (c non déclarée
-    /// dépendance) est LWW — une écriture concurrente plus récente la masque.
-    /// `Publie` garantit la canonicité des DÉPENDANCES (a,b), pas des aveugles.
+    /// P0 — EFFET OBSOLÈTE : écriture aveugle (c) LWW — masquée par une plus récente.
     #[test]
     fn effet_obsolete_pour_ecriture_aveugle() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
-        let pc = store.prop_keys.read().lookup("c").unwrap();
         let pre = precond(&store, id); // dépendances : a,b — PAS c
         let prep = store
-            .preparer_transformation(id, &[
-                (pa(&store), Value::Int64(10)),
-                (pb(&store), Value::Int64(20)),
-                (pc, Value::Int64(30)), // écriture AVEUGLE sur c
-            ])
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Lww)
             .unwrap();
-        // écriture normale PLUS RÉCENTE sur c (non déclarée dépendance).
         store.set_node_property(id, "c", Value::Int64(99));
-        let r = store.publier_si_precondition_intacte(prep, &pre).unwrap();
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
         assert_eq!(r, IssuePublication::Publie, "tête basculée");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)), "dépendance a canonique");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)), "dépendance b canonique");
-        assert_eq!(
-            store.get_node_property(id, &PropertyKey::new("c")),
-            Some(Value::Int64(99)),
-            "écriture aveugle c=30 OBSOLÈTE : la plus récente (99) gagne en LWW"
-        );
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(99)), "aveugle c=30 OBSOLÈTE");
         eprintln!("OBSOLETE_OK : Publie distingue dépendance canonique et aveugle obsolète");
+    }
+
+    /// P0 — LIEN CAPTURE↔TRANSFORMATION : T est liée à la capture qui l'a
+    /// calculée. L'ancien piège (capturer p0, préparer T, laisser changer une
+    /// dépendance, capturer p1, publier T avec p1) est impossible : publier
+    /// relit la précondition LIÉE à la préparation.
+    #[test]
+    fn lien_entre_capture_et_transformation() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let p0 = precond(&store, id); // capture a=1,b=2
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &p0, ModePublication::Lww)
+            .unwrap();
+        // une dépendance change APRÈS la capture p0 (donc T est calculée depuis
+        // un état périmé).
+        store.set_node_property(id, "a", Value::Int64(5));
+        // publier(prep) relit p0 (liée) : a (5) != p0 (1) → conflit. On ne peut
+        // PAS substituer une capture p1 plus fraîche (pas d'argument).
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::ConflitPrecondition, "T calculée depuis p0 refusée quand a a changé");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(5)), "a inchangé");
+        eprintln!("LIEN_OK : la transformation est liée à la capture qui l'a calculée");
+    }
+
+    /// P0 — MODE STRICT : refuse d'écrire une propriété non déclarée.
+    #[test]
+    fn mode_strict_refuse_ecriture_non_declaree() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id); // dépendances : a,b — PAS c
+        let r = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("c", Value::Int64(30))], &pre, ModePublication::Strict);
+        assert!(r.is_err(), "strict refuse d'écrire c non déclarée");
+        eprintln!("STRICT_REFUS_OK : écriture non déclarée refusée en mode strict");
+    }
+
+    /// P0 — MODE STRICT : tous les effets écrits deviennent canoniques (déclare
+    /// a,b,c) ; une écriture concurrente sur l'un d'eux → refus.
+    #[test]
+    fn mode_strict_tous_effets_canoniques() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = store.capturer_precondition(id, &["a", "b", "c"]).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Strict)
+            .unwrap();
+        store.set_node_property(id, "c", Value::Int64(99));
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::ConflitPrecondition, "strict : c a changé → refus");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)), "rien publié");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(99)));
+        eprintln!("STRICT_CANONIQUE_OK : mode strict refuse un effet non intégralement canonique");
     }
 }
 
@@ -47809,9 +47880,6 @@ mod mission1_identite_estampille {
 mod mission4_lecture_coherente {
     use super::*;
 
-    /// MISSION 4 : le mécanisme natif de capture cohérente est le verrou
-    /// d'écriture du nœud — `capturer_precondition` lit toutes les dépendances
-    /// sous ce verrou, donc aucun écrivain ne peut s'intercaler.
     #[test]
     fn capture_sous_verrou_noeud_est_coherente() {
         let td = tempfile::tempdir().unwrap();
@@ -47831,7 +47899,6 @@ mod mission4_lecture_coherente {
         };
         assert_eq!((va, vb), (Value::Int64(1), Value::Int64(2)), "capture cohérente V0");
         eprintln!("CAPTURE_OK : a et b lues sous la même autorité (verrou de nœud)");
-        // LIMITE assumée : l'isolation ne couvre que les dépendances nommées.
     }
 }
 
@@ -47873,8 +47940,6 @@ mod mesure_couts {
     use super::*;
     use std::time::Instant;
 
-    /// MESURE (ordre de grandeur) : capture, préparation, et croissance de la
-    /// zone par préparations abandonnées (pages privées orphelines).
     #[test]
     fn mesure_capture_preparation_croissance() {
         let td = tempfile::tempdir().unwrap();
@@ -47883,8 +47948,7 @@ mod mesure_couts {
         store.set_node_property(id, "a", Value::Int64(1));
         store.set_node_property(id, "b", Value::Int64(2));
         store.set_node_property(id, "c", Value::Int64(3));
-        let pa = store.prop_keys.read().lookup("a").unwrap();
-        let pb = store.prop_keys.read().lookup("b").unwrap();
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
 
         let n_cap = 10_000;
         let t = Instant::now();
@@ -47898,7 +47962,7 @@ mod mesure_couts {
         let n_prep = 1_000;
         let t = Instant::now();
         for _ in 0..n_prep {
-            store.preparer_transformation(id, &[(pa, Value::Int64(10)), (pb, Value::Int64(20))]).unwrap();
+            store.preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
         }
         let preparation_ns = t.elapsed().as_nanos() as f64 / n_prep as f64;
         let apres = pz.read().allocated_page_count();
@@ -47908,8 +47972,6 @@ mod mesure_couts {
             "COUTS capture={capture_ns:.0}ns preparation_2props={preparation_ns:.0}ns ; \
              pages orphelines après {n_prep} préparations non publiées = {croissance} (NON récupérées)"
         );
-        // La croissance est structurelle : les pages privées non publiées ne
-        // sont pas récupérées (pas de réclamation implémentée) — à documenter.
         assert!(croissance >= n_prep as u32, "chaque préparation alloue au moins une page");
     }
 }
