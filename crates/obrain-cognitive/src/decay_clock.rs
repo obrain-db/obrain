@@ -88,7 +88,9 @@ fn decode_anchor(v: &Value) -> Option<EnergyAnchor> {
         Ok(h) => h,
         Err(_) => return None,
     };
-    if !e_ref.is_finite() || e_ref <= 0.0 || t_ref <= 0 {
+    // e_ref == 0 est une énergie légitime (décroissance complète) : seul
+    // e_ref < 0 ou non fini est aberrant.
+    if !e_ref.is_finite() || e_ref < 0.0 || t_ref <= 0 {
         return None;
     }
     Some(EnergyAnchor {
@@ -527,5 +529,42 @@ mod tests {
         let a = decode_anchor(&ok).expect("ancre valide");
         assert!((a.e_ref - 1.0).abs() < 1e-9);
         assert_eq!(a.half_life, Duration::from_secs(64));
+    }
+}
+
+
+#[cfg(test)]
+mod tests_encodeur {
+    use super::*;
+    use std::sync::Arc;
+
+    fn rt(e: f64) -> Option<f64> {
+        let a = EnergyAnchor { e_ref: e, t_ref_micros: 1_000_000, t_hi_micros: 1_000_000, half_life: Duration::from_secs(64) };
+        decode_anchor(&encode_anchor(&a)).map(|a| a.e_ref)
+    }
+
+    #[test]
+    fn round_trip_accepte_les_energies_legitimes() {
+        for e in [1.0, 0.5, 2f64.powi(-16), 2f64.powi(-160), f64::MIN_POSITIVE, 0.0] {
+            let d = rt(e);
+            assert!(d.is_some(), "E={e} doit décoder (état valide), obtenu None");
+        }
+    }
+
+    #[test]
+    fn round_trip_rejette_les_aberrants() {
+        for e in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let a = EnergyAnchor { e_ref: e, t_ref_micros: 1_000_000, t_hi_micros: 1_000_000, half_life: Duration::from_secs(64) };
+            assert!(decode_anchor(&encode_anchor(&a)).is_none(), "E={e} doit être rejeté");
+        }
+    }
+
+    #[test]
+    fn une_decroissance_complete_n_est_pas_une_corruption() {
+        // E=1, dt=86400 s, H=64 s -> 2^-1350 -> 0 en f64. L'ancre doit rester
+        // VALIDE (e_ref=0), pas Corrupted.
+        let e = 1.0f64 * 2f64.powf(-86400.0 / 64.0);
+        assert_eq!(e, 0.0, "2^-1350 sous-dépasse en f64");
+        assert_eq!(rt(e), Some(0.0), "une énergie nulle est un état valide");
     }
 }
