@@ -101,9 +101,17 @@ fn decode_anchor(v: &Value) -> Option<EnergyAnchor> {
 
 /// Lit l'ancre composite d'un nœud. `None` = jamais ancré (ou donnée héritée).
 pub fn read_anchor(sub: &SubstrateStore, node_id: NodeId) -> Option<EnergyAnchor> {
-    sub.get_node_property(node_id, &cle_ancre())
-        .as_ref()
-        .and_then(decode_anchor)
+    match read_anchor_state(sub, node_id) {
+        AnchorState::Valid(a) => Some(a),
+        _ => None,
+    }
+}
+
+/// Lecture TYPÉE de l'ancre : la seule source d'interprétation. `read_anchor`
+/// (Option) est conservé pour compatibilité, mais perd la distinction
+/// absence/corruption — les chemins énergétiques utilisent `read_anchor_state`.
+pub fn read_anchor_state(sub: &SubstrateStore, node_id: NodeId) -> AnchorState {
+    decode_anchor_state(&sub.get_node_property(node_id, &cle_ancre()))
 }
 
 /// État typé de l'ancre composite : distingue ABSENCE légitime, VALIDITÉ et
@@ -187,18 +195,28 @@ pub fn energy_at(
     now_micros: i64,
 ) -> Option<f64> {
     // L'ancre composite est la source de vérité ATOMIQUE.
-    if let Some(a) = read_anchor(sub, node_id) {
-        return Some(if a.half_life.is_zero() {
-            // H non figée (test / ré-ancrage) : loi de l'appelant, garde monotone.
-            law.energy_at(
-                a.e_ref,
-                elapsed_monotonic(a.t_ref_micros, now_micros, a.t_hi_micros),
-            )
-        } else {
-            a.energy_at(now_micros)
-        });
+    match read_anchor_state(sub, node_id) {
+        AnchorState::Valid(a) => {
+            return Some(if a.half_life.is_zero() {
+                // H non figée (test / ré-ancrage) : loi de l'appelant, garde monotone.
+                law.energy_at(
+                    a.e_ref,
+                    elapsed_monotonic(a.t_ref_micros, now_micros, a.t_hi_micros),
+                )
+            } else {
+                a.energy_at(now_micros)
+            });
+        }
+        AnchorState::Corrupted => {
+            // Ancre présente mais corrompue : l'énergie CANONIQUE (colonne) est
+            // préservée telle quelle — PAS de décroissance, PAS de repli
+            // historique (jamais confondue avec une absence).
+            let e_ref = sub.get_node_energy_f32(node_id).ok().flatten()? as f64;
+            return Some(if e_ref <= 0.0 { 0.0 } else { e_ref });
+        }
+        AnchorState::Absent => {}
     }
-    // Donnée héritée : colonne = E_ref, propriété séparée = t_ref.
+    // Donnée héritée (absence légitime) : colonne = E_ref, propriété = t_ref.
     let e_ref = sub.get_node_energy_f32(node_id).ok().flatten()? as f64;
     if e_ref <= 0.0 {
         return Some(0.0);
@@ -234,8 +252,8 @@ pub fn reinforce(
 
     // Demi-vie FIGÉE : celle de l'ancre existante, sinon celle de l'appelant.
     // Le high-water mark ne recule jamais.
-    let (t_hi, h) = match read_anchor(sub, node_id) {
-        Some(a) => (
+    let (t_hi, h) = match read_anchor_state(sub, node_id) {
+        AnchorState::Valid(a) => (
             a.t_hi_micros.max(now_micros),
             if a.half_life.is_zero() {
                 law.half_life()
@@ -243,7 +261,7 @@ pub fn reinforce(
                 a.half_life
             },
         ),
-        None => (now_micros, law.half_life()),
+        _ => (now_micros, law.half_life()),
     };
 
     // UNE mutation atomique porte tout l'état temporel.
