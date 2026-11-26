@@ -359,3 +359,74 @@ mod tests_horloge {
         assert!((e1 - 0.5).abs() < 0.02, "une demi-vie → 0.5, mesuré {e1}");
     }
 }
+
+#[cfg(test)]
+mod tests_evenement_tique {
+    use super::*;
+    use obrain_substrate::store::SubstrateStore;
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+    use tracing::field::Visit;
+    use tracing::subscriber::with_default;
+
+    /// Souscripteur minimal qui capture (niveau, message) — même motif que le
+    /// `JournalTest` de `slot_remap.rs` : prouve que l'événement DEBUG de la
+    /// tique est ÉMIS, donc que ses champs (scanned, advanced, half_life…) sont
+    /// ÉVALUÉS.
+    struct Journal(Mutex<Vec<(tracing::Level, String)>>);
+
+    struct CapteurMessage<'a>(&'a mut Option<String>);
+    impl Visit for CapteurMessage<'_> {
+        fn record_debug(&mut self, champ: &tracing::field::Field, valeur: &dyn std::fmt::Debug) {
+            if champ.name() == "message" {
+                *self.0 = Some(format!("{valeur:?}"));
+            }
+        }
+    }
+
+    impl tracing::Subscriber for Journal {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, evenement: &tracing::Event<'_>) {
+            let mut message = None;
+            evenement.record(&mut CapteurMessage(&mut message));
+            if let Some(m) = message {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((*evenement.metadata().level(), m));
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+        fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+            Some(tracing::level_filters::LevelFilter::TRACE)
+        }
+    }
+
+    /// La tique ÉMET l'événement DEBUG de consolidation (niveau, comptes,
+    /// demi-vie), observable par un souscripteur.
+    #[test]
+    fn la_tique_emet_l_evenement_de_consolidation() {
+        let td = TempDir::new().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("c-debug")).unwrap());
+        let c = Consolidator::new(ConsolidatorConfig::default());
+
+        let journal = Arc::new(Journal(Mutex::new(Vec::new())));
+        with_default(journal.clone(), || {
+            c.tick(&store).expect("tick ok");
+        });
+        let tout = journal.0.lock().unwrap();
+        assert!(
+            tout.iter()
+                .any(|(n, m)| *n == tracing::Level::DEBUG && m.contains("énergie avancée")),
+            "un DEBUG de consolidation doit être émis : {tout:?}"
+        );
+    }
+}
