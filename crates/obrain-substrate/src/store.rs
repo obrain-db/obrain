@@ -48073,3 +48073,58 @@ mod mesure_couts {
         assert!(croissance >= n_prep as u32, "chaque préparation alloue au moins une page");
     }
 }
+
+#[cfg(test)]
+mod projections_publiees {
+    use super::*;
+
+    /// P0 — PROJECTIONS : la publication conditionnelle écrit directement dans
+    /// PropsZone et contourne le crochet d'indexation de set_node_property.
+    /// La lecture directe voit la nouvelle valeur ; la recherche indexée est
+    /// PÉRIMÉE jusqu'à réouverture (l'index ne connaît pas la nouvelle valeur).
+    #[test]
+    fn index_perime_apres_publication_directe() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let id = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = store.create_node(&["personne"]);
+            store.set_node_property(id, "age", Value::Int64(30));
+            // première recherche : construit l'index de la clé
+            let avant = store.find_nodes_by_property("age", &Value::Int64(30));
+            assert_eq!(avant, vec![id], "avant : index trouve age=30");
+            // publication conditionnelle : age -> 40 (contourne le crochet d'index)
+            let pre = store.capturer_precondition(id, &["age"]).unwrap();
+            let prep = store
+                .preparer_transformation(id, &[("age", Value::Int64(40))], &pre, ModePublication::Strict)
+                .unwrap();
+            let r = store.publier_si_precondition_intacte(prep).unwrap();
+            assert_eq!(r, IssuePublication::PublieIntegrale);
+            // lecture directe : nouvelle valeur
+            assert_eq!(
+                store.get_node_property(id, &PropertyKey::new("age")),
+                Some(Value::Int64(40)),
+                "lecture directe : nouvelle valeur"
+            );
+            // recherche indexée : l'index est-il périmé ?
+            let cherche_30 = store.find_nodes_by_property("age", &Value::Int64(30));
+            let cherche_40 = store.find_nodes_by_property("age", &Value::Int64(40));
+            eprintln!("APRES_PUBLICATION age=30 -> {cherche_30:?} ; age=40 -> {cherche_40:?}");
+            // age=30 est revérifié exactement : le nœud porte 40, donc exclu.
+            assert!(cherche_30.is_empty(), "30 n'est plus porté (revérifié exact)");
+            // DÉFAUT MESURÉ : l'index ne connaît pas 40 (crochet d'indexation contourné).
+            assert!(cherche_40.is_empty(), "DÉFAUT : l'index ignore la valeur publiée");
+            store.close().unwrap();
+            id
+        };
+        // réouverture : la lecture directe conserve 40 (durabilité propre), mais
+        // l'index reste PÉRIMÉ — la reconstruction ne récupère pas la valeur
+        // publiée par la primitive (le défaut persiste après réouverture).
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        let direct = store2.get_node_property(id, &PropertyKey::new("age"));
+        let cherche_40 = store2.find_nodes_by_property("age", &Value::Int64(40));
+        eprintln!("APRES_REOUVERTURE direct={direct:?} age=40 -> {cherche_40:?}");
+        assert_eq!(direct, Some(Value::Int64(40)), "lecture directe après réouverture : 40 conservé");
+        assert!(cherche_40.is_empty(), "DÉFAUT : l'index reste périmé après réouverture");
+    }
+}
