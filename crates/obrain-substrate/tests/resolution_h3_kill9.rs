@@ -2,6 +2,19 @@
 //! publication en sous-processus, `kill -9` avant/après la bascule, réouverture
 //! en processus indépendant, résolution SANS republier. `Indetermine` ne devient
 //! jamais une absence définitive.
+//!
+//! TROIS INTERRUPTIONS DISTINGUÉES :
+//! 1. INTERRUPTION DE PROCESSUS (testée) — `kill -9` à un point arbitraire du
+//!    déroulement (avant bascule / après bascule), la base est rouverte en
+//!    processus indépendant et l'état est relu/contrôlé.
+//! 2. INTERRUPTION AU POINT DE SCELLEMENT (non testée ici) — un `kill -9` PENDANT
+//!    le scellement WAL (`seal_commit`) est une fenêtre différente : on ne la
+//!    qualifie pas dans ce banc (le marqueur `closed` est posé APRÈS `close()`,
+//!    jamais pendant).
+//! 3. PERTE ÉLECTRIQUE (NON revendiquée) — `ecrire_fichier` est un tmp+rename
+//!    SANS fsync : la visibilité entre processus vient du cache de pages partagé,
+//!    pas d'une durabilité physique. La résistance à la coupure électrique n'est
+//!    pas qualifiée ici.
 
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -18,6 +31,10 @@ use obrain_substrate::{
 const ENV_DIR: &str = "H3_RES_DIR";
 const ENV_PHASE: &str = "H3_RES_PHASE";
 const TEST_ENFANT: &str = "enfant_h3_resolution";
+/// Marqueur POSITIF écrit À L'INTÉRIEUR de la boucle infinie `dormir_jusqua_kill` :
+/// le parent l'attend avant de tuer, ce qui PROUVE que l'enfant est réellement en
+/// train de tourner dans la boucle (donc `store.close()` inatteignable).
+const MARQUEUR_BOUCLE: &str = "dans_la_boucle";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Phase {
@@ -51,8 +68,15 @@ fn ecrire_fichier(dir: &Path, nom: &str, contenu: &[u8]) {
     std::fs::rename(&tmp, &fin).unwrap();
 }
 
-fn dormir_jusqua_kill() -> ! {
+/// Boucle infinie DIVERGENTE : tourne jusqu'au `kill -9`. Écrit un MARQUEUR
+/// POSITIF À L'INTÉRIEUR de la boucle (atomique, tmp+rename) : le parent attend
+/// CE marqueur avant de tuer, ce qui PROUVE que l'enfant est réellement EN train
+/// de tourner ici — donc que `store.close()` est INATTEIGNABLE — et pas
+/// simplement qu'il a dépassé la phase. Ce n'est PAS un fsync : la résistance à
+/// la coupure électrique n'est pas qualifiée ici.
+fn dormir_jusqua_kill(dir: &Path) -> ! {
     loop {
+        ecrire_fichier(dir, MARQUEUR_BOUCLE, b"1");
         std::thread::sleep(Duration::from_secs(3600));
     }
 }
@@ -74,6 +98,21 @@ fn enfant_h3_resolution() {
     ecrire_fichier(&dir, "node_id", id.0.to_string().as_bytes());
 
     let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+    // ESTAMPILLES INITIALES EXACTES (auteur + horloge) des valeurs d'origine,
+    // capturées AVANT publication : après kill -9 avant bascule, le parent doit
+    // les retrouver À L'IDENTIQUE (l'état initial est CONSERVÉ, pas seulement
+    // « différent de la tentative »).
+    let stamp_a = pre.estampille_capturee("a").expect("a présente");
+    let stamp_b = pre.estampille_capturee("b").expect("b présente");
+    ecrire_fichier(
+        &dir,
+        "estampilles_initiales",
+        format!(
+            "{} {} {} {}",
+            stamp_a.auteur, stamp_a.horloge, stamp_b.auteur, stamp_b.horloge
+        )
+        .as_bytes(),
+    );
     let prep = store
         .preparer_transformation(
             id,
@@ -88,7 +127,7 @@ fn enfant_h3_resolution() {
 
     poser_marqueur(&dir, Phase::Avant.nom());
     if phase == Phase::Avant.nom() {
-        dormir_jusqua_kill();
+        dormir_jusqua_kill(&dir);
     }
 
     let issue = store.publier_si_precondition_intacte(prep).unwrap();
@@ -96,13 +135,13 @@ fn enfant_h3_resolution() {
 
     poser_marqueur(&dir, Phase::Apres.nom());
     if phase == Phase::Apres.nom() {
-        dormir_jusqua_kill();
+        dormir_jusqua_kill(&dir);
     }
 
     store.close().unwrap();
     poser_marqueur(&dir, "closed");
     if phase == "closed" {
-        dormir_jusqua_kill();
+        dormir_jusqua_kill(&dir);
     }
 }
 
@@ -165,12 +204,27 @@ fn node_id(dir: &Path) -> NodeId {
     NodeId(s.trim().parse().unwrap())
 }
 
+/// Estampilles initiales EXACTES (auteur, horloge) des valeurs d'origine,
+/// relues depuis ce que l'enfant a persisté AVANT publication.
+fn estampilles_initiales(dir: &Path) -> ((u64, u64), (u64, u64)) {
+    let s = std::fs::read_to_string(dir.join("estampilles_initiales")).unwrap();
+    let mut it = s.split_whitespace().map(|t| t.parse::<u64>().unwrap());
+    let a = (it.next().unwrap(), it.next().unwrap());
+    let b = (it.next().unwrap(), it.next().unwrap());
+    (a, b)
+}
+
 /// H3 — kill -9 AVANT publication : référence persistée, tête jamais basculée.
 /// Résolution Indéterminée (pas une absence définitive), état initial conservé.
 #[test]
 fn h3_kill9_avant_publication() {
     let (td, mut child) = lancer(Phase::Avant);
+    // MARQUEUR POSITIF : l'enfant est DANS la boucle infinie (close() inatteignable),
+    // pas simplement passé devant elle. Le marqueur de phase garantit déjà que la
+    // référence et le node_id sont persistés ; le marqueur de boucle prouve que
+    // l'enfant n'a PAS pu franchir close().
     attendre_marqueur(td.path(), Phase::Avant.nom(), &mut child);
+    attendre_marqueur(td.path(), MARQUEUR_BOUCLE, &mut child);
     tuer_9(&mut child);
 
     let store = SubstrateStore::open(td.path().join("kb")).unwrap();
@@ -185,16 +239,33 @@ fn h3_kill9_avant_publication() {
     );
     assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)));
     assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
+    // IDENTITÉ EXACTE : l'estampille initiale (auteur + horloge) est CONSERVÉE
+    // À L'IDENTIQUE après kill -9 avant bascule — pas seulement « différente de
+    // la tentative ».
+    let (estamp_a, estamp_b) = estampilles_initiales(td.path());
     for e in &res.par_cle {
         assert_eq!(e.etat, ResolutionEffet::Indetermine, "chaque clé est indéterminée");
-        // estampille COURANTE = valeur initiale (jamais remplacée par la tentative)
+        let attendu = if e.cle == "a" {
+            estamp_a
+        } else if e.cle == "b" {
+            estamp_b
+        } else {
+            panic!("clé inattendue {}", e.cle);
+        };
+        assert_eq!(
+            e.estampille_courante,
+            Some(attendu),
+            "l'estampille initiale de {} est CONSERVÉE à l'identique (auteur + horloge)",
+            e.cle
+        );
+        // la tentative n'a jamais remplacé l'état initial
         assert_ne!(
             e.estampille_courante,
             Some((reference.auteur(), reference.horloge())),
             "l'estampille de la tentative n'est PAS la courante (jamais engagée)"
         );
     }
-    eprintln!("H3_KILL9_AVANT_OK : résolution indéterminée sans republication");
+    eprintln!("H3_KILL9_AVANT_OK : résolution indéterminée sans republication, estampille initiale conservée");
 }
 
 /// H3 — kill -9 APRÈS publication : réponse perdue, réouverture en processus
@@ -202,7 +273,10 @@ fn h3_kill9_avant_publication() {
 #[test]
 fn h3_kill9_apres_publication() {
     let (td, mut child) = lancer(Phase::Apres);
+    // MARQUEUR POSITIF : l'enfant est DANS la boucle infinie APRÈS publication
+    // (close() inatteignable) — la réponse est perdue par le kill, pas par close().
     attendre_marqueur(td.path(), Phase::Apres.nom(), &mut child);
+    attendre_marqueur(td.path(), MARQUEUR_BOUCLE, &mut child);
     tuer_9(&mut child);
 
     let store = SubstrateStore::open(td.path().join("kb")).unwrap();
