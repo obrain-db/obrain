@@ -349,6 +349,9 @@ pub struct DecayAdvance {
     /// Nœuds dont l'ancre composite est PRÉSENTE mais corrompue : non migrés,
     /// non décrus, énergie canonique préservée (verdict de corruption).
     pub corrupted: u64,
+    /// Miroirs (projections Q1.15) réconciliés SANS matérialisation canonique :
+    /// l'ancre n'a pas changé, seule la projection obsolète a été réparée.
+    pub reconciled: u64,
 }
 
 /// Avance jusqu'à `max_nodes` nœuds le long de LEUR propre loi, depuis LEUR
@@ -448,17 +451,28 @@ pub fn advance_all(
             h_frozen
         };
         let dt = elapsed_monotonic(t_ref, now_micros, t_hi);
-        if dt.is_zero() {
-            continue;
-        }
         let nouvelle = DecayLaw::new(h).energy_at(e_ref, dt);
-        // Une valeur qui ne change pas au bit près ne mérite pas deux écritures.
-        if (nouvelle as f32) == (e_ref as f32) {
+        // Deux décisions SÉPARÉES : (1) matérialisation canonique (l'ancre
+        // change-t-elle ?) ; (2) réconciliation du miroir (la projection Q1.15
+        // est-elle obsolète ?). Un miroir obsolète doit être réparé même à
+        // temps constant ou sans décroissance supplémentaire.
+        let changement_canonique = (nouvelle as f32) != (e_ref as f32);
+        let miroir_attendu = obrain_substrate::record::q1_15_to_f32(
+            obrain_substrate::record::f32_to_q1_15(nouvelle as f32),
+        );
+        let miroir_stocke = sub.get_node_energy_f32(node_id).ok().flatten();
+        let miroir_obsolete = miroir_stocke != Some(miroir_attendu);
+        if !changement_canonique && !miroir_obsolete {
             continue;
         }
-        write_anchor(sub, node_id, nouvelle, now_micros, t_hi, h);
-        if sub.set_node_energy_f32(node_id, nouvelle as f32).is_ok() {
+        if changement_canonique {
+            write_anchor(sub, node_id, nouvelle, now_micros, t_hi, h);
             stats.advanced += 1;
+        }
+        if miroir_obsolete {
+            if sub.set_node_energy_f32(node_id, nouvelle as f32).is_ok() {
+                stats.reconciled += 1;
+            }
         }
     }
     Ok(stats)
