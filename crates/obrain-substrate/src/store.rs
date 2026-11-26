@@ -3306,6 +3306,24 @@ pub enum ResolutionEffet {
     Indetermine,
 }
 
+/// Verdict DÉRIVÉ d'un effet résolu : distingue l'engagement historique de l'état
+/// courant, SANS nouvelle lecture ni nouvelle autorité. C'est la primitive native
+/// qui permet à T3 de ne pas confondre « effet historiquement appliqué puis
+/// supplanté » et « jamais matérialisé ».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerdictEffet {
+    /// Tentative engagée ET sa valeur est encore l'état courant (même estampille).
+    EngageEtCourant,
+    /// Tentative engagée mais SUPPLANTÉE par une écriture ultérieure (révision supérieure).
+    EngagePuisSupplante,
+    /// Tentative engagée puis SUPPRIMÉE (tombstone ultérieur).
+    EngagePuisSupprime,
+    /// Tentative jamais engagée (ressource vivante, entrée absente de la chaîne).
+    JamaisEngage,
+    /// Indéterminé (ressource inexistante : la preuve a pu être compactée).
+    Indetermine,
+}
+
 /// Référence OPAQUE d'une tentative de publication, obtenue AVANT publication.
 ///
 /// Elle lie ce qui est réellement persisté au moment de la préparation :
@@ -3619,6 +3637,37 @@ impl EffetResolu {
             EtatPropriete::Supprimee(_)
             | EtatPropriete::Absente
             | EtatPropriete::RessourceInexistante => None,
+        }
+    }
+
+    /// Verdict DÉRIVÉ de l'engagement historique + de l'état courant. C'est la
+    /// primitive native qui résout la frontière T3 : une révision supérieure
+    /// (état courant d'une autre tentative) ne doit JAMAIS être lue comme une
+    /// preuve que CETTE tentative n'a pas été engagée ni matérialisée.
+    ///
+    /// `(auteur_tentative, horloge_tentative)` = l'estampille de la tentative
+    /// résolue (celle de la `ReferenceTentative`). Aucune seconde lecture.
+    pub fn verdict(&self, auteur_tentative: u64, horloge_tentative: u64) -> VerdictEffet {
+        match self.etat {
+            ResolutionEffet::Engage => match &self.etat_courant {
+                EtatPropriete::Presente { estampille, .. } => {
+                    if estampille.auteur == auteur_tentative
+                        && estampille.horloge == horloge_tentative
+                    {
+                        VerdictEffet::EngageEtCourant
+                    } else {
+                        VerdictEffet::EngagePuisSupplante
+                    }
+                }
+                EtatPropriete::Supprimee(_) => VerdictEffet::EngagePuisSupprime,
+                EtatPropriete::Absente | EtatPropriete::RessourceInexistante => {
+                    VerdictEffet::EngagePuisSupplante
+                }
+            },
+            ResolutionEffet::Indetermine => match &self.etat_courant {
+                EtatPropriete::RessourceInexistante => VerdictEffet::Indetermine,
+                _ => VerdictEffet::JamaisEngage,
+            },
         }
     }
 }
@@ -49448,6 +49497,45 @@ mod publication_conditionnelle_native {
         for e in &res.par_cle {
             assert_eq!(e.estampille_courante(), Some((reference.auteur(), reference.horloge())));
         }
+    }
+
+    /// P0 — FRONTIÈRE T3 : K1 appliqué (rev 1) puis supplanté par K2 (rev 2).
+    /// Résoudre K1 ne doit PAS donner « jamais matérialisé » : l'engagement est
+    /// HISTORIQUE (l'entrée est dans la chaîne), l'état courant est celui de K2.
+    #[test]
+    fn verdict_distingue_engage_puis_supplante_de_jamais_engage() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        // K1 : a→10 (rev 1)
+        let pre1 = precond(&store, id);
+        let prep1 = store
+            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre1, ModePublication::Strict)
+            .unwrap();
+        let ref1 = prep1.reference_tentative();
+        store.publier_si_precondition_intacte(prep1).unwrap();
+        // K2 : a→20 (rev 2), supplante K1
+        let pre2 = store.capturer_precondition(id, &["a"]).unwrap();
+        let prep2 = store
+            .preparer_transformation(id, &[("a", Value::Int64(20))], &pre2, ModePublication::Strict)
+            .unwrap();
+        let ref2 = prep2.reference_tentative();
+        store.publier_si_precondition_intacte(prep2).unwrap();
+        // résoudre K1 : engagé PUIS supplanté (jamais « jamais matérialisé »)
+        let res1 = store.resoudre_reference(&ref1).unwrap();
+        assert_eq!(
+            res1.par_cle[0].verdict(ref1.auteur(), ref1.horloge()),
+            VerdictEffet::EngagePuisSupplante,
+            "K1 engagé puis supplanté"
+        );
+        // résoudre K2 : engagé ET courant
+        let res2 = store.resoudre_reference(&ref2).unwrap();
+        assert_eq!(
+            res2.par_cle[0].verdict(ref2.auteur(), ref2.horloge()),
+            VerdictEffet::EngageEtCourant,
+            "K2 engagé et courant"
+        );
+        eprintln!("VERDICT_OK : K1 supplanté, K2 courant — jamais un faux « jamais matérialisé »");
     }
 
     /// P0 — RECRÉATION DE CIBLE : la référence vise une incarnation morte.
