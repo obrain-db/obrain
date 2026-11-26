@@ -2802,6 +2802,9 @@ pub struct SubstrateStore {
     /// Crochet de suspension d'écriture (test-only, PAR STORE — jamais global).
     #[cfg(test)]
     suspension: SuspensionEvenement,
+    /// Sabotage d'append WAL (test-only, PAR STORE — jamais global).
+    #[cfg(test)]
+    echec_append_wal: parking_lot::Mutex<bool>,
     /// Serializes the read-modify-write of a node's edge-chain head in
     /// `splice_edge_at_head` and the delete-unlink path. Without it, concurrent
     /// `create_edge` / `delete_edge` on the same source race on `first_edge_off`,
@@ -3517,8 +3520,6 @@ impl SuspensionEvenement {
     }
 }
 
-#[cfg(test)]
-static ECHEC_APPEND_WAL: parking_lot::Mutex<bool> = parking_lot::Mutex::new(false);
 
 
 /// Verrous de publication shardés (256) : séparent les lecteurs cohérents des
@@ -7250,7 +7251,7 @@ impl SubstrateStore {
             )));
         }
         #[cfg(test)]
-        if *ECHEC_APPEND_WAL.lock() {
+        if *self.echec_append_wal.lock() {
             return Err(SubstrateError::Internal("TxProprieteAvant : append saboté (test)".to_string()));
         }
         self.writer
@@ -9139,6 +9140,8 @@ impl SubstrateStore {
             verrou_evenements: parking_lot::Mutex::new(()),
             #[cfg(test)]
             suspension: SuspensionEvenement::nouvelle(),
+            #[cfg(test)]
+            echec_append_wal: parking_lot::Mutex::new(false),
             construction_index: Mutex::new(()),
             preparation_annulee: std::sync::atomic::AtomicBool::new(false),
             passes_de_construction: AtomicU64::new(0),
@@ -46861,7 +46864,7 @@ mod journalisation_stricte {
         let id = store.create_node(&["ressource"]);
         let tx = obrain_common::types::TransactionId(42);
         // armer l'échec d'append
-        *ECHEC_APPEND_WAL.lock() = true;
+        *store.echec_append_wal.lock() = true;
         let r = store.journaliser_valeur_avant_strict(
             tx,
             crate::vec_column::EntityKind::Node,
@@ -46878,7 +46881,7 @@ mod journalisation_stricte {
             "k",
             Some(&obrain_common::types::Value::Int64(1)),
         );
-        *ECHEC_APPEND_WAL.lock() = false;
+        *store.echec_append_wal.lock() = false;
         // sans échec : la stricte réussit
         assert!(store
             .journaliser_valeur_avant_strict(
@@ -46909,7 +46912,7 @@ mod mutation_conditionnelle {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = ressource(&store);
-        *ECHEC_APPEND_WAL.lock() = true;
+        *store.echec_append_wal.lock() = true;
         let r = store.muter_deux_proprietes(
             id,
             "a",
@@ -46929,7 +46932,7 @@ mod mutation_conditionnelle {
             Some(Value::Int64(2)),
             "b intacte"
         );
-        *ECHEC_APPEND_WAL.lock() = false;
+        *store.echec_append_wal.lock() = false;
     }
 
     #[test]
