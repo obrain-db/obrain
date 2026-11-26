@@ -26177,8 +26177,10 @@ impl SubstrateStore {
             // scalaires d'arête — on ferme.
             let _verrou_entite = self.verrou_entite(id.0);
             self.route_vector_write(EntityKind::Node, id.0 as u32, key, v);
-            self.notify_vector_written(id, key, v);
-            self.notify_node_property_set(id, key);
+            if vivant_exige {
+                self.notify_vector_written(id, key, v);
+                self.notify_node_property_set(id, key);
+            }
             return Ok(());
         }
         // T16.7 Step 4d: oversized `Value::String` / `Value::Bytes`
@@ -26279,7 +26281,9 @@ impl SubstrateStore {
                 self.index_ram_complets.remove(&pkey);
                 self.egalite_couverte.remove(&pkey);
             }
-            self.notify_node_property_set(id, key);
+            if vivant_exige {
+                self.notify_node_property_set(id, key);
+            }
             return Ok(());
         }
         // (2026-08-20) LA VALEUR NE VA PAS EN COLONNE BLOB — IL FAUT DONC
@@ -26567,7 +26571,9 @@ impl SubstrateStore {
             && !self.dashmap_noeuds_hydratee.load(Ordering::Acquire)
             && self.property_indexes.is_empty()
         {
-            self.notify_node_property_set(id, key);
+            if vivant_exige {
+                self.notify_node_property_set(id, key);
+            }
             return Ok(());
         }
         let prev = self
@@ -26607,7 +26613,9 @@ impl SubstrateStore {
                 self.prop_index_remove(&pkey, blob, id);
             }
         }
-        self.notify_node_property_set(id, key);
+        if vivant_exige {
+            self.notify_node_property_set(id, key);
+        }
         Ok(())
     }
 }
@@ -45624,15 +45632,16 @@ impl SubstrateStore {
     }
 
     /// Pose la naissance (bit `ALLOCATED`) + compteurs + observateurs, APRÈS le
-    /// scellement : le nœud ne devient visible qu'une fois complet.
-    fn finaliser_noeud_atomique(&self, id: NodeId, bitset: u64) -> SubstrateResult<()> {
-        self.writer.finaliser_noeud_allocated(id.0 as u32)?;
+    /// scellement : le nœud ne devient visible qu'une fois complet. INFAILLIBLE
+    /// — rien ne peut échouer entre le `TxCommit` et la publication, sinon un
+    /// `TxCommit` scellé sans identité publiée permettrait une seconde identité.
+    fn finaliser_noeud_atomique(&self, id: NodeId, bitset: u64) {
+        self.writer.finaliser_noeud_allocated(id.0 as u32);
         self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
         self.incr_label_counts(bitset, 1);
         self.incr_first_label_count(bitset, 1);
         self.note_naissance_noeud(id);
         self.notify_node_created(id);
-        Ok(())
     }
 
     fn creer_noeud_atomique(
@@ -45674,9 +45683,12 @@ impl SubstrateStore {
                 tx: Self::tx_creation_auto(id),
             },
         };
-        // L'échec du SCELLEMENT est propagé (pas avalé) : sans `TxCommit`, le
-        // nœud en vol est écarté au rejeu. `flags: 0` — pas de fsync par
-        // réservation (durabilité = celle des écritures auto-commit).
+        // SCELLEMENT ≠ DURABILITÉ. L'append du `TxCommit` SCELLE la transaction
+        // (marqueur de commit journalisé dans le tampon WAL) — sans lui, le nœud
+        // en vol est écarté au rejeu. Mais `flags: 0` = AUCUN fsync immédiat :
+        // la DURABILITÉ (survie à une coupure) n'est acquise qu'au prochain
+        // `flush`/`close`, comme toute écriture auto-commit. L'échec d'append
+        // est PROPAGÉ (pas avalé).
         #[cfg(test)]
         if ECHEC_SCELLEMENT_ATOMIQUE.with(|c| c.replace(false)) {
             return Err(SubstrateError::Internal(
@@ -45684,8 +45696,12 @@ impl SubstrateStore {
             ));
         }
         self.writer.wal().append_encoded(&rec)?;
-        // Naissance différée : le nœud ne devient visible qu'ici, complet.
-        self.finaliser_noeud_atomique(id, bitset)?;
+        // Naissance différée (infaillible après le scellement) : le nœud ne
+        // devient visible qu'ici, complet, et la naissance est DURABLE
+        // (`NodeUpdateV3` journalisé par `finaliser_noeud_allocated`). Rien
+        // d'autre ne peut échouer entre le `TxCommit` et l'insertion d'index
+        // côté `reserver_identite`.
+        self.finaliser_noeud_atomique(id, bitset);
         Ok(id)
     }
 }
@@ -45942,13 +45958,14 @@ mod reservation_tests {
         // AVANT toute retentative : le nœud en vol (naissance différée) est
         // INVISIBLE — aucun nœud partiel (même une propriété déjà posée) n'est
         // exposé par les chemins de lecture.
+        let slot_reserve = u64::from(s.next_node_id.load(Ordering::Acquire) - 1);
         assert_eq!(
             s.node_ids(),
             Vec::<NodeId>::new(),
             "aucun nœud en vol visible (échec au milieu)"
         );
         assert_eq!(
-            s.get_node_property(NodeId(1), &PropertyKey::new("payload")),
+            s.get_node_property(NodeId(slot_reserve), &PropertyKey::new("payload")),
             None,
             "aucune propriété d'un nœud partiel n'est lisible"
         );
@@ -46018,6 +46035,9 @@ mod reservation_tests {
 
         // Lecteur INDÉPENDANT (B) : le nœud en vol (résultat indéterminé) ne
         // doit pas être présenté comme un nœud valide par les chemins publics.
+        // Le slot effectivement alloué par la construction en échec est
+        // `next_node_id - 1` (aucun nœud valide ne doit y être lisible).
+        let slot_reserve = u64::from(s.next_node_id.load(Ordering::Acquire) - 1);
         let ids = s.node_ids();
         assert_eq!(
             ids,
@@ -46035,11 +46055,11 @@ mod reservation_tests {
             "recherche par propriété : aucun nœud partiel"
         );
         assert!(
-            s.get_node(NodeId(1)).is_none(),
-            "get_node ne doit pas rendre le nœud partiel"
+            s.get_node(NodeId(slot_reserve)).is_none(),
+            "get_node ne doit pas rendre le nœud partiel (slot {slot_reserve})"
         );
         assert_eq!(
-            s.get_node_property(NodeId(1), &PropertyKey::new("payload")),
+            s.get_node_property(NodeId(slot_reserve), &PropertyKey::new("payload")),
             None,
             "get_node_property ne doit pas rendre une propriété du nœud partiel"
         );

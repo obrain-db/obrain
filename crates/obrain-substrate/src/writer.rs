@@ -427,27 +427,29 @@ impl Writer {
         self.ecrire_node(idx, node, Some(precede), false)
     }
 
-    /// Pose `ALLOCATED` sur un nœud écrit « en vol » (naissance différée), en
-    /// MÉMOIRE SEULEMENT (aucun record WAL : le rejeu pose déjà `ALLOCATED` via
-    /// `NodeInsertV3`, et publie le nœud via son `TxCommit`). Rend le nœud
-    /// visible aux chemins de lecture.
-    pub fn finaliser_noeud_allocated(&self, idx: u32) -> SubstrateResult<()> {
-        let mut rec = match self.read_node(idx)? {
-            Some(rec) => rec,
-            None => {
-                return Err(crate::error::SubstrateError::Internal(format!(
-                    "finaliser_noeud_allocated : slot {idx} absent de la zone"
-                )));
-            }
+    /// Pose `ALLOCATED` sur un nœud écrit « en vol » (naissance différée), et le
+    /// rend DURABLE : `update_node` journalise un `NodeUpdateV3` (qui porte le
+    /// bit `ALLOCATED`) avant la mutation mmap — le rejeu restaure la naissance
+    /// même si le processus disparaît après le scellement. Rend le nœud visible
+    /// aux chemins de lecture.
+    ///
+    /// INFAILLIBLE : un slot absent est un bug de programmation — `panic`,
+    /// comme le `.expect` de `creer_noeud`. Appelée APRÈS le scellement : rien
+    /// ne peut plus échouer entre le `TxCommit` et la publication.
+    ///
+    /// Le read-modify-write lit puis réécrit le record ENTIER ; le nœud est
+    /// privé (en vol, invisible) pendant la construction, donc aucun champ non
+    /// lié ne peut être modifié concurrentiellement entre la lecture et
+    /// l'écriture.
+    pub fn finaliser_noeud_allocated(&self, idx: u32) {
+        let rec = match self.read_node(idx) {
+            Ok(Some(rec)) => rec,
+            _ => panic!("finaliser_noeud_allocated : slot {idx} absent de la zone"),
         };
+        let mut rec = rec;
         rec.flags |= crate::record::node_flags::ALLOCATED;
-        self.with_node_zone(|zf| {
-            let offset = idx as usize * NodeRecord::SIZE;
-            ensure_room(zf, offset + NodeRecord::SIZE, self.min_headroom)?;
-            let bytes = bytemuck::bytes_of(&rec);
-            zf.as_slice_mut()[offset..offset + NodeRecord::SIZE].copy_from_slice(bytes);
-            Ok(())
-        })
+        self.update_node(idx, rec)
+            .expect("finaliser_noeud_allocated : update_node impossible");
     }
 
     fn ecrire_node(
