@@ -3,6 +3,7 @@
 //! en processus indépendant, résolution SANS republier. `Indetermine` ne devient
 //! jamais une absence définitive.
 
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -10,8 +11,8 @@ use std::time::{Duration, Instant};
 use obrain_common::types::{NodeId, PropertyKey, Value};
 use obrain_core::graph::traits::{GraphStore, GraphStoreMut};
 use obrain_substrate::{
-    IntegriteTentative, IssuePublication, ModePublication, ReferenceTentative, ResolutionTentative,
-    SubstrateStore,
+    IntegriteTentative, IssuePublication, ModePublication, ReferenceTentative, ResolutionEffet,
+    ResolutionTentative, SubstrateStore,
 };
 
 const ENV_DIR: &str = "H3_RES_DIR";
@@ -40,6 +41,9 @@ fn poser_marqueur(dir: &Path, nom: &str) {
     std::fs::rename(&tmp, &fin).unwrap();
 }
 
+/// Renommage ATOMIQUE (tmp+rename) : visible par le parent après kill -9 via
+/// le cache de pages partagé. Ce n'est PAS un fsync — la persistance PHYSIQUE
+/// (résistance à la coupure électrique) n'est PAS qualifiée ici.
 fn ecrire_fichier(dir: &Path, nom: &str, contenu: &[u8]) {
     let tmp = dir.join(format!("{nom}.tmp"));
     let fin = dir.join(nom);
@@ -141,7 +145,12 @@ fn tuer_9(child: &mut Child) {
         .status()
         .expect("kill -9");
     assert!(status.success(), "kill -9 a échoué");
-    let _ = child.wait();
+    let st = child.wait().expect("wait enfant");
+    assert_eq!(
+        st.signal(),
+        Some(9),
+        "l'enfant doit MOURIR par SIGKILL (9), pas terminer proprement"
+    );
 }
 
 fn resolution_reference(store: &SubstrateStore, dir: &Path) -> ResolutionTentative {
@@ -173,6 +182,10 @@ fn h3_kill9_avant_publication() {
         "jamais engagée → indéterminé (jamais « absence définitive »)"
     );
     assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)));
+    assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
+    for e in &res.par_cle {
+        assert_eq!(e.etat, ResolutionEffet::Indetermine, "chaque clé est indéterminée");
+    }
     eprintln!("H3_KILL9_AVANT_OK : résolution indéterminée sans republication");
 }
 
@@ -194,6 +207,11 @@ fn h3_kill9_apres_publication() {
         "publication réelle attestée après kill -9"
     );
     assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+    assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+    for e in &res.par_cle {
+        assert_eq!(e.etat, ResolutionEffet::Engage, "chaque clé est engagée");
+        assert!(e.estampille_courante.is_some(), "estampille historique disponible");
+    }
     // masquage ultérieur : l'événement historique reste attesté
     store.set_node_property(id, "a", Value::Int64(99));
     let res2 = resolution_reference(&store, td.path());
