@@ -352,3 +352,101 @@ mod tests {
         assert!((epoch_secs_to_micros(secs) - micros).abs() <= 1);
     }
 }
+
+#[cfg(test)]
+mod tests_branches_limites {
+    use super::*;
+
+    /// Une ancre non finie (NaN, ±∞) n'a pas d'instant : convertie en 0,
+    /// jamais propagée dans une loi qui produirait du NaN.
+    #[test]
+    fn une_ancre_non_finie_est_convertie_en_zero() {
+        assert_eq!(epoch_secs_to_micros(f64::NAN), 0);
+        assert_eq!(epoch_secs_to_micros(f64::INFINITY), 0);
+        assert_eq!(epoch_secs_to_micros(f64::NEG_INFINITY), 0);
+    }
+
+    /// Une demi-vie nulle (division par zéro sinon) retombe sur le défaut
+    /// 24 h au lieu de produire une loi dégénérée.
+    #[test]
+    fn une_demi_vie_nulle_retombe_sur_24h() {
+        let law = DecayLaw::new(Duration::ZERO);
+        assert_eq!(law.half_life(), Duration::from_secs(24 * 3600));
+    }
+
+    /// Une énergie de référence aberrante (NaN, nulle, négative) ne doit pas
+    /// franchir la loi : zéro, sans fabriquer de NaN.
+    #[test]
+    fn une_energie_de_reference_aberrante_rend_zero() {
+        let law = DecayLaw::new(Duration::from_secs(3600));
+        assert_eq!(law.energy_at(f64::NAN, Duration::ZERO), 0.0);
+        assert_eq!(law.energy_at(0.0, Duration::ZERO), 0.0);
+        assert_eq!(law.energy_at(-1.0, Duration::ZERO), 0.0);
+    }
+
+    /// Une demi-vie impliquée invalide (facteur hors de (0,1), ou période
+    /// nulle) ne fabrique pas de durée : zéro, pour ne pas propager NaN.
+    #[test]
+    fn une_demi_vie_impliquee_invalide_rend_zero() {
+        assert_eq!(
+            DecayLaw::implied_half_life(0.0, Duration::from_secs(60)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            DecayLaw::implied_half_life(1.0, Duration::from_secs(60)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            DecayLaw::implied_half_life(f64::NAN, Duration::from_secs(60)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            DecayLaw::implied_half_life(0.5, Duration::ZERO),
+            Duration::ZERO
+        );
+    }
+
+    /// Un nombre de demi-vies incohérent (référence nulle, seuil nul, ou déjà
+    /// sous le seuil) rend zéro au lieu de `log2` d'un rapport invalide.
+    #[test]
+    fn un_nombre_de_demi_vies_invalide_rend_zero() {
+        let law = DecayLaw::new(Duration::from_secs(3600));
+        assert_eq!(law.half_lives_to(0.0, 0.5), 0.0);
+        assert_eq!(law.half_lives_to(1.0, 0.0), 0.0);
+        assert_eq!(law.half_lives_to(0.5, 1.0), 0.0);
+    }
+
+    /// `energy_now` lit l'ancre à l'instant courant : une ancre posée
+    /// « maintenant » avec une énergie 1,0 se relit ≈ 1,0.
+    #[test]
+    fn energy_now_lit_l_ancre_a_l_instant_courant() {
+        let h = Duration::from_secs(3600);
+        let ancre = EnergyAnchor::new(1.0, unix_micros(), h);
+        assert!(
+            (ancre.energy_now() - 1.0).abs() < 1e-9,
+            "ancre fraîche = 1,0"
+        );
+    }
+
+    /// `materialized` avance l'ancre à `now` (t_ref = now) et conserve la
+    /// demi-vie, sans jamais faire RECULER le high-water mark.
+    #[test]
+    fn materialized_avance_l_ancre_sans_faire_reculer_le_high_water_mark() {
+        let h = Duration::from_secs(3600);
+        let ancre = EnergyAnchor::new(1.0, 0, h);
+        let now = 2 * 3600 * 1_000_000;
+        let avancee = ancre.materialized(0.25, now);
+        assert_eq!(avancee.e_ref, 0.25);
+        assert_eq!(avancee.t_ref_micros, now);
+        assert_eq!(avancee.t_hi_micros, now);
+        assert_eq!(avancee.half_life, h);
+
+        // Le high-water mark ne recule jamais, même si `now` est antérieur.
+        let gardee = EnergyAnchor {
+            t_hi_micros: now + 1,
+            ..ancre
+        };
+        let avancee2 = gardee.materialized(0.5, now);
+        assert_eq!(avancee2.t_hi_micros, now + 1);
+    }
+}

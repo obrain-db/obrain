@@ -757,3 +757,34 @@ mod tests {
         assert!(b.0 < c.0);
     }
 }
+
+#[cfg(test)]
+mod tests_rehydratation {
+    use super::*;
+
+    /// `rehydrate_signature` reconstruit la projection DÉRIVÉE (signature
+    /// spectrale) sans muter l'état canonique : elle invalide le cache
+    /// Hopfield (révision +1) mais ne déclenche aucun write-through. Un id
+    /// absent est un no-op silencieux.
+    #[test]
+    fn rehydrate_signature_reconstruit_la_projection_sans_reviser_l_engramme() {
+        let store = EngramStore::new(None);
+        let id = store.next_id();
+        store.insert(Engram::new(id, vec![(NodeId(1), 1.0), (NodeId(2), 0.5)]));
+        let rev_avant = store.revision();
+
+        let sig = vec![0.1, 0.2, 0.3];
+        store.rehydrate_signature(id, sig.clone());
+        assert_eq!(store.get(id).unwrap().spectral_signature, sig);
+        assert_eq!(
+            store.revision(),
+            rev_avant + 1,
+            "le cache Hopfield est invalidé"
+        );
+
+        // Id absent : no-op, sans panique ni révision supplémentaire.
+        let rev_apres = store.revision();
+        store.rehydrate_signature(EngramId(999_999), vec![9.9]);
+        assert_eq!(store.revision(), rev_apres);
+    }
+}

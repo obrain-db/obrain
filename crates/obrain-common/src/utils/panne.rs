@@ -80,3 +80,21 @@ pub fn point_entre_ancre_et_miroir() {
         std::process::abort();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// L'armement pose le drapeau, le désarmement le relève, et le point
+    /// DÉSARMÉ traverse sans `abort`. Le drapeau est remis à zéro dans le même
+    /// test : il est global au processus et les tests tournent en parallèle.
+    #[test]
+    fn armer_puis_desarmer_et_le_point_desarme_n_arrete_pas() {
+        armer_arret_entre_ancre_et_miroir();
+        assert_eq!(ARRET_ENTRE_ANCRE_ET_MIROIR.load(Ordering::SeqCst), 1);
+        // Désarmement : un point armé appellerait `abort()` (testé par
+        // `ancre_composite_kill9`, dans un processus enfant).
+        ARRET_ENTRE_ANCRE_ET_MIROIR.store(0, Ordering::SeqCst);
+        point_entre_ancre_et_miroir(); // ne doit pas s'arrêter
+    }
+}

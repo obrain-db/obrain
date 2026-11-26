@@ -324,3 +324,38 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tests_horloge {
+    use super::*;
+    use obrain_core::graph::GraphStoreMut;
+    use obrain_substrate::store::SubstrateStore;
+    use tempfile::TempDir;
+
+    /// `with_clock` fige le temps injecté : la tique se joue à un instant
+    /// reproductible au lieu de lire la montre réelle.
+    #[test]
+    fn with_clock_fige_le_temps_pour_la_tique() {
+        let td = TempDir::new().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("c-horloge")).unwrap());
+        let n1 = store.create_node(&["n"]);
+        store.set_node_energy_f32(n1, 1.0).unwrap();
+
+        let half = Duration::from_secs(3600);
+        let maintenant = unix_micros();
+        decay_clock::persist_anchor(store.as_ref(), n1, maintenant - half.as_micros() as i64);
+
+        let horloge: Arc<dyn Fn() -> i64 + Send + Sync> = Arc::new(move || maintenant);
+        let config = ConsolidatorConfig {
+            half_life: half,
+            ..Default::default()
+        };
+        let c = Consolidator::new(config).with_clock(horloge);
+        assert_eq!(c.now_micros(), maintenant);
+
+        let r = c.tick(&store).expect("tick ok");
+        assert_eq!(r.nodes_touched, 1, "un nœud ancré une demi-vie en arrière");
+        let e1 = crate::decay_clock::current_energy(&store, n1, &c.config.law()).unwrap();
+        assert!((e1 - 0.5).abs() < 0.02, "une demi-vie → 0.5, mesuré {e1}");
+    }
+}

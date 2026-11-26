@@ -377,3 +377,82 @@ pub fn energy_from_parts(
         None => e_ref_col,
     }
 }
+
+#[cfg(test)]
+mod tests_decode_ancre {
+    use super::*;
+
+    /// Une propriété d'ancre mal formée (mauvaise longueur) ne se décode pas :
+    /// `read_anchor` rendra `None`, jamais une ancre déchirée.
+    #[test]
+    fn decode_anchor_refuse_une_longueur_aberrante() {
+        let v = Value::Bytes(Arc::from([0u8; 8].as_slice()));
+        assert!(decode_anchor(&v).is_none());
+    }
+
+    /// Une ancre aberrante (énergie de référence nulle ou non finie) ne se
+    /// décode pas non plus : zéro, et `None`, plutôt qu'une loi qui produit
+    /// du NaN.
+    #[test]
+    fn decode_anchor_refuse_une_ancre_aberrante() {
+        // 32 octets tous nuls : e_ref = 0 (≤ 0) → None.
+        let v = Value::Bytes(Arc::from([0u8; 32].as_slice()));
+        assert!(decode_anchor(&v).is_none());
+        // e_ref = NaN → None.
+        let mut b = [0u8; 32];
+        b[0..8].copy_from_slice(&f64::NAN.to_le_bytes());
+        let v2 = Value::Bytes(Arc::from(b.as_slice()));
+        assert!(decode_anchor(&v2).is_none());
+    }
+
+    /// L'aller-retour encode→decode d'une ancre valide est sans perte.
+    #[test]
+    fn encode_puis_decode_est_sans_perte() {
+        let a = EnergyAnchor::new(0.5, 1_000_000, Duration::from_secs(3600));
+        let v = encode_anchor(&a);
+        let b = decode_anchor(&v).expect("ancre valide décodable");
+        assert_eq!(b.e_ref, 0.5);
+        assert_eq!(b.t_ref_micros, 1_000_000);
+        assert_eq!(b.t_hi_micros, 1_000_000);
+        assert_eq!(b.half_life, Duration::from_secs(3600));
+    }
+}
+
+#[cfg(test)]
+mod tests_energy_from_parts {
+    use super::*;
+
+    /// `energy_from_parts` applique la loi à l'ancre HÉRITÉE (colonne = E_ref,
+    /// propriété séparée = t_ref) : une demi-vie en arrière → 0,5.
+    #[test]
+    fn energy_from_parts_legacy_applique_la_loi() {
+        let law = DecayLaw::new(Duration::from_secs(3600));
+        let t = 1_000_000i64; // 1 s après l'époque, positif
+        let now = t + 3600 * 1_000_000; // une demi-vie plus tard
+        let e = energy_from_parts(1.0, None, Some(t), &law, now);
+        assert!((e - 0.5).abs() < 1e-12, "une demi-vie → 0,5 : {e}");
+    }
+
+    /// Sans ancre (ni composite ni héritée), on ne réinvente pas l'âge : la
+    /// colonne est rendue telle quelle ; une colonne nulle/négative rend 0.
+    #[test]
+    fn energy_from_parts_sans_ancre_rend_la_colonne() {
+        let law = DecayLaw::new(Duration::from_secs(3600));
+        let now = 2_000_000_000i64;
+        assert_eq!(energy_from_parts(0.7, None, None, &law, now), 0.7);
+        assert_eq!(energy_from_parts(0.0, None, None, &law, now), 0.0);
+        assert_eq!(energy_from_parts(-1.0, None, Some(now), &law, now), 0.0);
+    }
+
+    /// L'ancre COMPOSITE est la source de vérité : elle prime sur la colonne.
+    #[test]
+    fn energy_from_parts_composite_prime_sur_la_colonne() {
+        let law = DecayLaw::new(Duration::from_secs(3600));
+        let t_ref = 1_000_000i64; // positif, sinon l'ancre est refusée au décodage
+        let now = t_ref + 3600 * 1_000_000; // une demi-vie plus tard
+        let ancre = EnergyAnchor::new(1.0, t_ref, Duration::from_secs(3600));
+        let v = encode_anchor(&ancre);
+        let e = energy_from_parts(0.1, Some(&v), None, &law, now);
+        assert!((e - 0.5).abs() < 1e-9, "l'ancre composite prime : {e}");
+    }
+}

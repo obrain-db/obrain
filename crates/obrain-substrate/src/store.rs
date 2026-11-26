@@ -46371,3 +46371,44 @@ mod fenetre_remplacement_blob {
         );
     }
 }
+
+#[cfg(test)]
+mod tests_type_synapse_bien_connu {
+    use super::*;
+
+    /// Le type « SYNAPSE » est résolu par son id bien connu (1) même quand le
+    /// dictionnaire nom↔id n'a pas encore été flushé (panne avant flush) :
+    /// `name_for` retombe sur le nom canonique, `id_for` sur l'id réservé s'il
+    /// est libre ou déjà porté par SYNAPSE.
+    #[test]
+    fn le_type_synapse_est_resolu_par_son_id_bien_connu() {
+        let reg = EdgeTypeRegistry::default();
+        // Dictionnaire vide : le nom reste lisible via l'id bien connu.
+        let nom = reg.name_for(crate::record::SYNAPSE_EDGE_TYPE_ID);
+        assert!(nom.is_some(), "id bien connu résoluble sans dictionnaire");
+        assert_eq!(
+            nom.as_ref().unwrap().as_str(),
+            crate::record::SYNAPSE_EDGE_TYPE_NAME
+        );
+        // Un id inconnu quelconque reste None.
+        assert!(reg.name_for(999).is_none());
+
+        // Id bien connu libre : `id_for` rend l'id réservé.
+        assert_eq!(
+            reg.id_for(crate::record::SYNAPSE_EDGE_TYPE_NAME),
+            Some(crate::record::SYNAPSE_EDGE_TYPE_ID)
+        );
+
+        // Id bien connu déjà porté par SYNAPSE (mais nom absent du
+        // dictionnaire) : toujours résolu — le cas « panne avant flush ».
+        let mut reg2 = EdgeTypeRegistry::default();
+        reg2.par_id.insert(
+            crate::record::SYNAPSE_EDGE_TYPE_ID,
+            ArcStr::from(crate::record::SYNAPSE_EDGE_TYPE_NAME),
+        );
+        assert_eq!(
+            reg2.id_for(crate::record::SYNAPSE_EDGE_TYPE_NAME),
+            Some(crate::record::SYNAPSE_EDGE_TYPE_ID)
+        );
+    }
+}

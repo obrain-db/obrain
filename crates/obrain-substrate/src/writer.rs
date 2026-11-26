@@ -5505,3 +5505,71 @@ mod offset_arete_tests {
         assert_eq!(offset_arete_dans_zone(idx, T, usize::MAX), None);
     }
 }
+
+#[cfg(test)]
+mod tests_engram_etat_atomique {
+    use super::*;
+
+    /// L'écriture ATOMIQUE membres+poids refuse une incohérence de longueur
+    /// (corruption impossible à rejouer proprement) au lieu de la persister.
+    #[test]
+    fn set_engram_state_refuse_des_longueurs_incoherentes() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let w = Writer::new(sub, SyncMode::Never).unwrap();
+        let err = w.set_engram_state(1, vec![10, 20], vec![1.0]).unwrap_err();
+        assert!(
+            err.to_string().contains("membres"),
+            "le diagnostic doit nommer l'incohérence : {err}"
+        );
+    }
+
+    /// L'état complet (membres+poids) s'écrit puis se relit, en ouvrant les
+    /// DEUX zones à la première utilisation.
+    #[test]
+    fn set_engram_state_ecrit_et_relit_membres_et_poids() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let w = Writer::new(sub, SyncMode::Never).unwrap();
+        w.set_engram_state(1, vec![10, 20], vec![0.5, 0.75])
+            .unwrap();
+        let (members, weights) = w.read_engram_state(1).unwrap().unwrap();
+        assert_eq!(members, vec![10, 20]);
+        assert_eq!(weights, Some(vec![0.5, 0.75]));
+    }
+
+    /// La zone POIDS ouverte seule (via `set_engram_weights`) reste relue, puis
+    /// l'état complet n'ouvre que la zone MEMBRES (poids déjà publiée).
+    #[test]
+    fn set_engram_weights_ouvre_la_zone_poids_avant_l_etat() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let w = Writer::new(sub, SyncMode::Never).unwrap();
+        w.set_engram_weights(2, vec![0.25, 0.5]).unwrap();
+        assert_eq!(w.engram_weights(2).unwrap(), Some(vec![0.25, 0.5]));
+        w.set_engram_state(2, vec![30, 40], vec![0.25, 0.5])
+            .unwrap();
+        let (m, wts) = w.read_engram_state(2).unwrap().unwrap();
+        assert_eq!(m, vec![30, 40]);
+        assert_eq!(wts, Some(vec![0.25, 0.5]));
+    }
+
+    /// La zone MEMBRES ouverte seule (via `engram_members`) reste cohérente,
+    /// puis l'état complet n'ouvre que la zone POIDS (membres déjà publiée).
+    #[test]
+    fn engram_members_ouvre_la_zone_membres_avant_l_etat() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let w = Writer::new(sub, SyncMode::Never).unwrap();
+        assert!(w.engram_members(3).unwrap().is_none());
+        w.set_engram_state(3, vec![50], vec![0.9]).unwrap();
+        let (m, wts) = w.read_engram_state(3).unwrap().unwrap();
+        assert_eq!(m, vec![50]);
+        assert_eq!(wts, Some(vec![0.9]));
+    }
+
+    /// Le `madvise` de pré-chargement couvre la zone POIDS d'engramme, qui
+    /// s'ouvre paresseusement comme les autres zones gérées par le writer.
+    #[test]
+    fn advise_zone_willneed_couvre_la_zone_poids_d_engramme() {
+        let sub = SubstrateFile::open_tempfile().unwrap();
+        let w = Writer::new(sub, SyncMode::Never).unwrap();
+        w.advise_zone_willneed(Zone::EngramWeights, 0, 0).unwrap();
+    }
+}

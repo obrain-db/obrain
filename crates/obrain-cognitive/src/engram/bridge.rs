@@ -404,3 +404,98 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tests_pont_observation {
+    use super::*;
+    use crate::engram::traits::InMemoryVectorIndex;
+    use obrain_reactive::{EdgeSnapshot, NodeSnapshot};
+
+    fn manager() -> Arc<EngramManager> {
+        Arc::new(EngramManager::new(
+            crate::engram::manager::EngramManagerConfig::default(),
+            Arc::new(InMemoryVectorIndex::new()),
+        ))
+    }
+
+    fn noeud(id: u64) -> NodeSnapshot {
+        NodeSnapshot {
+            id: NodeId(id),
+            labels: Default::default(),
+            properties: Vec::new(),
+        }
+    }
+
+    fn arete(id: u64, src: u64, dst: u64) -> EdgeSnapshot {
+        EdgeSnapshot {
+            id: obrain_common::types::EdgeId(id),
+            src: NodeId(src),
+            dst: NodeId(dst),
+            edge_type: Default::default(),
+            properties: Vec::new(),
+        }
+    }
+
+    /// Le pont expose son nom et accepte une surprise par épisode explicite
+    /// (constructeur `with_prediction_error`, chemin de test/simulation).
+    #[test]
+    fn le_pont_expose_son_nom_et_accepte_une_surprise_explicite() {
+        let mgr = manager();
+        let bridge = EngramObservationBridge::with_prediction_error(Arc::clone(&mgr), 0.7);
+        assert_eq!(bridge.name(), "cognitive:engram");
+        assert!((bridge.prediction_error - 0.7).abs() < f64::EPSILON);
+    }
+
+    /// `on_event` (chemin unitaire, hors lot) traduit CHAQUE variante de
+    /// mutation en co-activation : les singletons ne forment rien, une arête
+    /// co-activée `min_episodes` fois forme l'engramme {src,dst}.
+    #[tokio::test]
+    async fn on_event_traite_toutes_les_variantes_de_mutation() {
+        let mgr = manager();
+        let bridge = EngramObservationBridge::new(Arc::clone(&mgr));
+
+        // Singletons : aucune formation possible, quel que soit le type.
+        bridge
+            .on_event(&MutationEvent::NodeCreated { node: noeud(1) })
+            .await;
+        bridge
+            .on_event(&MutationEvent::NodeUpdated {
+                before: noeud(2),
+                after: noeud(2),
+            })
+            .await;
+        bridge
+            .on_event(&MutationEvent::NodeDeleted { node: noeud(3) })
+            .await;
+
+        // Arête {10,11} : chaque événement d'arête est SA PROPRE co-activation.
+        for _ in 0..3 {
+            bridge
+                .on_event(&MutationEvent::EdgeCreated {
+                    edge: arete(1, 10, 11),
+                })
+                .await;
+            bridge
+                .on_event(&MutationEvent::EdgeUpdated {
+                    before: arete(2, 10, 11),
+                    after: arete(2, 10, 11),
+                })
+                .await;
+            bridge
+                .on_event(&MutationEvent::EdgeDeleted {
+                    edge: arete(3, 10, 11),
+                })
+                .await;
+        }
+
+        let engrams = mgr.store().list();
+        assert!(
+            engrams.iter().any(|e| {
+                let mut ids: Vec<u64> = e.node_ids().iter().map(|n| n.0).collect();
+                ids.sort_unstable();
+                ids == vec![10, 11]
+            }),
+            "un engramme {{10,11}} doit se former via on_event, engrams={engrams:?}"
+        );
+    }
+}

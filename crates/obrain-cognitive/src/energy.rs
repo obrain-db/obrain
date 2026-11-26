@@ -1110,3 +1110,36 @@ mod substrate_tests {
         assert_eq!(low[0], ids[0]);
     }
 }
+
+#[cfg(test)]
+mod tests_chemin_sans_substrat {
+    use super::*;
+    use web_time::Instant;
+
+    /// `advance_to` matérialise la décroissance jusqu'à `now` et DÉPLACE
+    /// l'ancre (`last_activated`) : après une demi-vie, 1,0 → 0,5.
+    #[test]
+    fn advance_to_materialise_et_deplace_l_ancre() {
+        let t0 = Instant::now();
+        let mut e = NodeEnergy::new_at(1.0, Duration::from_secs(3600), t0);
+        let t1 = t0 + Duration::from_secs(3600);
+        e.advance_to(t1);
+        assert!((e.raw_energy() - 0.5).abs() < 1e-12, "une demi-vie : {e:?}");
+        assert_eq!(e.last_activated(), t1);
+    }
+
+    /// `decay_tick` SANS substrat avance chaque nœud du cache le long de sa
+    /// propre ancre, et `max_nodes` borne le travail d'une tique (les nœuds
+    /// restants sont reportés à la suivante, sans erreur).
+    #[test]
+    fn decay_tick_sans_substrat_avance_et_bornes_par_max_nodes() {
+        let store = EnergyStore::new(EnergyConfig::default());
+        store.boost(NodeId(1), 1.0);
+        store.boost(NodeId(2), 0.5);
+        store.boost(NodeId(3), 0.25);
+        // Sans borne : les trois nœuds sont avancés en une tique.
+        assert_eq!(store.decay_tick(0), 3);
+        // Borne à 1 : un seul nœud avancé, `break` sur le suivant.
+        assert_eq!(store.decay_tick(1), 1);
+    }
+}

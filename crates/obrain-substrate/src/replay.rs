@@ -2990,3 +2990,61 @@ mod tests {
         assert_eq!(stats.dangling_prop_anchors, 0, "aucune ancre non nulle ici");
     }
 }
+
+#[cfg(test)]
+mod tests_rejeu_engramme {
+    use super::*;
+    use crate::file::SubstrateFile;
+    use crate::wal_io::SyncMode;
+    use crate::writer::Writer;
+    use tempfile::tempdir;
+
+    /// Le rejeu reconstruit l'état COMPLET d'un engramme (membres+poids) depuis
+    /// le record WAL `EngramStateSet`, en ouvrant paresseusement les deux zones.
+    #[test]
+    fn replay_reconstruit_l_etat_complet_d_engramme() {
+        let dir = tempdir().unwrap();
+        let sub_path = dir.path().join("kb");
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            w.set_engram_state(1, vec![10, 20], vec![0.5, 0.75])
+                .unwrap();
+            w.commit().unwrap();
+        }
+        // Efface les zones pour forcer la reconstruction depuis le WAL seul.
+        std::fs::write(sub_path.join(crate::file::zone::ENGRAM_MEMBERS), []).unwrap();
+        std::fs::write(sub_path.join(crate::file::zone::ENGRAM_WEIGHTS), []).unwrap();
+
+        let sub2 = SubstrateFile::open(&sub_path).unwrap();
+        let stats = replay_from(&sub2, 0).unwrap();
+        assert_eq!(stats.decode_errors, 0);
+
+        let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
+        let (m, wts) = w2.read_engram_state(1).unwrap().unwrap();
+        assert_eq!(m, vec![10, 20]);
+        assert_eq!(wts, Some(vec![0.5, 0.75]));
+    }
+
+    /// Le rejeu reconstruit les POIDS SEULS depuis le record `EngramWeightsSet`,
+    /// en ouvrant paresseusement la zone poids à la première occurrence.
+    #[test]
+    fn replay_reconstruit_les_poids_seuls_d_engramme() {
+        let dir = tempdir().unwrap();
+        let sub_path = dir.path().join("kb");
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            w.set_engram_weights(2, vec![0.25, 0.5]).unwrap();
+            w.commit().unwrap();
+        }
+        std::fs::write(sub_path.join(crate::file::zone::ENGRAM_WEIGHTS), []).unwrap();
+
+        let sub2 = SubstrateFile::open(&sub_path).unwrap();
+        let stats = replay_from(&sub2, 0).unwrap();
+        assert_eq!(stats.decode_errors, 0);
+
+        let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
+        assert_eq!(w2.engram_weights(2).unwrap(), Some(vec![0.25, 0.5]));
+    }
+}
