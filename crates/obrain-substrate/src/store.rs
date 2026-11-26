@@ -3204,10 +3204,15 @@ pub enum ResolutionEffet {
 /// préparation). À conserver AVANT la publication pour résoudre un effet dont la
 /// réponse a été perdue. Ce n'est PAS une identité logique durable K (pas
 /// d'idempotence) ni une preuve de compatibilité de contenu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReferenceTentative {
     pub auteur: u64,
     pub horloge: u64,
+    /// Cible (nœud) de la tentative — lie la référence à LA ressource concernée.
+    pub cible: NodeId,
+    /// Clés écrites attendues (l'ensemble des effets) — une résolution portant
+    /// sur une clé étrangère à cet ensemble est refusée (Indetermine).
+    pub effets: Vec<String>,
 }
 
 /// Mode de publication : détermine si les propriétés ÉCRITES mais non DÉCLARÉES
@@ -3275,6 +3280,8 @@ impl TransformationPrete {
         ReferenceTentative {
             auteur: self.auteur,
             horloge: self.horloge_effet,
+            cible: self.cible,
+            effets: self.ecritures.clone(),
         }
     }
 
@@ -3466,11 +3473,15 @@ impl SubstrateStore {
     /// puis résout l'effet après réouverture, sans republier.
     pub fn resoudre_effet_historique_par_reference(
         &self,
-        cible: NodeId,
         key: &str,
-        reference: ReferenceTentative,
+        reference: &ReferenceTentative,
     ) -> SubstrateResult<ResolutionEffet> {
-        self.resoudre_effet_historique(cible, key, reference.auteur, reference.horloge)
+        // La clé demandée doit faire partie des effets attendus de la référence :
+        // une résolution portant sur un effet étranger n'est pas attestable.
+        if !reference.effets.iter().any(|e| e == key) {
+            return Ok(ResolutionEffet::Indetermine);
+        }
+        self.resoudre_effet_historique(reference.cible, key, reference.auteur, reference.horloge)
     }
 
     /// Capture COHÉRENTE de plusieurs propriétés d'un nœud sous le verrou

@@ -84,14 +84,53 @@ fn contrat_public_resolution_apres_perte_reponse() {
     };
     let store2 = SubstrateStore::open(&chemin).unwrap();
     // résoudre SANS republier
-    let res = store2.resoudre_effet_historique_par_reference(id, "a", reference).unwrap();
+    let res = store2.resoudre_effet_historique_par_reference("a", &reference).unwrap();
     assert_eq!(res, ResolutionEffet::Engage, "l'engagement est attesté après réouverture");
     // masquage ultérieur : l'événement historique reste attesté
     store2.set_node_property(id, "a", Value::Int64(99));
     assert_eq!(
-        store2.resoudre_effet_historique_par_reference(id, "a", reference).unwrap(),
+        store2.resoudre_effet_historique_par_reference("a", &reference).unwrap(),
         ResolutionEffet::Engage,
         "masqué mais historiquement engagé"
     );
     eprintln!("REFERENCE_OK : référence conservée → publication → perte → résolution sans republier");
+}
+
+
+#[test]
+fn contrat_public_reference_etrangere_refusee() {
+    let td = tempfile::tempdir().unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+    let id = store.create_node(&["ressource"]);
+    store.set_node_property(id, "a", Value::Int64(1));
+    let pre = store.capturer_precondition(id, &["a"]).unwrap();
+    let prep = store
+        .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
+        .unwrap();
+    let reference = prep.reference_tentative();
+    store.publier_si_precondition_intacte(prep).unwrap();
+    // résolution sur une clé ÉTRANGÈRE à l'ensemble des effets → Indetermine
+    let res = store.resoudre_effet_historique_par_reference("z", &reference).unwrap();
+    assert_eq!(res, ResolutionEffet::Indetermine, "effet étranger non attestable");
+    eprintln!("ETRANGER_OK : la référence ne peut pas attester un effet étranger");
+}
+
+#[test]
+fn contrat_public_reference_alteree_indetermine() {
+    let td = tempfile::tempdir().unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+    let id = store.create_node(&["ressource"]);
+    store.set_node_property(id, "a", Value::Int64(1));
+    let pre = store.capturer_precondition(id, &["a"]).unwrap();
+    let prep = store
+        .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
+        .unwrap();
+    let reference = prep.reference_tentative();
+    store.publier_si_precondition_intacte(prep).unwrap();
+    // référence ALTÉRÉE : estampille modifiée → l'effet n'est pas retrouvé
+    let mut alteree = reference.clone();
+    alteree.horloge = alteree.horloge.wrapping_add(1);
+    let res = store.resoudre_effet_historique_par_reference("a", &alteree).unwrap();
+    assert_eq!(res, ResolutionEffet::Indetermine, "référence altérée non attestable");
+    eprintln!("ALTEREE_OK : la référence altérée ne résout pas l'effet");
 }
