@@ -77,7 +77,8 @@ fn records_engramme_nul(wal: &Path) -> Vec<&'static str> {
 /// Efface les DEUX zones de l'état d'engramme : le cas « le dérivé a disparu,
 /// le journal doit suffire ».
 fn effacer_zones_engram(base: &Path) {
-    std::fs::write(base.join(zone::ENGRAM_MEMBERS), Vec::<u8>::new()).expect("vider la zone membres");
+    std::fs::write(base.join(zone::ENGRAM_MEMBERS), Vec::<u8>::new())
+        .expect("vider la zone membres");
     std::fs::write(base.join(zone::ENGRAM_WEIGHTS), Vec::<u8>::new()).expect("vider la zone poids");
 }
 
@@ -171,9 +172,15 @@ fn un_engramme_nul_refuse_ne_bloque_pas_la_reouverture() {
 
     // LES TROIS PORTES de l'état d'engramme refusent l'identifiant nul.
     let refus = [
-        ("set_engram_state", w.set_engram_state(0, vec![3], vec![0.75]).err()),
+        (
+            "set_engram_state",
+            w.set_engram_state(0, vec![3], vec![0.75]).err(),
+        ),
         ("set_engram_members", w.set_engram_members(0, vec![3]).err()),
-        ("set_engram_weights", w.set_engram_weights(0, vec![0.75]).err()),
+        (
+            "set_engram_weights",
+            w.set_engram_weights(0, vec![0.75]).err(),
+        ),
     ];
     for (porte, err) in refus {
         let err = err.unwrap_or_else(|| panic!("{porte} doit refuser l'engramme 0"));
@@ -543,10 +550,7 @@ fn le_couple_membres_poids_survit_a_une_panne_dans_la_fenetre() {
         );
         assert_eq!(
             records[1],
-            (
-                vec![7u32, 8],
-                vec![0.75f32.to_bits(), 0.25f32.to_bits()]
-            ),
+            (vec![7u32, 8], vec![0.75f32.to_bits(), 0.25f32.to_bits()]),
             "point {rang} : le second record est l'état B complet"
         );
     }
