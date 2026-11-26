@@ -3173,6 +3173,236 @@ pub enum ResolutionEffet {
     Indetermine,
 }
 
+/// Référence OPAQUE d'une tentative de publication, obtenue AVANT publication.
+///
+/// Elle lie ce qui est réellement persisté au moment de la préparation :
+/// l'auteur effectif de la tentative (`writer.id` du répertoire de la base),
+/// l'estampille HLC attribuée à toutes ses écritures, la cible et l'ensemble des
+/// clés écrites. Elle ne porte AUCUNE donnée de session : l'`incarnation` du
+/// store n'est pas persistée, et une référence qui la contiendrait ne
+/// survivrait pas à la réouverture.
+///
+/// LIMITE DÉCLARÉE — identité de base. `substrate.meta` est de taille figée et
+/// ne porte aucun identifiant de base : il n'en existe pas aujourd'hui.
+/// `writer.id` est tiré une fois par répertoire puis relu à chaque ouverture ;
+/// il tient donc lieu d'identité persistante de ce répertoire. Les notions
+/// « identité de base » et « identité d'écrivain » COÏNCIDENT ici par
+/// construction — c'est une limite mesurée, pas une identité déguisée.
+///
+/// Une référence n'est JAMAIS, à elle seule, une preuve d'engagement : seule
+/// [`SubstrateStore::resoudre_reference`] en produit une, et `Indetermine` y
+/// couvre aussi bien « jamais engagée » que « retirée par compaction ».
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferenceTentative {
+    auteur: u64,
+    horloge: u64,
+    cible: NodeId,
+    effets: Vec<String>,
+}
+
+/// Magic des octets d'une [`ReferenceTentative`] encodée.
+pub const REFERENCE_TENTATIVE_MAGIC: [u8; 4] = *b"OBRT";
+/// Version du format d'encodage d'une [`ReferenceTentative`].
+pub const REFERENCE_TENTATIVE_VERSION: u8 = 1;
+
+/// Lit 8 octets little-endian à `pos`, en avance `pos`. Refus nommé, jamais de panique.
+fn lire_u64_le(octets: &[u8], pos: &mut usize) -> SubstrateResult<u64> {
+    let fin = pos
+        .checked_add(8)
+        .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+            raison: "dépassement d'index".to_string(),
+        })?;
+    let tranche = octets
+        .get(*pos..fin)
+        .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+            raison: format!("troncature : 8 octets attendus à l'offset {pos}"),
+        })?;
+    *pos = fin;
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(tranche);
+    Ok(u64::from_le_bytes(buf))
+}
+
+/// Lit 4 octets little-endian à `pos`, en avance `pos`. Refus nommé, jamais de panique.
+fn lire_u32_le(octets: &[u8], pos: &mut usize) -> SubstrateResult<u32> {
+    let fin = pos
+        .checked_add(4)
+        .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+            raison: "dépassement d'index".to_string(),
+        })?;
+    let tranche = octets
+        .get(*pos..fin)
+        .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+            raison: format!("troncature : 4 octets attendus à l'offset {pos}"),
+        })?;
+    *pos = fin;
+    let mut buf = [0u8; 4];
+    buf.copy_from_slice(tranche);
+    Ok(u32::from_le_bytes(buf))
+}
+
+impl ReferenceTentative {
+    /// Auteur effectif de la tentative (identité persistée du répertoire).
+    pub fn auteur(&self) -> u64 {
+        self.auteur
+    }
+
+    /// Estampille HLC attribuée aux écritures de la tentative.
+    pub fn horloge(&self) -> u64 {
+        self.horloge
+    }
+
+    /// Cible de la tentative.
+    pub fn cible(&self) -> NodeId {
+        self.cible
+    }
+
+    /// Clés écrites, dans l'ordre de la préparation.
+    pub fn effets(&self) -> &[String] {
+        &self.effets
+    }
+
+    /// Encodage STABLE et versionné :
+    /// `magic(4) | version(1) | auteur(8 LE) | horloge(8 LE) | cible(8 LE) |
+    /// n(4 LE) | [len(4 LE) | octets]*n`
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out =
+            Vec::with_capacity(33 + self.effets.iter().map(|e| 4 + e.len()).sum::<usize>());
+        out.extend_from_slice(&REFERENCE_TENTATIVE_MAGIC);
+        out.push(REFERENCE_TENTATIVE_VERSION);
+        out.extend_from_slice(&self.auteur.to_le_bytes());
+        out.extend_from_slice(&self.horloge.to_le_bytes());
+        out.extend_from_slice(&self.cible.0.to_le_bytes());
+        out.extend_from_slice(&(self.effets.len() as u32).to_le_bytes());
+        for cle in &self.effets {
+            out.extend_from_slice(&(cle.len() as u32).to_le_bytes());
+            out.extend_from_slice(cle.as_bytes());
+        }
+        out
+    }
+
+    /// Décodage CONTRÔLÉ : refuse magic invalide, version inconnue, décompte
+    /// d'effets incohérent, troncature, clé non UTF-8 et octets excédentaires.
+    /// Ne panique sur aucune entrée.
+    ///
+    /// L'intégrité qui COMPTE n'est pas celle de ces octets : un consommateur
+    /// peut les fabriquer, et ce décodage accepte une fabrication bien formée.
+    /// La garantie est ailleurs — [`SubstrateStore::resoudre_reference`] relit
+    /// les données persistées et ne peut rendre `Engage` que sur une entrée
+    /// réellement présente dans la chaîne canonique.
+    pub fn from_bytes(octets: &[u8]) -> SubstrateResult<Self> {
+        if octets.len() < 33 {
+            return Err(SubstrateError::ReferenceNonAttribuable {
+                raison: format!("troncature : {} octets pour un en-tête de 33", octets.len()),
+            });
+        }
+        if octets[..4] != REFERENCE_TENTATIVE_MAGIC {
+            return Err(SubstrateError::ReferenceNonAttribuable {
+                raison: "magic invalide — ce n'est pas une référence de tentative".to_string(),
+            });
+        }
+        if octets[4] != REFERENCE_TENTATIVE_VERSION {
+            return Err(SubstrateError::ReferenceNonAttribuable {
+                raison: format!(
+                    "version inconnue {} (attendu {})",
+                    octets[4], REFERENCE_TENTATIVE_VERSION
+                ),
+            });
+        }
+        let mut pos = 5usize;
+        let auteur = lire_u64_le(octets, &mut pos)?;
+        let horloge = lire_u64_le(octets, &mut pos)?;
+        let cible = NodeId(lire_u64_le(octets, &mut pos)?);
+        let n_effets = lire_u32_le(octets, &mut pos)? as usize;
+        // Un décompte forgé ne doit pas faire boucler : chaque effet porte au
+        // moins 4 octets de longueur.
+        if n_effets > (octets.len() - pos) / 4 {
+            return Err(SubstrateError::ReferenceNonAttribuable {
+                raison: format!("décompte d'effets incohérent : {n_effets}"),
+            });
+        }
+        let mut effets = Vec::with_capacity(n_effets);
+        for _ in 0..n_effets {
+            let len = lire_u32_le(octets, &mut pos)? as usize;
+            let fin =
+                pos.checked_add(len)
+                    .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+                        raison: "dépassement de longueur d'une clé".to_string(),
+                    })?;
+            let tranche =
+                octets
+                    .get(pos..fin)
+                    .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+                        raison: format!(
+                            "troncature : {len} octets de clé annoncés à l'offset {pos}"
+                        ),
+                    })?;
+            let cle = std::str::from_utf8(tranche).map_err(|e| {
+                SubstrateError::ReferenceNonAttribuable {
+                    raison: format!("clé non UTF-8 : {e}"),
+                }
+            })?;
+            effets.push(cle.to_string());
+            pos = fin;
+        }
+        if pos != octets.len() {
+            return Err(SubstrateError::ReferenceNonAttribuable {
+                raison: format!(
+                    "octets excédentaires : {} au-delà de la référence",
+                    octets.len() - pos
+                ),
+            });
+        }
+        Ok(Self {
+            auteur,
+            horloge,
+            cible,
+            effets,
+        })
+    }
+}
+
+/// État d'UN effet d'une tentative, dans l'histoire canonique accessible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffetResolu {
+    /// Clé écrite par la tentative.
+    pub cle: String,
+    /// `Engage` si l'entrée de CETTE tentative est dans la chaîne canonique
+    /// accessible (canonique **ou masquée**), `Indetermine` sinon.
+    pub etat: ResolutionEffet,
+    /// Estampille CANONIQUE COURANTE de la clé, relue maintenant. Elle diffère
+    /// de celle de la tentative quand l'effet a été masqué par une écriture
+    /// ultérieure — c'est la distinction « engagé et masqué » / « engagé et
+    /// canonique ». `None` : clé absente, ou nœud non vivant.
+    pub estampille_courante: Option<(u64, u64)>,
+}
+
+/// Intégrité d'une tentative multi-effets. N'est JAMAIS déduite d'un seul effet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegriteTentative {
+    /// Tous les effets attendus sont engagés.
+    Integrale,
+    /// Au moins un effet engagé, au moins un non retrouvé. Ne jamais lire ceci
+    /// comme « publiée » : `Indetermine` couvre « jamais engagé ou compacté ».
+    Partielle,
+    /// Aucun effet retrouvé (et cas de la référence sans effet).
+    Indeterminee,
+}
+
+/// Résultat d'une résolution de [`ReferenceTentative`], avec le tuple RELU.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionTentative {
+    /// Cible effectivement consultée.
+    pub cible: NodeId,
+    /// Auteur de la base qui a résolu. Le comparer à `reference.auteur()` écarte
+    /// une référence étrangère : elle rend `Indeterminee` ici.
+    pub auteur_resolvant: u64,
+    /// Un état par clé, dans l'ordre de la référence. Jamais un agrégat seul.
+    pub par_cle: Vec<EffetResolu>,
+    /// Agrégat explicite, jamais une implication depuis un seul effet.
+    pub integrite: IntegriteTentative,
+}
+
 /// Mode de publication : détermine si les propriétés ÉCRITES mais non DÉCLARÉES
 /// comme dépendances sont permises (LWW) ou refusées (Strict).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3197,6 +3427,11 @@ pub enum ModePublication {
 pub struct TransformationPrete {
     incarnation: u64,
     cible: NodeId,
+    /// Auteur EFFECTIF de la tentative (`writer_id` du store au moment de la
+    /// préparation) : c'est lui qui estampille toutes les écritures de cette
+    /// transformation. Conservé ici pour que la tentative puisse se nommer
+    /// elle-même AVANT publication — voir [`Self::reference_tentative`].
+    auteur: u64,
     /// Précondition CAPTURÉE qui a servi à calculer la transformation — LIÉE
     /// à la préparation : `publier_si_precondition_intacte` la relit telle
     /// quelle, l'appelant ne peut pas en substituer une autre (lien explicite
@@ -3236,6 +3471,21 @@ impl TransformationPrete {
         self.empreinte
     }
 
+    /// Référence OPAQUE de CETTE tentative, disponible AVANT publication et
+    /// indépendante de son sort : c'est elle que l'on conserve pour résoudre
+    /// une réponse perdue. Ne consomme PAS le descripteur (contrairement à
+    /// [`Self::publier_si_precondition_intacte`]… voir
+    /// [`SubstrateStore::publier_si_precondition_intacte`], qui le prend par
+    /// valeur).
+    pub fn reference_tentative(&self) -> ReferenceTentative {
+        ReferenceTentative {
+            auteur: self.auteur,
+            horloge: self.horloge_effet,
+            cible: self.cible,
+            effets: self.ecritures.clone(),
+        }
+    }
+
     /// (tests) accès aux adresses physiques, pour les contre-épreuves naïves.
     #[cfg(test)]
     pub(crate) fn tete_privee_pour_test(&self) -> u64 {
@@ -3267,6 +3517,24 @@ pub struct PreparationDifferee {
     precondition: Precondition,
     ecritures: Vec<(String, Value)>,
     mode: ModePublication,
+}
+
+impl PreparationDifferee {
+    /// REFUS EXPLICITE — une préparation différée n'a AUCUNE estampille avant sa
+    /// matérialisation : elle n'alloue ni page, ni clé internée, ni estampille,
+    /// et c'est exactement ce qui garantit le zéro-allocation des préparations
+    /// abandonnées. Fabriquer une estampille anticipée serait un mensonge : ce
+    /// ne serait pas celle que la publication attribuera, donc la référence
+    /// désignerait une tentative qui n'existera jamais.
+    ///
+    /// Le refus est donc public, nommé et matchable — jamais un `None`
+    /// silencieux, jamais une valeur inventée.
+    pub fn reference_tentative(&self) -> SubstrateResult<ReferenceTentative> {
+        Err(SubstrateError::ReferenceNonAttribuable {
+            raison: "préparation différée : l'estampille n'est attribuée qu'à la matérialisation"
+                .to_string(),
+        })
+    }
 }
 
 /// Deux états correspondent si leur espèce et, pour présent/supprimé, leur
@@ -3408,6 +3676,68 @@ impl SubstrateStore {
             ResolutionEffet::Engage
         } else {
             ResolutionEffet::Indetermine
+        })
+    }
+
+    /// Résout une [`ReferenceTentative`] contre l'état PERSISTÉ de ce store :
+    /// un état par clé, l'agrégat d'intégrité, et l'estampille canonique
+    /// courante relue.
+    ///
+    /// Réutilise [`Self::resoudre_effet_historique`] telle quelle : aucune
+    /// seconde infrastructure transactionnelle, aucun second parcours de chaîne.
+    ///
+    /// GARANTIE DE SÛRETÉ : une référence forgée, altérée ou venue d'une AUTRE
+    /// base ne peut produire que `Indetermine` — jamais un `Engage` faux,
+    /// puisqu'un `Engage` exige de retrouver, dans la chaîne canonique de CE
+    /// store, une entrée dont l'estampille persistée égale `(auteur, horloge)`.
+    ///
+    /// Ce que cela ne prouve PAS : que l'effet correspond à l'intention.
+    /// `Engage` + `estampille_courante` différente de la référence = « engagé
+    /// puis masqué » ; la valeur courante peut être incompatible avec celle que
+    /// la tentative écrivait, et c'est au consommateur de la relire.
+    pub fn resoudre_reference(
+        &self,
+        reference: &ReferenceTentative,
+    ) -> SubstrateResult<ResolutionTentative> {
+        let mut par_cle = Vec::with_capacity(reference.effets.len());
+        for cle in &reference.effets {
+            let etat = self.resoudre_effet_historique(
+                reference.cible,
+                cle,
+                reference.auteur,
+                reference.horloge,
+            )?;
+            // La relecture de l'état courant est INDICATIVE : son échec (nœud
+            // disparu) ne doit pas transformer une résolution en erreur.
+            let estampille_courante = match self.lire_etat_propriete(reference.cible, cle).ok() {
+                Some(EtatPropriete::Presente { estampille, .. })
+                | Some(EtatPropriete::Supprimee(estampille)) => {
+                    Some((estampille.auteur, estampille.horloge))
+                }
+                _ => None,
+            };
+            par_cle.push(EffetResolu {
+                cle: cle.clone(),
+                etat,
+                estampille_courante,
+            });
+        }
+        let engages = par_cle
+            .iter()
+            .filter(|e| e.etat == ResolutionEffet::Engage)
+            .count();
+        let integrite = if engages == 0 || par_cle.is_empty() {
+            IntegriteTentative::Indeterminee
+        } else if engages == par_cle.len() {
+            IntegriteTentative::Integrale
+        } else {
+            IntegriteTentative::Partielle
+        };
+        Ok(ResolutionTentative {
+            cible: reference.cible,
+            auteur_resolvant: self.writer_id,
+            par_cle,
+            integrite,
         })
     }
 
@@ -3560,6 +3890,7 @@ impl SubstrateStore {
         Ok(TransformationPrete {
             incarnation: self.incarnation,
             cible,
+            auteur,
             precondition: precondition.clone(),
             ecritures: nouvelles.iter().map(|(c, _)| (*c).to_string()).collect(),
             horloge_effet: horloge,

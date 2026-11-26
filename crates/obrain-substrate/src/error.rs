@@ -296,6 +296,13 @@ pub enum SubstrateError {
     #[error("substrate invariant violated: {0}")]
     Internal(String),
 
+    /// Une référence de tentative ne peut pas être ATTRIBUÉE en l'état — cas
+    /// nommé : le chemin de préparation différée, où l'estampille n'existe
+    /// qu'à la matérialisation. Refus explicite et matchable : jamais une
+    /// estampille anticipée, jamais un `None` silencieux.
+    #[error("référence de tentative non attribuable : {raison}")]
+    ReferenceNonAttribuable { raison: String },
+
     /// (jalon 3) Un principal est DEJA pose sur ce handle de store. Le
     /// principal est immuable une fois pose — pas de re-pose, pas
     /// d'effacement (la lecon du `access_context` mutable : une identite
