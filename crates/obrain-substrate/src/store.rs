@@ -3718,7 +3718,25 @@ impl SubstrateStore {
     /// préparée mais NON engagée (page privée orpheline) n'est pas atteinte.
     /// Un effet engagé puis masqué reste dans la chaîne : `Engage`. L'absence
     /// dans l'histoire accessible (jamais engagé OU compacté) est `Indetermine`.
+    /// Résolution historique d'UNE clé par identité de tentative (auteur,
+    /// horloge), sous le verrou de nœud.
     pub fn resoudre_effet_historique(
+        &self,
+        cible: NodeId,
+        key: &str,
+        auteur: u64,
+        horloge: u64,
+    ) -> SubstrateResult<ResolutionEffet> {
+        let _un_ecrivain = self.verrou_ecriture_noeud(cible).lock();
+        self.resoudre_effet_historique_verrouille(cible, key, auteur, horloge)
+    }
+
+    /// PRÉREQUIS : le VERROU DE NŒUD (`verrou_ecriture_noeud(cible)`) est DÉJÀ
+    /// tenu par l'appelant. Parcourt la chaîne canonique sans re-acquérir le
+    /// verrou (évite l'acquisition récursive). Utilisé par
+    /// `resoudre_reference` pour résoudre TOUTES les clés sous une SEULE
+    /// acquisition — un instantané cohérent.
+    fn resoudre_effet_historique_verrouille(
         &self,
         cible: NodeId,
         key: &str,
@@ -3730,10 +3748,6 @@ impl SubstrateStore {
                 "resoudre_effet_historique : pas de props_zone".to_string(),
             ));
         };
-        // Stabilise la tête canonique PENDANT le parcours : le verrou de nœud est
-        // l'autorité que prend aussi la publication lors de la bascule. Sans lui,
-        // la tête capturée pourrait être décalée d'une publication concurrente.
-        let _un_ecrivain = self.verrou_ecriture_noeud(cible).lock();
         if !self.is_live_on_disk(cible) {
             return Ok(ResolutionEffet::Indetermine);
         }
@@ -3778,9 +3792,13 @@ impl SubstrateStore {
         &self,
         reference: &ReferenceTentative,
     ) -> SubstrateResult<ResolutionTentative> {
+        // UNE seule acquisition du verrou de nœud pour TOUTES les clés : l'agrégat
+        // est un instantané COHÉRENT (toutes les clés lues contre le même état),
+        // pas une concaténation d'observations issues d'états différents.
+        let _un_ecrivain = self.verrou_ecriture_noeud(reference.cible).lock();
         let mut par_cle = Vec::with_capacity(reference.effets.len());
         for cle in &reference.effets {
-            let etat = self.resoudre_effet_historique(
+            let etat = self.resoudre_effet_historique_verrouille(
                 reference.cible,
                 cle,
                 reference.auteur,
@@ -49053,6 +49071,43 @@ mod publication_conditionnelle_native {
             "c n'a pas été écrit par cette transformation → non résolu"
         );
         eprintln!("MULTI_EFFET_OK : la résolution est par clé, l'intégralité exige chaque clé");
+    }
+
+    /// P0 — COHÉRENCE MULTI-CLÉS : resoudre_reference prend le verrou de nœud
+    /// UNE SEULE fois pour toutes les clés → instantané cohérent, pas une
+    /// concaténation d'observations issues d'états qui n'ont jamais coexisté.
+    #[test]
+    fn resolution_multi_cles_est_un_instantanee_coherent() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = base(&store);
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Strict)
+            .unwrap();
+        let reference = prep.reference_tentative();
+        store.publier_si_precondition_intacte(prep).unwrap();
+        let store2 = Arc::clone(&store);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ecrivain = std::thread::spawn(move || {
+            let _g = store2.verrou_ecriture_noeud(id).lock();
+            tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        });
+        rx.recv().unwrap();
+        let debut = std::time::Instant::now();
+        let res = store.resoudre_reference(&reference).unwrap();
+        let el = debut.elapsed();
+        eprintln!("RESOLUTION_COHERENTE attente={el:?} integrite={:?}", res.integrite);
+        ecrivain.join().unwrap();
+        assert!(
+            el >= std::time::Duration::from_millis(50),
+            "resoudre_reference BLOQUE sur le verrou de nœud → instantané cohérent"
+        );
+        assert_eq!(res.integrite, IntegriteTentative::Integrale);
+        for e in &res.par_cle {
+            assert_eq!(e.estampille_courante, Some((reference.auteur(), reference.horloge())));
+        }
     }
 
     fn f64_de_capture(pre: &Precondition) -> f64 {
