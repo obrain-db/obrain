@@ -3318,9 +3318,9 @@ pub enum VerdictEffet {
     EngagePuisSupplante,
     /// Tentative engagée puis SUPPRIMÉE (tombstone ultérieur).
     EngagePuisSupprime,
-    /// Tentative jamais engagée (ressource vivante, entrée absente de la chaîne).
-    JamaisEngage,
-    /// Indéterminé (ressource inexistante : la preuve a pu être compactée).
+    /// Indéterminé : aucune preuve native positive de non-engagement n'existe.
+    /// `Indetermine` couvre « jamais engagé », « refusé » ET « preuve compactée
+    /// sur ressource toujours vivante » — on ne les distingue PAS sans preuve.
     Indetermine,
 }
 
@@ -3640,36 +3640,6 @@ impl EffetResolu {
         }
     }
 
-    /// Verdict DÉRIVÉ de l'engagement historique + de l'état courant. C'est la
-    /// primitive native qui résout la frontière T3 : une révision supérieure
-    /// (état courant d'une autre tentative) ne doit JAMAIS être lue comme une
-    /// preuve que CETTE tentative n'a pas été engagée ni matérialisée.
-    ///
-    /// `(auteur_tentative, horloge_tentative)` = l'estampille de la tentative
-    /// résolue (celle de la `ReferenceTentative`). Aucune seconde lecture.
-    pub fn verdict(&self, auteur_tentative: u64, horloge_tentative: u64) -> VerdictEffet {
-        match self.etat {
-            ResolutionEffet::Engage => match &self.etat_courant {
-                EtatPropriete::Presente { estampille, .. } => {
-                    if estampille.auteur == auteur_tentative
-                        && estampille.horloge == horloge_tentative
-                    {
-                        VerdictEffet::EngageEtCourant
-                    } else {
-                        VerdictEffet::EngagePuisSupplante
-                    }
-                }
-                EtatPropriete::Supprimee(_) => VerdictEffet::EngagePuisSupprime,
-                EtatPropriete::Absente | EtatPropriete::RessourceInexistante => {
-                    VerdictEffet::EngagePuisSupplante
-                }
-            },
-            ResolutionEffet::Indetermine => match &self.etat_courant {
-                EtatPropriete::RessourceInexistante => VerdictEffet::Indetermine,
-                _ => VerdictEffet::JamaisEngage,
-            },
-        }
-    }
 }
 
 /// Intégrité d'une tentative multi-effets. N'est JAMAIS déduite d'un seul effet.
@@ -3692,10 +3662,59 @@ pub struct ResolutionTentative {
     /// Auteur de la base qui a résolu. Le comparer à `reference.auteur()` écarte
     /// une référence étrangère : elle rend `Indeterminee` ici.
     pub auteur_resolvant: u64,
+    /// Horloge HLC de la tentative résolue (`reference.horloge()`). Associée à
+    /// `auteur_resolvant`, elle forme l'estampille de la tentative — c'est LA
+    /// référence native que `verdict_effet` compare à l'état courant, sans
+    /// paramètre libre fabriquable par l'appelant.
+    pub horloge_tentative: u64,
     /// Un état par clé, dans l'ordre de la référence. Jamais un agrégat seul.
     pub par_cle: Vec<EffetResolu>,
     /// Agrégat explicite, jamais une implication depuis un seul effet.
     pub integrite: IntegriteTentative,
+}
+
+impl ResolutionTentative {
+    /// Verdict NATIF dérivé de l'engagement historique + de l'état courant, SANS
+    /// paramètre libre : l'estampille de la tentative est CELLE de la référence
+    /// résolue (`auteur_resolvant`, `horloge_tentative`), jamais un argument
+    /// fourni par l'appelant (aucune classification fabricable).
+    ///
+    /// RÈGLE CENTRALE : une révision supérieure (état courant d'une autre
+    /// tentative) n'est JAMAIS une preuve de non-engagement ni de
+    /// non-matérialisation. `Indetermine` reste `Indetermine` : on ne dérive
+    /// jamais « jamais engagé » d'une ressource vivante (la preuve a pu être
+    /// compactée).
+    ///
+    /// Tombstone : une suppression portée par la tentative ELLE-MÊME (estampille
+    /// == tentative) est `EngageEtCourant` (la suppression tient toujours), pas
+    /// une « suppression ultérieure ».
+    pub fn verdict_effet(&self, i: usize) -> VerdictEffet {
+        let e = &self.par_cle[i];
+        let ta = self.auteur_resolvant;
+        let th = self.horloge_tentative;
+        match e.etat {
+            ResolutionEffet::Engage => match &e.etat_courant {
+                EtatPropriete::Presente { estampille, .. } => {
+                    if estampille.auteur == ta && estampille.horloge == th {
+                        VerdictEffet::EngageEtCourant
+                    } else {
+                        VerdictEffet::EngagePuisSupplante
+                    }
+                }
+                EtatPropriete::Supprimee(estampille) => {
+                    if estampille.auteur == ta && estampille.horloge == th {
+                        VerdictEffet::EngageEtCourant // la tentative EST la suppression, encore debout
+                    } else {
+                        VerdictEffet::EngagePuisSupprime
+                    }
+                }
+                EtatPropriete::Absente | EtatPropriete::RessourceInexistante => {
+                    VerdictEffet::Indetermine // contradictoire avec Engage : rester défensif
+                }
+            },
+            ResolutionEffet::Indetermine => VerdictEffet::Indetermine,
+        }
+    }
 }
 
 /// Mode de publication : détermine si les propriétés ÉCRITES mais non DÉCLARÉES
@@ -4056,6 +4075,7 @@ impl SubstrateStore {
             return Ok(ResolutionTentative {
                 cible: reference.cible,
                 auteur_resolvant: self.writer_id,
+                horloge_tentative: reference.horloge(),
                 par_cle,
                 integrite: IntegriteTentative::Indeterminee,
             });
@@ -4113,6 +4133,7 @@ impl SubstrateStore {
         Ok(ResolutionTentative {
             cible: reference.cible,
             auteur_resolvant: self.writer_id,
+            horloge_tentative: reference.horloge(),
             par_cle,
             integrite,
         })
@@ -49524,18 +49545,50 @@ mod publication_conditionnelle_native {
         // résoudre K1 : engagé PUIS supplanté (jamais « jamais matérialisé »)
         let res1 = store.resoudre_reference(&ref1).unwrap();
         assert_eq!(
-            res1.par_cle[0].verdict(ref1.auteur(), ref1.horloge()),
+            res1.verdict_effet(0),
             VerdictEffet::EngagePuisSupplante,
             "K1 engagé puis supplanté"
         );
         // résoudre K2 : engagé ET courant
         let res2 = store.resoudre_reference(&ref2).unwrap();
         assert_eq!(
-            res2.par_cle[0].verdict(ref2.auteur(), ref2.horloge()),
+            res2.verdict_effet(0),
             VerdictEffet::EngageEtCourant,
             "K2 engagé et courant"
         );
         eprintln!("VERDICT_OK : K1 supplanté, K2 courant — jamais un faux « jamais matérialisé »");
+
+        // P0 — préparée mais JAMAIS publiée : Indetermine, PAS « jamais engagé ».
+        let pre3 = store.capturer_precondition(id, &["a"]).unwrap();
+        let prep3 = store
+            .preparer_transformation(id, &[("a", Value::Int64(40))], &pre3, ModePublication::Strict)
+            .unwrap();
+        let ref3 = prep3.reference_tentative();
+        // prep3 n'est JAMAIS publiée (abandonnée)
+        drop(prep3);
+        let res3 = store.resoudre_reference(&ref3).unwrap();
+        assert_eq!(
+            res3.verdict_effet(0),
+            VerdictEffet::Indetermine,
+            "préparée jamais publiée → Indetermine (pas JamaisEngage)"
+        );
+        eprintln!("VERDICT_INDET_OK : préparée non publiée = Indetermine");
+
+        // P0 — engagée puis SUPPRIMÉE par un tombstone ultérieur.
+        let pre4 = store.capturer_precondition(id, &["a"]).unwrap();
+        let prep4 = store
+            .preparer_transformation(id, &[("a", Value::Int64(50))], &pre4, ModePublication::Strict)
+            .unwrap();
+        let ref4 = prep4.reference_tentative();
+        store.publier_si_precondition_intacte(prep4).unwrap();
+        store.remove_node_property(id, "a"); // tombstone ultérieur
+        let res4 = store.resoudre_reference(&ref4).unwrap();
+        assert_eq!(
+            res4.verdict_effet(0),
+            VerdictEffet::EngagePuisSupprime,
+            "engagée puis supprimée par un tombstone ultérieur"
+        );
+        eprintln!("VERDICT_SUPPR_OK : engagée puis supprimée = EngagePuisSupprime");
     }
 
     /// P0 — RECRÉATION DE CIBLE : la référence vise une incarnation morte.
