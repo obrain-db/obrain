@@ -153,6 +153,65 @@ pub enum ReconsolidationStrategy {
     Adaptive(ObservationScope, AdaptiveRevisionParams),
 }
 
+/// Un pas d un OPERATEUR DE REVISION natif, reutilisable.
+#[derive(Debug, Clone)]
+pub struct RevisionStep {
+    pub nodes: Vec<NodeId>,
+    pub prediction_error: f64,
+    pub scope: ObservationScope,
+    pub params: AdaptiveRevisionParams,
+}
+
+/// Un OPERATEUR NATIF REUTILISABLE : une sequence ORDONNEE de pas de
+/// reconsolidation, avec preconditions (validation des parametres a chaque pas)
+/// et effets explicites (la liste des `EngramRevision` produits).
+///
+/// `compose(a, b)` MATERIALISE la sequence : appliquer `compose(a, b)` equivaut
+/// a appliquer `a` puis `b` — meme resultat mathematique ET meme historique
+/// d application (les pas s executent dans le meme ordre).
+#[derive(Debug, Clone, Default)]
+pub struct RevisionOp {
+    pub steps: Vec<RevisionStep>,
+}
+
+impl RevisionOp {
+    pub fn new() -> Self {
+        Self { steps: Vec::new() }
+    }
+
+    pub fn push(mut self, step: RevisionStep) -> Self {
+        self.steps.push(step);
+        self
+    }
+
+    /// Applique la sequence. S ARRETE a la PREMIERE erreur (application
+    /// PARTIELLE, PAS atomique) : les pas precedents sont deja publies.
+    pub fn apply(
+        &self,
+        m: &EngramManager,
+        eid: EngramId,
+    ) -> Result<Vec<EngramRevision>, RevisionError> {
+        let mut out = Vec::with_capacity(self.steps.len());
+        for s in &self.steps {
+            out.push(m.revise_adaptive_with(
+                eid,
+                &s.nodes,
+                s.prediction_error,
+                s.scope,
+                s.params,
+            )?);
+        }
+        Ok(out)
+    }
+
+    /// Composition MATERIELISEE (concatenation des pas).
+    pub fn compose(a: &RevisionOp, b: &RevisionOp) -> RevisionOp {
+        RevisionOp {
+            steps: a.steps.iter().chain(b.steps.iter()).cloned().collect(),
+        }
+    }
+}
+
 /// Action effectuee par un pas de boucle predictive.
 #[derive(Debug, Clone)]
 pub enum PredictiveAction {
@@ -492,6 +551,13 @@ impl EngramManager {
     pub fn encode_observation(&self, nodes: &[NodeId]) -> Vec<f64> {
         let weighted: Vec<(NodeId, f64)> = nodes.iter().map(|&n| (n, 1.0)).collect();
         self.spectral.encode(&weighted)
+    }
+
+    /// Encode un ensemble PONDERE (poids reels). Permet au temoin de calculer la
+    /// signature ATTENDUE sur les poids reels et de verifier que la signature
+    /// PUBLIEE est exactement celle-la (pas seulement « differente »).
+    pub fn encode_weighted(&self, ensemble: &[(NodeId, f64)]) -> Vec<f64> {
+        self.spectral.encode(ensemble)
     }
 
     /// Erreur L2 entre deux embeddings, DIMENSION VERIFIEE : jamais de distance

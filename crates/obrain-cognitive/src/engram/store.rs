@@ -606,6 +606,24 @@ impl EngramStore {
         // ÉTAT CANDIDAT : clone, applique, valide — SANS muter l'état publié.
         let mut candidate = entry.value().clone();
         f(&mut candidate);
+        // ENFORCEMENT DE L'INVARIANT DE PROJECTION : si l'ensemble (nœuds) a
+        // change MAIS que la signature est RESTEE IDENTIQUE, c'est une
+        // publication périmée (mutateur appliqué sans recalcul). On REJETTE,
+        // au niveau de l'autorité qui ACCEPTE le résultat du mutateur.
+        let ensemble_changed = {
+            let mut a: Vec<u64> = candidate.node_ids().iter().map(|n| n.0).collect();
+            let mut b: Vec<u64> = entry.value().node_ids().iter().map(|n| n.0).collect();
+            a.sort_unstable();
+            b.sort_unstable();
+            a != b
+        };
+        if ensemble_changed
+            && candidate.spectral_signature == entry.value().spectral_signature
+        {
+            return Err(StoreError::ValidationFailed(
+                "signature spectrale non recalculée après changement d'ensemble".into(),
+            ));
+        }
         // Invariance de l'identité logique : une révision ne change pas l'id.
         if candidate.id != id {
             return Err(StoreError::ValidationFailed(
