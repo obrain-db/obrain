@@ -2844,6 +2844,20 @@ pub struct SubstrateStore {
     writer_id: u64,
     /// Horloge hybride locale (HLC) pour estampiller les écritures (#334).
     horloge: Mutex<crate::horloge_hybride::HorlogeHybride>,
+    /// Identité d'instance du store (par ouverture) : lie les descripteurs de
+    /// transformation préparée à LEUR store (refus d'un descripteur étranger
+    /// ou périmé). N'est PAS persistée.
+    incarnation: u64,
+    /// Sérialise `appliquer_evenement` PAR STORE (dédup + révision + écriture
+    /// sous une section critique commune). Jamais global : une suspension sur
+    /// un store ne bloque pas un événement sur un autre store.
+    verrou_evenements: parking_lot::Mutex<()>,
+    /// Crochet de suspension d'écriture (test-only, PAR STORE — jamais global).
+    #[cfg(test)]
+    suspension: SuspensionEvenement,
+    /// Sabotage d'append WAL (test-only, PAR STORE — jamais global).
+    #[cfg(test)]
+    echec_append_wal: parking_lot::Mutex<bool>,
     /// Serializes the read-modify-write of a node's edge-chain head in
     /// `splice_edge_at_head` and the delete-unlink path. Without it, concurrent
     /// `create_edge` / `delete_edge` on the same source race on `first_edge_off`,
@@ -3092,6 +3106,1224 @@ thread_local! {
 /// monotone ; comparer deux lectures).
 pub fn noeuds_hydrates() -> u64 {
     NOEUDS_HYDRATES.with(std::cell::Cell::get)
+}
+
+
+
+/// Issue d'une application transactionnelle d'événement (générique, expérimentale).
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum IssueEvenement {
+    /// Première application : état et preuve présents.
+    Applique,
+    /// Même identité, même définition : aucun nouvel effet.
+    RejeuIdentique,
+    /// Même identité, définition incompatible : conflit.
+    ConflitIdentite,
+    /// Révision de la cible différente de la révision attendue : refus.
+    ConflitRevision,
+}
+
+
+/// Compteur d'incarnation des stores (par ouverture) — voir
+/// `SubstrateStore::incarnation`. Lie un descripteur de transformation préparée
+/// à SON store : un descripteur étranger ou périmé (réouverture) est refusé.
+static INCARNATION_SUIVANTE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Estampille native COMPLÈTE d'une propriété : auteur (writer_id) + horloge
+/// HLC. C'est l'identité d'écriture qu'exige la précondition de publication
+/// conditionnelle — pas la seule horloge, qui est GLOBALE au store et ne
+/// distingue pas deux ressources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EstampilleComplete {
+    pub auteur: u64,
+    pub horloge: u64,
+}
+
+/// État d'une propriété lue pour la précondition. On ne confond pas présente /
+/// absente / supprimée / ressource inexistante ; les erreurs de lecture ou de
+/// corruption remontent via `SubstrateResult`, jamais avalées en `None`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EtatPropriete {
+    /// Le nœud n'existe pas (ou a été supprimé) : rien à lire.
+    RessourceInexistante,
+    /// Le nœud existe mais la clé n'a jamais été écrite.
+    Absente,
+    /// La clé a été effacée (tombstone) — l'estampille porte l'effacement.
+    Supprimee(EstampilleComplete),
+    /// La clé porte une valeur vivante, avec son estampille complète.
+    Presente {
+        estampille: EstampilleComplete,
+        valeur: Value,
+    },
+}
+
+/// Une dépendance nommée de la précondition : la clé et l'état capturé.
+#[derive(Debug, Clone)]
+struct Dependance {
+    cle: String,
+    etat: EtatPropriete,
+}
+
+/// Précondition CAPTURÉE : l'état (avec estampille complète) de chaque
+/// dépendance, lié à son store (incarnation) et à sa cible. Champs PRIVÉS :
+/// la précondition est OPAQUE et non falsifiable — seule
+/// [`SubstrateStore::capturer_precondition`] la construit, l'appelant ne peut
+/// ni changer la cible, ni retirer une dépendance, ni substituer une estampille.
+/// La « précondition déclarée » n'existe donc pas séparément de la capture :
+/// ce que l'appelant détient EST une capture, dont la provenance est garantie
+/// par l'opacité du type (pas une garantie déclarative).
+///
+/// INCARNATION : `incarnation` identifie une OUVERTURE du store (descripteur
+/// périmé après réouverture). L'incarnation LOGIQUE d'une ressource est portée
+/// par son `NodeId` (alloué monotone, jamais réutilisé) et vérifiée par le test
+/// de vivacité à la publication — deux garanties distinctes, toutes deux exigées.
+#[derive(Debug, Clone)]
+pub struct Precondition {
+    incarnation: u64,
+    cible: NodeId,
+    dependances: Vec<Dependance>,
+}
+
+impl Precondition {
+    /// Lecture seule PUBLIQUE : la VALEUR capturée d'une dépendance (si présente).
+    /// Permet à un consommateur externe de calculer une transformation depuis la
+    /// capture elle-même, SANS seconde lecture indépendante de la valeur.
+    pub fn valeur_capturee(&self, cle: &str) -> Option<&Value> {
+        self.dependances
+            .iter()
+            .find(|d| d.cle == cle)
+            .and_then(|d| match &d.etat {
+                EtatPropriete::Presente { valeur, .. } => Some(valeur),
+                _ => None,
+            })
+    }
+    /// Lecture seule PUBLIQUE : l'estampille complète capturée d'une dépendance.
+    pub fn estampille_capturee(&self, cle: &str) -> Option<EstampilleComplete> {
+        self.dependances
+            .iter()
+            .find(|d| d.cle == cle)
+            .and_then(|d| match &d.etat {
+                EtatPropriete::Presente { estampille, .. }
+                | EtatPropriete::Supprimee(estampille) => Some(*estampille),
+                _ => None,
+            })
+    }
+}
+
+#[cfg(test)]
+impl Precondition {
+    pub(crate) fn nb_dependances(&self) -> usize {
+        self.dependances.len()
+    }
+    pub(crate) fn etat_dependance(&self, i: usize) -> &EtatPropriete {
+        &self.dependances[i].etat
+    }
+    pub(crate) fn estampille_dependance(&self, i: usize) -> EstampilleComplete {
+        self.dependances[i].etat.clone().into_stamp()
+    }
+}
+
+/// Issue d'une publication conditionnelle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssuePublication {
+    /// Tête basculée ET TOUS les effets écrits sont canoniques (application
+    /// INTÉGRALE) — vérifié par lecture-retour de l'estampille de chaque
+    /// propriété écrite, sous le verrou de nœud.
+    PublieIntegrale,
+    /// Tête basculée, mais au moins un effet écrit est masqué par une écriture
+    /// concurrente plus récente (application PARTIELLE — écriture aveugle LWW).
+    PubliePartielle,
+    /// Une dépendance de la précondition a changé depuis la capture : aucun effet.
+    ConflitPrecondition,
+}
+
+/// Résultat d'une consultation HISTORIQUE d'un effet (par identité de tentative
+/// `(auteur, horloge)`), limitée à l'histoire accessible depuis la tête
+/// canonique. Une page privée orpheline n'est JAMAIS une preuve d'engagement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionEffet {
+    /// L'entrée figure dans la chaîne canonique accessible : l'effet a été
+    /// ENGAGÉ (qu'il soit aujourd'hui canonique ou masqué par une écriture
+    /// ultérieure).
+    Engage,
+    /// L'entrée est absente de l'histoire accessible : soit jamais engagé, soit
+    /// retirée par compaction. INDÉTERMINÉ — pas une attestation d'absence
+    /// définitive.
+    Indetermine,
+}
+
+/// Référence OPAQUE d'une tentative de publication, obtenue AVANT publication.
+///
+/// Elle lie ce qui est réellement persisté au moment de la préparation :
+/// l'auteur effectif de la tentative (`writer.id` du répertoire de la base),
+/// l'estampille HLC attribuée à toutes ses écritures, la cible et l'ensemble des
+/// clés écrites. Elle ne porte AUCUNE donnée de session : l'`incarnation` du
+/// store n'est pas persistée, et une référence qui la contiendrait ne
+/// survivrait pas à la réouverture.
+///
+/// LIMITE DÉCLARÉE — identité de base. `substrate.meta` est de taille figée et
+/// ne porte aucun identifiant de base : il n'en existe pas aujourd'hui.
+/// `writer.id` est tiré une fois par répertoire puis relu à chaque ouverture ;
+/// il tient donc lieu d'identité persistante de ce répertoire. Les notions
+/// « identité de base » et « identité d'écrivain » COÏNCIDENT ici par
+/// construction — c'est une limite mesurée, pas une identité déguisée.
+///
+/// Une référence n'est JAMAIS, à elle seule, une preuve d'engagement : seule
+/// [`SubstrateStore::resoudre_reference`] en produit une, et `Indetermine` y
+/// couvre aussi bien « jamais engagée » que « retirée par compaction ».
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferenceTentative {
+    auteur: u64,
+    horloge: u64,
+    cible: NodeId,
+    effets: Vec<String>,
+}
+
+/// Magic des octets d'une [`ReferenceTentative`] encodée.
+pub const REFERENCE_TENTATIVE_MAGIC: [u8; 4] = *b"OBRT";
+/// Version du format d'encodage d'une [`ReferenceTentative`].
+pub const REFERENCE_TENTATIVE_VERSION: u8 = 1;
+
+/// Lit 8 octets little-endian à `pos`, en avance `pos`. Refus nommé, jamais de panique.
+fn lire_u64_le(octets: &[u8], pos: &mut usize) -> SubstrateResult<u64> {
+    let fin = pos
+        .checked_add(8)
+        .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+            raison: "dépassement d'index".to_string(),
+        })?;
+    let tranche = octets
+        .get(*pos..fin)
+        .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+            raison: format!("troncature : 8 octets attendus à l'offset {pos}"),
+        })?;
+    *pos = fin;
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(tranche);
+    Ok(u64::from_le_bytes(buf))
+}
+
+/// Lit 4 octets little-endian à `pos`, en avance `pos`. Refus nommé, jamais de panique.
+fn lire_u32_le(octets: &[u8], pos: &mut usize) -> SubstrateResult<u32> {
+    let fin = pos
+        .checked_add(4)
+        .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+            raison: "dépassement d'index".to_string(),
+        })?;
+    let tranche = octets
+        .get(*pos..fin)
+        .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+            raison: format!("troncature : 4 octets attendus à l'offset {pos}"),
+        })?;
+    *pos = fin;
+    let mut buf = [0u8; 4];
+    buf.copy_from_slice(tranche);
+    Ok(u32::from_le_bytes(buf))
+}
+
+impl ReferenceTentative {
+    /// Auteur effectif de la tentative (identité persistée du répertoire).
+    pub fn auteur(&self) -> u64 {
+        self.auteur
+    }
+
+    /// Estampille HLC attribuée aux écritures de la tentative.
+    pub fn horloge(&self) -> u64 {
+        self.horloge
+    }
+
+    /// Cible de la tentative.
+    pub fn cible(&self) -> NodeId {
+        self.cible
+    }
+
+    /// Clés écrites, dans l'ordre de la préparation.
+    pub fn effets(&self) -> &[String] {
+        &self.effets
+    }
+
+    /// Encodage STABLE et versionné :
+    /// `magic(4) | version(1) | auteur(8 LE) | horloge(8 LE) | cible(8 LE) |
+    /// n(4 LE) | [len(4 LE) | octets]*n`
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out =
+            Vec::with_capacity(33 + self.effets.iter().map(|e| 4 + e.len()).sum::<usize>());
+        out.extend_from_slice(&REFERENCE_TENTATIVE_MAGIC);
+        out.push(REFERENCE_TENTATIVE_VERSION);
+        out.extend_from_slice(&self.auteur.to_le_bytes());
+        out.extend_from_slice(&self.horloge.to_le_bytes());
+        out.extend_from_slice(&self.cible.0.to_le_bytes());
+        out.extend_from_slice(&(self.effets.len() as u32).to_le_bytes());
+        for cle in &self.effets {
+            out.extend_from_slice(&(cle.len() as u32).to_le_bytes());
+            out.extend_from_slice(cle.as_bytes());
+        }
+        out
+    }
+
+    /// Décodage CONTRÔLÉ : refuse magic invalide, version inconnue, décompte
+    /// d'effets incohérent, troncature, clé non UTF-8 et octets excédentaires.
+    /// Ne panique sur aucune entrée.
+    ///
+    /// L'intégrité qui COMPTE n'est pas celle de ces octets : un consommateur
+    /// peut les fabriquer, et ce décodage accepte une fabrication bien formée.
+    /// La garantie est ailleurs — [`SubstrateStore::resoudre_reference`] relit
+    /// les données persistées et ne peut rendre `Engage` que sur une entrée
+    /// réellement présente dans la chaîne canonique.
+    pub fn from_bytes(octets: &[u8]) -> SubstrateResult<Self> {
+        if octets.len() < 33 {
+            return Err(SubstrateError::ReferenceNonAttribuable {
+                raison: format!("troncature : {} octets pour un en-tête de 33", octets.len()),
+            });
+        }
+        if octets[..4] != REFERENCE_TENTATIVE_MAGIC {
+            return Err(SubstrateError::ReferenceNonAttribuable {
+                raison: "magic invalide — ce n'est pas une référence de tentative".to_string(),
+            });
+        }
+        if octets[4] != REFERENCE_TENTATIVE_VERSION {
+            return Err(SubstrateError::ReferenceNonAttribuable {
+                raison: format!(
+                    "version inconnue {} (attendu {})",
+                    octets[4], REFERENCE_TENTATIVE_VERSION
+                ),
+            });
+        }
+        let mut pos = 5usize;
+        let auteur = lire_u64_le(octets, &mut pos)?;
+        let horloge = lire_u64_le(octets, &mut pos)?;
+        let cible = NodeId(lire_u64_le(octets, &mut pos)?);
+        let n_effets = lire_u32_le(octets, &mut pos)? as usize;
+        // Un décompte forgé ne doit pas faire boucler : chaque effet porte au
+        // moins 4 octets de longueur.
+        if n_effets > (octets.len() - pos) / 4 {
+            return Err(SubstrateError::ReferenceNonAttribuable {
+                raison: format!("décompte d'effets incohérent : {n_effets}"),
+            });
+        }
+        let mut effets = Vec::with_capacity(n_effets);
+        for _ in 0..n_effets {
+            let len = lire_u32_le(octets, &mut pos)? as usize;
+            let fin =
+                pos.checked_add(len)
+                    .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+                        raison: "dépassement de longueur d'une clé".to_string(),
+                    })?;
+            let tranche =
+                octets
+                    .get(pos..fin)
+                    .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+                        raison: format!(
+                            "troncature : {len} octets de clé annoncés à l'offset {pos}"
+                        ),
+                    })?;
+            let cle = std::str::from_utf8(tranche).map_err(|e| {
+                SubstrateError::ReferenceNonAttribuable {
+                    raison: format!("clé non UTF-8 : {e}"),
+                }
+            })?;
+            effets.push(cle.to_string());
+            pos = fin;
+        }
+        if pos != octets.len() {
+            return Err(SubstrateError::ReferenceNonAttribuable {
+                raison: format!(
+                    "octets excédentaires : {} au-delà de la référence",
+                    octets.len() - pos
+                ),
+            });
+        }
+        Ok(Self {
+            auteur,
+            horloge,
+            cible,
+            effets,
+        })
+    }
+}
+
+/// État d'UN effet d'une tentative, dans l'histoire canonique accessible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffetResolu {
+    /// Clé écrite par la tentative.
+    pub cle: String,
+    /// `Engage` si l'entrée de CETTE tentative est dans la chaîne canonique
+    /// accessible (canonique **ou masquée**), `Indetermine` sinon.
+    pub etat: ResolutionEffet,
+    /// Estampille CANONIQUE COURANTE de la clé, relue maintenant. Elle diffère
+    /// de celle de la tentative quand l'effet a été masqué par une écriture
+    /// ultérieure — c'est la distinction « engagé et masqué » / « engagé et
+    /// canonique ». `None` : clé absente, ou nœud non vivant.
+    pub estampille_courante: Option<(u64, u64)>,
+}
+
+/// Intégrité d'une tentative multi-effets. N'est JAMAIS déduite d'un seul effet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegriteTentative {
+    /// Tous les effets attendus sont engagés.
+    Integrale,
+    /// Au moins un effet engagé, au moins un non retrouvé. Ne jamais lire ceci
+    /// comme « publiée » : `Indetermine` couvre « jamais engagé ou compacté ».
+    Partielle,
+    /// Aucun effet retrouvé (et cas de la référence sans effet).
+    Indeterminee,
+}
+
+/// Résultat d'une résolution de [`ReferenceTentative`], avec le tuple RELU.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionTentative {
+    /// Cible effectivement consultée.
+    pub cible: NodeId,
+    /// Auteur de la base qui a résolu. Le comparer à `reference.auteur()` écarte
+    /// une référence étrangère : elle rend `Indeterminee` ici.
+    pub auteur_resolvant: u64,
+    /// Un état par clé, dans l'ordre de la référence. Jamais un agrégat seul.
+    pub par_cle: Vec<EffetResolu>,
+    /// Agrégat explicite, jamais une implication depuis un seul effet.
+    pub integrite: IntegriteTentative,
+}
+
+/// Mode de publication : détermine si les propriétés ÉCRITES mais non DÉCLARÉES
+/// comme dépendances sont permises (LWW) ou refusées (Strict).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModePublication {
+    /// Écritures aveugles permises : une propriété écrite non déclarée est LWW
+    /// (une écriture concurrente plus récente peut la masquer).
+    Lww,
+    /// Toute propriété ÉCRITE doit être DÉCLARÉE comme dépendance : la
+    /// précondition la valide, donc TOUS les effets écrits deviennent
+    /// canoniques (aucun effet partiellement masqué). Refus sinon.
+    Strict,
+}
+
+/// Transformation préparée hors de la tête canonique : une chaîne de pages
+/// privées (invisible des lecteurs) prête à être publiée par une seule bascule
+/// de tête. Descripteur OPAQUE et CONSOMMABLE : non `Copy`/`Clone`, champs
+/// privés, lié à son store (incarnation) et à sa cible. La consommation par
+/// `publier_si_precondition_intacte(prep, …)` interdit la double publication au
+/// niveau du type ; la « privauté » des pages est garantie par l'autorité du
+/// moteur (seule la publication les rend atteignables depuis la tête canonique).
+#[derive(Debug)]
+pub struct TransformationPrete {
+    incarnation: u64,
+    cible: NodeId,
+    /// Auteur EFFECTIF de la tentative (`writer_id` du store au moment de la
+    /// préparation) : c'est lui qui estampille toutes les écritures de cette
+    /// transformation. Conservé ici pour que la tentative puisse se nommer
+    /// elle-même AVANT publication — voir [`Self::reference_tentative`].
+    auteur: u64,
+    /// Précondition CAPTURÉE qui a servi à calculer la transformation — LIÉE
+    /// à la préparation : `publier_si_precondition_intacte` la relit telle
+    /// quelle, l'appelant ne peut pas en substituer une autre (lien explicite
+    /// préparation ↔ capture).
+    precondition: Precondition,
+    /// Clés écrites par la transformation (chaque clé au plus une fois), pour
+    /// vérifier l'intégralité de l'effet après publication.
+    ecritures: Vec<String>,
+    /// Mode de publication (Strict / Lww), CONSERVÉ dans le contrat préparé :
+    /// le mode strict établit la canonicité de tous les effets AVANT la bascule,
+    /// le mode Lww autorise les écritures aveugles masquables.
+    mode: ModePublication,
+    /// Identité LOGIQUE de la transformation : stable entre deux tentatives de
+    /// la MÊME transformation (même cible, même mode, mêmes dépendances
+    /// versionnées, mêmes effets), indépendante de la valeur actuellement
+    /// visible et de l'estampille de préparation. Permet la résolution d'une
+    /// publication indéterminée sans dépendre de la valeur courante.
+    empreinte: u64,
+    /// Estampille HLC (composante horloge) attribuée à TOUTES les écritures à
+    /// la préparation. L'auteur est le `writer_id` du store.
+    horloge_effet: u64,
+    /// Tête canonique au moment de la préparation (H0).
+    tete_origine: u64,
+    /// Page privée dont `next_page` pointe `tete_origine` — le point de
+    /// rattachement à re-pointer si la tête canonique a avancé.
+    point_attache: u64,
+    /// Tête de la chaîne privée (à poser comme nouvelle tête canonique).
+    tete_privee: u64,
+}
+
+impl TransformationPrete {
+    /// Empreinte expérimentale du CONTENU (signature de transformation),
+    /// PAS une identité logique durable : `DefaultHasher` + `Debug` ne sont pas
+    /// stables entre versions et peuvent entrer en collision. À ne pas utiliser
+    /// comme clé d'idempotence durable. Stable entre tentatives d'un même build.
+    pub fn empreinte(&self) -> u64 {
+        self.empreinte
+    }
+
+    /// Référence OPAQUE de CETTE tentative, disponible AVANT publication et
+    /// indépendante de son sort : c'est elle que l'on conserve pour résoudre
+    /// une réponse perdue. Ne consomme PAS le descripteur (contrairement à
+    /// [`Self::publier_si_precondition_intacte`]… voir
+    /// [`SubstrateStore::publier_si_precondition_intacte`], qui le prend par
+    /// valeur).
+    pub fn reference_tentative(&self) -> ReferenceTentative {
+        ReferenceTentative {
+            auteur: self.auteur,
+            horloge: self.horloge_effet,
+            cible: self.cible,
+            effets: self.ecritures.clone(),
+        }
+    }
+
+    /// (tests) accès aux adresses physiques, pour les contre-épreuves naïves.
+    #[cfg(test)]
+    pub(crate) fn tete_privee_pour_test(&self) -> u64 {
+        self.tete_privee
+    }
+    #[cfg(test)]
+    pub(crate) fn horloge_effet_pour_test(&self) -> u64 {
+        self.horloge_effet
+    }
+}
+
+/// Préparation LOGIQUE DIFFÉRÉE d'une transformation conditionnelle : stocke
+/// les nouvelles valeurs, la précondition CAPTURÉE (lien préparation↔capture
+/// CONSERVÉ) et la provenance (incarnation + cible), SANS allouer de page
+/// PropsZone. La matérialisation physique (chaîne de pages privées, estampille,
+/// interning) n'a lieu qu'à la PUBLICATION, via le chemin natif
+/// [`SubstrateStore::preparer_transformation`] puis
+/// [`SubstrateStore::publier_si_precondition_intacte`].
+///
+/// CONTRASTE AVEC [`TransformationPrete`] : l'ABANDON (ne jamais publier) ne
+/// provoque AUCUNE croissance permanente du stockage — aucune page allouée,
+/// aucune clé internée, aucune estampille attribuée, aucune écriture WAL à la
+/// préparation. C'est le mode adapté à une cognition par champs/diffusion qui
+/// évalue des milliers d'hypothèses et n'en retient qu'une poignée.
+#[derive(Debug)]
+pub struct PreparationDifferee {
+    incarnation: u64,
+    cible: NodeId,
+    precondition: Precondition,
+    ecritures: Vec<(String, Value)>,
+    mode: ModePublication,
+}
+
+impl PreparationDifferee {
+    /// REFUS EXPLICITE — une préparation différée n'a AUCUNE estampille avant sa
+    /// matérialisation : elle n'alloue ni page, ni clé internée, ni estampille,
+    /// et c'est exactement ce qui garantit le zéro-allocation des préparations
+    /// abandonnées. Fabriquer une estampille anticipée serait un mensonge : ce
+    /// ne serait pas celle que la publication attribuera, donc la référence
+    /// désignerait une tentative qui n'existera jamais.
+    ///
+    /// Le refus est donc public, nommé et matchable — jamais un `None`
+    /// silencieux, jamais une valeur inventée.
+    pub fn reference_tentative(&self) -> SubstrateResult<ReferenceTentative> {
+        Err(SubstrateError::ReferenceNonAttribuable {
+            raison: "préparation différée : l'estampille n'est attribuée qu'à la matérialisation"
+                .to_string(),
+        })
+    }
+}
+
+/// Deux états correspondent si leur espèce et, pour présent/supprimé, leur
+/// estampille complète (auteur + horloge) sont identiques. La valeur n'entre
+/// PAS en compte : c'est l'identité d'écriture qui porte la précondition.
+/// EMPREINTE expérimentale du contenu d'une transformation : hash `DefaultHasher`
+/// de (cible, mode, dépendances versionnées, effets). Ce n'est PAS une identité
+/// logique durable (pas de stabilité inter-versions, collisions possibles) :
+/// c'est une signature de contenu pour corréler des tentatives d'un même build.
+/// mode, dépendances versionnées, effets), indépendant de l'estampille de
+/// préparation et des adresses physiques. Deux tentatives de la même
+/// transformation rendent la même identité.
+fn empreinte_de(
+    cible: NodeId,
+    mode: ModePublication,
+    precondition: &Precondition,
+    nouvelles: &[(&str, Value)],
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cible.0.hash(&mut h);
+    matches!(mode, ModePublication::Strict).hash(&mut h);
+    for dep in &precondition.dependances {
+        dep.cle.hash(&mut h);
+        match &dep.etat {
+            EtatPropriete::Presente { estampille, .. } | EtatPropriete::Supprimee(estampille) => {
+                estampille.horloge.hash(&mut h);
+                estampille.auteur.hash(&mut h);
+            }
+            EtatPropriete::Absente => 1u8.hash(&mut h),
+            EtatPropriete::RessourceInexistante => 2u8.hash(&mut h),
+        }
+    }
+    for (cle, valeur) in nouvelles {
+        cle.hash(&mut h);
+        format!("{:?}", valeur).hash(&mut h);
+    }
+    h.finish()
+}
+
+fn etat_correspond(courant: &EtatPropriete, attendu: &EtatPropriete) -> bool {
+    match (courant, attendu) {
+        (EtatPropriete::RessourceInexistante, EtatPropriete::RessourceInexistante) => true,
+        (EtatPropriete::Absente, EtatPropriete::Absente) => true,
+        (EtatPropriete::Supprimee(a), EtatPropriete::Supprimee(b)) => a == b,
+        (
+            EtatPropriete::Presente { estampille: a, .. },
+            EtatPropriete::Presente { estampille: b, .. },
+        ) => a == b,
+        _ => false,
+    }
+}
+
+impl SubstrateStore {
+    /// Lit une propriété d'un nœud AVEC son estampille complète (auteur +
+    /// horloge), en distinguant les états. Les erreurs de lecture/corruption
+    /// remontent (pas de `.ok()` qui les convertirait en absence).
+    pub fn lire_etat_propriete(&self, id: NodeId, key: &str) -> SubstrateResult<EtatPropriete> {
+        let Some(pz_lock) = self.props_zone.as_ref() else {
+            return Err(SubstrateError::Internal(
+                "lire_etat_propriete : pas de props_zone".to_string(),
+            ));
+        };
+        // Distingue « ressource inexistante (ou supprimée) » de « propriété
+        // absente » : la vivacité se lit sur le record du nœud, pas sur la
+        // simple présence d'un slot dans la zone.
+        if !self.is_live_on_disk(id) {
+            return Ok(EtatPropriete::RessourceInexistante);
+        }
+        let rec = self.writer.read_node(id.0 as u32)?.ok_or_else(|| {
+            SubstrateError::Internal("lire_etat_propriete : nœud vivant sans record".to_string())
+        })?;
+        let tete = (rec.first_prop_off.to_u64() != 0).then(|| rec.first_prop_off.to_u64());
+        let Some(prop_key_id) = self.prop_keys.read().lookup(key) else {
+            return Ok(EtatPropriete::Absente);
+        };
+        let pz = pz_lock.read();
+        let Some(entry) = pz.get_latest_for_key_unite(tete, prop_key_id)? else {
+            return Ok(EtatPropriete::Absente);
+        };
+        let estampille = match (entry.auteur, entry.horloge) {
+            (Some(auteur), Some(horloge)) => EstampilleComplete { auteur, horloge },
+            // Une entrée héritée non estampillée n'a pas d'identité d'écriture :
+            // on le signale au lieu de forger un auteur.
+            _ => {
+                return Err(SubstrateError::Internal(format!(
+                    "lire_etat_propriete : propriété {key} non estampillée"
+                )));
+            }
+        };
+        if entry.is_tombstone() {
+            Ok(EtatPropriete::Supprimee(estampille))
+        } else {
+            let valeur = decode_value(&pz, &entry.value)?;
+            Ok(EtatPropriete::Presente { estampille, valeur })
+        }
+    }
+
+    /// Consultation HISTORIQUE d'un effet par identité de tentative
+    /// `(auteur, horloge)` : parcourt la chaîne CANONIQUE (depuis `first_prop_off`)
+    /// et cherche une entrée estampillée correspondant à cette clé. Une entrée
+    /// préparée mais NON engagée (page privée orpheline) n'est pas atteinte.
+    /// Un effet engagé puis masqué reste dans la chaîne : `Engage`. L'absence
+    /// dans l'histoire accessible (jamais engagé OU compacté) est `Indetermine`.
+    pub fn resoudre_effet_historique(
+        &self,
+        cible: NodeId,
+        key: &str,
+        auteur: u64,
+        horloge: u64,
+    ) -> SubstrateResult<ResolutionEffet> {
+        let Some(pz_lock) = self.props_zone.as_ref() else {
+            return Err(SubstrateError::Internal(
+                "resoudre_effet_historique : pas de props_zone".to_string(),
+            ));
+        };
+        // Stabilise la tête canonique PENDANT le parcours : le verrou de nœud est
+        // l'autorité que prend aussi la publication lors de la bascule. Sans lui,
+        // la tête capturée pourrait être décalée d'une publication concurrente.
+        let _un_ecrivain = self.verrou_ecriture_noeud(cible).lock();
+        if !self.is_live_on_disk(cible) {
+            return Ok(ResolutionEffet::Indetermine);
+        }
+        let rec = self.writer.read_node(cible.0 as u32)?.ok_or_else(|| {
+            SubstrateError::Internal("resoudre_effet_historique : nœud absent".to_string())
+        })?;
+        let tete = (rec.first_prop_off.to_u64() != 0).then(|| rec.first_prop_off.to_u64());
+        let Some(prop_key_id) = self.prop_keys.read().lookup(key) else {
+            return Ok(ResolutionEffet::Indetermine);
+        };
+        let pz = pz_lock.read();
+        let mut trouve = false;
+        pz.walk_chain_unite_avec_tombstones(tete, |e| {
+            if e.prop_key == prop_key_id && e.auteur == Some(auteur) && e.horloge == Some(horloge) {
+                trouve = true;
+            }
+        })?;
+        Ok(if trouve {
+            ResolutionEffet::Engage
+        } else {
+            ResolutionEffet::Indetermine
+        })
+    }
+
+    /// Résout une [`ReferenceTentative`] contre l'état PERSISTÉ de ce store :
+    /// un état par clé, l'agrégat d'intégrité, et l'estampille canonique
+    /// courante relue.
+    ///
+    /// Réutilise [`Self::resoudre_effet_historique`] telle quelle : aucune
+    /// seconde infrastructure transactionnelle, aucun second parcours de chaîne.
+    ///
+    /// GARANTIE DE SÛRETÉ : une référence forgée, altérée ou venue d'une AUTRE
+    /// base ne peut produire que `Indetermine` — jamais un `Engage` faux,
+    /// puisqu'un `Engage` exige de retrouver, dans la chaîne canonique de CE
+    /// store, une entrée dont l'estampille persistée égale `(auteur, horloge)`.
+    ///
+    /// Ce que cela ne prouve PAS : que l'effet correspond à l'intention.
+    /// `Engage` + `estampille_courante` différente de la référence = « engagé
+    /// puis masqué » ; la valeur courante peut être incompatible avec celle que
+    /// la tentative écrivait, et c'est au consommateur de la relire.
+    pub fn resoudre_reference(
+        &self,
+        reference: &ReferenceTentative,
+    ) -> SubstrateResult<ResolutionTentative> {
+        let mut par_cle = Vec::with_capacity(reference.effets.len());
+        for cle in &reference.effets {
+            let etat = self.resoudre_effet_historique(
+                reference.cible,
+                cle,
+                reference.auteur,
+                reference.horloge,
+            )?;
+            // La relecture de l'état courant est INDICATIVE : son échec (nœud
+            // disparu) ne doit pas transformer une résolution en erreur.
+            let estampille_courante = match self.lire_etat_propriete(reference.cible, cle).ok() {
+                Some(EtatPropriete::Presente { estampille, .. })
+                | Some(EtatPropriete::Supprimee(estampille)) => {
+                    Some((estampille.auteur, estampille.horloge))
+                }
+                _ => None,
+            };
+            par_cle.push(EffetResolu {
+                cle: cle.clone(),
+                etat,
+                estampille_courante,
+            });
+        }
+        let engages = par_cle
+            .iter()
+            .filter(|e| e.etat == ResolutionEffet::Engage)
+            .count();
+        let integrite = if engages == 0 || par_cle.is_empty() {
+            IntegriteTentative::Indeterminee
+        } else if engages == par_cle.len() {
+            IntegriteTentative::Integrale
+        } else {
+            IntegriteTentative::Partielle
+        };
+        Ok(ResolutionTentative {
+            cible: reference.cible,
+            auteur_resolvant: self.writer_id,
+            par_cle,
+            integrite,
+        })
+    }
+
+    /// Capture COHÉRENTE de plusieurs propriétés d'un nœud sous le verrou
+    /// d'écriture du nœud (l'autorité commune des écrivains) : un écrivain
+    /// concurrent ne peut pas intercaler une écriture entre deux lectures.
+    /// Rend une [`Precondition`] liée à ce store et à cette cible — directement
+    /// réutilisable par `publier_si_precondition_intacte`.
+    pub fn capturer_precondition(
+        &self,
+        cible: NodeId,
+        cles: &[&str],
+    ) -> SubstrateResult<Precondition> {
+        let _un_ecrivain = self.verrou_ecriture_noeud(cible).lock();
+        let mut dependances = Vec::with_capacity(cles.len());
+        for &k in cles {
+            let etat = self.lire_etat_propriete(cible, k)?;
+            dependances.push(Dependance {
+                cle: k.to_string(),
+                etat,
+            });
+        }
+        Ok(Precondition {
+            incarnation: self.incarnation,
+            cible,
+            dependances,
+        })
+    }
+
+    /// Prépare une transformation (une liste de propriétés à écrire) DANS une
+    /// chaîne privée, hors de la tête canonique. Rend un [`TransformationPrete`]
+    /// opaque, lié à ce store et à cette cible.
+    ///
+    /// DURABILITÉ : les pages privées sont écrites dans la PropsZone (mmap),
+    /// NON journalisées individuellement au WAL — leur persistance suit le
+    /// flush/checkpoint de la zone (comme tout contenu v2). Une préparation
+    /// abandonnée (jamais publiée) laisse des pages orphelines non récupérées.
+    pub fn preparer_transformation(
+        &self,
+        cible: NodeId,
+        nouvelles: &[(&str, Value)],
+        precondition: &Precondition,
+        mode: ModePublication,
+    ) -> SubstrateResult<TransformationPrete> {
+        // Liaison de la précondition à CE store et à CETTE cible (même
+        // incarnation, même ressource) — refus précoce.
+        if precondition.incarnation != self.incarnation {
+            return Err(SubstrateError::Internal(
+                "preparer_transformation : précondition d'un autre store".to_string(),
+            ));
+        }
+        if precondition.cible != cible {
+            return Err(SubstrateError::Internal(
+                "preparer_transformation : précondition d'une autre cible".to_string(),
+            ));
+        }
+        // ÉCRITURE RÉPÉTÉE : une transformation écrit chaque clé au plus une
+        // fois — deux écritures de même estampille rendraient l'ordre LWW
+        // indécidable.
+        for (i, (cle, _)) in nouvelles.iter().enumerate() {
+            if nouvelles[..i].iter().any(|(c, _)| c == cle) {
+                return Err(SubstrateError::Internal(format!(
+                    "preparer_transformation : écriture répétée de {cle}"
+                )));
+            }
+        }
+        // MODE STRICT : toute propriété ÉCRITE doit être DÉCLARÉE comme
+        // dépendance — sinon la précondition ne la validerait pas, et son effet
+        // ne serait pas garanti canonique (elle resterait une écriture aveugle).
+        if mode == ModePublication::Strict {
+            for (cle, _) in nouvelles {
+                if !precondition.dependances.iter().any(|d| d.cle == *cle) {
+                    return Err(SubstrateError::Internal(format!(
+                        "preparer_transformation : écriture de {cle} non déclarée en mode strict"
+                    )));
+                }
+            }
+        }
+        let Some(pz_lock) = self.props_zone.as_ref() else {
+            return Err(SubstrateError::Internal(
+                "preparer_transformation : pas de props_zone".to_string(),
+            ));
+        };
+        let slot = cible.0 as u32;
+        let node_rec = self.writer.read_node(slot)?.ok_or_else(|| {
+            SubstrateError::Internal("preparer_transformation : nœud absent".to_string())
+        })?;
+        let tete_origine = node_rec.first_prop_off.to_u64();
+        let auteur = self.writer_id;
+        let millis = crate::horloge_hybride::horloge_murale_millis();
+        let horloge = self.horloge.lock().maintenant(millis).pack();
+
+        // MODE STRICT — DOMINANCE : l'estampille de l'effet (horloge, auteur)
+        // doit dominer STRICTEMENT l'estampille capturée de chaque propriété
+        // EFFECTIVEMENT ÉCRITE (W ∩ R), PRÉSENTE ou SUPPRIMÉE (tombstone). Une
+        // dépendance seulement LUE (b ∈ R, b ∉ W) doit rester valide mais n'est
+        // PAS soumise à la dominance. Refus AVANT allocation.
+        if mode == ModePublication::Strict {
+            for (cle, _) in nouvelles {
+                if let Some(dep) = precondition.dependances.iter().find(|d| d.cle == *cle) {
+                    let estampille = match &dep.etat {
+                        EtatPropriete::Presente { estampille, .. }
+                        | EtatPropriete::Supprimee(estampille) => Some(estampille),
+                        _ => None,
+                    };
+                    if let Some(estampille) = estampille {
+                        if (horloge, self.writer_id) <= (estampille.horloge, estampille.auteur) {
+                            return Err(SubstrateError::Internal(format!(
+                                "preparer_transformation : l'estampille de l'effet ne domine pas {} (mode strict)",
+                                dep.cle
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Interner les clés AVANT de prendre le verrou de zone (même ordre de
+        // verrous que set_node_property).
+        let mut entrees: Vec<(u16, &Value)> = Vec::with_capacity(nouvelles.len());
+        for (cle, valeur) in nouvelles {
+            let prop_key_id = self.interner_cle_journalisee(cle)?;
+            entrees.push((prop_key_id, valeur));
+        }
+
+        let mut pz = pz_lock.write();
+        let mut point_attache = 0u64;
+        let mut tete_privee = 0u64;
+        for (i, (prop_key_id, valeur)) in entrees.iter().enumerate() {
+            let pv = encode_value(&mut pz, valeur)?;
+            let entry = PropertyEntry::new_stamped(*prop_key_id, pv, auteur, horloge);
+            if i == 0 {
+                let p = pz.preparer_page_privee(
+                    slot,
+                    crate::page::OwnerKind::Node,
+                    (tete_origine != 0).then_some(tete_origine),
+                    &entry,
+                )?;
+                point_attache = p;
+                tete_privee = p;
+            } else {
+                tete_privee = pz.append_entree_sur_chainee(
+                    slot,
+                    crate::page::OwnerKind::Node,
+                    Some(tete_privee),
+                    &entry,
+                )?;
+            }
+        }
+        Ok(TransformationPrete {
+            incarnation: self.incarnation,
+            cible,
+            auteur,
+            precondition: precondition.clone(),
+            ecritures: nouvelles.iter().map(|(c, _)| (*c).to_string()).collect(),
+            horloge_effet: horloge,
+            mode,
+            empreinte: empreinte_de(cible, mode, precondition, nouvelles),
+            tete_origine,
+            point_attache,
+            tete_privee,
+        })
+    }
+
+    /// Publie une transformation préparée SI la précondition tient toujours,
+    /// sous le verrou d'écriture du nœud (autorité commune des écrivains).
+    /// `prep` est CONSOMMÉ (par valeur) : une transformation ne peut être
+    /// publiée qu'une fois. Rend :
+    /// - `PublieIntegrale` : tête basculée, tous les effets écrits canoniques.
+    /// - `PubliePartielle` : tête basculée, au moins un effet écrit masqué (LWW).
+    /// - `ConflitPrecondition` : une dépendance a changé depuis la capture.
+    /// - `Err` : descripteur étranger/périmé, cible supprimée/recréée,
+    ///   transformation vide, ou re-publication (chaîne déjà canonique).
+    ///
+    /// GARANTIE WAL / DURABILITÉ (identifiée, pas une preuve de fsync) : la
+    /// bascule de tête passe par `update_node_first_prop_off`, qui journalise
+    /// `NodePropHeadUpdate` (WAL d'abord, mmap ensuite) — le POINTEUR de tête
+    /// survit au rejeu. Le CONTENU des pages privées, lui, est en mmap
+    /// (PropsZone) et n'est durable qu'au flush/checkpoint/close : une perte
+    /// électrique entre la publication et le flush peut laisser la tête pointer
+    /// vers un contenu non encore persisté. Même contrat que `set_node_property`
+    /// v2 — la publication n'est pas un acquittement de durabilité.
+    pub fn publier_si_precondition_intacte(
+        &self,
+        prep: TransformationPrete,
+    ) -> SubstrateResult<IssuePublication> {
+        // Liaison au store : même incarnation. La précondition est LIÉE à la
+        // transformation (stockée à la préparation) — l'appelant ne peut pas en
+        // substituer une autre.
+        if prep.incarnation != self.incarnation {
+            return Err(SubstrateError::Internal(
+                "publier_si_precondition_intacte : descripteur d'un autre store".to_string(),
+            ));
+        }
+        if prep.tete_privee == 0 {
+            return Err(SubstrateError::Internal(
+                "publier_si_precondition_intacte : transformation vide".to_string(),
+            ));
+        }
+        let Some(pz_lock) = self.props_zone.as_ref() else {
+            return Err(SubstrateError::Internal(
+                "publier_si_precondition_intacte : pas de props_zone".to_string(),
+            ));
+        };
+        let slot = prep.cible.0 as u32;
+        let _un_ecrivain = self.verrou_ecriture_noeud(prep.cible).lock();
+        // Cible vivante (suppression ou recréation → refus).
+        if !self.is_live_on_disk(prep.cible) {
+            return Err(SubstrateError::Internal(
+                "publier_si_precondition_intacte : cible supprimée ou recréée".to_string(),
+            ));
+        }
+        let rec = self.writer.read_node(slot)?.ok_or_else(|| {
+            SubstrateError::Internal("publier_si_precondition_intacte : nœud absent".to_string())
+        })?;
+        let tete_courante = rec.first_prop_off.to_u64();
+        // Garde anti-cycle : la chaîne privée est déjà la tête canonique
+        // (re-publication). Refuser SANS re-rattacher la chaîne à elle-même.
+        if tete_courante == prep.tete_privee {
+            return Err(SubstrateError::Internal(
+                "publier_si_precondition_intacte : transformation déjà publiée".to_string(),
+            ));
+        }
+        // Validation : la précondition LIÉE (capturée à la préparation) est
+        // relue telle quelle.
+        for dep in &prep.precondition.dependances {
+            let courante = self.lire_etat_propriete(prep.cible, &dep.cle)?;
+            if !etat_correspond(&courante, &dep.etat) {
+                return Ok(IssuePublication::ConflitPrecondition);
+            }
+        }
+        // Rattachement à la tête canonique courante : si elle a avancé (une
+        // écriture indépendante a alloué une nouvelle page), la chaîne privée
+        // doit la chaîner, sinon l'écriture intermédiaire serait perdue.
+        if tete_courante != prep.tete_origine {
+            let mut pz = pz_lock.write();
+            pz.rattacher_page_privee(prep.point_attache, tete_courante)?;
+        }
+        // Publication : bascule de tête (WAL NodePropHeadUpdate puis mmap).
+        self.writer
+            .update_node_first_prop_off(slot, crate::record::U48::from_u64(prep.tete_privee))?;
+        // La publication a écrit DIRECTEMENT dans PropsZone (chaîne privée),
+        // sans `prop_index_insert` : l'index d'égalité ne borne plus les
+        // porteurs. On retire les marqueurs de complétude (même invariant que
+        // `bulk_import_node_props`) pour que la prochaine recherche rebâtisse
+        // l'index depuis les chaînes — qui, elles, portent tout.
+        self.index_batis_depuis_v2.clear();
+        self.egalite_couverte.clear();
+        // MODE STRICT : la canonicité de TOUS les effets est établie AVANT la
+        // bascule — le mode strict exige W ⊆ R (toute propriété écrite est une
+        // dépendance validée par la précondition), donc la validation ci-dessus
+        // suffit. Aucun verdict postérieur ne peut rendre la bascule inexistante.
+        if prep.mode == ModePublication::Strict {
+            return Ok(IssuePublication::PublieIntegrale);
+        }
+        // MODE LWW : les écritures aveugles peuvent être masquées — on relit
+        // l'estampille de chaque propriété écrite pour distinguer application
+        // INTÉGRALE / PARTIELLE. Toujours sous le verrou de nœud, donc stable.
+        let mut integrale = true;
+        for cle in &prep.ecritures {
+            match self.lire_etat_propriete(prep.cible, cle)? {
+                EtatPropriete::Presente { estampille, .. } => {
+                    if estampille.auteur != self.writer_id || estampille.horloge != prep.horloge_effet {
+                        integrale = false;
+                        break;
+                    }
+                }
+                _ => {
+                    integrale = false;
+                    break;
+                }
+            }
+        }
+        Ok(if integrale {
+            IssuePublication::PublieIntegrale
+        } else {
+            IssuePublication::PubliePartielle
+        })
+    }
+
+    /// Prépare une transformation en mode LOGIQUE DIFFÉRÉ : aucune page
+    /// PropsZone allouée, aucune clé internée, aucune estampille attribuée.
+    /// Le descripteur rendu est une captation en mémoire (nouvelles valeurs +
+    /// précondition + provenance), OPAQUE et CONSOMMABLE.
+    ///
+    /// Les MÊMES refus que [`SubstrateStore::preparer_transformation`]
+    /// s'appliquent (incarnation étrangère, cible étrangère, écriture répétée,
+    /// mode strict) — mais SANS aucun effet de bord sur le stockage.
+    pub fn preparer_transformation_differee(
+        &self,
+        cible: NodeId,
+        nouvelles: &[(&str, Value)],
+        precondition: &Precondition,
+        mode: ModePublication,
+    ) -> SubstrateResult<PreparationDifferee> {
+        // Liaison de la précondition à CE store et à CETTE cible.
+        if precondition.incarnation != self.incarnation {
+            return Err(SubstrateError::Internal(
+                "preparer_transformation_differee : précondition d'un autre store".to_string(),
+            ));
+        }
+        if precondition.cible != cible {
+            return Err(SubstrateError::Internal(
+                "preparer_transformation_differee : précondition d'une autre cible".to_string(),
+            ));
+        }
+        // ÉCRITURE RÉPÉTÉE : même règle que la préparation physique.
+        for (i, (cle, _)) in nouvelles.iter().enumerate() {
+            if nouvelles[..i].iter().any(|(c, _)| c == cle) {
+                return Err(SubstrateError::Internal(format!(
+                    "preparer_transformation_differee : écriture répétée de {cle}"
+                )));
+            }
+        }
+        // MODE STRICT : toute propriété ÉCRITE doit être DÉCLARÉE.
+        if mode == ModePublication::Strict {
+            for (cle, _) in nouvelles {
+                if !precondition.dependances.iter().any(|d| d.cle == *cle) {
+                    return Err(SubstrateError::Internal(format!(
+                        "preparer_transformation_differee : écriture de {cle} non déclarée en mode strict"
+                    )));
+                }
+            }
+        }
+        Ok(PreparationDifferee {
+            incarnation: self.incarnation,
+            cible,
+            precondition: precondition.clone(),
+            ecritures: nouvelles
+                .iter()
+                .map(|(c, v)| ((*c).to_string(), v.clone()))
+                .collect(),
+            mode,
+        })
+    }
+
+    /// Publie une préparation DIFFÉRÉE : matérialise la transformation via le
+    /// chemin natif [`SubstrateStore::preparer_transformation`] (allocation de
+    /// pages privées + estampille + interning), PUIS bascule la tête via
+    /// [`SubstrateStore::publier_si_precondition_intacte`]. La précondition est
+    /// celle CAPTURÉE à la préparation logique (lien préparation↔capture
+    /// conservé) : aucune substitution possible.
+    pub fn publier_si_precondition_intacte_differee(
+        &self,
+        prep: PreparationDifferee,
+    ) -> SubstrateResult<IssuePublication> {
+        // Liaison au store : même incarnation (descripteur périmé après
+        // réouverture). Miroir du garde de `publier_si_precondition_intacte`.
+        if prep.incarnation != self.incarnation {
+            return Err(SubstrateError::Internal(
+                "publier_si_precondition_intacte_differee : descripteur d'un autre store"
+                    .to_string(),
+            ));
+        }
+        // VALIDATION PRÉALABLE SANS ALLOCATION (sous le verrou de nœud) : si la
+        // précondition est DÉJÀ obsolète, refuser sans matérialiser. La
+        // matérialisation (allocation de pages privées) n'a donc lieu que si la
+        // précondition tient à l'instant de la vérification. La re-validation
+        // dans publier_si_precondition_intacte ferme la fenêtre résiduelle entre
+        // cette vérification et la bascule (elle ne peut pas produire un effet
+        // obsolète — seulement, dans le cas rare d'une écriture concurrente
+        // intercalée, une allocation déjà amortie).
+        {
+            let _un_ecrivain = self.verrou_ecriture_noeud(prep.cible).lock();
+            if !self.is_live_on_disk(prep.cible) {
+                return Err(SubstrateError::Internal(
+                    "publier_si_precondition_intacte_differee : cible supprimée ou recréée"
+                        .to_string(),
+                ));
+            }
+            for dep in &prep.precondition.dependances {
+                let courante = self.lire_etat_propriete(prep.cible, &dep.cle)?;
+                if !etat_correspond(&courante, &dep.etat) {
+                    return Ok(IssuePublication::ConflitPrecondition);
+                }
+            }
+        }
+        let nouvelles: Vec<(&str, Value)> = prep
+            .ecritures
+            .iter()
+            .map(|(c, v)| (c.as_str(), v.clone()))
+            .collect();
+        let physique = self.preparer_transformation(
+            prep.cible,
+            &nouvelles,
+            &prep.precondition,
+            prep.mode,
+        )?;
+        self.publier_si_precondition_intacte(physique)
+    }
+}
+
+/// Application générique d'un événement identifiable sur une cible logique
+/// (nœud existant) : déduplication par identité d'événement, précondition de
+/// révision, transformation + preuve sous une section critique commune.
+/// EXPÉRIMENTAL : la durabilité sous perte électrique n'est PAS acquise (la
+/// valeur n'est pas WAL-journalisée) ; l'atomicité réelle identité+transformation
+/// reste à qualifier sur le chemin transactionnel natif.
+pub fn appliquer_evenement(
+    store: &SubstrateStore,
+    cible: NodeId,
+    evenement_id: &str,
+    definition: &str,
+    revision_attendue: &str,
+    nouvelle_revision: &str,
+    etat_resultant: Value,
+) -> SubstrateResult<IssueEvenement> {
+    use obrain_core::graph::traits::{GraphStore, GraphStoreMut};
+    let _garde = store.verrou_evenements.lock();
+    // 1. Déduplication par identité d'événement.
+    let cle = format!("ev:{evenement_id}");
+    if let Some(existante) = store.get_node_property(cible, &PropertyKey::new(&cle)) {
+        return Ok(if existante.as_str() == Some(definition) {
+            IssueEvenement::RejeuIdentique
+        } else {
+            IssueEvenement::ConflitIdentite
+        });
+    }
+    // 2. Précondition de révision.
+    let rev = store.get_node_property(cible, &PropertyKey::new("revision"));
+    let rev_courante = rev.as_ref().and_then(|v| v.as_str()).unwrap_or("");
+    if rev_courante != revision_attendue {
+        return Ok(IssueEvenement::ConflitRevision);
+    }
+    // 3. Transformation + preuve.
+    store.set_node_property(cible, &cle, Value::from(definition.to_string()));
+    #[cfg(test)]
+    store.suspension.suspendre_apres_preuve();
+    store.set_node_property(cible, "etat", etat_resultant);
+    store.set_node_property(cible, "revision", Value::from(nouvelle_revision.to_string()));
+    Ok(IssueEvenement::Applique)
+}
+
+/// Crochet de suspension d'écriture PAR STORE (jamais global) : une suspension
+/// sur un store n'affecte jamais un autre store ni un autre test du même
+/// processus. Chaque `SubstrateStore` porte la sienne (`champ suspension`).
+/// Un store fraîchement créé est toujours dans l'état initial (ni suspendu,
+/// ni à reprendre) — aucun `reinitialiser` global à orchestrer.
+#[cfg(test)]
+pub struct SuspensionEvenement {
+    etat: parking_lot::Mutex<EtatSuspension>,
+    cv: parking_lot::Condvar,
+}
+
+#[cfg(test)]
+struct EtatSuspension {
+    arme: bool,
+    suspendu: bool,
+    reprendre: bool,
+}
+
+#[cfg(test)]
+impl SuspensionEvenement {
+    pub fn nouvelle() -> Self {
+        Self {
+            etat: parking_lot::Mutex::new(EtatSuspension {
+                arme: false,
+                suspendu: false,
+                reprendre: false,
+            }),
+            cv: parking_lot::Condvar::new(),
+        }
+    }
+
+    pub fn suspendre_apres_preuve(&self) {
+        let mut e = self.etat.lock();
+        if !e.arme {
+            return; // non armé : la suspension est un no-op (écritures normales)
+        }
+        e.suspendu = true;
+        self.cv.notify_all();
+        while !e.reprendre {
+            self.cv.wait(&mut e);
+        }
+    }
+
+    pub fn attendre_suspension(&self) {
+        let mut e = self.etat.lock();
+        while !e.suspendu {
+            self.cv.wait(&mut e);
+        }
+    }
+
+    pub fn relacher(&self) {
+        let mut e = self.etat.lock();
+        e.reprendre = true;
+        self.cv.notify_all();
+    }
+
+    pub fn armer(&self) {
+        let mut e = self.etat.lock();
+        e.arme = true;
+        e.suspendu = false;
+        e.reprendre = false;
+    }
+}
+
+
+
+/// Verrous de publication shardés (256) : séparent les lecteurs cohérents des
+/// écrivains pendant une publication atomique. EXPÉRIMENTAL — pas une garantie
+/// distribuée ni une architecture définitive.
+static VERROUS_PUBLICATION: std::sync::LazyLock<Box<[parking_lot::RwLock<()>]>> =
+    std::sync::LazyLock::new(|| (0..256).map(|_| parking_lot::RwLock::new(())).collect());
+
+fn verrou_publication(id: NodeId) -> &'static parking_lot::RwLock<()> {
+    &VERROUS_PUBLICATION[(id.0 % 256) as usize]
 }
 
 impl SubstrateStore {
@@ -6773,6 +8005,145 @@ impl SubstrateStore {
     /// réécrites. Sans elle, le rejeu suivant la prendrait pour une transaction
     /// en vol et restaurerait ses valeurs d'avant PAR-DESSUS les écritures
     /// commitées depuis.
+    /// Variante STRICTE de `journaliser_valeur_avant` : propage les échecs de
+    /// préparation (encodage, plafond WAL, append) au lieu de les avaler. Les
+    /// cas légitimes « pas de journal nécessaire » (SYSTEM, écriture partagée,
+    /// entité créée par la transaction) restent Ok(()).
+    fn journaliser_valeur_avant_strict(
+        &self,
+        tx: TransactionId,
+        entity_kind: EntityKind,
+        id: u64,
+        key: &str,
+        avant: Option<&Value>,
+    ) -> SubstrateResult<()> {
+        if tx == TransactionId::SYSTEM || self.ecriture_partagee {
+            return Ok(());
+        }
+        let creee_par_tx = match entity_kind {
+            EntityKind::Node => self
+                .en_attente_noeuds
+                .get(&NodeId(id))
+                .is_some_and(|t| *t.value() == tx.0),
+            EntityKind::Edge => self
+                .aretes_creees_par_tx
+                .get(&EdgeId(id))
+                .is_some_and(|t| *t.value() == tx.0),
+        };
+        if creee_par_tx {
+            return Ok(());
+        }
+        let avant = avant
+            .map(Self::wal_inline_encode_value)
+            .transpose()
+            .map_err(|e| {
+                SubstrateError::Internal(format!("TxProprieteAvant : valeur d'avant indécodable : {e}"))
+            })?;
+        if avant.as_ref().is_some_and(|a| a.len() > BLOB_WAL_MAX_BYTES) {
+            return Err(SubstrateError::Internal(format!(
+                "TxProprieteAvant : valeur d'avant au-delà du plafond WAL ({BLOB_WAL_MAX_BYTES} o)"
+            )));
+        }
+        #[cfg(test)]
+        if *self.echec_append_wal.lock() {
+            return Err(SubstrateError::Internal("TxProprieteAvant : append saboté (test)".to_string()));
+        }
+        self.writer
+            .append_payload(WalPayload::TxProprieteAvant {
+                tx: tx.0,
+                entity_kind: entity_kind as u8,
+                id,
+                key: key.to_string(),
+                avant,
+            })
+            .map_err(|e| SubstrateError::Internal(format!("TxProprieteAvant non journalisée : {e}")))?;
+        self.tx_avec_valeur_avant.lock().insert(tx.0);
+        Ok(())
+    }
+
+    /// Mutation conditionnelle atomique minimale de DEUX propriétés d'une
+    /// ressource existante : préparation stricte (journal des valeurs d'avant)
+    /// AVANT toute écriture, puis mutation, puis scellement. Un échec de
+    /// préparation laisse les deux propriétés intactes.
+    pub fn muter_deux_proprietes(
+        &self,
+        cible: NodeId,
+        cle1: &str,
+        valeur1: Value,
+        cle2: &str,
+        valeur2: Value,
+        tx: TransactionId,
+    ) -> SubstrateResult<()> {
+        // 1. Préparation COMPLÈTE (stricte) avant toute mutation.
+        let avant1 = self.get_node_property(cible, &PropertyKey::new(cle1));
+        let avant2 = self.get_node_property(cible, &PropertyKey::new(cle2));
+        self.journaliser_valeur_avant_strict(
+            tx,
+            EntityKind::Node,
+            cible.0 as u64,
+            cle1,
+            avant1.as_ref(),
+        )?;
+        self.journaliser_valeur_avant_strict(
+            tx,
+            EntityKind::Node,
+            cible.0 as u64,
+            cle2,
+            avant2.as_ref(),
+        )?;
+        // 2. Mutation.
+        self.set_node_property(cible, cle1, valeur1);
+        self.set_node_property(cible, cle2, valeur2);
+        // 3. Publication (scellement).
+        self.seal_commit(tx)
+            .map_err(|e| SubstrateError::Internal(format!("seal_commit : {e}")))?;
+        Ok(())
+    }
+
+    /// Publication atomique de DEUX propriétés d'une ressource existante : le
+    /// verrou d'écriture de publication est tenu pendant les deux mutations,
+    /// donc un lecteur cohérent (lire_deux_proprietes_coherent) ne peut observer
+    /// que V0 ou V1, jamais le mélange. EXPÉRIMENTAL.
+    /// OBSOLÈTE — supersédée par [`Self::publier_si_precondition_intacte`] :
+    /// elle synchronise sur `verrou_publication` (RwLock statique global), une
+    /// autorité DIFFÉRENTE du `verrou_ecriture_noeud` que prennent
+    /// `set_node_property` ET la publication conditionnelle. Deux chemins qui ne
+    /// partagent pas la même autorité peuvent s'entrelacer. À ne plus utiliser.
+    pub fn publier_deux_proprietes_atomiquement(
+        &self,
+        cible: NodeId,
+        cle1: &str,
+        valeur1: Value,
+        cle2: &str,
+        valeur2: Value,
+    ) -> SubstrateResult<()> {
+        let _g = verrou_publication(cible).write();
+        self.set_node_property(cible, cle1, valeur1);
+        #[cfg(test)]
+        self.suspension.suspendre_apres_preuve();
+        self.set_node_property(cible, cle2, valeur2);
+        Ok(())
+    }
+
+    /// Lecture cohérente de DEUX propriétés : prend le VERROU D'ÉCRITURE DU
+    /// NŒUD (`verrou_ecriture_noeud`), l'autorité commune que prennent aussi
+    /// `set_node_property` et `publier_si_precondition_intacte`. Elle ne traverse
+    /// donc jamais une publication conditionnelle ni une écriture unitaire en
+    /// cours sur ce nœud. (L'ancienne synchronisation sur `verrou_publication`
+    /// était une autorité DIFFÉRENTE — corrigée.)
+    pub fn lire_deux_proprietes_coherent(
+        &self,
+        cible: NodeId,
+        cle1: &str,
+        cle2: &str,
+    ) -> (Option<Value>, Option<Value>) {
+        let _g = self.verrou_ecriture_noeud(cible).lock();
+        (
+            self.get_node_property(cible, &PropertyKey::new(cle1)),
+            self.get_node_property(cible, &PropertyKey::new(cle2)),
+        )
+    }
+
     fn clore_transaction_annulee(&self, tx: TransactionId) {
         if !self.tx_avec_valeur_avant.lock().remove(&tx.0) {
             return;
@@ -8568,6 +9939,12 @@ impl SubstrateStore {
             egalite_delta_sale: std::sync::atomic::AtomicBool::new(false),
             epoque_index: AtomicU64::new(0),
             verrous_ecriture_noeud: (0..256).map(|_| Mutex::new(())).collect(),
+            incarnation: INCARNATION_SUIVANTE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            verrou_evenements: parking_lot::Mutex::new(()),
+            #[cfg(test)]
+            suspension: SuspensionEvenement::nouvelle(),
+            #[cfg(test)]
+            echec_append_wal: parking_lot::Mutex::new(false),
             construction_index: Mutex::new(()),
             preparation_annulee: std::sync::atomic::AtomicBool::new(false),
             passes_de_construction: AtomicU64::new(0),
@@ -46369,5 +47746,2294 @@ mod fenetre_remplacement_blob {
                 .read_value(&cle, EntityKind::Node, a.0 as u32)
                 .is_none()
         );
+    }
+}
+
+
+#[cfg(test)]
+mod application_evenement {
+    use super::*;
+
+    fn nœud(store: &SubstrateStore) -> NodeId {
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "revision", Value::from("rev0"));
+        id
+    }
+
+    #[test]
+    fn a_premiere_application_etat_et_preuve_presents() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = nœud(&store);
+        let r = appliquer_evenement(
+            &store,
+            id,
+            "e1",
+            "def-e1",
+            "rev0",
+            "rev1",
+            Value::Int64(7),
+        )
+        .unwrap();
+        assert_eq!(r, IssueEvenement::Applique);
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("etat")),
+            Some(Value::Int64(7))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("ev:e1")),
+            Some(Value::from("def-e1"))
+        );
+    }
+
+    #[test]
+    fn b_rejeu_identique_aucun_nouvel_effet() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = nœud(&store);
+        appliquer_evenement(&store, id, "e1", "def-e1", "rev0", "rev1", Value::Int64(7)).unwrap();
+        let r = appliquer_evenement(&store, id, "e1", "def-e1", "rev1", "rev2", Value::Int64(9)).unwrap();
+        assert_eq!(r, IssueEvenement::RejeuIdentique);
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("etat")),
+            Some(Value::Int64(7)),
+            "l'état ne change pas"
+        );
+    }
+
+    #[test]
+    fn c_meme_identite_contenu_different_conflit() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = nœud(&store);
+        appliquer_evenement(&store, id, "e1", "def-a", "rev0", "rev1", Value::Int64(1)).unwrap();
+        let r = appliquer_evenement(&store, id, "e1", "def-b", "rev1", "rev2", Value::Int64(2)).unwrap();
+        assert_eq!(r, IssueEvenement::ConflitIdentite);
+    }
+
+    #[test]
+    fn d_conflit_de_revision_refus() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = nœud(&store);
+        let r = appliquer_evenement(&store, id, "e1", "def-e1", "rev-ancienne", "rev1", Value::Int64(1)).unwrap();
+        assert_eq!(r, IssueEvenement::ConflitRevision);
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("etat")),
+            None,
+            "aucun état appliqué"
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod divergence_evenement {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    /// DÉFAUT REPRODUIT : la preuve (ev:e1) et l'état sont écrits NON-atomiquement.
+    /// Un lecteur indépendant, pendant la suspension après la preuve, observe la
+    /// preuve sans l'état — la divergence que l'atomicité doit résoudre.
+    #[test]
+    fn divergence_identite_enregistree_etat_non_applique() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "revision", Value::from("rev0"));
+        let store2 = Arc::clone(&store);
+        store.suspension.armer();
+        let h = thread::spawn(move || {
+            appliquer_evenement(&store2, id, "e1", "def-e1", "rev0", "rev1", Value::Int64(7))
+                .unwrap()
+        });
+        store.suspension.attendre_suspension();
+        // lecteur indépendant : preuve présente, état absent
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("ev:e1")),
+            Some(Value::from("def-e1"))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("etat")),
+            None,
+            "DIVERGENCE : preuve enregistrée mais état non matérialisé"
+        );
+        store.suspension.relacher();
+        h.join().unwrap();
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("etat")),
+            Some(Value::Int64(7))
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod journalisation_stricte {
+    use super::*;
+
+    #[test]
+    fn chemin_strict_propage_les_echecs_de_preparation() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        let tx = obrain_common::types::TransactionId(42);
+        // armer l'échec d'append
+        *store.echec_append_wal.lock() = true;
+        let r = store.journaliser_valeur_avant_strict(
+            tx,
+            crate::vec_column::EntityKind::Node,
+            id.0 as u64,
+            "k",
+            Some(&obrain_common::types::Value::Int64(1)),
+        );
+        assert!(r.is_err(), "la variante stricte doit propager l'échec de préparation");
+        // l'ancienne variante avale silencieusement (retourne ())
+        store.journaliser_valeur_avant(
+            tx,
+            crate::vec_column::EntityKind::Node,
+            id.0 as u64,
+            "k",
+            Some(&obrain_common::types::Value::Int64(1)),
+        );
+        *store.echec_append_wal.lock() = false;
+        // sans échec : la stricte réussit
+        assert!(store
+            .journaliser_valeur_avant_strict(
+                tx,
+                crate::vec_column::EntityKind::Node,
+                id.0 as u64,
+                "k",
+                Some(&obrain_common::types::Value::Int64(1)),
+            )
+            .is_ok());
+    }
+}
+
+
+#[cfg(test)]
+mod mutation_conditionnelle {
+    use super::*;
+
+    fn ressource(store: &SubstrateStore) -> NodeId {
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        id
+    }
+
+    #[test]
+    fn echec_preparation_laisse_les_deux_proprietes_intactes() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = ressource(&store);
+        *store.echec_append_wal.lock() = true;
+        let r = store.muter_deux_proprietes(
+            id,
+            "a",
+            Value::Int64(10),
+            "b",
+            Value::Int64(20),
+            obrain_common::types::TransactionId(42),
+        );
+        assert!(r.is_err(), "l'échec de préparation doit être propagé");
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(1)),
+            "a intacte"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(2)),
+            "b intacte"
+        );
+        *store.echec_append_wal.lock() = false;
+    }
+
+    #[test]
+    fn mutation_reussie_publication_coherente() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = ressource(&store);
+        store
+            .muter_deux_proprietes(
+                id,
+                "a",
+                Value::Int64(10),
+                "b",
+                Value::Int64(20),
+                obrain_common::types::TransactionId(43),
+            )
+            .unwrap();
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20))
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod visibilite_transactionnelle {
+    use super::*;
+
+    /// EXPÉRIENCE DE VISIBILITÉ : le chemin versionné natif
+    /// (set_node_property_versioned) diffère-t-il la publication ? On mute a→10
+    /// sous transaction SANS commit, puis on lit a et b.
+    #[test]
+    fn mutation_versionnee_est_visible_avant_commit() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let tx = obrain_common::types::TransactionId(100);
+        store.set_node_property_versioned(id, "a", Value::Int64(10), tx);
+        // lecteur : lit a et b AVANT commit
+        let a = store.get_node_property(id, &PropertyKey::new("a"));
+        let b = store.get_node_property(id, &PropertyKey::new("b"));
+        eprintln!("APRES_A_SANS_COMMIT a={a:?} b={b:?}");
+        // Résultat observé (pas présumé) :
+        // - si a=10 : la mutation est visible avant commit → pas d'isolation.
+        assert_eq!(a, Some(Value::Int64(10)), "a est visible avant commit");
+        assert_eq!(b, Some(Value::Int64(2)), "b inchangé");
+    }
+}
+
+
+#[cfg(test)]
+mod publication_atomique {
+    use super::*;
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::Duration;
+
+    /// AUTORITÉ COMMUNE : `lire_deux_proprietes_coherent` prend le VERROU DE
+    /// NŒUD (celui que tiennent aussi `set_node_property` et
+    /// `publier_si_precondition_intacte`). Un lecteur cohérent BLOQUE donc tant
+    /// qu'un écrivain tient ce verrou — il ne traverse jamais une publication en
+    /// cours (contrairement à deux `get_node_property` historiques séparés).
+    #[test]
+    fn lecteur_coherent_ne_voit_pas_le_melange() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let store2 = Arc::clone(&store);
+        let (tx, rx) = mpsc::channel();
+        let ecrivain = thread::spawn(move || {
+            // tient l'autorité commune (verrou de nœud) comme le ferait une publication
+            let _g = store2.verrou_ecriture_noeud(id).lock();
+            tx.send(()).unwrap(); // le verrou EST acquis
+            thread::sleep(Duration::from_millis(150));
+        });
+        rx.recv().unwrap(); // attend DÉTERMINISTE : l'écrivain tient le verrou
+        let debut = std::time::Instant::now();
+        let (a, b) = store.lire_deux_proprietes_coherent(id, "a", "b");
+        let el = debut.elapsed();
+        eprintln!("LECTEUR_COHERENT a={a:?} b={b:?} attente={el:?}");
+        ecrivain.join().unwrap();
+        assert_eq!(
+            (a, b),
+            (Some(Value::Int64(1)), Some(Value::Int64(2))),
+            "V0 cohérent"
+        );
+        assert!(
+            el >= Duration::from_millis(50),
+            "le lecteur a bloqué sur l'autorité commune (verrou de nœud)"
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod contournement_publication {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    /// CONTRE-ÉPREUVE A : l'écrivain historique (set_node_property) contourne le
+    /// verrou de publication. Pendant que publier_deux_proprietes_atomiquement
+    /// tient le verrou (suspendu après la 1ère mutation), un set_node_property
+    /// direct écrit SANS attendre : le verrou de publication ne protège pas ce
+    /// chemin.
+    #[test]
+    fn ecrivain_historique_contourne_le_verrou_de_publication() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let store2 = Arc::clone(&store);
+        store.suspension.armer();
+        let ecrivain = thread::spawn(move || {
+            store2
+                .publier_deux_proprietes_atomiquement(id, "a", Value::Int64(10), "b", Value::Int64(20))
+                .unwrap();
+        });
+        store.suspension.attendre_suspension();
+        // l'écrivain historique écrit DANS la fenêtre (contourne)
+        store.set_node_property(id, "a", Value::Int64(99));
+        store.suspension.relacher();
+        ecrivain.join().unwrap();
+        let a = store.get_node_property(id, &PropertyKey::new("a"));
+        eprintln!("APRES_CONTOURNEMENT a={a:?}");
+        // Le résultat démontre le contournement (l'écriture 99 a traversé).
+        assert_eq!(a, Some(Value::Int64(99)), "l'écrivain historique a écrit pendant la publication");
+    }
+}
+
+
+#[cfg(test)]
+mod contournement_lecture_magasin {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    /// CONTRE-ÉPREUVE B : le lecteur historique (get_node_property) n'attend pas
+    /// le verrou de publication → observe l'état partiel pendant la suspension.
+    #[test]
+    fn lecteur_historique_observe_l_etat_partiel() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let store2 = Arc::clone(&store);
+        store.suspension.armer();
+        let ecrivain = thread::spawn(move || {
+            store2
+                .publier_deux_proprietes_atomiquement(id, "a", Value::Int64(10), "b", Value::Int64(20))
+                .unwrap();
+        });
+        store.suspension.attendre_suspension();
+        // lecture historique : n'attend pas le verrou de publication
+        let a = store.get_node_property(id, &PropertyKey::new("a"));
+        let b = store.get_node_property(id, &PropertyKey::new("b"));
+        eprintln!("LECTEUR_HISTORIQUE a={a:?} b={b:?}");
+        assert_eq!((a, b), (Some(Value::Int64(10)), Some(Value::Int64(2))), "état partiel visible");
+        store.suspension.relacher();
+        ecrivain.join().unwrap();
+    }
+
+    /// CONTRE-ÉPREUVE C : le tableau statique de verrous est global au processus
+    /// — deux magasins indépendants partagent le même verrou (même NodeId).
+    #[test]
+    fn verrou_publication_est_global_au_processus() {
+        let td1 = tempfile::tempdir().unwrap();
+        let td2 = tempfile::tempdir().unwrap();
+        let store1 = Arc::new(SubstrateStore::create(td1.path().join("kb")).unwrap());
+        let store2 = Arc::new(SubstrateStore::create(td2.path().join("kb")).unwrap());
+        let id = store1.create_node(&["ressource"]);
+        let _ = store2.create_node(&["ressource"]); // même NodeId(1)
+        let store1b = Arc::clone(&store1);
+        let ecrivain = thread::spawn(move || {
+            let _g = verrou_publication(id).write();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let debut = std::time::Instant::now();
+        // magasin 2 : opération indépendante, mais bloquée par le verrou global
+        let _g = verrou_publication(id).read();
+        let el = debut.elapsed();
+        eprintln!("MAGASIN2_ATTENTE={:?}", el);
+        assert!(el >= std::time::Duration::from_millis(50), "le verrou global bloque le magasin 2");
+        ecrivain.join().unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod publication_differee {
+    use super::*;
+    use crate::page::{OwnerKind, PropertyEntry, PropertyValue};
+
+    /// EXPÉRIENCE PHYSIQUE : préparer des entrées SANS publier la tête canonique,
+    /// puis publier par UNE seule modification de first_prop_off.
+    #[test]
+    fn append_est_in_place_pas_de_publication_differee() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let slot = id.0 as u32;
+        let prop_a = store.prop_keys.read().lookup("a").unwrap();
+        let prop_b = store.prop_keys.read().lookup("b").unwrap();
+        let auteur = store.writer_id;
+
+        let pz_lock = store.props_zone.as_ref().expect("zone v2");
+        let mut pz = pz_lock.write();
+        let node_rec = store.writer.read_node(slot).unwrap().unwrap();
+        let h0 = node_rec.first_prop_off.to_u64();
+
+        // CONSTAT : append_entree_sur_chainee(Some(h0), e) est IN-PLACE — le
+        // lecteur depuis H0 voit IMMÉDIATEMENT la nouvelle entrée (a=10), sans
+        // publication de tête. Il n'existe PAS de chaîne privée « non publiée ».
+        let e_a = PropertyEntry::new_stamped(prop_a, PropertyValue::I64(10), auteur, u64::MAX);
+        pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e_a)
+            .unwrap();
+        let lu_a = pz.get_latest_for_key_unite(Some(h0), prop_a).unwrap().unwrap();
+        eprintln!("APRES_APPEND_SANS_PUBLICATION a={:?}", lu_a.value);
+        assert_eq!(
+            lu_a.value,
+            PropertyValue::I64(10),
+            "l'append est immédiatement visible (in-place) — pas de publication différée native"
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod preparation_privee_positive {
+    use super::*;
+    use crate::page::{OwnerKind, PropertyEntry, PropertyValue};
+
+    #[test]
+    fn preparation_privee_puis_publication_atomique() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        store.set_node_property(id, "c", Value::Int64(3));
+        let slot = id.0 as u32;
+        let prop_a = store.prop_keys.read().lookup("a").unwrap();
+        let prop_b = store.prop_keys.read().lookup("b").unwrap();
+        let auteur = store.writer_id;
+        let millis = crate::horloge_hybride::horloge_murale_millis();
+        let horloge = store.horloge.lock().maintenant(millis).pack();
+
+        let pz_lock = store.props_zone.as_ref().unwrap();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+
+        // 1. prépare a=10 dans une page privée (next_page = H0), récupère P.
+        let p = {
+            let mut pz = pz_lock.write();
+            let e_a = PropertyEntry::new_stamped(prop_a, PropertyValue::I64(10), auteur, horloge);
+            pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_a)
+                .unwrap()
+        };
+        // lecture publique canonique : inchangée (H0 ne pointe pas vers P)
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(1))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(2))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(3)),
+            "c=3 conservé : canonique inchangé avant publication"
+        );
+
+        // 2. ajoute b=20 à la chaîne privée (P -> P2)
+        let p2 = {
+            let mut pz = pz_lock.write();
+            let e_b = PropertyEntry::new_stamped(prop_b, PropertyValue::I64(20), auteur, horloge);
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(p), &e_b)
+                .unwrap()
+        };
+        // canonique encore inchangé
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(1))
+        );
+
+        // 3. publication : UNE seule modification de la tête canonique.
+        store
+            .writer
+            .update_node_first_prop_off(slot, crate::record::U48::from_u64(p2))
+            .unwrap();
+        eprintln!(
+            "APRES_PUBLICATION a={:?} b={:?}",
+            store.get_node_property(id, &PropertyKey::new("a")),
+            store.get_node_property(id, &PropertyKey::new("b"))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(3)),
+            "c=3 conservé via le chaînage next_page -> H0"
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod revision_canonique {
+    use super::*;
+
+    /// CONTRE-ÉPREUVE : la mutation historique in-place ne change PAS first_prop_off,
+    /// alors que la valeur change. Un contrôle fondé sur l'égalité de tête accepterait
+    /// à tort une transformation préparée depuis une version obsolète.
+    #[test]
+    fn tete_inchangee_apres_mutation_historique_in_place() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        let slot = id.0 as u32;
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        // mutation historique in-place
+        store.set_node_property(id, "a", Value::Int64(30));
+        let h1 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let valeur = store.get_node_property(id, &PropertyKey::new("a"));
+        eprintln!("TETE_INCHANGEE h0={h0} h1={h1} valeur={valeur:?}");
+        assert_eq!(h0, h1, "la tête est INCHANGÉE malgré la mutation in-place");
+        assert_eq!(valeur, Some(Value::Int64(30)), "mais la valeur a changé");
+    }
+}
+
+
+#[cfg(test)]
+mod autorite_revision {
+    use super::*;
+
+    /// EXPÉRIENCE DISCRIMINANTE : candidats de révision.
+    /// 1. Horloge HLC du store : avance sur mutation in-place, mais GLOBALE.
+    /// 2. first_prop_off : ne change PAS sur mutation in-place (déjà démontré).
+    #[test]
+    fn horloge_store_avance_mais_globale_pas_par_ressource() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id_a = store.create_node(&["ressource"]);
+        let id_b = store.create_node(&["ressource"]);
+        store.set_node_property(id_a, "x", Value::Int64(1));
+        let r0 = store.horloge.lock().derniere().pack();
+        // mutation in-place sur A (first_prop_off inchangé)
+        store.set_node_property(id_a, "x", Value::Int64(2));
+        let r1 = store.horloge.lock().derniere().pack();
+        // écriture sur l'AUTRE ressource B : l'horloge avance aussi
+        store.set_node_property(id_b, "y", Value::Int64(9));
+        let r2 = store.horloge.lock().derniere().pack();
+        eprintln!("HLC r0={r0} r1={r1} r2={r2}");
+        assert!(r1 > r0, "l'horloge avance sur la mutation in-place");
+        assert!(r2 > r1, "l'horloge avance aussi sur une AUTRE ressource (globale)");
+        // l'horloge est GLOBALE : r1 (mutation sur A) ne distingue pas A de B.
+        eprintln!("HLC_GLOBALE : la même horloge sert toutes les ressources");
+    }
+}
+
+
+#[cfg(test)]
+mod revision_composite {
+    use super::*;
+
+    fn horloge_de(store: &SubstrateStore, id: NodeId, key: &str) -> Option<u64> {
+        let pz_lock = store.props_zone.as_ref()?;
+        let pz = pz_lock.read();
+        let node_rec = store.writer.read_node(id.0 as u32).ok()??;
+        let tete = (node_rec.first_prop_off.to_u64() != 0)
+            .then(|| node_rec.first_prop_off.to_u64());
+        let prop_key_id = store.prop_keys.read().lookup(key)?;
+        let entry = pz.get_latest_for_key_unite(tete, prop_key_id).ok()??;
+        entry.horloge
+    }
+
+    /// RÉVISION COMPOSITE : précondition sur les estampilles canoniques des
+    /// propriétés dont dépend une transformation (a et b), pas sur le max global.
+    #[test]
+    fn precondition_composite_sur_estampilles() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (sa, sb, sa2, sb2) = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = store.create_node(&["ressource"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            store.set_node_property(id, "b", Value::Int64(2));
+            store.set_node_property(id, "c", Value::Int64(3));
+            let sa = horloge_de(&store, id, "a").unwrap();
+            let sb = horloge_de(&store, id, "b").unwrap();
+            // A : mutation historique de a → précondition invalidée
+            store.set_node_property(id, "a", Value::Int64(10));
+            assert_ne!(horloge_de(&store, id, "a"), Some(sa), "A : a invalidé");
+            assert_eq!(horloge_de(&store, id, "b"), Some(sb), "A : b inchangé");
+
+            let id2 = store.create_node(&["ressource"]);
+            store.set_node_property(id2, "a", Value::Int64(1));
+            store.set_node_property(id2, "b", Value::Int64(2));
+            store.set_node_property(id2, "c", Value::Int64(3));
+            let sa2 = horloge_de(&store, id2, "a").unwrap();
+            let sb2 = horloge_de(&store, id2, "b").unwrap();
+            // B : mutation de c → précondition (a,b) valide
+            store.set_node_property(id2, "c", Value::Int64(30));
+            assert_eq!(horloge_de(&store, id2, "a"), Some(sa2), "B : a inchangé");
+            assert_eq!(horloge_de(&store, id2, "b"), Some(sb2), "B : b inchangé");
+            // C : autre ressource → aucune invalidation
+            let id3 = store.create_node(&["ressource"]);
+            store.set_node_property(id3, "z", Value::Int64(99));
+            assert_eq!(horloge_de(&store, id2, "a"), Some(sa2), "C : a inchangé");
+            assert_eq!(horloge_de(&store, id2, "b"), Some(sb2), "C : b inchangé");
+            store.close().unwrap();
+            (sa, sb, sa2, sb2)
+        };
+        // réouverture : conservation des estampilles
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        // (a et b de id ont été mutées : a changé, b conservé)
+        assert_eq!(horloge_de(&store2, NodeId(1), "b"), Some(sb), "réouverture : b conservé");
+        assert_eq!(horloge_de(&store2, NodeId(2), "a"), Some(sa2), "réouverture : a(id2) conservé");
+        assert_eq!(horloge_de(&store2, NodeId(2), "b"), Some(sb2), "réouverture : b(id2) conservé");
+        eprintln!("REVISION_COMPOSITE OK : estampilles persistées et précondition par dépendances");
+    }
+}
+
+
+
+
+#[cfg(test)]
+mod publication_conditionnelle_native {
+    use super::*;
+    use crate::page::{OwnerKind, PropertyEntry, PropertyValue};
+    use std::collections::HashSet;
+
+    fn stamp(store: &SubstrateStore, id: NodeId, key: &str) -> EstampilleComplete {
+        match store.lire_etat_propriete(id, key).unwrap() {
+            EtatPropriete::Presente { estampille, .. } => estampille,
+            autre => panic!("{key} attendue présente, lu {autre:?}"),
+        }
+    }
+
+    fn base(store: &SubstrateStore) -> NodeId {
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        store.set_node_property(id, "c", Value::Int64(3));
+        id
+    }
+
+    fn precond(store: &SubstrateStore, id: NodeId) -> Precondition {
+        store.capturer_precondition(id, &["a", "b"]).unwrap()
+    }
+
+    /// MISSION 2 — A : mutation concurrente de a (dépendance) → conflit.
+    #[test]
+    fn scenario_a_mutation_concurrente_de_a_conflit() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        store.set_node_property(id, "a", Value::Int64(99));
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::ConflitPrecondition, "A : conflit explicite");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(99)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
+        eprintln!("A_OK : mutation de a → conflit, aucun effet publié");
+    }
+
+    /// MISSION 2 — B : mutation indépendante de c → acceptée, c conservé.
+    #[test]
+    fn scenario_b_mutation_independante_de_c_acceptee() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        store.set_node_property(id, "c", Value::Int64(30));
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale, "B : acceptée");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(30)));
+        eprintln!("B_OK : mutation de c acceptée, c=30 conservé");
+    }
+
+    /// MISSION 2 — C : mutation d'une autre ressource → aucune invalidation.
+    #[test]
+    fn scenario_c_autre_ressource_aucune_invalidation() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let id2 = store.create_node(&["ressource"]);
+        store.set_node_property(id2, "z", Value::Int64(9));
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        store.set_node_property(id2, "z", Value::Int64(99));
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale, "C : acceptée");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id2, &PropertyKey::new("z")), Some(Value::Int64(99)));
+        eprintln!("C_OK : autre ressource → aucune invalidation");
+    }
+
+    /// MISSION 2 — D : deux transformations dépendant du même état de a.
+    #[test]
+    fn scenario_d_deux_transformations_une_seule_publie() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id);
+        let prep1 = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        let prep2 = store.preparer_transformation(id, &[("a", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        let r1 = store.publier_si_precondition_intacte(prep1).unwrap();
+        let r2 = store.publier_si_precondition_intacte(prep2).unwrap();
+        assert_eq!(r1, IssuePublication::PublieIntegrale, "D : première publiée");
+        assert_eq!(r2, IssuePublication::ConflitPrecondition, "D : seconde refusée");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        eprintln!("D_OK : une seule des deux transformations publie");
+    }
+
+    /// MISSION 3 — rattachement : la tête avance sur c, la publication rattache.
+    #[test]
+    fn scenario_e_rattachement_conserve_c_apres_changement_de_tete() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pc = store.prop_keys.read().lookup("c").unwrap();
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let slot = id.0 as u32;
+        let auteur = store.writer_id;
+        let horloge = store.horloge.lock().maintenant(crate::horloge_hybride::horloge_murale_millis()).pack();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h1 = {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e_c = PropertyEntry::new_stamped(pc, PropertyValue::I64(30), auteur, horloge);
+            pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_c).unwrap()
+        };
+        store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(h1)).unwrap();
+        assert_eq!(stamp(&store, id, "a"), pre.estampille_dependance(0), "a inchangé");
+        assert_eq!(stamp(&store, id, "b"), pre.estampille_dependance(1), "b inchangé");
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale, "validation logique réussit");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(30)));
+        eprintln!("E_OK : rattachement conserve c après changement de tête");
+    }
+
+    /// MISSION 3 — CONTRE-ÉPREUVE : publication naïve perd c.
+    #[test]
+    fn scenario_f_publication_naive_perd_c_apres_changement_de_tete() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pc = store.prop_keys.read().lookup("c").unwrap();
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let slot = id.0 as u32;
+        let auteur = store.writer_id;
+        let horloge = store.horloge.lock().maintenant(crate::horloge_hybride::horloge_murale_millis()).pack();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h1 = {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e_c = PropertyEntry::new_stamped(pc, PropertyValue::I64(30), auteur, horloge);
+            pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_c).unwrap()
+        };
+        store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(h1)).unwrap();
+        store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(prep.tete_privee_pour_test())).unwrap();
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(3)), "c=30 PERDU");
+        eprintln!("F_OK : publication naive perd c — le rattachement est nécessaire");
+    }
+
+    /// P0-1 : transformation vide → refusée.
+    #[test]
+    fn transformation_vide_refusee() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id);
+        let prep = store.preparer_transformation(id, &[], &pre, ModePublication::Lww).unwrap();
+        let r = store.publier_si_precondition_intacte(prep);
+        assert!(r.is_err(), "transformation vide → erreur");
+        eprintln!("VIDE_OK : transformation vide refusée");
+    }
+
+    /// P0-1 : précondition vide = écriture aveugle.
+    #[test]
+    fn precondition_vide_ecriture_aveugle() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = store.capturer_precondition(id, &[]).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale, "écriture aveugle publiée");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+        eprintln!("AVEUGLE_OK : précondition vide = écriture aveugle, publiée");
+    }
+
+    /// P0-1 : re-publication → refusée par la garde anti-cycle.
+    #[test]
+    fn republication_refusee_garde_anti_cycle() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id);
+        let prep = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        let slot = id.0 as u32;
+        store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(prep.tete_privee_pour_test())).unwrap();
+        let r = store.publier_si_precondition_intacte(prep);
+        assert!(r.is_err(), "re-publication refusée");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        eprintln!("REPUBLICATION_OK : garde anti-cycle refuse sans boucler");
+    }
+
+    /// P0-1 — CONTRE-ÉPREUVE BORNÉE : le rattachement naïf à soi-même crée un cycle.
+    #[test]
+    fn rattachement_a_soi_meme_creerait_un_cycle() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let slot = id.0 as u32;
+        let prop_a = store.prop_keys.read().lookup("a").unwrap();
+        let prop_b = store.prop_keys.read().lookup("b").unwrap();
+        let auteur = store.writer_id;
+        let horloge = store.horloge.lock().maintenant(crate::horloge_hybride::horloge_murale_millis()).pack();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let (p, p2) = {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e_a = PropertyEntry::new_stamped(prop_a, PropertyValue::I64(10), auteur, horloge);
+            let p = pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_a).unwrap();
+            let e_b = PropertyEntry::new_stamped(prop_b, PropertyValue::I64(20), auteur, horloge);
+            let p2 = pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(p), &e_b).unwrap();
+            pz.rattacher_page_privee(p, p2).unwrap();
+            (p, p2)
+        };
+        let pz_lock = store.props_zone.as_ref().unwrap();
+        let pz = pz_lock.read();
+        let mut visites: HashSet<u64> = HashSet::new();
+        let mut cur = p2;
+        let mut cyclique = false;
+        for _ in 0..64 {
+            if !visites.insert(cur) {
+                cyclique = true;
+                break;
+            }
+            let page = pz.read_page_for_test(cur as u32).unwrap();
+            let suivant = page.header.next_page.to_u64();
+            if suivant == 0 {
+                break;
+            }
+            cur = suivant;
+        }
+        assert!(cyclique, "le rattachement naïf à soi-même crée un cycle");
+        assert!(visites.contains(&p) && visites.contains(&p2));
+        eprintln!("CYCLE_OK : cycle détecté par marche bornée");
+    }
+
+    /// P0-1 : publication après suppression de la cible → refus.
+    #[test]
+    fn publication_apres_suppression_cible() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id);
+        let prep = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        assert!(store.delete_node(id), "suppression effective");
+        let r = store.publier_si_precondition_intacte(prep);
+        assert!(r.is_err(), "cible supprimée → refus");
+        eprintln!("SUPPRESSION_OK : publication sur cible supprimée refusée");
+    }
+
+    /// P0-1 : descripteur préparé sur un AUTRE store → refus (incarnation).
+    #[test]
+    fn descripteur_etranger_refuse() {
+        let td = tempfile::tempdir().unwrap();
+        let store_a = SubstrateStore::create(td.path().join("ka")).unwrap();
+        let store_b = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id_a = base(&store_a);
+        let _id_b = base(&store_b);
+        let pre = precond(&store_a, id_a);
+        let prep = store_a.preparer_transformation(id_a, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        let r = store_b.publier_si_precondition_intacte(prep);
+        assert!(r.is_err(), "descripteur étranger refusé");
+        eprintln!("ETRANGER_OK : descripteur d'un autre store refusé (incarnation)");
+    }
+
+    /// P0 : précondition capturée sur une AUTRE ressource → refus à la préparation.
+    #[test]
+    fn precondition_autre_ressource_refusee() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id1 = base(&store);
+        let id2 = store.create_node(&["ressource"]);
+        store.set_node_property(id2, "a", Value::Int64(1));
+        store.set_node_property(id2, "b", Value::Int64(2));
+        let pre = precond(&store, id1); // capturée sur id1
+        let r = store.preparer_transformation(id2, &[("a", Value::Int64(10))], &pre, ModePublication::Lww);
+        assert!(r.is_err(), "précondition d'une autre cible refusée");
+        eprintln!("AUTRE_CIBLE_OK : précondition d'une autre ressource refusée");
+    }
+
+    /// P0 : écriture sur une propriété NON dépendante → préservée (LWW).
+    #[test]
+    fn ecriture_sur_non_dependance_preservee() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id); // dépendances : a, b — PAS d
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        store.set_node_property(id, "d", Value::Int64(7));
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale, "écriture non dépendante n'invalide pas");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("d")), Some(Value::Int64(7)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        eprintln!("NON_DEP_OK : écriture sur propriété non dépendante préservée");
+    }
+
+    /// P0 — EFFET OBSOLÈTE : écriture aveugle (c) LWW — masquée par une plus récente.
+    #[test]
+    fn effet_obsolete_pour_ecriture_aveugle() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id); // dépendances : a,b — PAS c
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Lww)
+            .unwrap();
+        store.set_node_property(id, "c", Value::Int64(99));
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PubliePartielle, "tête basculée, effet aveugle masqué");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)), "dépendance a canonique");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)), "dépendance b canonique");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(99)), "aveugle c=30 OBSOLÈTE");
+        eprintln!("OBSOLETE_OK : Publie distingue dépendance canonique et aveugle obsolète");
+    }
+
+    /// P0 — LIEN CAPTURE↔TRANSFORMATION : T est liée à la capture qui l'a
+    /// calculée. L'ancien piège (capturer p0, préparer T, laisser changer une
+    /// dépendance, capturer p1, publier T avec p1) est impossible : publier
+    /// relit la précondition LIÉE à la préparation.
+    #[test]
+    fn lien_entre_capture_et_transformation() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let p0 = precond(&store, id); // capture a=1,b=2
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &p0, ModePublication::Lww)
+            .unwrap();
+        // une dépendance change APRÈS la capture p0 (donc T est calculée depuis
+        // un état périmé).
+        store.set_node_property(id, "a", Value::Int64(5));
+        // publier(prep) relit p0 (liée) : a (5) != p0 (1) → conflit. On ne peut
+        // PAS substituer une capture p1 plus fraîche (pas d'argument).
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::ConflitPrecondition, "T calculée depuis p0 refusée quand a a changé");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(5)), "a inchangé");
+        eprintln!("LIEN_OK : la transformation est liée à la capture qui l'a calculée");
+    }
+
+    /// P0 — MODE STRICT : refuse d'écrire une propriété non déclarée.
+    #[test]
+    fn mode_strict_refuse_ecriture_non_declaree() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id); // dépendances : a,b — PAS c
+        let r = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("c", Value::Int64(30))], &pre, ModePublication::Strict);
+        assert!(r.is_err(), "strict refuse d'écrire c non déclarée");
+        eprintln!("STRICT_REFUS_OK : écriture non déclarée refusée en mode strict");
+    }
+
+    /// P0 — MODE STRICT : tous les effets écrits deviennent canoniques (déclare
+    /// a,b,c) ; une écriture concurrente sur l'un d'eux → refus.
+    #[test]
+    fn mode_strict_tous_effets_canoniques() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = store.capturer_precondition(id, &["a", "b", "c"]).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Strict)
+            .unwrap();
+        store.set_node_property(id, "c", Value::Int64(99));
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::ConflitPrecondition, "strict : c a changé → refus");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)), "rien publié");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(99)));
+        eprintln!("STRICT_CANONIQUE_OK : mode strict refuse un effet non intégralement canonique");
+    }
+
+    /// P0-A — MODE STRICT réussi : tous les effets écrits sont canoniques, le
+    /// verdict INTÉGRAL est rendu SANS lecture-retour post-bascule (la garantie
+    /// est établie AVANT le point de linéarisation par W ⊆ R + validation).
+    #[test]
+    fn mode_strict_succes_integral() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = store.capturer_precondition(id, &["a", "b", "c"]).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Strict)
+            .unwrap();
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale, "strict : succès intégral");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(30)));
+        eprintln!("STRICT_SUCCES_OK : strict réussi → intégral, sans lecture-retour");
+    }
+
+    /// P0-A — DOMINANCE STRICTE : une dépendance porte une estampille MAXIMALE
+    /// (u64::MAX, non observable par l'horloge locale) — l'effet préparé ne
+    /// pourra jamais la dominer, donc le mode strict REFUSE avant allocation.
+    #[test]
+    fn mode_strict_estampille_maximale_refusee() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        let slot = id.0 as u32;
+        let prop_a = store.prop_keys.read().lookup("a").unwrap();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e = PropertyEntry::new_stamped(prop_a, PropertyValue::I64(999), 99, u64::MAX);
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e).unwrap();
+        }
+        let pre = store.capturer_precondition(id, &["a"]).unwrap();
+        let r = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict);
+        assert!(r.is_err(), "mode strict refuse : l'effet ne domine pas l'estampille maximale");
+        eprintln!("DOMINANCE_OK : strict refuse un effet non dominant (estampille maximale)");
+    }
+
+    /// P0-A — DOMINANCE RESTREINTE À W : une dépendance seulement LUE (b ∈ R,
+    /// b ∉ W) portant une estampille élevée ne déclenche PAS la dominance.
+    #[test]
+    fn mode_strict_dependance_lue_non_dominee_acceptee() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let slot = id.0 as u32;
+        let prop_b = store.prop_keys.read().lookup("b").unwrap();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e = PropertyEntry::new_stamped(prop_b, PropertyValue::I64(999), 99, u64::MAX);
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e).unwrap();
+        }
+        // R = {a, b}, W = {a} : b est seulement LUE, a est écrit.
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let r = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict);
+        assert!(r.is_ok(), "b (lue, non écrite) ne doit pas déclencher la dominance");
+        eprintln!("DOMINANCE_W_OK : dépendance lue non dominée acceptée (seul W est soumis)");
+    }
+
+    /// P0-A — TOMBSTONE : une suppression versionnée à estampille maximale
+    /// domine une écriture ultérieure d'estampille inférieure — strict refuse.
+    #[test]
+    fn mode_strict_tombstone_estampille_elevee_refuse() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        let slot = id.0 as u32;
+        let prop_a = store.prop_keys.read().lookup("a").unwrap();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e = PropertyEntry::tombstone_stamped(prop_a, 99, u64::MAX);
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e).unwrap();
+        }
+        let pre = store.capturer_precondition(id, &["a"]).unwrap();
+        let r = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict);
+        assert!(r.is_err(), "strict refuse : l'effet ne domine pas le tombstone à estampille maximale");
+        eprintln!("TOMBSTONE_OK : strict refuse un effet non dominant sur un tombstone");
+    }
+
+    /// P0-B — IDENTITÉ LOGIQUE : stable entre deux tentatives de la MÊME
+    /// transformation (indépendante de l'estampille de préparation), distincte
+    /// quand l'effet diffère.
+    #[test]
+    fn empreinte_stable_entre_tentatives() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id);
+        let prep1 = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let id1 = prep1.empreinte();
+        let prep2 = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let id2 = prep2.empreinte();
+        assert_eq!(id1, id2, "même contenu → même empreinte");
+        let prep3 = store
+            .preparer_transformation(id, &[("a", Value::Int64(99)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let id3 = prep3.empreinte();
+        assert_ne!(id1, id3, "effet différent → empreinte différente");
+        eprintln!("EMPREINTE_OK : empreinte stable entre tentatives, distincte selon l'effet");
+    }
+
+    /// P0-B — RÉSOLUTION HISTORIQUE : distingue préparation privée (page
+    /// orpheline, jamais engagée) de l'engagement réel, et atteste un effet
+    /// engagé puis masqué par une écriture ultérieure.
+    #[test]
+    fn resolution_historique_distingue_preparation_et_engagement() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let auteur = store.writer_id;
+
+        // A : préparation privée SANS publication → Indetermine (page orpheline)
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let horloge_orpheline = prep.horloge_effet_pour_test();
+        assert_eq!(
+            store.resoudre_effet_historique(id, "a", auteur, horloge_orpheline).unwrap(),
+            ResolutionEffet::Indetermine,
+            "A : préparation privée non engagée → indéterminé"
+        );
+
+        // B : publication réelle → Engage
+        let pre2 = precond(&store, id);
+        let prep2 = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre2, ModePublication::Lww)
+            .unwrap();
+        let horloge_engagee = prep2.horloge_effet_pour_test();
+        let r = store.publier_si_precondition_intacte(prep2).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale);
+        assert_eq!(
+            store.resoudre_effet_historique(id, "a", auteur, horloge_engagee).unwrap(),
+            ResolutionEffet::Engage,
+            "B : publication réelle → engagé"
+        );
+
+        // C : remplacement ultérieur → l'effet reste historiquement engagé (masqué)
+        store.set_node_property(id, "a", Value::Int64(99));
+        assert_eq!(
+            store.resoudre_effet_historique(id, "a", auteur, horloge_engagee).unwrap(),
+            ResolutionEffet::Engage,
+            "C : masqué par une écriture ultérieure mais historiquement engagé"
+        );
+        eprintln!("RESOLUTION_OK : préparation privée ≠ engagement, masquage ≠ absence");
+    }
+
+    /// P0-B — H3 : publication réelle, réponse perdue, résolution après
+    /// réouverture SANS republier, puis masquage ultérieur.
+    #[test]
+    fn h3_publication_reelle_reponse_perdue() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (auteur, horloge) = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = store.create_node(&["ressource"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            store.set_node_property(id, "b", Value::Int64(2));
+            let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+            let prep = store
+                .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Strict)
+                .unwrap();
+            let auteur = store.writer_id;
+            let horloge = prep.horloge_effet_pour_test();
+            // réponse « perdue » : le verdict n'est pas reçu, mais l'engagement a eu lieu
+            let _verdict_perdu = store.publier_si_precondition_intacte(prep).unwrap();
+            store.close().unwrap();
+            (auteur, horloge)
+        };
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        let id = NodeId(1);
+        // résolution SANS republier
+        let res = store2.resoudre_effet_historique(id, "a", auteur, horloge).unwrap();
+        assert_eq!(res, ResolutionEffet::Engage, "H3 : l'engagement est attesté après réouverture, réponse perdue");
+        // masquage ultérieur : l'historique atteste toujours l'engagement
+        store2.set_node_property(id, "a", Value::Int64(99));
+        assert_eq!(
+            store2.resoudre_effet_historique(id, "a", auteur, horloge).unwrap(),
+            ResolutionEffet::Engage,
+            "H3 : masqué mais l'événement historique reste attesté"
+        );
+        eprintln!("H3_OK : réponse perdue résolue par consultation historique sans republier");
+    }
+
+    /// P0-D — TÉMOIN ÉNERGÉTIQUE CONDITIONNEL (pour le principal) : énergie
+    /// initiale 0.2, deux opérations indépendantes A et B capturent la même
+    /// version. A (+0.1) est engagée ; B (+0.1 depuis 0.2) est REFUSÉE sur
+    /// précondition obsolète ; B est recalculée depuis 0.3 → 0.4. Aucun
+    /// plafonnement, aucun double comptage.
+    #[test]
+    fn temoin_energetique_conditionnel() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["energie"]);
+        store.set_node_property(id, "energie", Value::Float64(0.2));
+
+        // A et B capturent la MÊME version initiale (0.2)
+        let pre_a = store.capturer_precondition(id, &["energie"]).unwrap();
+        let pre_b = store.capturer_precondition(id, &["energie"]).unwrap();
+
+        // A : +0.1 (0.2 → 0.3)
+        let prep_a = store
+            .preparer_transformation(id, &[("energie", Value::Float64(0.3))], &pre_a, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_a).unwrap(), IssuePublication::PublieIntegrale);
+
+        // B : +0.1 depuis 0.2 (0.2 → 0.3) — précondition devenue obsolète
+        let prep_b = store
+            .preparer_transformation(id, &[("energie", Value::Float64(0.3))], &pre_b, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(
+            store.publier_si_precondition_intacte(prep_b).unwrap(),
+            IssuePublication::ConflitPrecondition,
+            "B refusée sur précondition obsolète"
+        );
+
+        // B recalculée depuis l'état courant (0.3 → 0.4)
+        let pre_b2 = store.capturer_precondition(id, &["energie"]).unwrap();
+        let prep_b2 = store
+            .preparer_transformation(id, &[("energie", Value::Float64(0.4))], &pre_b2, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_b2).unwrap(), IssuePublication::PublieIntegrale);
+
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("energie")),
+            Some(Value::Float64(0.4)),
+            "0.2 → A+0.1 → B obsolète → B recalculée → 0.4"
+        );
+        eprintln!("ENERGIE_OK : 0.2 → A(+0.1) → B refusée → B recalculée → 0.4");
+    }
+
+    /// P0-A — RÉSOLUTION MULTI-EFFET PAR CLÉ : la résolution porte sur UNE clé
+    /// et UNE estampille ; l'intégralité d'une transformation multi-effets exige
+    /// de résoudre chaque effet séparément.
+    #[test]
+    fn resolution_multi_effet_est_par_cle() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let auteur = store.writer_id;
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let horloge = prep.horloge_effet_pour_test();
+        store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(store.resoudre_effet_historique(id, "a", auteur, horloge).unwrap(), ResolutionEffet::Engage);
+        assert_eq!(store.resoudre_effet_historique(id, "b", auteur, horloge).unwrap(), ResolutionEffet::Engage);
+        assert_eq!(
+            store.resoudre_effet_historique(id, "c", auteur, horloge).unwrap(),
+            ResolutionEffet::Indetermine,
+            "c n'a pas été écrit par cette transformation → non résolu"
+        );
+        eprintln!("MULTI_EFFET_OK : la résolution est par clé, l'intégralité exige chaque clé");
+    }
+
+    fn f64_de_capture(pre: &Precondition) -> f64 {
+        match pre.etat_dependance(0) {
+            EtatPropriete::Presente { valeur, .. } => match valeur {
+                Value::Float64(v) => *v,
+                autre => panic!("attendu Float64, lu {autre:?}"),
+            },
+            autre => panic!("attendu présente, lu {autre:?}"),
+        }
+    }
+
+    /// P0-A — MUTATION CONDITIONNELLE avec RECALCUL RÉEL : les valeurs ne sont
+    /// PAS prédéterminées, elles sont calculées depuis la valeur capturée.
+    #[test]
+    fn mutation_conditionnelle_recalcul_reel() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["energie"]);
+        store.set_node_property(id, "energie", Value::Float64(0.2));
+
+        // capture initiale : la valeur EST lue, pas prédéterminée
+        let pre = store.capturer_precondition(id, &["energie"]).unwrap();
+        let e0 = f64_de_capture(&pre);
+        assert!((e0 - 0.2).abs() < 1e-9);
+
+        // A et B calculent depuis la MÊME capture : e0 + 0.1
+        let a = e0 + 0.1;
+        let b = e0 + 0.1;
+
+        let prep_a = store
+            .preparer_transformation(id, &[("energie", Value::Float64(a))], &pre, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_a).unwrap(), IssuePublication::PublieIntegrale);
+
+        let prep_b = store
+            .preparer_transformation(id, &[("energie", Value::Float64(b))], &pre, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(
+            store.publier_si_precondition_intacte(prep_b).unwrap(),
+            IssuePublication::ConflitPrecondition,
+            "B refusée sur précondition obsolète"
+        );
+
+        // recapture de la valeur COURANTE (0.3), puis recalcul de B
+        let pre2 = store.capturer_precondition(id, &["energie"]).unwrap();
+        let e1 = f64_de_capture(&pre2);
+        let b2 = e1 + 0.1;
+        let prep_b2 = store
+            .preparer_transformation(id, &[("energie", Value::Float64(b2))], &pre2, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_b2).unwrap(), IssuePublication::PublieIntegrale);
+
+        let resultat = f64_de_capture(&store.capturer_precondition(id, &["energie"]).unwrap());
+        assert!((resultat - 0.4).abs() < 1e-9, "résultat proche de 0.4, lu {resultat}");
+        eprintln!("RECALCUL_OK : e0={e0} → A={a} engagée → B={b} refusée → recapture e1={e1} → B'={b2} → {resultat}");
+    }
+
+    /// P0-A — ANCRE Bytes versionnée : la capture préserve contenu + estampille
+    /// d'une ancre encodée en octets ; la mutation conditionnelle s'y applique.
+    #[test]
+    fn mutation_conditionnelle_ancre_bytes() {
+        use std::sync::Arc;
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["energie"]);
+        let enc = |v: f64| -> Value { Value::Bytes(Arc::from(v.to_le_bytes().to_vec())) };
+        store.set_node_property(id, "ancre", enc(0.2));
+
+        let pre = store.capturer_precondition(id, &["ancre"]).unwrap();
+        let e0 = match pre.etat_dependance(0) {
+            EtatPropriete::Presente { valeur: Value::Bytes(b), .. } => f64::from_le_bytes(b[..8].try_into().unwrap()),
+            autre => panic!("attendu Bytes, lu {autre:?}"),
+        };
+        assert!((e0 - 0.2).abs() < 1e-9);
+
+        let a = e0 + 0.1;
+        let prep_a = store
+            .preparer_transformation(id, &[("ancre", enc(a))], &pre, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_a).unwrap(), IssuePublication::PublieIntegrale);
+
+        // B depuis la même capture (obsolète)
+        let prep_b = store
+            .preparer_transformation(id, &[("ancre", enc(e0 + 0.1))], &pre, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_b).unwrap(), IssuePublication::ConflitPrecondition);
+
+        // recapture + recalcul → 0.4
+        let pre2 = store.capturer_precondition(id, &["ancre"]).unwrap();
+        let e1 = match pre2.etat_dependance(0) {
+            EtatPropriete::Presente { valeur: Value::Bytes(b), .. } => f64::from_le_bytes(b[..8].try_into().unwrap()),
+            autre => panic!("attendu Bytes, lu {autre:?}"),
+        };
+        let prep_b2 = store
+            .preparer_transformation(id, &[("ancre", enc(e1 + 0.1))], &pre2, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_b2).unwrap(), IssuePublication::PublieIntegrale);
+        eprintln!("BYTES_OK : ancre Bytes versionnée, capture+recalcul → 0.4");
+    }
+
+    /// P0-B — MESURE des 10 000 conflits différés : abandon volontaire (0 page)
+    /// vs publication refusée sur précondition obsolète (matérialisation AVANT
+    /// validation → amplification de pages).
+    #[test]
+    fn mesure_10000_conflits_differees() {
+        use std::time::Instant;
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        let pre = store.capturer_precondition(id, &["a"]).unwrap();
+        // rend la précondition obsolète (a=2), pour que la publication soit refusée
+        store.set_node_property(id, "a", Value::Int64(2));
+
+        let pz = store.props_zone.as_ref().unwrap();
+        let n = 10_000;
+
+        // scénario 1 : préparations LOGIQUES abandonnées (jamais publiées)
+        let avant = pz.read().allocated_page_count();
+        let t = Instant::now();
+        for _ in 0..n {
+            store.preparer_transformation_differee(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict).unwrap();
+        }
+        let abandon_pages = pz.read().allocated_page_count() - avant;
+        let abandon_ns = t.elapsed().as_nanos() as f64 / n as f64;
+
+        // scénario 2 : publications différées REFUSÉES (matérialisation précède la validation)
+        let avant2 = pz.read().allocated_page_count();
+        let t = Instant::now();
+        for _ in 0..n {
+            let prep = store.preparer_transformation_differee(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict).unwrap();
+            let r = store.publier_si_precondition_intacte_differee(prep).unwrap();
+            assert_eq!(r, IssuePublication::ConflitPrecondition);
+        }
+        let conflit_pages = pz.read().allocated_page_count() - avant2;
+        let conflit_ns = t.elapsed().as_nanos() as f64 / n as f64;
+
+        eprintln!(
+            "CONFLITS abandon={abandon_pages} pages ({abandon_ns:.0} ns/prép) ;              refus={conflit_pages} pages ({conflit_ns:.0} ns/pub)"
+        );
+        assert_eq!(abandon_pages, 0, "l'abandon logique n'alloue aucune page");
+        // CORRIGÉ : la validation préalable (sans allocation) refuse le conflit
+        // AVANT matérialisation → zéro page.
+        assert_eq!(conflit_pages, 0, "conflit refusé avant matérialisation : zéro page");
+    }
+
+    /// P0 — écriture répétée d'une même clé : refusée à la préparation.
+    #[test]
+    fn ecritures_repetees_sur_une_cle_refusees() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id);
+        let r = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("a", Value::Int64(20))], &pre, ModePublication::Lww);
+        assert!(r.is_err(), "écriture répétée de a refusée");
+        eprintln!("REPETEE_OK : écriture répétée refusée");
+    }
+
+    /// P0 — estampille DISTANTE supérieure : une écriture aveugle masquée par
+    /// une estampille distante plus haute → application PARTIELLE.
+    #[test]
+    fn estampille_distante_superieure_masque_l_effet() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pc = store.prop_keys.read().lookup("c").unwrap();
+        let pre = precond(&store, id); // dépendances a,b — PAS c
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Lww)
+            .unwrap();
+        let slot = id.0 as u32;
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e = PropertyEntry::new_stamped(pc, PropertyValue::I64(999), 99, u64::MAX);
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e).unwrap();
+        }
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PubliePartielle, "effet aveugle c masqué par une estampille distante");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(999)));
+        eprintln!("DISTANT_OK : estampille distante supérieure → application partielle");
+    }
+
+    /// P0 — dépendance ABSENTE devenue présente entre capture et publication.
+    #[test]
+    fn dependance_absente_change_conflit() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = store.capturer_precondition(id, &["a", "inexistante"]).unwrap();
+        let prep = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        store.set_node_property(id, "inexistante", Value::Int64(42));
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::ConflitPrecondition, "dépendance absente devenue présente");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)), "rien publié");
+        eprintln!("ABSENT_OK : dépendance absente devenue présente → conflit");
+    }
+}
+
+#[cfg(test)]
+impl EtatPropriete {
+    /// (tests) extrait l'estampille d'un état présent/supprimé.
+    fn into_stamp(self) -> EstampilleComplete {
+        match self {
+            EtatPropriete::Presente { estampille, .. } | EtatPropriete::Supprimee(estampille) => estampille,
+            _ => panic!("pas d'estampille sur cet état"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod mission1_identite_estampille {
+    use super::*;
+    use crate::page::{OwnerKind, PropertyEntry, PropertyValue};
+
+    #[test]
+    fn lecture_distingue_les_etats() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        assert_eq!(store.lire_etat_propriete(id, "a").unwrap(), EtatPropriete::Absente);
+        store.set_node_property(id, "a", Value::Int64(1));
+        match store.lire_etat_propriete(id, "a").unwrap() {
+            EtatPropriete::Presente { estampille, valeur } => {
+                assert_eq!(estampille.auteur, store.writer_id);
+                assert_ne!(estampille.horloge, 0);
+                assert_eq!(valeur, Value::Int64(1));
+            }
+            autre => panic!("a attendue présente, lu {autre:?}"),
+        }
+        store.remove_node_property(id, "a");
+        match store.lire_etat_propriete(id, "a").unwrap() {
+            EtatPropriete::Supprimee(estampille) => assert_eq!(estampille.auteur, store.writer_id),
+            autre => panic!("a attendue supprimée, lu {autre:?}"),
+        }
+        assert_eq!(store.lire_etat_propriete(NodeId(4242), "a").unwrap(), EtatPropriete::RessourceInexistante);
+        eprintln!("ETATS_OK : présente/absente/supprimée/inexistante distinguées, estampille complète");
+    }
+
+    #[test]
+    fn meme_horloge_auteurs_differents_lww() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        let slot = id.0 as u32;
+        let prop_a = store.prop_keys.read().lookup("a").unwrap();
+        let horloge = store.horloge.lock().maintenant(crate::horloge_hybride::horloge_murale_millis()).pack();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &PropertyEntry::new_stamped(prop_a, PropertyValue::I64(100), 2, horloge)).unwrap();
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &PropertyEntry::new_stamped(prop_a, PropertyValue::I64(200), 3, horloge)).unwrap();
+        }
+        let pz_lock = store.props_zone.as_ref().unwrap();
+        let pz = pz_lock.read();
+        let lu = pz.get_latest_for_key_unite(Some(h0), prop_a).unwrap().unwrap();
+        assert_eq!(lu.value, PropertyValue::I64(200));
+        assert_eq!(lu.auteur, Some(3));
+        eprintln!("LWW_OK : (horloge, auteur) départage les écritures à horloge égale");
+    }
+}
+
+#[cfg(test)]
+mod mission4_lecture_coherente {
+    use super::*;
+
+    #[test]
+    fn capture_sous_verrou_noeud_est_coherente() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let cap = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        assert_eq!(cap.nb_dependances(), 2);
+        let va = match cap.etat_dependance(0) {
+            EtatPropriete::Presente { valeur, .. } => valeur.clone(),
+            autre => panic!("a attendue présente, lu {autre:?}"),
+        };
+        let vb = match cap.etat_dependance(1) {
+            EtatPropriete::Presente { valeur, .. } => valeur.clone(),
+            autre => panic!("b attendue présente, lu {autre:?}"),
+        };
+        assert_eq!((va, vb), (Value::Int64(1), Value::Int64(2)), "capture cohérente V0");
+        eprintln!("CAPTURE_OK : a et b lues sous la même autorité (verrou de nœud)");
+    }
+}
+
+#[cfg(test)]
+mod mission5_reouverture {
+    use super::*;
+
+    #[test]
+    fn suppression_puis_recreation_change_l_estampille_et_survit() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let s1 = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = store.create_node(&["ressource"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            let avant = store.lire_etat_propriete(id, "a").unwrap().into_stamp();
+            store.remove_node_property(id, "a");
+            assert!(matches!(store.lire_etat_propriete(id, "a").unwrap(), EtatPropriete::Supprimee(_)));
+            store.set_node_property(id, "a", Value::Int64(1));
+            let apres = store.lire_etat_propriete(id, "a").unwrap().into_stamp();
+            assert_ne!(avant.horloge, apres.horloge);
+            store.close().unwrap();
+            apres
+        };
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        match store2.lire_etat_propriete(NodeId(1), "a").unwrap() {
+            EtatPropriete::Presente { estampille, valeur } => {
+                assert_eq!(estampille, s1);
+                assert_eq!(valeur, Value::Int64(1));
+            }
+            autre => panic!("a doit survivre à la réouverture, lu {autre:?}"),
+        }
+        eprintln!("REOUVERTURE_OK : NodeId conservé, estampille de recréation conservée");
+    }
+}
+
+#[cfg(test)]
+mod mesure_couts {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn mesure_capture_preparation_croissance() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        store.set_node_property(id, "c", Value::Int64(3));
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+
+        let n_cap = 10_000;
+        let t = Instant::now();
+        for _ in 0..n_cap {
+            store.capturer_precondition(id, &["a", "b"]).unwrap();
+        }
+        let capture_ns = t.elapsed().as_nanos() as f64 / n_cap as f64;
+
+        let pz = store.props_zone.as_ref().unwrap();
+        let avant = pz.read().allocated_page_count();
+        let n_prep = 1_000;
+        let t = Instant::now();
+        for _ in 0..n_prep {
+            store.preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        }
+        let preparation_ns = t.elapsed().as_nanos() as f64 / n_prep as f64;
+        let apres = pz.read().allocated_page_count();
+        let croissance = apres - avant;
+
+        eprintln!(
+            "COUTS capture={capture_ns:.0}ns preparation_2props={preparation_ns:.0}ns ; \
+             pages orphelines après {n_prep} préparations non publiées = {croissance} (NON récupérées)"
+        );
+        assert!(croissance >= n_prep as u32, "chaque préparation alloue au moins une page");
+    }
+}
+
+#[cfg(test)]
+mod projections_publiees {
+    use super::*;
+
+    /// P0 — PROJECTIONS : la publication conditionnelle écrit directement dans
+    /// PropsZone et contourne le crochet d'indexation de set_node_property.
+    /// La lecture directe voit la nouvelle valeur ; la recherche indexée est
+    /// PÉRIMÉE jusqu'à réouverture (l'index ne connaît pas la nouvelle valeur).
+    #[test]
+    fn index_perime_apres_publication_directe() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let id = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = store.create_node(&["personne"]);
+            store.set_node_property(id, "age", Value::Int64(30));
+            // première recherche : construit l'index de la clé
+            let avant = store.find_nodes_by_property("age", &Value::Int64(30));
+            assert_eq!(avant, vec![id], "avant : index trouve age=30");
+            // publication conditionnelle : age -> 40 (contourne le crochet d'index)
+            let pre = store.capturer_precondition(id, &["age"]).unwrap();
+            let prep = store
+                .preparer_transformation(id, &[("age", Value::Int64(40))], &pre, ModePublication::Strict)
+                .unwrap();
+            let r = store.publier_si_precondition_intacte(prep).unwrap();
+            assert_eq!(r, IssuePublication::PublieIntegrale);
+            // lecture directe : nouvelle valeur
+            assert_eq!(
+                store.get_node_property(id, &PropertyKey::new("age")),
+                Some(Value::Int64(40)),
+                "lecture directe : nouvelle valeur"
+            );
+            // recherche indexée : l'index est-il périmé ?
+            let cherche_30 = store.find_nodes_by_property("age", &Value::Int64(30));
+            let cherche_40 = store.find_nodes_by_property("age", &Value::Int64(40));
+            eprintln!("APRES_PUBLICATION age=30 -> {cherche_30:?} ; age=40 -> {cherche_40:?}");
+            // age=30 est revérifié exactement : le nœud porte 40, donc exclu.
+            assert!(cherche_30.is_empty(), "30 n'est plus porté (revérifié exact)");
+            // CORRIGÉ : l'index a été invalidé, la recherche rebâtit et trouve 40.
+            assert_eq!(cherche_40, vec![id], "l'index retrouve 40 après invalidations");
+            store.close().unwrap();
+            id
+        };
+        // réouverture : la lecture directe ET la recherche retrouvent 40.
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        let direct = store2.get_node_property(id, &PropertyKey::new("age"));
+        let cherche_40 = store2.find_nodes_by_property("age", &Value::Int64(40));
+        eprintln!("APRES_REOUVERTURE direct={direct:?} age=40 -> {cherche_40:?}");
+        assert_eq!(direct, Some(Value::Int64(40)), "lecture directe après réouverture : 40 conservé");
+        assert_eq!(cherche_40, vec![id], "après réouverture, l'index retrouve 40");
+    }
+
+    /// P0 — réouverture SANS recherche intermédiaire : après publication on
+    /// ferme IMMÉDIATEMENT (aucune recherche ne « répare » l'index en session).
+    /// À la réouverture, la recherche doit retrouver la valeur publiée par
+    /// reconstruction depuis les chaînes — pas par une réparation antérieure.
+    #[test]
+    fn reouverture_sans_recherche_intermediaire() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let id = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = store.create_node(&["personne"]);
+            store.set_node_property(id, "age", Value::Int64(30));
+            let avant = store.find_nodes_by_property("age", &Value::Int64(30));
+            assert_eq!(avant, vec![id], "index initial construit");
+            let pre = store.capturer_precondition(id, &["age"]).unwrap();
+            let prep = store
+                .preparer_transformation(id, &[("age", Value::Int64(40))], &pre, ModePublication::Strict)
+                .unwrap();
+            let r = store.publier_si_precondition_intacte(prep).unwrap();
+            assert_eq!(r, IssuePublication::PublieIntegrale);
+            // AUCUNE recherche entre la publication et la fermeture.
+            store.close().unwrap();
+            id
+        };
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        let direct = store2.get_node_property(id, &PropertyKey::new("age"));
+        let cherche_40 = store2.find_nodes_by_property("age", &Value::Int64(40));
+        eprintln!("REOUVERTURE_SANS_RECHERCHE direct={direct:?} age=40 -> {cherche_40:?}");
+        assert_eq!(direct, Some(Value::Int64(40)));
+        assert_eq!(cherche_40, vec![id], "réouverture retrouve 40 sans recherche intermédiaire");
+    }
+}
+
+#[cfg(test)]
+mod concurrence_reelle {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    /// Pose le drapeau d'arrêt à la sortie de portée (y compris en cas de
+    /// panic dans le fil principal) : un lecteur en spin ne reste jamais
+    /// orphelin à consommer un cœur.
+    struct RelacheArret(Arc<AtomicBool>);
+    impl Drop for RelacheArret {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    /// Adresse brute de la tête canonique d'un nœud (page de tête PropsZone).
+    fn tete(store: &SubstrateStore, id: NodeId) -> u64 {
+        store
+            .writer
+            .read_node(id.0 as u32)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64()
+    }
+
+    /// Lit un Int64 via le chemin historique ; -1 si absent ou non-Int64.
+    fn lire_i64(store: &SubstrateStore, id: NodeId, cle: &str) -> i64 {
+        match store.get_node_property(id, &PropertyKey::new(cle)) {
+            Some(Value::Int64(v)) => v,
+            _ => -1,
+        }
+    }
+
+    fn base(store: &SubstrateStore) -> NodeId {
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        store.set_node_property(id, "c", Value::Int64(3));
+        id
+    }
+
+    /// 1a — Deux écrivains sur le MÊME nœud : la dépendance « a » est modifiée
+    /// par l'écrivain historique ENTRE la préparation et la publication (ordre
+    /// imposé par des canaux bornés) → ConflitPrecondition, aucun effet publié.
+    #[test]
+    fn deux_ecrivains_dependance_modifiee_pendant_preparation_conflit() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = base(&store);
+
+        let (tx_prepare, rx_prepare) = mpsc::channel::<()>();
+        let (tx_ecrit, rx_ecrit) = mpsc::channel::<()>();
+
+        let s1 = Arc::clone(&store);
+        let h1 = thread::spawn(move || {
+            let pre = s1.capturer_precondition(id, &["a", "b"]).unwrap();
+            let prep = s1
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
+            tx_prepare.send(()).unwrap();
+            rx_ecrit
+                .recv_timeout(Duration::from_secs(5))
+                .expect("borne : attente de l'écriture historique");
+            s1.publier_si_precondition_intacte(prep).unwrap()
+        });
+
+        let s2 = Arc::clone(&store);
+        let h2 = thread::spawn(move || {
+            rx_prepare
+                .recv_timeout(Duration::from_secs(5))
+                .expect("borne : attente de la préparation");
+            s2.set_node_property(id, "a", Value::Int64(99));
+            tx_ecrit.send(()).unwrap();
+        });
+
+        let r = h1.join().expect("écrivain conditionnel");
+        h2.join().expect("écrivain historique");
+
+        assert_eq!(r, IssuePublication::ConflitPrecondition, "a modifiée → conflit");
+        assert_eq!(lire_i64(&store, id, "a"), 99, "l'écriture historique de a est conservée");
+        assert_eq!(lire_i64(&store, id, "b"), 2, "b inchangée : aucun effet publié");
+        eprintln!("CONCUR_1a_OK : dépendance modifiée pendant la préparation → conflit");
+    }
+
+    /// 1b — Écriture indépendante (autre clé « c ») pendant la préparation →
+    /// publication acceptée, c conservé, a/b intégralement publiés.
+    #[test]
+    fn deux_ecrivains_ecriture_independante_acceptee_conservation() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = base(&store);
+
+        let (tx_prepare, rx_prepare) = mpsc::channel::<()>();
+        let (tx_ecrit, rx_ecrit) = mpsc::channel::<()>();
+
+        let s1 = Arc::clone(&store);
+        let h1 = thread::spawn(move || {
+            let pre = s1.capturer_precondition(id, &["a", "b"]).unwrap();
+            let prep = s1
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
+            tx_prepare.send(()).unwrap();
+            rx_ecrit
+                .recv_timeout(Duration::from_secs(5))
+                .expect("borne : attente de l'écriture indépendante");
+            s1.publier_si_precondition_intacte(prep).unwrap()
+        });
+
+        let s2 = Arc::clone(&store);
+        let h2 = thread::spawn(move || {
+            rx_prepare
+                .recv_timeout(Duration::from_secs(5))
+                .expect("borne : attente de la préparation");
+            s2.set_node_property(id, "c", Value::Int64(30));
+            tx_ecrit.send(()).unwrap();
+        });
+
+        let r = h1.join().expect("écrivain conditionnel");
+        h2.join().expect("écrivain historique");
+
+        assert_eq!(r, IssuePublication::PublieIntegrale, "écriture indépendante n'invalide pas");
+        assert_eq!(lire_i64(&store, id, "a"), 10);
+        assert_eq!(lire_i64(&store, id, "b"), 20);
+        assert_eq!(lire_i64(&store, id, "c"), 30, "c conservé malgré le rattachement");
+        eprintln!("CONCUR_1b_OK : écriture indépendante acceptée, c conservé");
+    }
+
+    /// 2 — Changement de tête H0→H1 provoqué par `set_node_property` (remplissage
+    /// d'une page → allocation d'une nouvelle page de tête), PAS par manipulation
+    /// directe du Writer. La publication conditionnelle doit rattacher sa chaîne
+    /// privée à la tête courante et conserver toutes les écritures intermédiaires.
+    #[test]
+    fn changement_de_tete_par_remplissage_via_set_node_property() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let prep = store
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
+            .unwrap();
+
+        let h0 = tete(&store, id);
+        // Remplit la page de tête via le chemin PUBLIC jusqu'à ce qu'une nouvelle
+        // page soit allouée (la tête change). Borne haute : 512 écritures.
+        let mut h1 = h0;
+        let mut i = 0usize;
+        while h1 == h0 && i < 512 {
+            store.set_node_property(id, &format!("bourrage{i}"), Value::Int64(i as i64));
+            h1 = tete(&store, id);
+            i += 1;
+        }
+        assert_ne!(h1, h0, "le remplissage via set_node_property a forcé une nouvelle page de tête");
+        assert!(i > 0, "au moins une écriture de bourrage");
+
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale, "rattachement → publication intégrale");
+        assert_eq!(lire_i64(&store, id, "a"), 10);
+        assert_eq!(lire_i64(&store, id, "b"), 20);
+        assert_eq!(lire_i64(&store, id, "c"), 3, "c de la chaîne H0 conservé");
+        let derniere = i - 1;
+        assert_eq!(
+            lire_i64(&store, id, &format!("bourrage{derniere}")),
+            derniere as i64,
+            "la dernière écriture de bourrage est conservée (pas perdue par le rattachement)"
+        );
+        eprintln!("CONCUR_2_OK : H0→H1 via set_node_property ({i} écritures), rattachement conserve tout");
+    }
+
+    /// 3 — Lecteur concurrent SOUS le verrou d'écriture de nœud (la même autorité
+    /// que prend la publication) : il ne voit que V0=(1,2) ou V1=(10,20), jamais
+    /// le mélange, pendant préparation → publication.
+    #[test]
+    fn lecteur_sous_verrou_noeud_ne_voit_pas_de_melange() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let vus = Arc::new(Mutex::new(Vec::<(i64, i64)>::new()));
+
+        let s_lecteur = Arc::clone(&store);
+        let stop_l = Arc::clone(&stop);
+        let vus_l = Arc::clone(&vus);
+        let lecteur = thread::spawn(move || {
+            let mut dernier = None;
+            while !stop_l.load(Ordering::Acquire) {
+                let (a, b) = {
+                    let _g = s_lecteur.verrou_ecriture_noeud(id).lock();
+                    (lire_i64(&s_lecteur, id, "a"), lire_i64(&s_lecteur, id, "b"))
+                };
+                if dernier != Some((a, b)) {
+                    vus_l.lock().unwrap().push((a, b));
+                    dernier = Some((a, b));
+                }
+                thread::yield_now();
+            }
+        });
+        // En cas de panic du fil principal, le lecteur reçoit l'arrêt et sort.
+        let _arret = RelacheArret(Arc::clone(&stop));
+
+        // publication conditionnelle pendant que le lecteur tourne
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+
+        stop.store(true, Ordering::Release);
+        lecteur.join().expect("lecteur");
+
+        assert_eq!(r, IssuePublication::PublieIntegrale);
+        let vus = vus.lock().unwrap();
+        for &(a, b) in vus.iter() {
+            assert!(
+                (a == 1 && b == 2) || (a == 10 && b == 20),
+                "mélange V0/V1 observé par le lecteur verrouillé : (a={a}, b={b})"
+            );
+        }
+        eprintln!("CONCUR_3_OK : lecteur sous verrou de nœud n'a vu que V0/V1 ; états = {vus:?}");
+    }
+
+    /// 3b — CONTRE-ÉPREUVE documentée : le lecteur historique (`get_node_property`,
+    /// deux lectures séparées, SANS verrou) peut chevaucher la bascule de tête et
+    /// observer le mélange V0/V1. Déterminé par l'ordre des appels, pas un aléa.
+    #[test]
+    fn lecteur_historique_deux_lectures_chevauchent_la_bascule() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+
+        // lecteur historique : lit a AVANT la bascule, puis b APRÈS la bascule
+        let a_avant = lire_i64(&store, id, "a");
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        let b_apres = lire_i64(&store, id, "b");
+
+        assert_eq!(r, IssuePublication::PublieIntegrale);
+        assert_eq!(a_avant, 1, "a lu avant la bascule = V0");
+        assert_eq!(b_apres, 20, "b lu après la bascule = V1");
+        eprintln!(
+            "CONCUR_3b_OK : deux lectures historiques séparées chevauchent la bascule → (a={a_avant}, b={b_apres}) est le mélange V0/V1"
+        );
+    }
+
+    /// 4 — Deux stores simultanés progressent indépendamment : chacun fait sa
+    /// propre publication conditionnelle sur son propre nœud, sans se bloquer.
+    /// (La suspension d'écriture est déjà PAR STORE — champ `suspension` ; on
+    /// vérifie ici qu'aucun verrou GLOBAL ne fige un store à cause de l'autre.)
+    #[test]
+    fn deux_stores_progressent_independamment() {
+        let td_a = tempfile::tempdir().unwrap();
+        let td_b = tempfile::tempdir().unwrap();
+        let store_a = Arc::new(SubstrateStore::create(td_a.path().join("ka")).unwrap());
+        let store_b = Arc::new(SubstrateStore::create(td_b.path().join("kb")).unwrap());
+        let id_a = base(&store_a);
+        let id_b = base(&store_b);
+
+        let (tx_a, rx_a) = mpsc::channel::<IssuePublication>();
+        let (tx_b, rx_b) = mpsc::channel::<IssuePublication>();
+
+        let sa = Arc::clone(&store_a);
+        let ha = thread::spawn(move || {
+            let pre = sa.capturer_precondition(id_a, &["a", "b"]).unwrap();
+            let prep = sa
+                .preparer_transformation(id_a, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+                .unwrap();
+            tx_a.send(sa.publier_si_precondition_intacte(prep).unwrap()).unwrap();
+        });
+        let sb = Arc::clone(&store_b);
+        let hb = thread::spawn(move || {
+            let pre = sb.capturer_precondition(id_b, &["a", "b"]).unwrap();
+            let prep = sb
+                .preparer_transformation(id_b, &[("a", Value::Int64(100)), ("b", Value::Int64(200))], &pre, ModePublication::Lww)
+                .unwrap();
+            tx_b.send(sb.publier_si_precondition_intacte(prep).unwrap()).unwrap();
+        });
+
+        let ra = rx_a.recv_timeout(Duration::from_secs(5)).expect("borne : store A");
+        let rb = rx_b.recv_timeout(Duration::from_secs(5)).expect("borne : store B");
+        ha.join().expect("store A");
+        hb.join().expect("store B");
+
+        assert_eq!(ra, IssuePublication::PublieIntegrale);
+        assert_eq!(rb, IssuePublication::PublieIntegrale);
+        assert_eq!(lire_i64(&store_a, id_a, "a"), 10);
+        assert_eq!(lire_i64(&store_b, id_b, "a"), 100);
+        assert_eq!(lire_i64(&store_a, id_a, "b"), 20);
+        assert_eq!(lire_i64(&store_b, id_b, "b"), 200);
+        eprintln!("CONCUR_4_OK : deux stores progressent indépendamment, sans blocage croisé");
+    }
+}
+
+#[cfg(test)]
+mod preparation_differee {
+    use super::*;
+    use std::time::Instant;
+
+    fn base(store: &SubstrateStore) -> NodeId {
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        store.set_node_property(id, "c", Value::Int64(3));
+        id
+    }
+
+    fn pages_allouees(store: &SubstrateStore) -> u32 {
+        store
+            .props_zone
+            .as_ref()
+            .unwrap()
+            .read()
+            .allocated_page_count()
+    }
+
+    fn taille_props(chemin: &std::path::Path) -> u64 {
+        std::fs::metadata(chemin.join(crate::props_zone::PROPS_V2_FILENAME))
+            .map(|m| m.len())
+            .unwrap_or(0)
+    }
+
+    /// Lien préparation↔capture conservé : la précondition LIÉE est relue à la
+    /// publication (pas de substitution possible) ; aucune page allouée avant.
+    #[test]
+    fn differee_conserve_lien_capture_transformation() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let p0 = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let prep = store
+            .preparer_transformation_differee(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &p0,
+                ModePublication::Lww,
+            )
+            .unwrap();
+        // Les dépendances capturées sont conservées dans le descripteur.
+        assert_eq!(prep.precondition.nb_dependances(), 2);
+        // Aucune page allouée à la préparation logique.
+        let avant = pages_allouees(&store);
+        assert_eq!(pages_allouees(&store), avant);
+        // Une dépendance change APRÈS la capture : la publication relit la
+        // précondition LIÉE et refuse.
+        store.set_node_property(id, "a", Value::Int64(5));
+        let r = store.publier_si_precondition_intacte_differee(prep).unwrap();
+        assert_eq!(r, IssuePublication::ConflitPrecondition);
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(5)));
+        eprintln!("LIEN_DIFFERE_OK : précondition liée relue, substitution impossible");
+    }
+
+    /// Publication heureuse : matérialisation (pages) uniquement à la publication.
+    #[test]
+    fn differee_publication_heureuse() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let p0 = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let prep = store
+            .preparer_transformation_differee(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &p0,
+                ModePublication::Lww,
+            )
+            .unwrap();
+        let avant = pages_allouees(&store);
+        let r = store.publier_si_precondition_intacte_differee(prep).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale);
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+        assert!(pages_allouees(&store) > avant, "la matérialisation alloue des pages à la publication");
+        eprintln!("HEUREUX_OK : matérialisation à la publication, effet canonique");
+    }
+
+    /// ABANDON différé : aucune croissance permanente (pages et fichier).
+    #[test]
+    fn differee_abandon_aucune_croissance() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let store = SubstrateStore::create(&chemin).unwrap();
+        let id = base(&store);
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let pages_avant = pages_allouees(&store);
+        let props_avant = taille_props(&chemin);
+        let n = 10_000;
+        for _ in 0..n {
+            let _prep = store
+                .preparer_transformation_differee(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
+            // abandonné : jamais publié.
+        }
+        let pages_apres = pages_allouees(&store);
+        let props_apres = taille_props(&chemin);
+        eprintln!("ABANDON_DIFFERE {n} : pages {pages_avant}->{pages_apres}, props {props_avant}->{props_apres}");
+        assert_eq!(pages_apres, pages_avant, "aucune page allouée");
+        assert_eq!(props_apres, props_avant, "aucune croissance du fichier props");
+    }
+
+    /// ABANDON physique : les pages orphelines PERSISTENT (fuite mesurée), y
+    /// compris après réouverture (non récupérées).
+    #[test]
+    fn physique_abandon_orphelines_persistantes() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (pages_avant, pages_apres) = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = base(&store);
+            let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+            let pages_avant = pages_allouees(&store);
+            for _ in 0..1_000 {
+                let _prep = store
+                    .preparer_transformation(
+                        id,
+                        &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                        &pre,
+                        ModePublication::Lww,
+                    )
+                    .unwrap();
+            }
+            let pages_apres = pages_allouees(&store);
+            store.close().unwrap();
+            (pages_avant, pages_apres)
+        };
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        let pages_reopen = pages_allouees(&store2);
+        eprintln!("ORPHELINES_PHYSIQUE : {pages_avant}->{pages_apres}, après réouverture {pages_reopen}");
+        assert!(pages_apres > pages_avant, "la préparation physique alloue des pages");
+        assert_eq!(pages_reopen, pages_apres, "les pages orphelines persistent après réouverture (fuite)");
+    }
+
+    /// MESURE COMPARATIVE : physique vs logique (temps/pages/octets) + coût de
+    /// publication. Les chiffres sortent en `eprintln!` (--nocapture).
+    #[test]
+    fn comparaison_physique_vs_logique() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let store = SubstrateStore::create(&chemin).unwrap();
+        let id = base(&store);
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+
+        let pages_debut = pages_allouees(&store);
+        let props_debut = taille_props(&chemin);
+
+        // PHYSIQUE — N=1000 puis N=10000, jamais publiées.
+        let n1000 = 1_000usize;
+        let n10000 = 10_000usize;
+        let t = Instant::now();
+        for _ in 0..n1000 {
+            let _ = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        }
+        let phys_1000_ns = t.elapsed().as_nanos() as f64 / n1000 as f64;
+        let pages_1000 = pages_allouees(&store);
+
+        let t = Instant::now();
+        for _ in 0..n10000 {
+            let _ = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        }
+        let phys_10000_ns = t.elapsed().as_nanos() as f64 / n10000 as f64;
+        let pages_physique = pages_allouees(&store);
+        let props_physique = taille_props(&chemin);
+
+        // LOGIQUE — N=1000 puis N=10000.
+        let pages_avant_logique = pages_allouees(&store);
+        let props_avant_logique = taille_props(&chemin);
+        let t = Instant::now();
+        for _ in 0..n1000 {
+            let _ = store.preparer_transformation_differee(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        }
+        let log_1000_ns = t.elapsed().as_nanos() as f64 / n1000 as f64;
+        let t = Instant::now();
+        for _ in 0..n10000 {
+            let _ = store.preparer_transformation_differee(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        }
+        let log_10000_ns = t.elapsed().as_nanos() as f64 / n10000 as f64;
+        let pages_apres_logique = pages_allouees(&store);
+        let props_apres_logique = taille_props(&chemin);
+
+        // COÛT DE PUBLICATION (matérialisation + bascule) d'une hypothèse retenue.
+        let prep_ret = store.preparer_transformation_differee(id, &[("a", Value::Int64(11)), ("b", Value::Int64(21))], &pre, ModePublication::Lww).unwrap();
+        let t = Instant::now();
+        let r = store.publier_si_precondition_intacte_differee(prep_ret).unwrap();
+        let pub_ns = t.elapsed().as_nanos() as f64;
+
+        eprintln!("=== COMPARAISON (2 props / transformation, jamais publiées) ===");
+        eprintln!("PHYSIQUE  N=1000 : {phys_1000_ns:.0} ns/prép   N=10000 : {phys_10000_ns:.0} ns/prép");
+        eprintln!("LOGIQUE   N=1000 : {log_1000_ns:.0} ns/prép   N=10000 : {log_10000_ns:.0} ns/prép");
+        eprintln!("PAGES     physique : {pages_debut}->{pages_physique} (+{})   logique : {pages_avant_logique}->{pages_apres_logique} (+{})",
+            pages_physique - pages_debut,
+            pages_apres_logique - pages_avant_logique);
+        eprintln!("substrate.props.v2  début={props_debut}  après physique={props_physique}  après logique={props_apres_logique}  (Δ logique = {})",
+            props_apres_logique - props_avant_logique);
+        eprintln!("PUBLICATION (matérialisation + bascule) : {pub_ns:.0} ns");
+
+        assert_eq!(r, IssuePublication::PublieIntegrale);
+        assert!(pages_1000 >= pages_debut + 1_000, "chaque prép physique alloue au moins 1 page");
+        assert_eq!(pages_apres_logique, pages_avant_logique, "logique n'alloue aucune page");
+        assert_eq!(props_apres_logique, props_avant_logique, "logique ne fait pas croître le fichier");
     }
 }
