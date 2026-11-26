@@ -59,7 +59,6 @@ mod recall;
 #[cfg(feature = "engram")]
 pub use recall::{
     ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig, WarmupSelector,
-    reconsolidate,
 };
 
 #[cfg(feature = "engram")]
