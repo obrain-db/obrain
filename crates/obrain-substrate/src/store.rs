@@ -3361,6 +3361,10 @@ impl SubstrateStore {
                 "resoudre_effet_historique : pas de props_zone".to_string(),
             ));
         };
+        // Stabilise la tête canonique PENDANT le parcours : le verrou de nœud est
+        // l'autorité que prend aussi la publication lors de la bascule. Sans lui,
+        // la tête capturée pourrait être décalée d'une publication concurrente.
+        let _un_ecrivain = self.verrou_ecriture_noeud(cible).lock();
         if !self.is_live_on_disk(cible) {
             return Ok(ResolutionEffet::Indetermine);
         }
@@ -48221,6 +48225,78 @@ mod publication_conditionnelle_native {
             "H3 : masqué mais l'événement historique reste attesté"
         );
         eprintln!("H3_OK : réponse perdue résolue par consultation historique sans republier");
+    }
+
+    /// P0-D — TÉMOIN ÉNERGÉTIQUE CONDITIONNEL (pour le principal) : énergie
+    /// initiale 0.2, deux opérations indépendantes A et B capturent la même
+    /// version. A (+0.1) est engagée ; B (+0.1 depuis 0.2) est REFUSÉE sur
+    /// précondition obsolète ; B est recalculée depuis 0.3 → 0.4. Aucun
+    /// plafonnement, aucun double comptage.
+    #[test]
+    fn temoin_energetique_conditionnel() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["energie"]);
+        store.set_node_property(id, "energie", Value::Float64(0.2));
+
+        // A et B capturent la MÊME version initiale (0.2)
+        let pre_a = store.capturer_precondition(id, &["energie"]).unwrap();
+        let pre_b = store.capturer_precondition(id, &["energie"]).unwrap();
+
+        // A : +0.1 (0.2 → 0.3)
+        let prep_a = store
+            .preparer_transformation(id, &[("energie", Value::Float64(0.3))], &pre_a, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_a).unwrap(), IssuePublication::PublieIntegrale);
+
+        // B : +0.1 depuis 0.2 (0.2 → 0.3) — précondition devenue obsolète
+        let prep_b = store
+            .preparer_transformation(id, &[("energie", Value::Float64(0.3))], &pre_b, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(
+            store.publier_si_precondition_intacte(prep_b).unwrap(),
+            IssuePublication::ConflitPrecondition,
+            "B refusée sur précondition obsolète"
+        );
+
+        // B recalculée depuis l'état courant (0.3 → 0.4)
+        let pre_b2 = store.capturer_precondition(id, &["energie"]).unwrap();
+        let prep_b2 = store
+            .preparer_transformation(id, &[("energie", Value::Float64(0.4))], &pre_b2, ModePublication::Strict)
+            .unwrap();
+        assert_eq!(store.publier_si_precondition_intacte(prep_b2).unwrap(), IssuePublication::PublieIntegrale);
+
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("energie")),
+            Some(Value::Float64(0.4)),
+            "0.2 → A+0.1 → B obsolète → B recalculée → 0.4"
+        );
+        eprintln!("ENERGIE_OK : 0.2 → A(+0.1) → B refusée → B recalculée → 0.4");
+    }
+
+    /// P0-A — RÉSOLUTION MULTI-EFFET PAR CLÉ : la résolution porte sur UNE clé
+    /// et UNE estampille ; l'intégralité d'une transformation multi-effets exige
+    /// de résoudre chaque effet séparément.
+    #[test]
+    fn resolution_multi_effet_est_par_cle() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let auteur = store.writer_id;
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let horloge = prep.horloge_effet_pour_test();
+        store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(store.resoudre_effet_historique(id, "a", auteur, horloge).unwrap(), ResolutionEffet::Engage);
+        assert_eq!(store.resoudre_effet_historique(id, "b", auteur, horloge).unwrap(), ResolutionEffet::Engage);
+        assert_eq!(
+            store.resoudre_effet_historique(id, "c", auteur, horloge).unwrap(),
+            ResolutionEffet::Indetermine,
+            "c n'a pas été écrit par cette transformation → non résolu"
+        );
+        eprintln!("MULTI_EFFET_OK : la résolution est par clé, l'intégralité exige chaque clé");
     }
 
     /// P0 — écriture répétée d'une même clé : refusée à la préparation.
