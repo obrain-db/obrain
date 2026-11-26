@@ -110,6 +110,8 @@ pub struct EngramRevision {
 pub enum RevisionError {
     EngramAbsent(EngramId),
     InvalidObservation(String),
+    /// Parametres de revision invalides (non finis, bornes incoherentes).
+    InvalidParams(String),
     ValidationFailed(String),
     PersistenceFailed(String),
 }
@@ -401,9 +403,15 @@ impl EngramManager {
     }
 
     /// AUTORITE UNIQUE de reconsolidation : toutes les variantes passent ici
-    /// (memes garanties : validation, verrou par engramme, mutate candidat,
-    /// persistance, signature spectrale recomputee, publication d index,
-    /// propagation d erreur, rejeu).
+    /// (memes garanties AU NIVEAU DE L API : validation, verrou par engramme,
+    /// mutate candidat, persistance, signature spectrale recomputee, publication
+    /// d index, propagation d erreur, rejeu).
+    ///
+    /// PORTEE EXACTE : c est une autorite d API, PAS une garantie d isolation
+    /// transactionnelle durable. La durabilite, les contrats substrate/WAL et la
+    /// reconciliation des projections relevent de #418 (lot transactionnel) ; ce
+    /// point d entree ne les remplace ni ne les etend. Le verrou `revise_locks`
+    /// reste une PROTECTION PROVISOIRE.
     pub fn revise_with(
         &self,
         engram_id: EngramId,
@@ -419,6 +427,11 @@ impl EngramManager {
         if new_nodes.is_empty() {
             return Err(RevisionError::InvalidObservation("observation vide".into()));
         }
+        // VALIDATION DES PARAMETRES AVANT TOUT CALCUL (erreur typee, pas de
+        // calcul silencieux sur des bornes incoherentes).
+        if let ReconsolidationStrategy::Adaptive(_, params) = strategy {
+            params.validate().map_err(RevisionError::InvalidParams)?;
+        }
         // PROTECTION PROVISOIRE : sérialise mutate + lecture + upsert de la
         // projection, jusqu'à ce que la discipline native couvre la publication.
         // Sans elle, A peut lire sigma1 puis publier sigma1 APRÈS que B a publié
@@ -432,6 +445,7 @@ impl EngramManager {
         let _guard = lock.lock();
         self.store
             .mutate(engram_id, |e| {
+                let mut before: Vec<NodeId> = e.node_ids();
                 match strategy {
                     ReconsolidationStrategy::Additive => {
                         reconsolidate(e, new_nodes, prediction_error)
@@ -439,6 +453,14 @@ impl EngramManager {
                     ReconsolidationStrategy::Adaptive(scope, params) => {
                         reconsolidate_adaptive(e, new_nodes, prediction_error, scope, params)
                     }
+                }
+                let mut after: Vec<NodeId> = e.node_ids();
+                before.sort_unstable();
+                after.sort_unstable();
+                if before != after && e.structural_key.is_some() {
+                    // La definition (participants) a CHANGE : la cle fournie par
+                    // l appelant ne la decrit plus. Marque PERIMEE, jamais effacee.
+                    e.structural_key_stale = true;
                 }
                 // Projection dérivée : signature recalculée sur l'ensemble
                 // pondéré révisé, PAS conservée périmée.
@@ -561,7 +583,7 @@ impl EngramManager {
             },
             PredictivePolicy::Episodic => {
                 let eid = self.form_observation(observed);
-                match self.revise_adaptive(eid, observed, error, ObservationScope::Complete) {
+                match self.revise_adaptive(eid, observed, error, ObservationScope::DeclaredComplete) {
                     Ok(rev) => PredictiveAction::Revised(rev),
                     Err(err) => PredictiveAction::RevisionFailed(err),
                 }
@@ -618,6 +640,15 @@ impl EngramManager {
         self.vector_index.upsert(&id.to_string(), &signature);
         self.metrics.record_formation();
         id
+    }
+
+    /// (Re)definit la cle structurelle d un engramme et levee l etat PERIME.
+    /// A appeler apres une revision qui a change les participants.
+    pub fn set_structural_key(&self, engram_id: EngramId, key: Option<&str>) {
+        self.store.update(engram_id, |e| {
+            e.structural_key = key.map(|s| s.to_string());
+            e.structural_key_stale = false;
+        });
     }
 
     /// Revision NON MONOTONE : comme `revise`, mais l ensemble est ALIGNE sur

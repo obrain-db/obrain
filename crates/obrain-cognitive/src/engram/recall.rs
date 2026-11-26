@@ -686,24 +686,32 @@ pub fn reconsolidate_adaptive(
     }
     let lr = (params.lr_base + prediction_error * params.lr_error_gain)
         .clamp(0.0, params.lr_max);
+    // DEDUPLICATION de l observation : deux occurrences du MEME NodeId ne
+    // doivent pas provoquer un DOUBLE renforcement des poids.
+    let mut observed_uniq: Vec<NodeId> = Vec::new();
+    for &n in observed {
+        if !observed_uniq.contains(&n) {
+            observed_uniq.push(n);
+        }
+    }
     // DECROISSANCE seulement si l observation est COMPLETE. Sous observation
     // PARTIELLE, l absence n est PAS une preuve de disparition : on PRESERVE.
-    if scope == ObservationScope::Complete {
+    if scope == ObservationScope::DeclaredComplete {
         for (nid, w) in engram.ensemble.iter_mut() {
-            if !observed.contains(nid) {
+            if !observed_uniq.contains(nid) {
                 *w *= 1.0 - lr;
             }
         }
     }
     // Renforcement / ajout des noeuds OBSERVES (dans les deux portees).
-    for &nid in observed {
+    for &nid in &observed_uniq {
         match engram.ensemble.iter_mut().find(|(n, _)| *n == nid) {
             Some((_, w)) => *w = (*w * (1.0 - lr) + lr).min(1.0),
             None => engram.ensemble.push((nid, lr.max(0.1))),
         }
     }
     // RETRAIT sous plancher : seulement quand l absence est une PREUVE.
-    if scope == ObservationScope::Complete {
+    if scope == ObservationScope::DeclaredComplete {
         engram.ensemble.retain(|(_, w)| *w >= params.floor);
     }
     engram.strength = (engram.strength + 0.05).min(1.0);
