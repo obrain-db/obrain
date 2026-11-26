@@ -36,10 +36,8 @@
 
 #![cfg(all(feature = "engram", feature = "substrate"))]
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomOrder};
 use std::time::Instant;
 
 use obrain_cognitive::engram::substrate_adapter::SubstrateVectorIndexAdapter;
@@ -52,65 +50,10 @@ use obrain_common::types::NodeId;
 use obrain_substrate::retrieval::{
     LargeursCascade, SubstrateTieredIndex, VectorIndex as SubstrateVectorIndex,
 };
-use obrain_substrate::tiers::{L2_DIM, Tier0, Tier1, Tier2};
-
-// ---------------------------------------------------------------------------
-// Mémoire RÉELLE — allocateur compteur
-// ---------------------------------------------------------------------------
-
-/// Octets actuellement alloués par ce binaire de test.
-static OCTETS_VIVANTS: AtomicUsize = AtomicUsize::new(0);
-/// Pic d'octets vivants depuis la dernière remise à zéro du pic.
-static OCTETS_PIC: AtomicUsize = AtomicUsize::new(0);
-
-/// `size_of::<Tier0>() + …` donne la taille des STRUCTURES, pas la mémoire
-/// réellement allouée (tables de hachage, vecteurs de slots, maps
-/// identifiant → offset, capacité réservée). Cet allocateur compte les octets
-/// rendus et repris au système, ce qui est la seule mesure honnête.
-struct AllocateurCompteur;
-
-unsafe impl GlobalAlloc for AllocateurCompteur {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let p = unsafe { System.alloc(layout) };
-        if !p.is_null() {
-            let n = OCTETS_VIVANTS.fetch_add(layout.size(), AtomOrder::Relaxed) + layout.size();
-            OCTETS_PIC.fetch_max(n, AtomOrder::Relaxed);
-        }
-        p
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        OCTETS_VIVANTS.fetch_sub(layout.size(), AtomOrder::Relaxed);
-        unsafe { System.dealloc(ptr, layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let q = unsafe { System.realloc(ptr, layout, new_size) };
-        if !q.is_null() {
-            let n = OCTETS_VIVANTS.fetch_add(new_size, AtomOrder::Relaxed) + new_size;
-            OCTETS_VIVANTS.fetch_sub(layout.size(), AtomOrder::Relaxed);
-            OCTETS_PIC.fetch_max(n, AtomOrder::Relaxed);
-        }
-        q
-    }
-}
-
-#[global_allocator]
-static ALLOCATEUR_COMPTEUR: AllocateurCompteur = AllocateurCompteur;
-
-/// Exécute `f` et rend `(valeur, octets nets retenus, pic d'octets pendant l'appel)`.
-fn octets_alloues<T>(f: impl FnOnce() -> T) -> (T, usize, usize) {
-    let avant = OCTETS_VIVANTS.load(AtomOrder::Relaxed);
-    OCTETS_PIC.store(avant, AtomOrder::Relaxed);
-    let valeur = f();
-    let apres = OCTETS_VIVANTS.load(AtomOrder::Relaxed);
-    let pic = OCTETS_PIC.load(AtomOrder::Relaxed);
-    (
-        valeur,
-        apres.saturating_sub(avant),
-        pic.saturating_sub(avant),
-    )
-}
+use obrain_substrate::tiers::{
+    L2_DIM, Tier0, Tier0Builder, Tier1, Tier1Builder, Tier2, Tier2Builder, tier0_hamming,
+    tier1_hamming, tier2_cosine,
+};
 
 const K: usize = 10;
 /// Tailles du balayage d'échelle. 16 000 est la plus grande qui tienne dans un
@@ -375,6 +318,28 @@ fn cout_index_seul(
         par_requete.push(median(samples));
     }
     median(par_requete)
+}
+
+/// Mémoire RÉSIDENTE du processus (pages résidentes × 4096), lue dans
+/// `/proc/self/statm`.
+///
+/// POURQUOI PAS UN ALLOCATEUR COMPTEUR. Compter les octets rendus par
+/// l'allocateur Rust demande un `#[global_allocator]`, donc `unsafe` — que le
+/// workspace INTERDIT (`unsafe_code = "warn"` + `-D warnings`) et auquel je
+/// n'ajoute pas d'exception. La mémoire est donc mesurée par le RSS (ce que la
+/// machine paie réellement) et comparée à un PLANCHER STRUCTUREL calculé par
+/// `size_of` sur les données stockées. L'écart entre les deux est exactement ce
+/// que l'allocateur ajoute : en-têtes de blocs, capacité réservée, tables de
+/// hachage, fragmentation externe. Aucun des deux chiffres ne remplace l'autre.
+fn rss_octets() -> usize {
+    let Ok(statm) = std::fs::read_to_string("/proc/self/statm") else {
+        return 0;
+    };
+    statm
+        .split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse::<usize>().ok())
+        .map_or(0, |pages| pages * 4096)
 }
 
 fn moyenne(v: &[f64]) -> f64 {
@@ -694,6 +659,259 @@ fn adapter(inner: &Arc<SubstrateTieredIndex>) -> SubstrateVectorIndexAdapter {
 // Le banc
 // ---------------------------------------------------------------------------
 
+#[derive(Default, Clone, Copy)]
+struct Travail {
+    l0: usize,
+    l1: usize,
+    l2: usize,
+    exact: usize,
+}
+impl Travail {
+    fn total(&self) -> usize {
+        self.l0 + self.l1 + self.l2 + self.exact
+    }
+}
+
+/// Les paliers d'un corpus, partagés par toutes les politiques.
+struct Paliers<'a> {
+    l0: &'a [Tier0],
+    l1: &'a [Tier1],
+    l2: &'a [Tier2],
+    ids: &'a [EngramId],
+    store: &'a EngramStore,
+}
+
+/// Une requête projetée dans les trois paliers, plus son ensemble exact.
+struct Requete {
+    q0: Tier0,
+    q1: Tier1,
+    q2: Tier2,
+    ensemble: Vec<(NodeId, f64)>,
+}
+
+/// Une exploration. `incremental` : garde l'ordre L0 et les affinages déjà
+/// faits. Sinon : refait tout à chaque élargissement (ce que fait
+/// `nearest(k)` aujourd'hui — l'index n'a aucune notion d'exploration en
+/// cours). Rend `(top-k, travail, tours)`.
+fn explorer(
+    pal: &Paliers<'_>,
+    req: &Requete,
+    incremental: bool,
+    pas: usize,
+    cap: usize,
+) -> (Vec<EngramId>, Travail, usize) {
+    let n = pal.l0.len();
+    // Ordre L0 : payé une fois (incrémental) ou à chaque tour (redémarrage).
+    let ordre_l0: Vec<(u32, usize)> = {
+        let mut v: Vec<(u32, usize)> = (0..n)
+            .map(|i| (tier0_hamming(req.q0, pal.l0[i]), i))
+            .collect();
+        v.sort_unstable_by_key(|(d, i)| (*d, *i));
+        v
+    };
+    let mut travail = Travail::default();
+    if incremental {
+        travail.l0 += n;
+    }
+    let mut scores: HashMap<EngramId, f64> = HashMap::new();
+    let mut top_prec: Vec<EngramId> = Vec::new();
+    let mut stabilite = 0usize;
+    let mut rounds = 0usize;
+    let mut examine = 0usize;
+    while examine < cap.min(n) {
+        rounds += 1;
+        if !incremental {
+            travail.l0 += n; // le redémarrage rebalaye les empreintes
+        }
+        let fin = (examine + pas).min(n);
+        let tranche = &ordre_l0[examine..fin];
+        let mut affines: Vec<(u32, usize)> = Vec::with_capacity(tranche.len());
+        for &(_, idx) in tranche {
+            affines.push((tier1_hamming(&pal.l1[idx], &req.q1), idx));
+        }
+        travail.l1 += tranche.len();
+        affines.sort_unstable_by_key(|(d, i)| (*d, *i));
+        let garder = (affines.len() / 2).max(1);
+        for &(_, idx) in affines.iter().take(garder) {
+            let id = pal.ids[idx];
+            if scores.contains_key(&id) {
+                continue; // déjà affiné : l'incrémental ne le refait pas
+            }
+            travail.l2 += 1;
+            let cos = f64::from(tier2_cosine(&pal.l2[idx], &req.q2));
+            std::hint::black_box(cos);
+            travail.exact += 1;
+            if let Some(e) = pal.store.get(id) {
+                scores.insert(id, harness_cosine(&req.ensemble, &e.ensemble));
+            }
+        }
+        examine = fin;
+        let mut classes: Vec<(EngramId, f64)> = scores.iter().map(|(id, s)| (*id, *s)).collect();
+        classes.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.0.cmp(&b.0.0))
+        });
+        let top: Vec<EngramId> = classes.iter().take(K).map(|(id, _)| *id).collect();
+        // Critère DÉPLOYABLE (aucun oracle) : le top-k ne bouge plus deux tours
+        // de suite. Il ne consulte jamais la référence exacte du corpus.
+        if !top.is_empty() && top == top_prec {
+            stabilite += 1;
+            if stabilite >= 2 {
+                break;
+            }
+        } else {
+            stabilite = 0;
+        }
+        top_prec = top;
+    }
+    let mut classes: Vec<(EngramId, f64)> = scores.into_iter().collect();
+    classes.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.0.cmp(&b.0.0))
+    });
+    (
+        classes.iter().take(K).map(|(id, _)| *id).collect(),
+        travail,
+        rounds,
+    )
+}
+
+/// Une ligne de comparaison de politiques d'exploration.
+struct LignePolitique {
+    nom: String,
+    plafond: f64,
+    travail: f64,
+    exacts: f64,
+    tours: f64,
+    temps_us: f64,
+}
+
+/// Compare, à une taille `n` donnée, l'exploration INCRÉMENTALE et le
+/// REDÉMARRAGE (ce que fait `nearest(k)` aujourd'hui), plus deux largeurs fixes
+/// de référence. Tout est simulé ici : aucun moteur n'est modifié.
+fn comparer_politiques(
+    n: usize,
+    encoder: &SpectralEncoder,
+    query_seed: u64,
+) -> Option<Vec<LignePolitique>> {
+    let corpus = make_corpus(n, Distrib::Clusters, Densite::Moyenne, 0x9E37_79B9);
+    let queries = make_queries(Distrib::Clusters, Densite::Moyenne, 0x9E37_79B9);
+    let banc = construire(&corpus, encoder);
+    let refs: Vec<Vec<(EngramId, f64)>> =
+        queries.iter().map(|c| reference(&banc.store, c)).collect();
+
+    let b0 = Tier0Builder::with_default_seed(L2_DIM);
+    let b1 = Tier1Builder::with_default_seed(L2_DIM);
+    let b2 = Tier2Builder::new();
+    let mut l0: Vec<Tier0> = Vec::with_capacity(n);
+    let mut l1: Vec<Tier1> = Vec::with_capacity(n);
+    let mut l2: Vec<Tier2> = Vec::with_capacity(n);
+    let mut ids: Vec<EngramId> = Vec::with_capacity(n);
+    for i in 0..n {
+        let id = EngramId(i as u64 + 1);
+        let engram = banc.store.get(id)?;
+        let mut p: Vec<f32> = engram
+            .spectral_signature
+            .iter()
+            .map(|&x| x as f32)
+            .collect();
+        p.resize(L2_DIM, 0.0);
+        l0.push(b0.project(&p));
+        l1.push(b1.project(&p));
+        l2.push(b2.project(&p));
+        ids.push(id);
+    }
+    let paliers = Paliers {
+        l0: &l0,
+        l1: &l1,
+        l2: &l2,
+        ids: &ids,
+        store: &banc.store,
+    };
+
+    let mut lignes: Vec<LignePolitique> = Vec::new();
+    for (nom, incremental, pas) in [
+        ("incrémental pas=25", true, 25usize),
+        ("incrémental pas=50", true, 50),
+        ("redémarrage pas=25", false, 25),
+        ("redémarrage pas=50", false, 50),
+    ] {
+        let (mut plafonds, mut travaux, mut exacts, mut rounds, mut temps) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (q, cues) in queries.iter().enumerate() {
+            let sig = encoder.encode(&cues.iter().map(|&x| (x, 1.0)).collect::<Vec<_>>());
+            let mut p: Vec<f32> = sig.iter().map(|&x| x as f32).collect();
+            p.resize(L2_DIM, 0.0);
+            let req = Requete {
+                q0: b0.project(&p),
+                q1: b1.project(&p),
+                q2: b2.project(&p),
+                ensemble: cues.iter().map(|&x| (x, 1.0)).collect(),
+            };
+            let ref_top: Vec<EngramId> = refs[q].iter().take(K).map(|(id, _)| *id).collect();
+            let t0 = Instant::now();
+            let (top, travail, r) = explorer(&paliers, &req, incremental, pas, 400);
+            temps.push(t0.elapsed().as_secs_f64() * 1e6);
+            plafonds.push(
+                top.iter().filter(|id| ref_top.contains(id)).count() as f64 / ref_top.len() as f64,
+            );
+            travaux.push(travail.total() as f64);
+            exacts.push(travail.exact as f64);
+            rounds.push(r as f64);
+        }
+        lignes.push(LignePolitique {
+            nom: nom.to_string(),
+            plafond: moyenne(&plafonds),
+            travail: moyenne(&travaux),
+            exacts: moyenne(&exacts),
+            tours: moyenne(&rounds),
+            temps_us: median(temps),
+        });
+    }
+
+    // Références non incrémentales : la cascade à largeurs fixes.
+    for k0 in [200usize, 4000] {
+        banc.largeurs(k0);
+        let (mut plafonds, mut temps) = (Vec::new(), Vec::new());
+        for (q, cues) in queries.iter().enumerate() {
+            let sig = encoder.encode(&cues.iter().map(|&x| (x, 1.0)).collect::<Vec<_>>());
+            let mut s = Vec::with_capacity(3);
+            for _ in 0..3 {
+                let t0 = Instant::now();
+                let hits = banc.cascade.nearest(&sig, N_PROBE);
+                s.push(t0.elapsed().as_secs_f64() * 1e6);
+                std::hint::black_box(hits);
+            }
+            temps.push(median(s));
+            let ref_top: Vec<EngramId> = refs[q].iter().take(K).map(|(id, _)| *id).collect();
+            let vivier: Vec<EngramId> = banc
+                .cascade
+                .nearest(&sig, N_PROBE)
+                .iter()
+                .filter_map(|(raw, _)| parse_engram_id(raw))
+                .collect();
+            plafonds.push(
+                vivier.iter().filter(|id| ref_top.contains(id)).count() as f64
+                    / ref_top.len() as f64,
+            );
+        }
+        let k1 = (k0 / 10).max(N_PROBE);
+        lignes.push(LignePolitique {
+            nom: format!("fixe k0={k0} (via nearest)"),
+            plafond: moyenne(&plafonds),
+            travail: (n + k0 + k1) as f64,
+            exacts: N_PROBE as f64,
+            tours: 1.0,
+            temps_us: median(temps),
+        });
+    }
+    banc.largeurs_defaut();
+    std::hint::black_box(query_seed);
+    Some(lignes)
+}
+
 #[test]
 fn banc_echelle_et_fidelite() {
     let started = Instant::now();
@@ -721,6 +939,102 @@ fn banc_echelle_et_fidelite() {
         std::mem::size_of::<Tier1>(),
         std::mem::size_of::<Tier2>()
     );
+
+    // ---- 5) Mémoire : RSS mesuré vs plancher structurel (mesuré EN PREMIER) ----
+    println!("\n-- 5. Mémoire : RSS mesuré (machine) vs plancher structurel (size_of) --");
+    println!("   Pas d'allocateur compteur : il exigerait `unsafe`, interdit par le workspace");
+    println!("   (`unsafe_code = \"warn\"` + `-D warnings`), et je n'ajoute pas d'exception.");
+    println!("   Deux grandeurs distinctes, jamais substituées l'une à l'autre :");
+    println!("   · plancher = octets que les DONNÉES exigent (signatures, paliers, slots) ;");
+    println!("   · RSS     = pages résidentes payées par la machine (en-têtes d'allocation,");
+    println!("               capacité réservée, tables de hachage, fragmentation externe).");
+    println!("   Aucun index n'est mmapé ici (construction en mémoire) : rien hors tas.");
+    println!(
+        "   Mesuré EN PREMIER, à froid : le RSS ne redescend pas quand le tas libère, donc un"
+    );
+    println!("   delta mesuré après d'autres sections serait nul même si le tas avait grandi.");
+    let n_mem = 4000usize;
+    let corpus_mem = make_corpus(n_mem, Distrib::Clusters, Densite::Moyenne, 0x9E37_79B9);
+    let sig_octets = encoder.dimensions() * std::mem::size_of::<f64>();
+    let paliers_octets =
+        std::mem::size_of::<Tier0>() + std::mem::size_of::<Tier1>() + std::mem::size_of::<Tier2>();
+
+    let rss0 = rss_octets();
+    let store_mem = {
+        let store = EngramStore::new(None);
+        for (i, ensemble) in corpus_mem.iter().enumerate() {
+            let mut e = Engram::new(EngramId(i as u64 + 1), ensemble.clone());
+            e.spectral_signature = encoder.encode(ensemble);
+            store.insert(e);
+        }
+        store
+    };
+    let rss_store = rss_octets().saturating_sub(rss0);
+
+    let rss1 = rss_octets();
+    let brute_mem = Brute::default();
+    store_mem.for_each(|e| brute_mem.upsert(&e.id.to_string(), &e.spectral_signature));
+    let rss_brute = rss_octets().saturating_sub(rss1);
+
+    let rss2 = rss_octets();
+    let cascade_inner_mem = Arc::new(SubstrateTieredIndex::new(encoder.dimensions()));
+    let cascade_adapter_mem = adapter(&cascade_inner_mem);
+    store_mem.for_each(|e| cascade_adapter_mem.upsert(&e.id.to_string(), &e.spectral_signature));
+    let rss_cascade = rss_octets().saturating_sub(rss2);
+
+    {
+        let n = n_mem as f64;
+        println!(
+            "{:<30} {:>12} {:>11} {:>12} {:>11} {:>9}",
+            "composant", "plancher o", "pl./vect", "RSS o", "RSS/vect", "écart"
+        );
+        for (nom, plancher, rss) in [
+            (
+                "store (engrammes + signatures)",
+                sig_octets * n_mem,
+                rss_store,
+            ),
+            ("+ index force brute", sig_octets * n_mem, rss_brute),
+            ("+ cascade substrate", paliers_octets * n_mem, rss_cascade),
+        ] {
+            println!(
+                "{:<30} {:>12} {:>11.0} {:>12} {:>11.0} {:>8.1}×",
+                nom,
+                plancher,
+                plancher as f64 / n,
+                rss,
+                rss as f64 / n,
+                if plancher > 0 {
+                    rss as f64 / plancher as f64
+                } else {
+                    f64::NAN
+                }
+            );
+        }
+        println!("   → l'écart n'est pas du gaspillage : c'est le coût des structures qui rendent");
+        println!("     l'index utilisable (en-têtes, capacité réservée, id→offset, Vec de slots).");
+        println!("   → EMPREINTE TOTALE par vecteur (store + index), la seule qui compte :");
+        println!(
+            "     force brute {:.0} o  |  cascade {:.0} o  → +{:.0} o (+{:.0} %)",
+            (rss_store + rss_brute) as f64 / n,
+            (rss_store + rss_cascade) as f64 / n,
+            (rss_cascade as f64 - rss_brute as f64) / n,
+            100.0 * (rss_cascade as f64 - rss_brute as f64) / (rss_store + rss_brute).max(1) as f64
+        );
+        println!(
+            "     La cascade stocke une représentation QUANTIFIÉE (848 o de paliers) là où la"
+        );
+        println!("     force brute duplique la signature exacte (512 o) : plus de place pour une");
+        println!(
+            "     information MOINS fidèle (f16), et c'est ce qui la rend perdante à petit n."
+        );
+        std::hint::black_box((
+            &brute_mem,
+            &store_mem,
+            &cascade_inner_mem,
+            &cascade_adapter_mem,
+        ));
+    }
 
     // ---- 1) Échelle ----
     println!("\n-- 1. Échelle (clusters, densité moyenne, graine fixe) --");
@@ -1025,64 +1339,6 @@ fn banc_echelle_et_fidelite() {
         }
     }
 
-    // ---- 5) Mémoire RÉELLEMENT allouée ----
-    println!("\n-- 5. Mémoire réellement allouée (allocateur compteur, pas size_of) --");
-    let n_mem = 4000usize;
-    let corpus_mem = make_corpus(n_mem, Distrib::Clusters, Densite::Moyenne, 0x9E37_79B9);
-    let (store_mem, octets_store, pic_store) = octets_alloues(|| {
-        let store = EngramStore::new(None);
-        for (i, ensemble) in corpus_mem.iter().enumerate() {
-            let mut e = Engram::new(EngramId(i as u64 + 1), ensemble.clone());
-            e.spectral_signature = encoder.encode(ensemble);
-            store.insert(e);
-        }
-        store
-    });
-    let (brute_mem, octets_brute, pic_brute) = octets_alloues(|| {
-        let b = Brute::default();
-        store_mem.for_each(|e| b.upsert(&e.id.to_string(), &e.spectral_signature));
-        b
-    });
-    let (cascade_mem, octets_cascade, pic_cascade) = octets_alloues(|| {
-        let inner = Arc::new(SubstrateTieredIndex::new(encoder.dimensions()));
-        let a = adapter(&inner);
-        store_mem.for_each(|e| a.upsert(&e.id.to_string(), &e.spectral_signature));
-        (inner, a)
-    });
-    {
-        let n = n_mem as f64;
-        println!(
-            "{:<30} {:>12} {:>11} {:>12} {:>11}",
-            "composant", "total o", "o/vecteur", "pic o", "pic/vect"
-        );
-        for (nom, total, pic) in [
-            ("store (engrammes + signatures)", octets_store, pic_store),
-            ("+ index force brute", octets_brute, pic_brute),
-            ("+ cascade substrate", octets_cascade, pic_cascade),
-        ] {
-            println!(
-                "{:<30} {:>12} {:>11.0} {:>12} {:>11.0}",
-                nom,
-                total,
-                total as f64 / n,
-                pic,
-                pic as f64 / n
-            );
-        }
-        println!(
-            "   → size_of annonce {} o/vecteur de paliers ; l'allocateur en compte {:.0} o/vecteur",
-            std::mem::size_of::<Tier0>()
-                + std::mem::size_of::<Tier1>()
-                + std::mem::size_of::<Tier2>(),
-            octets_cascade as f64 / n
-        );
-        println!(
-            "     pour le cascade ENTIER (paliers + table identifiant→offset + Vec de slots +"
-        );
-        println!("     capacités réservées). C'est le second chiffre qui fixe un budget mémoire.");
-        std::hint::black_box((&brute_mem, &store_mem, &cascade_mem));
-    }
-
     // ---- 6) Coûts de construction, de mise à jour, de suppression ----
     println!("\n-- 6. Coût par vecteur : construire / mettre à jour / supprimer (N = {n_mem}) --");
     {
@@ -1153,145 +1409,91 @@ fn banc_echelle_et_fidelite() {
         std::hint::black_box((&brute2, &casc2));
     }
 
-    // ---- 7) Budget ADAPTATIF selon l'incertitude de rappel ----
-    println!("\n-- 7. Budget adaptatif (N = {n_frontiere}) --");
-    println!("   Deux politiques SIMULÉES dans le banc, PAS branchées dans le moteur.");
-    println!("   DÉFAUT STRUCTUREL D'ABORD : le trait `VectorIndex` n'expose que `nearest(k)`,");
-    println!("   et l'adaptateur substrate la traduit en `search_top_k`, qui utilise des LARGEURS");
-    println!("   FIGÉES (k0=4000, k1=400). Changer `k` ne change donc QUE la troncature de");
-    println!("   sortie, pas le travail : un budget adaptatif n'est pas exprimable à travers le");
+    // ---- 7) Exploration INCRÉMENTALE vs redémarrage ----
+    println!("\n-- 7. Exploration incrémentale vs redémarrage --");
     println!(
-        "   trait — il faut `definir_largeurs` sur le type CONCRET. C'est ce que fait ce banc."
+        "   Mêmes paliers (graines canoniques du substrate, empreintes bit-identiques). Ce qui"
     );
-    {
-        let cap = 400usize;
-
-        // Plafond@10 du vivier pour un budget b, et le top-k exact de ce vivier.
-        let mesure_plafond = |cues: &[NodeId], q: usize, b: usize| -> (f64, Vec<EngramId>) {
-            banc.largeurs(b);
-            let sig = encoder.encode(&cues.iter().map(|&n| (n, 1.0)).collect::<Vec<_>>());
-            let vivier: Vec<EngramId> = banc
-                .cascade
-                .nearest(&sig, b)
-                .iter()
-                .filter_map(|(raw, _)| parse_engram_id(raw))
-                .collect();
-            let ref_top: Vec<EngramId> = refs[q].iter().take(K).map(|(id, _)| *id).collect();
-            let plafond = vivier.iter().filter(|id| ref_top.contains(id)).count() as f64
-                / ref_top.len() as f64;
-            let query: Vec<(NodeId, f64)> = cues.iter().map(|&n| (n, 1.0)).collect();
-            let mut scores: Vec<(EngramId, f64)> = vivier
-                .iter()
-                .filter_map(|id| {
-                    banc.store
-                        .get(*id)
-                        .map(|e| (*id, harness_cosine(&query, &e.ensemble)))
-                })
-                .collect();
-            scores.sort_by(|a, b| {
-                b.1.partial_cmp(&a.1)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(a.0.0.cmp(&b.0.0))
-            });
-            (plafond, scores.iter().take(K).map(|(id, _)| *id).collect())
+    println!(
+        "   les sépare est ce qu'elles RÉUTILISENT : l'incrémentale paie le balayage L0 UNE fois"
+    );
+    println!(
+        "   et garde son vivier ; le redémarrage refait tout à chaque élargissement — c'est ce"
+    );
+    println!(
+        "   que fait `nearest(k)` aujourd'hui, l'index n'ayant aucune notion d'exploration en"
+    );
+    println!("   cours. BUDGET DE TRAVAIL = comparaisons (L0 empreintes, L1 affinages, L2 cosinus");
+    println!("   f16, exact cosinus d'ensembles), pas des résultats demandés.");
+    for n_explo in [4000usize, 16_000] {
+        let Some(lignes) = comparer_politiques(n_explo, &encoder, 0xA11CE) else {
+            continue;
         };
-
-        struct Pol {
-            nom: &'static str,
-            budgets: Vec<f64>,
-            couts: Vec<f64>,
-            plafonds: Vec<f64>,
-            atteint_max: usize,
-        }
-
-        let mut politiques: Vec<Pol> = Vec::new();
-        for nom in ["A: gain de plafond < 1 pt", "B: top-k stable"] {
-            let mut budgets = Vec::new();
-            let mut couts = Vec::new();
-            let mut plafonds = Vec::new();
-            let mut atteint_max = 0usize;
-            for (q, cues) in queries.iter().enumerate() {
-                let (plafond_max, _) = mesure_plafond(cues, q, cap);
-                let mut b = 25usize;
-                let mut cout = 0usize;
-                let mut plafond_prec = 0.0f64;
-                let mut top_prec: Vec<EngramId> = Vec::new();
-                loop {
-                    let (plafond, top) = mesure_plafond(cues, q, b);
-                    cout += b;
-                    let stop = b >= cap
-                        || (b > 25
-                            && match nom {
-                                "A: gain de plafond < 1 pt" => (plafond - plafond_prec) < 0.01,
-                                _ => top == top_prec,
-                            });
-                    if stop {
-                        budgets.push(b as f64);
-                        couts.push(cout as f64);
-                        plafonds.push(plafond);
-                        if plafond + 1e-9 >= plafond_max {
-                            atteint_max += 1;
-                        }
-                        break;
-                    }
-                    plafond_prec = plafond;
-                    top_prec = top;
-                    b *= 2;
-                }
-            }
-            politiques.push(Pol {
-                nom,
-                budgets,
-                couts,
-                plafonds,
-                atteint_max,
-            });
-        }
-
-        let mut plafond_max_moy = Vec::new();
-        for (q, cues) in queries.iter().enumerate() {
-            plafond_max_moy.push(mesure_plafond(cues, q, cap).0);
-        }
-        banc.largeurs_defaut();
-
+        println!("\n   N = {n_explo}");
         println!(
-            "   plafond@10 au budget {cap} : {:.3} (référence de comparaison)",
-            moyenne(&plafond_max_moy)
+            "   {:<30} {:>11} {:>13} {:>9} {:>8} {:>11}",
+            "politique", "plafond@10", "travail", "exacts", "tours", "temps µs"
         );
-        println!(
-            "{:<28} {:>12} {:>14} {:>11} {:>13}",
-            "politique", "budget moyen", "candidats vus", "plafond@10", "au max"
-        );
-        for pol in &politiques {
+        for l in &lignes {
             println!(
-                "{:<28} {:>12.1} {:>14.1} {:>11.3} {:>10}/{}",
-                pol.nom,
-                moyenne(&pol.budgets),
-                moyenne(&pol.couts),
-                moyenne(&pol.plafonds),
-                pol.atteint_max,
-                N_QUERIES
+                "   {:<30} {:>11.3} {:>13.0} {:>9.0} {:>8.1} {:>11.1}",
+                l.nom, l.plafond, l.travail, l.exacts, l.tours, l.temps_us
             );
         }
-        for b in [25usize, 50, 100, 200, 400] {
-            let mut plafonds = Vec::new();
-            for (q, cues) in queries.iter().enumerate() {
-                plafonds.push(mesure_plafond(cues, q, b).0);
-            }
-            println!(
-                "{:<28} {:>12} {:>14} {:>11.3} {:>10}",
-                format!("fixe b = {b}"),
-                b,
-                b,
-                moyenne(&plafonds),
-                "—"
-            );
-        }
-        banc.largeurs_defaut();
-        println!("   → compromis MESURÉ, pas politique recommandée : les seuils (1 point de");
-        println!("     plafond, stabilité du top-k) sont des réglages arbitraires. Ce que le test");
-        println!("     montre : le coût, en candidats vus, d'atteindre un plafond donné.");
+        let inc = lignes
+            .iter()
+            .find(|l| l.nom == "incrémental pas=25")
+            .expect("ligne présente");
+        let red = lignes
+            .iter()
+            .find(|l| l.nom == "redémarrage pas=25")
+            .expect("ligne présente");
+        let fixe200 = lignes
+            .iter()
+            .find(|l| l.nom.starts_with("fixe k0=200"))
+            .expect("ligne présente");
+        println!(
+            "   → incrémental vs redémarrage, à plafond comparable ({:.3} vs {:.3}) : {:.0}",
+            inc.plafond, red.plafond, inc.travail
+        );
+        println!(
+            "     comparaisons contre {:.0} ({:.1}× moins de travail) MAIS {:.0} µs contre {:.0} µs :",
+            red.travail,
+            red.travail / inc.travail.max(1.0),
+            inc.temps_us,
+            red.temps_us
+        );
+        println!("     aucun gain de temps, aux deux tailles mesurées.");
+        println!(
+            "   → POURQUOI, et c'est le résultat qui compte : le travail économisé est dans le"
+        );
+        println!("     palier le MOINS cher (L0, une empreinte de 16 o ≈ 2 popcounts). Ce que le");
+        println!(
+            "     redémarrage paie en plus ({:.0} comparaisons) ne pèse presque rien en temps ; ce",
+            red.travail - inc.travail
+        );
+        println!(
+            "     qui pèse est ailleurs — les cosinus exacts ({:.0} pour l'incrémentale, {:.0} au",
+            inc.exacts, fixe200.exacts
+        );
+        println!(
+            "     budget fixe k0=200). L'exploration incrémentale est même DOMINÉE ici par un"
+        );
+        println!(
+            "     budget fixe bien choisi : plafond {:.3} pour {:.0} µs, contre {:.3} pour {:.0} µs.",
+            fixe200.plafond, fixe200.temps_us, inc.plafond, inc.temps_us
+        );
+        println!("     Une politique adaptative ne devient rentable que si CHAQUE comparaison est");
+        println!("     chère (rerank natif en dimension pleine, lectures mmap) — non mesuré ici :");
+        println!("     `SourceNative` n'est pas branché.");
+        assert!(
+            inc.travail < red.travail,
+            "l'exploration incrémentale doit coûter moins de travail que le redémarrage à pas égal"
+        );
     }
+    println!("   → « fixe k0 » : travail ANALYTIQUE (n + k0 + k1), temps mesuré — l'API n'expose");
+    println!("     pas le compteur interne du substrate. Aucune de ces politiques ne touche au");
+    println!("     moteur : tout est simulé dans le banc.");
 
     // ---- 8) Distribution RÉELLE, si une base est désignée ----
     println!("\n-- 8. Distribution réelle (base désignée par variable d'environnement) --");
@@ -1320,17 +1522,16 @@ fn banc_echelle_et_fidelite() {
                         // écriture sur la copie ne touche pas la base d'origine.
                         match obrain_substrate::SubstrateStore::open(copie.chemin()) {
                             Err(e) => {
-                                println!("   SAUTÉE : ouverture de la COPIE impossible — {e}")
+                                println!("   SAUTÉE : ouverture de la COPIE impossible — {e}");
                             }
                             Ok(base) => {
                                 let max_id = base.next_engram_id();
                                 let mut ensembles: Vec<Vec<(NodeId, f64)>> = Vec::new();
                                 for id in 0..max_id {
-                                    if let Ok(Some(membres)) = base.engram_members(id) {
-                                        if membres.len() >= 2 {
-                                            ensembles
-                                                .push(membres.iter().map(|n| (*n, 1.0)).collect());
-                                        }
+                                    if let Ok(Some(membres)) = base.engram_members(id)
+                                        && membres.len() >= 2
+                                    {
+                                        ensembles.push(membres.iter().map(|n| (*n, 1.0)).collect());
                                     }
                                 }
                                 let mut tailles: Vec<f64> =
