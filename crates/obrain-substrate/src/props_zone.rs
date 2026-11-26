@@ -1401,6 +1401,23 @@ impl PropsZone {
             .map(|idx| u64::from(idx))
     }
 
+    /// Rattache une page privée (préparée par [`Self::preparer_page_privee`])
+    /// à un nouveau successeur `nouveau_suivant`. Nécessaire quand la tête
+    /// canonique a avancé entre la préparation et la publication : la chaîne
+    /// privée doit alors pointer la tête COURANTE, pas celle de la préparation,
+    /// sous peine de perdre les écritures intermédiaires.
+    pub fn rattacher_page_privee(
+        &mut self,
+        page: u64,
+        nouveau_suivant: u64,
+    ) -> SubstrateResult<()> {
+        let idx = page as u32;
+        let mut p = self.read_page(idx)?;
+        p.header.next_page = crate::record::U48::from_u64(nouveau_suivant);
+        p.seal_crc32();
+        self.write_page(idx, &p)
+    }
+
     #[inline]
     pub fn append_entry_node(
         &mut self,

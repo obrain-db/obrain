@@ -3056,6 +3056,224 @@ pub enum IssueEvenement {
     ConflitRevision,
 }
 
+
+/// Estampille native COMPLÈTE d'une propriété : auteur (writer_id) + horloge
+/// HLC. C'est l'identité d'écriture qu'exige la précondition de publication
+/// conditionnelle — pas la seule horloge, qui est GLOBALE au store et ne
+/// distingue pas deux ressources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EstampilleComplete {
+    pub auteur: u64,
+    pub horloge: u64,
+}
+
+/// État d'une propriété lue pour la précondition. On ne confond pas présente /
+/// absente / supprimée / ressource inexistante ; les erreurs de lecture ou de
+/// corruption remontent via `SubstrateResult`, jamais avalées en `None`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EtatPropriete {
+    /// Le nœud n'existe pas (ou a été supprimé) : rien à lire.
+    RessourceInexistante,
+    /// Le nœud existe mais la clé n'a jamais été écrite.
+    Absente,
+    /// La clé a été effacée (tombstone) — l'estampille porte l'effacement.
+    Supprimee(EstampilleComplete),
+    /// La clé porte une valeur vivante, avec son estampille complète.
+    Presente {
+        estampille: EstampilleComplete,
+        valeur: Value,
+    },
+}
+
+/// Transformation préparée hors de la tête canonique : une chaîne de pages
+/// privées (invisible des lecteurs) prête à être publiée par une seule bascule
+/// de tête, à condition que la précondition tienne toujours.
+#[derive(Debug, Clone, Copy)]
+pub struct TransformationPrete {
+    pub cible: NodeId,
+    /// Tête canonique au moment de la préparation (H0).
+    pub tete_origine: u64,
+    /// Page privée dont `next_page` pointe `tete_origine` — le point de
+    /// rattachement à re-pointer si la tête canonique a avancé.
+    pub point_attache: u64,
+    /// Tête de la chaîne privée (à poser comme nouvelle tête canonique).
+    pub tete_privee: u64,
+}
+
+impl SubstrateStore {
+    /// Lit une propriété d'un nœud AVEC son estampille complète (auteur +
+    /// horloge), en distinguant les états. Les erreurs de lecture/corruption
+    /// remontent (pas de `.ok()` qui les convertirait en absence).
+    pub fn lire_etat_propriete(&self, id: NodeId, key: &str) -> SubstrateResult<EtatPropriete> {
+        let Some(pz_lock) = self.props_zone.as_ref() else {
+            return Err(SubstrateError::Internal(
+                "lire_etat_propriete : pas de props_zone".to_string(),
+            ));
+        };
+        // Distingue « ressource inexistante (ou supprimée) » de « propriété
+        // absente » : la vivacité se lit sur le record du nœud, pas sur la
+        // simple présence d'un slot dans la zone.
+        if !self.is_live_on_disk(id) {
+            return Ok(EtatPropriete::RessourceInexistante);
+        }
+        let rec = self.writer.read_node(id.0 as u32)?.ok_or_else(|| {
+            SubstrateError::Internal("lire_etat_propriete : nœud vivant sans record".to_string())
+        })?;
+        let tete = (rec.first_prop_off.to_u64() != 0).then(|| rec.first_prop_off.to_u64());
+        let Some(prop_key_id) = self.prop_keys.read().lookup(key) else {
+            return Ok(EtatPropriete::Absente);
+        };
+        let pz = pz_lock.read();
+        let Some(entry) = pz.get_latest_for_key_unite(tete, prop_key_id)? else {
+            return Ok(EtatPropriete::Absente);
+        };
+        let estampille = match (entry.auteur, entry.horloge) {
+            (Some(auteur), Some(horloge)) => EstampilleComplete { auteur, horloge },
+            // Une entrée héritée non estampillée n'a pas d'identité d'écriture :
+            // on le signale au lieu de forger un auteur.
+            _ => {
+                return Err(SubstrateError::Internal(format!(
+                    "lire_etat_propriete : propriété {key} non estampillée"
+                )));
+            }
+        };
+        if entry.is_tombstone() {
+            Ok(EtatPropriete::Supprimee(estampille))
+        } else {
+            let valeur = decode_value(&pz, &entry.value)?;
+            Ok(EtatPropriete::Presente { estampille, valeur })
+        }
+    }
+
+    /// Capture COHÉRENTE de plusieurs propriétés d'un nœud sous le verrou
+    /// d'écriture du nœud (l'autorité commune des écrivains) : un écrivain
+    /// concurrent ne peut pas intercaler une écriture entre deux lectures.
+    /// Rend `(clé, état)` pour chaque clé demandée, dans l'ordre.
+    pub fn capturer_precondition(
+        &self,
+        cible: NodeId,
+        cles: &[&str],
+    ) -> SubstrateResult<Vec<(String, EtatPropriete)>> {
+        let _un_ecrivain = self.verrou_ecriture_noeud(cible).lock();
+        cles.iter()
+            .map(|k| self.lire_etat_propriete(cible, k).map(|e| ((*k).to_string(), e)))
+            .collect()
+    }
+
+    /// Prépare une transformation (une liste de propriétés à écrire) DANS une
+    /// chaîne privée, hors de la tête canonique. Rend [`TransformationPrete`]
+    /// dont `point_attache` et `tete_privee` permettront la publication.
+    pub fn preparer_transformation(
+        &self,
+        cible: NodeId,
+        nouvelles: &[(u16, Value)],
+    ) -> SubstrateResult<TransformationPrete> {
+        let Some(pz_lock) = self.props_zone.as_ref() else {
+            return Err(SubstrateError::Internal(
+                "preparer_transformation : pas de props_zone".to_string(),
+            ));
+        };
+        let slot = cible.0 as u32;
+        let node_rec = self.writer.read_node(slot)?.ok_or_else(|| {
+            SubstrateError::Internal("preparer_transformation : nœud absent".to_string())
+        })?;
+        let tete_origine = node_rec.first_prop_off.to_u64();
+        let auteur = self.writer_id;
+        let millis = crate::horloge_hybride::horloge_murale_millis();
+        let horloge = self.horloge.lock().maintenant(millis).pack();
+
+        let mut pz = pz_lock.write();
+        let mut point_attache = 0u64;
+        let mut tete_privee = 0u64;
+        for (i, (prop_key_id, valeur)) in nouvelles.iter().enumerate() {
+            let pv = encode_value(&mut pz, valeur)?;
+            let entry = PropertyEntry::new_stamped(*prop_key_id, pv, auteur, horloge);
+            if i == 0 {
+                let p = pz.preparer_page_privee(
+                    slot,
+                    crate::page::OwnerKind::Node,
+                    (tete_origine != 0).then_some(tete_origine),
+                    &entry,
+                )?;
+                point_attache = p;
+                tete_privee = p;
+            } else {
+                tete_privee = pz.append_entree_sur_chainee(
+                    slot,
+                    crate::page::OwnerKind::Node,
+                    Some(tete_privee),
+                    &entry,
+                )?;
+            }
+        }
+        Ok(TransformationPrete {
+            cible,
+            tete_origine,
+            point_attache,
+            tete_privee,
+        })
+    }
+
+    /// Publie une transformation préparée SI la précondition tient toujours :
+    /// sous le verrou d'écriture du nœud (autorité commune des écrivains), on
+    /// relit l'estampille complète de chaque dépendance et on la compare à la
+    /// précondition capturée. Toute divergence → conflit, aucun effet publié.
+    /// Sinon, on rattache la chaîne privée à la tête canonique COURANTE (qui a
+    /// pu avancer sur des propriétés indépendantes) puis on bascule la tête.
+    /// Rend `true` si la publication a eu lieu, `false` en cas de conflit.
+    pub fn publier_si_precondition_intacte(
+        &self,
+        prep: &TransformationPrete,
+        precondition: &[(u16, EstampilleComplete)],
+    ) -> SubstrateResult<bool> {
+        let Some(pz_lock) = self.props_zone.as_ref() else {
+            return Err(SubstrateError::Internal(
+                "publier_si_precondition_intacte : pas de props_zone".to_string(),
+            ));
+        };
+        let slot = prep.cible.0 as u32;
+        let _un_ecrivain = self.verrou_ecriture_noeud(prep.cible).lock();
+        let rec = self.writer.read_node(slot)?.ok_or_else(|| {
+            SubstrateError::Internal("publier_si_precondition_intacte : nœud absent".to_string())
+        })?;
+        let tete_courante = rec.first_prop_off.to_u64();
+        let tete_courante_opt = (tete_courante != 0).then_some(tete_courante);
+        // Validation de la précondition : estampilles COMPLÈTES (auteur +
+        // horloge). Une erreur de lecture remonte, elle n'est pas un conflit.
+        let intacte = {
+            let pz = pz_lock.read();
+            let mut ok = true;
+            for &(prop_key_id, attendu) in precondition {
+                let courante = pz.get_latest_for_key_unite(tete_courante_opt, prop_key_id)?;
+                let correspond = match &courante {
+                    Some(e) => {
+                        e.auteur == Some(attendu.auteur) && e.horloge == Some(attendu.horloge)
+                    }
+                    None => false,
+                };
+                if !correspond {
+                    ok = false;
+                    break;
+                }
+            }
+            ok
+        };
+        if !intacte {
+            return Ok(false);
+        }
+        // Rattachement à la tête canonique courante : si elle a avancé (une
+        // écriture indépendante a alloué une nouvelle page), la chaîne privée
+        // doit la chaîner, sinon l'écriture intermédiaire serait perdue.
+        if tete_courante != prep.tete_origine {
+            let mut pz = pz_lock.write();
+            pz.rattacher_page_privee(prep.point_attache, tete_courante)?;
+        }
+        self.writer
+            .update_node_first_prop_off(slot, crate::record::U48::from_u64(prep.tete_privee))?;
+        Ok(true)
+    }
+}
+
 static VERROU_EVENEMENTS: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Application générique d'un événement identifiable sur une cible logique
@@ -46977,5 +47195,474 @@ mod revision_composite {
         assert_eq!(horloge_de(&store2, NodeId(2), "a"), Some(sa2), "réouverture : a(id2) conservé");
         assert_eq!(horloge_de(&store2, NodeId(2), "b"), Some(sb2), "réouverture : b(id2) conservé");
         eprintln!("REVISION_COMPOSITE OK : estampilles persistées et précondition par dépendances");
+    }
+}
+
+
+#[cfg(test)]
+mod publication_conditionnelle_native {
+    use super::*;
+    use crate::page::{OwnerKind, PropertyEntry, PropertyValue};
+
+    fn stamp(store: &SubstrateStore, id: NodeId, key: &str) -> EstampilleComplete {
+        match store.lire_etat_propriete(id, key).unwrap() {
+            EtatPropriete::Presente { estampille, .. } => estampille,
+            autre => panic!("{key} attendue présente, lu {autre:?}"),
+        }
+    }
+
+    fn base(store: &SubstrateStore) -> NodeId {
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        store.set_node_property(id, "c", Value::Int64(3));
+        id
+    }
+
+    fn precond(store: &SubstrateStore, id: NodeId) -> Vec<(u16, EstampilleComplete)> {
+        let pa = store.prop_keys.read().lookup("a").unwrap();
+        let pb = store.prop_keys.read().lookup("b").unwrap();
+        vec![(pa, stamp(store, id, "a")), (pb, stamp(store, id, "b"))]
+    }
+
+    /// MISSION 2 — A : mutation concurrente de a (dépendance) → conflit.
+    #[test]
+    fn scenario_a_mutation_concurrente_de_a_conflit() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pa = store.prop_keys.read().lookup("a").unwrap();
+        let pb = store.prop_keys.read().lookup("b").unwrap();
+        let pre = vec![(pa, stamp(&store, id, "a")), (pb, stamp(&store, id, "b"))];
+        let prep = store
+            .preparer_transformation(id, &[(pa, Value::Int64(10)), (pb, Value::Int64(20))])
+            .unwrap();
+        // A : mutation concurrente de la dépendance a.
+        store.set_node_property(id, "a", Value::Int64(99));
+        let publie = store.publier_si_precondition_intacte(&prep, &pre).unwrap();
+        assert!(!publie, "A : conflit explicite, aucun effet publié");
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(99)),
+            "a inchangé par la transformation"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(2)),
+            "b inchangé"
+        );
+        eprintln!("A_OK : mutation de a → conflit, aucun effet publié");
+    }
+
+    /// MISSION 2 — B : mutation indépendante de c → acceptée, c conservé.
+    #[test]
+    fn scenario_b_mutation_independante_de_c_acceptee() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pa = store.prop_keys.read().lookup("a").unwrap();
+        let pb = store.prop_keys.read().lookup("b").unwrap();
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[(pa, Value::Int64(10)), (pb, Value::Int64(20))])
+            .unwrap();
+        // B : mutation indépendante de c (non dépendante) — in-place.
+        store.set_node_property(id, "c", Value::Int64(30));
+        let publie = store.publier_si_precondition_intacte(&prep, &pre).unwrap();
+        assert!(publie, "B : acceptée");
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(30)),
+            "B : c=30 conservée (mutation indépendante)"
+        );
+        eprintln!("B_OK : mutation de c acceptée, c=30 conservé");
+    }
+
+    /// MISSION 2 — C : mutation d'une autre ressource → aucune invalidation.
+    #[test]
+    fn scenario_c_autre_ressource_aucune_invalidation() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let id2 = store.create_node(&["ressource"]);
+        store.set_node_property(id2, "z", Value::Int64(9));
+        let pa = store.prop_keys.read().lookup("a").unwrap();
+        let pb = store.prop_keys.read().lookup("b").unwrap();
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[(pa, Value::Int64(10)), (pb, Value::Int64(20))])
+            .unwrap();
+        // C : autre ressource.
+        store.set_node_property(id2, "z", Value::Int64(99));
+        let publie = store.publier_si_precondition_intacte(&prep, &pre).unwrap();
+        assert!(publie, "C : acceptée, autre ressource sans effet");
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id2, &PropertyKey::new("z")),
+            Some(Value::Int64(99)),
+            "C : l'autre ressource conserve sa mutation"
+        );
+        eprintln!("C_OK : autre ressource → aucune invalidation");
+    }
+
+    /// MISSION 2 — D : deux transformations dépendant du même état de a,
+    /// modifiant toutes deux a → une seule publie.
+    #[test]
+    fn scenario_d_deux_transformations_une_seule_publie() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pa = store.prop_keys.read().lookup("a").unwrap();
+        let pre = precond(&store, id);
+        let prep1 = store.preparer_transformation(id, &[(pa, Value::Int64(10))]).unwrap();
+        let prep2 = store.preparer_transformation(id, &[(pa, Value::Int64(20))]).unwrap();
+        let publie1 = store.publier_si_precondition_intacte(&prep1, &pre).unwrap();
+        let publie2 = store.publier_si_precondition_intacte(&prep2, &pre).unwrap();
+        assert!(publie1, "D : première transformation publiée");
+        assert!(!publie2, "D : seconde refusée (a a changé)");
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10)),
+            "D : une seule écriture de a survit"
+        );
+        eprintln!("D_OK : une seule des deux transformations publie");
+    }
+
+    /// MISSION 3 — rattachement : la tête canonique avance sur c, la
+    /// publication rattache la chaîne privée à la tête courante → c conservé.
+    #[test]
+    fn scenario_e_rattachement_conserve_c_apres_changement_de_tete() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pa = store.prop_keys.read().lookup("a").unwrap();
+        let pb = store.prop_keys.read().lookup("b").unwrap();
+        let pc = store.prop_keys.read().lookup("c").unwrap();
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[(pa, Value::Int64(10)), (pb, Value::Int64(20))])
+            .unwrap();
+        let slot = id.0 as u32;
+        let auteur = store.writer_id;
+        let horloge = store
+            .horloge
+            .lock()
+            .maintenant(crate::horloge_hybride::horloge_murale_millis())
+            .pack();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        // force une nouvelle tête canonique H1 (mutation indépendante de c).
+        let h1 = {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e_c = PropertyEntry::new_stamped(pc, PropertyValue::I64(30), auteur, horloge);
+            pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_c)
+                .unwrap()
+        };
+        store
+            .writer
+            .update_node_first_prop_off(slot, crate::record::U48::from_u64(h1))
+            .unwrap();
+        // estampilles de a,b inchangées → validation logique peut réussir.
+        assert_eq!(stamp(&store, id, "a"), pre[0].1, "a inchangé");
+        assert_eq!(stamp(&store, id, "b"), pre[1].1, "b inchangé");
+        let publie = store.publier_si_precondition_intacte(&prep, &pre).unwrap();
+        assert!(publie, "validation logique réussit");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(30)),
+            "E : c=30 conservé grâce au rattachement à la tête courante"
+        );
+        eprintln!("E_OK : rattachement conserve c après changement de tête");
+    }
+
+    /// MISSION 3 — CONTRE-ÉPREUVE : publier la chaîne privée qui référence H0
+    /// SANS rattachement perd l'écriture indépendante (c=30 orpheline).
+    #[test]
+    fn scenario_f_publication_naive_perd_c_apres_changement_de_tete() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pa = store.prop_keys.read().lookup("a").unwrap();
+        let pb = store.prop_keys.read().lookup("b").unwrap();
+        let pc = store.prop_keys.read().lookup("c").unwrap();
+        let prep = store
+            .preparer_transformation(id, &[(pa, Value::Int64(10)), (pb, Value::Int64(20))])
+            .unwrap();
+        let slot = id.0 as u32;
+        let auteur = store.writer_id;
+        let horloge = store
+            .horloge
+            .lock()
+            .maintenant(crate::horloge_hybride::horloge_murale_millis())
+            .pack();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h1 = {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e_c = PropertyEntry::new_stamped(pc, PropertyValue::I64(30), auteur, horloge);
+            pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_c)
+                .unwrap()
+        };
+        store
+            .writer
+            .update_node_first_prop_off(slot, crate::record::U48::from_u64(h1))
+            .unwrap();
+        // publication NAIVE : bascule sur tete_privee sans rattacher → H1 orphelin.
+        store
+            .writer
+            .update_node_first_prop_off(slot, crate::record::U48::from_u64(prep.tete_privee))
+            .unwrap();
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(3)),
+            "F : c=30 PERDU (la chaîne privée référence encore H0, H1 orphelin)"
+        );
+        eprintln!("F_OK : publication naive perd c — le rattachement est nécessaire");
+    }
+}
+
+#[cfg(test)]
+mod mission1_identite_estampille {
+    use super::*;
+    use crate::page::{OwnerKind, PropertyEntry, PropertyValue};
+
+    /// MISSION 1 : l'estampille complète (auteur + horloge), et la distinction
+    /// présente / absente / supprimée / ressource inexistante.
+    #[test]
+    fn lecture_distingue_les_etats() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        // absente (clé jamais écrite)
+        assert_eq!(
+            store.lire_etat_propriete(id, "a").unwrap(),
+            EtatPropriete::Absente
+        );
+        // présente : estampille COMPLÈTE (auteur = writer_id, horloge non nulle)
+        store.set_node_property(id, "a", Value::Int64(1));
+        match store.lire_etat_propriete(id, "a").unwrap() {
+            EtatPropriete::Presente { estampille, valeur } => {
+                assert_eq!(estampille.auteur, store.writer_id, "auteur = writer_id");
+                assert_ne!(estampille.horloge, 0, "horloge HLC non nulle");
+                assert_eq!(valeur, Value::Int64(1));
+            }
+            autre => panic!("a attendue présente, lu {autre:?}"),
+        }
+        // supprimée (tombstone, estampillé)
+        store.remove_node_property(id, "a");
+        match store.lire_etat_propriete(id, "a").unwrap() {
+            EtatPropriete::Supprimee(estampille) => {
+                assert_eq!(estampille.auteur, store.writer_id, "le tombstone est estampillé");
+            }
+            autre => panic!("a attendue supprimée, lu {autre:?}"),
+        }
+        // ressource inexistante (jamais créée)
+        assert_eq!(
+            store.lire_etat_propriete(NodeId(4242), "a").unwrap(),
+            EtatPropriete::RessourceInexistante
+        );
+        eprintln!("ETATS_OK : présente/absente/supprimée/inexistante distinguées, estampille complète");
+    }
+
+    /// MISSION 1 : deux écritures de MÊME horloge, auteurs différents → le LWW
+    /// natif départage par (horloge, auteur) : l'auteur le plus grand gagne.
+    #[test]
+    fn meme_horloge_auteurs_differents_lww() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        let slot = id.0 as u32;
+        let prop_a = store.prop_keys.read().lookup("a").unwrap();
+        let horloge = store
+            .horloge
+            .lock()
+            .maintenant(crate::horloge_hybride::horloge_murale_millis())
+            .pack();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            pz.append_entree_sur_chainee(
+                slot,
+                OwnerKind::Node,
+                Some(h0),
+                &PropertyEntry::new_stamped(prop_a, PropertyValue::I64(100), 2, horloge),
+            )
+            .unwrap();
+            pz.append_entree_sur_chainee(
+                slot,
+                OwnerKind::Node,
+                Some(h0),
+                &PropertyEntry::new_stamped(prop_a, PropertyValue::I64(200), 3, horloge),
+            )
+            .unwrap();
+        }
+        let pz_lock = store.props_zone.as_ref().unwrap();
+        let pz = pz_lock.read();
+        let lu = pz.get_latest_for_key_unite(Some(h0), prop_a).unwrap().unwrap();
+        assert_eq!(lu.value, PropertyValue::I64(200), "même horloge : auteur le plus grand gagne");
+        assert_eq!(lu.auteur, Some(3));
+        eprintln!("LWW_OK : (horloge, auteur) départage les écritures à horloge égale");
+    }
+}
+
+#[cfg(test)]
+mod mission4_lecture_coherente {
+    use super::*;
+
+    /// MISSION 4 : le mécanisme natif de capture cohérente est le verrou
+    /// d'écriture du nœud (autorité commune) — `capturer_precondition` lit a ET
+    /// b sous ce verrou, donc aucun écrivain ne peut s'intercaler. Deux `get`
+    /// séparés peuvent diverger (voir `contournement_lecture_magasin`).
+    #[test]
+    fn capture_sous_verrou_noeud_est_coherente() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let cap = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let va = match &cap[0].1 {
+            EtatPropriete::Presente { valeur, .. } => valeur.clone(),
+            autre => panic!("a attendue présente, lu {autre:?}"),
+        };
+        let vb = match &cap[1].1 {
+            EtatPropriete::Presente { valeur, .. } => valeur.clone(),
+            autre => panic!("b attendue présente, lu {autre:?}"),
+        };
+        assert_eq!((va, vb), (Value::Int64(1), Value::Int64(2)), "capture cohérente V0");
+        eprintln!("CAPTURE_OK : a et b lues sous la même autorité (verrou de nœud)");
+        // LIMITE assumée : l'isolation ne couvre ni l'ensemble complet des
+        // propriétés, ni l'existence/incarnation de la ressource, ni les
+        // relations, ni les résultats de recherche — seules les dépendances
+        // nommées (a,b) sont estampillées et comparées.
+    }
+}
+
+#[cfg(test)]
+mod mission5_reouverture {
+    use super::*;
+
+    /// MISSION 5 : suppression puis recréation change l'estampille, et l'état
+    /// survit à une fermeture propre + réouverture (NodeId conservés).
+    #[test]
+    fn suppression_puis_recreation_change_l_estampille_et_survit() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let s1 = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = store.create_node(&["ressource"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            let avant = match store.lire_etat_propriete(id, "a").unwrap() {
+                EtatPropriete::Presente { estampille, .. } => estampille,
+                autre => panic!("a attendue présente, lu {autre:?}"),
+            };
+            store.remove_node_property(id, "a");
+            assert!(matches!(
+                store.lire_etat_propriete(id, "a").unwrap(),
+                EtatPropriete::Supprimee(_)
+            ));
+            store.set_node_property(id, "a", Value::Int64(1));
+            let apres = match store.lire_etat_propriete(id, "a").unwrap() {
+                EtatPropriete::Presente { estampille, .. } => estampille,
+                autre => panic!("a attendue recréée, lu {autre:?}"),
+            };
+            assert_ne!(avant.horloge, apres.horloge, "la recréation porte une horloge neuve");
+            store.close().unwrap();
+            apres
+        };
+        // réouverture : NodeId(1) conservé, estampille conservée.
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        match store2.lire_etat_propriete(NodeId(1), "a").unwrap() {
+            EtatPropriete::Presente { estampille, valeur } => {
+                assert_eq!(estampille, s1, "estampille conservée après réouverture");
+                assert_eq!(valeur, Value::Int64(1));
+            }
+            autre => panic!("a doit survivre à la réouverture, lu {autre:?}"),
+        }
+        eprintln!("REOUVERTURE_OK : NodeId conservé, estampille de recréation conservée");
+    }
+}
+
+#[cfg(test)]
+mod mesure_couts {
+    use super::*;
+    use std::time::Instant;
+
+    /// MESURE (ordre de grandeur, machine locale) : coût de capture, de
+    /// validation et de préparation de la publication conditionnelle.
+    #[test]
+    fn mesure_capture_validation_preparation() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        store.set_node_property(id, "c", Value::Int64(3));
+        let pa = store.prop_keys.read().lookup("a").unwrap();
+        let pb = store.prop_keys.read().lookup("b").unwrap();
+        let pre = precond_mesure(&store, id);
+
+        let n_cap = 10_000;
+        let t = Instant::now();
+        for _ in 0..n_cap {
+            let _ = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        }
+        let capture_ns = t.elapsed().as_nanos() as f64 / n_cap as f64;
+
+        let n_val = 10_000;
+        // validation d'un CONFLIT : aucune écriture page ni bascule de tête.
+        let prep = store
+            .preparer_transformation(id, &[(pa, Value::Int64(10)), (pb, Value::Int64(20))])
+            .unwrap();
+        store.set_node_property(id, "a", Value::Int64(99)); // rend la précondition fausse
+        let t = Instant::now();
+        for _ in 0..n_val {
+            let _ = store.publier_si_precondition_intacte(&prep, &pre).unwrap();
+        }
+        let validation_ns = t.elapsed().as_nanos() as f64 / n_val as f64;
+
+        let n_prep = 500;
+        let t = Instant::now();
+        for _ in 0..n_prep {
+            let _ = store
+                .preparer_transformation(id, &[(pa, Value::Int64(10)), (pb, Value::Int64(20))])
+                .unwrap();
+        }
+        let preparation_ns = t.elapsed().as_nanos() as f64 / n_prep as f64;
+
+        eprintln!(
+            "COUTS capture={capture_ns:.0}ns validation(conflit)={validation_ns:.0}ns preparation(2 props)={preparation_ns:.0}ns"
+        );
+    }
+
+    fn precond_mesure(store: &SubstrateStore, id: NodeId) -> Vec<(u16, EstampilleComplete)> {
+        let pa = store.prop_keys.read().lookup("a").unwrap();
+        let pb = store.prop_keys.read().lookup("b").unwrap();
+        let ea = match store.lire_etat_propriete(id, "a").unwrap() {
+            EtatPropriete::Presente { estampille, .. } => estampille,
+            autre => panic!("a attendue présente, lu {autre:?}"),
+        };
+        let eb = match store.lire_etat_propriete(id, "b").unwrap() {
+            EtatPropriete::Presente { estampille, .. } => estampille,
+            autre => panic!("b attendue présente, lu {autre:?}"),
+        };
+        vec![(pa, ea), (pb, eb)]
     }
 }
