@@ -45608,7 +45608,7 @@ impl SubstrateStore {
     /// Sans propriétés il n'y a rien à lier : chemin inchangé.
     /// Écrit un nœud « en vol » (naissance différée) pour la construction
     /// atomique : `TxNoeudEnAttente` + `NodeInsert` SANS `ALLOCATED` — invisible
-    /// aux chemins de lecture jusqu'à [`Self::finaliser_noeud_atomique`].
+    /// aux chemins de lecture jusqu'au scellement (`Writer::sceller_noeud`).
     fn creer_noeud_en_vol(&self, labels: &[&str]) -> SubstrateResult<(NodeId, u64)> {
         self.refuser_mutation_en_lecture_seule("create_node");
         let id = self.allocate_node_id();
@@ -45631,12 +45631,10 @@ impl SubstrateStore {
         Ok((id, bitset))
     }
 
-    /// Pose la naissance (bit `ALLOCATED`) + compteurs + observateurs, APRÈS le
-    /// scellement : le nœud ne devient visible qu'une fois complet. INFAILLIBLE
-    /// — rien ne peut échouer entre le `TxCommit` et la publication, sinon un
-    /// `TxCommit` scellé sans identité publiée permettrait une seconde identité.
-    fn finaliser_noeud_atomique(&self, id: NodeId, bitset: u64) {
-        self.writer.finaliser_noeud_allocated(id.0 as u32);
+    /// Compteurs + observateurs EN MÉMOIRE, appelés APRÈS `sceller_noeud` (qui a
+    /// déjà rendu la naissance durable — `NodeUpdateV3` — et l'a posée en mmap).
+    /// Aucun de ces pas ne peut échouer.
+    fn finaliser_noeud_compteurs(&self, id: NodeId, bitset: u64) {
         self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
         self.incr_label_counts(bitset, 1);
         self.incr_first_label_count(bitset, 1);
@@ -45675,33 +45673,31 @@ impl SubstrateStore {
             self.poser_propriete_noeud(id, k.as_str(), v.clone(), true, false)?;
             obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
         }
-        let rec = WalRecord {
-            lsn: 0,
-            timestamp: horodatage_micros(),
-            flags: 0,
-            payload: WalPayload::TxCommit {
-                tx: Self::tx_creation_auto(id),
-            },
-        };
-        // SCELLEMENT ≠ DURABILITÉ. L'append du `TxCommit` SCELLE la transaction
-        // (marqueur de commit journalisé dans le tampon WAL) — sans lui, le nœud
-        // en vol est écarté au rejeu. Mais `flags: 0` = AUCUN fsync immédiat :
-        // la DURABILITÉ (survie à une coupure) n'est acquise qu'au prochain
-        // `flush`/`close`, comme toute écriture auto-commit. L'échec d'append
-        // est PROPAGÉ (pas avalé).
+        // SCELLEMENT + NAISSANCE ATOMIQUES : `sceller_noeud` écrit `TxCommit` ET
+        // `NodeUpdateV3` (bit ALLOCATED) dans le MÊME `append_batch` (une seule
+        // écriture WAL). Aucun instant où le `TxCommit` est scellé sans la
+        // naissance : avant le batch rien n'est scellé (nœud écarté au rejeu),
+        // après le batch scellé ET né.
+        //
+        // Trois issues possibles :
+        //  - CONNU : `append_batch` rend `Err` → rien n'est scellé, `Err` propagé ;
+        //  - INDÉTERMINÉ : l'append réussit mais la mutation mmap échoue → scellé
+        //    au WAL (publié et né au rejeu), invisible en mémoire ;
+        //  - DURABLE : acquise au `flush`/`close` (`flags: 0` = aucun fsync ici).
         #[cfg(test)]
         if ECHEC_SCELLEMENT_ATOMIQUE.with(|c| c.replace(false)) {
             return Err(SubstrateError::Internal(
                 "scellement saboté (test) : TxCommit non journalisé".into(),
             ));
         }
-        self.writer.wal().append_encoded(&rec)?;
-        // Naissance différée (infaillible après le scellement) : le nœud ne
-        // devient visible qu'ici, complet, et la naissance est DURABLE
-        // (`NodeUpdateV3` journalisé par `finaliser_noeud_allocated`). Rien
-        // d'autre ne peut échouer entre le `TxCommit` et l'insertion d'index
-        // côté `reserver_identite`.
-        self.finaliser_noeud_atomique(id, bitset);
+        let rec_noeud = self.writer.read_node(id.0 as u32)?.ok_or_else(|| {
+            SubstrateError::Internal(format!("nœud en vol {id} absent avant scellement"))
+        })?;
+        self.writer
+            .sceller_noeud(id.0 as u32, Self::tx_creation_auto(id), rec_noeud)?;
+        // Compteurs + observateurs en mémoire (aucun ne peut échouer) ; la
+        // naissance est déjà durable (NodeUpdateV3) et posée en mmap.
+        self.finaliser_noeud_compteurs(id, bitset);
         Ok(id)
     }
 }
@@ -46063,6 +46059,68 @@ mod reservation_tests {
             None,
             "get_node_property ne doit pas rendre une propriété du nœud partiel"
         );
+    }
+
+    /// Contre-épreuve DÉTERMINISTE (réserves #419) : interruption AVANT le
+    /// scellement → rien n'est scellé, le nœud en vol est écarté au rejeu, la
+    /// retentative construit UNE seule identité (jamais zéro ni deux).
+    #[test]
+    fn interruption_avant_scellement_reconstruit_une_seule_identite() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let s = SubstrateStore::create(&chemin).unwrap();
+
+        ECHEC_SCELLEMENT_ATOMIQUE.with(|c| c.set(true));
+        let r = s.reserver_identite(KIND, CLE, DEFINITION, construction);
+        assert!(r.is_err(), "échec CONNU avant scellement : {r:?}");
+
+        s.close().unwrap();
+        let s2 = SubstrateStore::open(&chemin).unwrap();
+        assert_eq!(
+            s2.node_ids(),
+            Vec::<NodeId>::new(),
+            "rien de scellé → rien après rejeu"
+        );
+
+        let r2 = s2
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert!(
+            matches!(r2, crate::reservation::IssueReservation::Cree(_)),
+            "une identité, jamais zéro ni deux : {r2:?}"
+        );
+        assert_eq!(s2.node_ids().len(), 1, "exactement un nœud");
+    }
+
+    /// Contre-épreuve DÉTERMINISTE : échec de la naissance mmap (écriture
+    /// partielle du record) AVANT le scellement → rien n'est scellé, l'issue
+    /// est CONNUE (Err), la retentative construit UNE seule identité.
+    #[test]
+    fn echec_mmap_naissance_ne_scelle_rien() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let s = SubstrateStore::create(&chemin).unwrap();
+
+        crate::writer::armer_echec_mmap_scellement(true);
+        let r = s.reserver_identite(KIND, CLE, DEFINITION, construction);
+        assert!(r.is_err(), "échec CONNU de la naissance mmap : {r:?}");
+
+        s.close().unwrap();
+        let s2 = SubstrateStore::open(&chemin).unwrap();
+        assert_eq!(
+            s2.node_ids(),
+            Vec::<NodeId>::new(),
+            "rien de scellé → rien après rejeu"
+        );
+
+        let r2 = s2
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert!(
+            matches!(r2, crate::reservation::IssueReservation::Cree(_)),
+            "une identité, jamais zéro ni deux : {r2:?}"
+        );
+        assert_eq!(s2.node_ids().len(), 1, "exactement un nœud");
     }
 }
 

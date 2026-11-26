@@ -414,7 +414,7 @@ impl Writer {
 
     /// Comme [`Writer::write_node_precede`], mais SANS poser `ALLOCATED` : le
     /// nœud est écrit « en vol », invisible aux chemins de lecture (naissance
-    /// différée), jusqu'à [`Writer::finaliser_noeud_allocated`]. Réservé à la
+    /// différée), jusqu'à [`Writer::sceller_noeud`]. Réservé à la
     /// construction atomique de nœud+propriétés (`creer_noeud_atomique`), qui
     /// ne veut pas exposer un nœud partiellement matérialisé à un lecteur
     /// concurrent.
@@ -427,29 +427,68 @@ impl Writer {
         self.ecrire_node(idx, node, Some(precede), false)
     }
 
-    /// Pose `ALLOCATED` sur un nœud écrit « en vol » (naissance différée), et le
-    /// rend DURABLE : `update_node` journalise un `NodeUpdateV3` (qui porte le
-    /// bit `ALLOCATED`) avant la mutation mmap — le rejeu restaure la naissance
-    /// même si le processus disparaît après le scellement. Rend le nœud visible
-    /// aux chemins de lecture.
+    /// Fait naître (bit `ALLOCATED` en mmap) PUIS scelle (`TxCommit` + `NodeUpdateV3`
+    /// dans le même `append_batch`) un nœud « en vol ». Cet ORDRE supprime
+    /// l'issue INDÉTERMINÉE : si la naissance mmap échoue, rien n'est scellé
+    /// (nœud en vol écarté au rejeu) ; si le scellement échoue, le nœud est né
+    /// mais non scellé (écarté au rejeu). Dans AUCUN cas un `TxCommit` scellé
+    /// sans naissance ne peut laisser une identité fantôme — donc jamais deux
+    /// identités logiques pour la même clé.
     ///
-    /// INFAILLIBLE : un slot absent est un bug de programmation — `panic`,
-    /// comme le `.expect` de `creer_noeud`. Appelée APRÈS le scellement : rien
-    /// ne peut plus échouer entre le `TxCommit` et la publication.
-    ///
-    /// Le read-modify-write lit puis réécrit le record ENTIER ; le nœud est
-    /// privé (en vol, invisible) pendant la construction, donc aucun champ non
-    /// lié ne peut être modifié concurrentiellement entre la lecture et
-    /// l'écriture.
-    pub fn finaliser_noeud_allocated(&self, idx: u32) {
-        let rec = match self.read_node(idx) {
-            Ok(Some(rec)) => rec,
-            _ => panic!("finaliser_noeud_allocated : slot {idx} absent de la zone"),
+    /// Trois issues :
+    ///  - CONNU : `Err` (naissance mmap impossible, ou append échoué) → rien de
+    ///    scellé, l'appelant renonce ou retente ;
+    ///  - (fenêtre étroite) né mais non scellé : visible complet en mémoire,
+    ///    écarté au rejeu si le processus disparaît avant le `TxCommit` ;
+    ///  - DURABLE : acquise au `flush`/`close` (`flags: 0` = aucun fsync ici).
+    pub fn sceller_noeud(&self, idx: u32, tx: u64, node: NodeRecord) -> SubstrateResult<()> {
+        let node = NodeRecord {
+            flags: node.flags | crate::record::node_flags::ALLOCATED,
+            ..node
         };
-        let mut rec = rec;
-        rec.flags |= crate::record::node_flags::ALLOCATED;
-        self.update_node(idx, rec)
-            .expect("finaliser_noeud_allocated : update_node impossible");
+        // 1. NAISSANCE (mmap) — le nœud devient visible, complet. Un échec ici
+        //    est CONNU : rien n'est scellé.
+        #[cfg(test)]
+        if ECHEC_MMAP_SCELLEMENT.with(|c| c.replace(false)) {
+            return Err(crate::error::SubstrateError::Internal(
+                "échec mmap scellement (test) : naissance non posée".into(),
+            ));
+        }
+        let bits = self.with_node_zone(|zf| {
+            let offset = idx as usize * NodeRecord::SIZE;
+            ensure_room(zf, offset + NodeRecord::SIZE, self.min_headroom)?;
+            let bits = bits_a_noter_sur(zf.as_slice(), offset, &node);
+            let bytes = bytemuck::bytes_of(&node);
+            zf.as_slice_mut()[offset..offset + NodeRecord::SIZE].copy_from_slice(bytes);
+            Ok(bits)
+        })?;
+        self.index_labels.noter(idx, bits);
+
+        // 2. SCELLEMENT + naissance durable — UNE écriture atomique : TxCommit et
+        //    NodeUpdateV3 (ALLOCATED) partent ensemble, jamais l'un sans l'autre.
+        let txcommit = WalRecord {
+            lsn: 0,
+            timestamp: unix_micros(),
+            flags: 0,
+            payload: WalPayload::TxCommit { tx },
+        };
+        let nodeupdate = WalRecord {
+            lsn: 0,
+            timestamp: unix_micros(),
+            flags: 0,
+            payload: WalPayload::NodeUpdateV3 {
+                node_id: idx,
+                label_bitset: node.label_bitset,
+                energy: node.energy,
+                scar_util_affinity: node.scar_util_affinity,
+                centrality_cached: node.centrality_cached,
+                flags: node.flags,
+                community_id: node.community_id,
+                tenant_id: node.tenant_id,
+            },
+        };
+        self.wal.append_batch([txcommit, nodeupdate])?;
+        Ok(())
     }
 
     fn ecrire_node(
@@ -3902,6 +3941,21 @@ thread_local! {
 thread_local! {
     pub(crate) static ECHEC_ENSURE_ROOM: std::cell::RefCell<Option<(String, u32)>> =
         const { std::cell::RefCell::new(None) };
+}
+
+// Failpoint : `sceller_noeud` rend `Err` APRÈS l'append WAL (TxCommit +
+// NodeUpdateV3 atomiques), AVANT la mutation mmap — simule une écriture
+// partielle du record (l'issue est INDÉTERMINÉE : scellé au WAL, invisible en
+// mémoire, publié au rejeu).
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ECHEC_MMAP_SCELLEMENT: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn armer_echec_mmap_scellement(v: bool) {
+    ECHEC_MMAP_SCELLEMENT.with(|c| c.set(v));
 }
 
 // Failpoint jumeau du precedent, mais sur `msync` — donc APRES que la
