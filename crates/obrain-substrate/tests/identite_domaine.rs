@@ -15,6 +15,8 @@
 //!   * copie NON déclarée — deux copies intégrales partagent le MÊME
 //!     `domaine_id` : c'est la LIMITE ASSUMÉE, la distinction exige le fork.
 
+use obrain_common::types::Value;
+use obrain_core::graph::GraphStoreMut as _;
 use obrain_substrate::{SubstrateError, SubstrateStore};
 
 /// Copie byte-à-byte du CONTENU d'un répertoire de base (tous les fichiers de
@@ -158,4 +160,74 @@ fn copie_integrale_non_declaree_partage_le_domaine() {
     // copie d'un déplacement. Le consommateur DOIT forker explicitement.
     assert_eq!(store.domaine_id(), id);
     store.close().unwrap();
+}
+
+/// TÉMOIN DU DISCRIMINANT (#334) : une base identifiée qui a publié une
+/// tentative (nœud + propriété) puis PERDU son `domaine.id` doit REFUSER la
+/// réouverture — jamais recevoir une identité neuve, qui ferait de la
+/// tentative passée une étrangère à sa propre base.
+#[test]
+fn base_avec_donnees_sans_domaine_id_refuse_la_reouverture() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("kb");
+
+    // 1. Base identifiée + tentative publiée (nœud + propriété), puis fermée.
+    let id_origine = {
+        let store = SubstrateStore::create(&chemin).unwrap();
+        let id_origine = store.domaine_id();
+        let n = store.create_node(&["ressource"]);
+        store.set_node_property(n, "etat", Value::Int64(7));
+        store.close().unwrap();
+        id_origine
+    };
+    assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists());
+    let _ = id_origine;
+
+    // 2. Le fichier d'identité est perdu (suppression).
+    std::fs::remove_file(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID)).unwrap();
+
+    // 3. Réouverture → ERREUR explicite (pas une identité neuve).
+    let err = match SubstrateStore::open(&chemin) {
+        Ok(_) => panic!("une base avec données sans domaine.id aurait dû refuser l'ouverture"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, SubstrateError::Io(e) if e.kind() == std::io::ErrorKind::InvalidData),
+        "refus explicite attendu (InvalidData), obtenu {err:?}"
+    );
+
+    // 4. Aucune réattribution silencieuse : `domaine.id` reste ABSENT. La
+    //    tentative passée n'est jamais rattachée à une identité neuve inventée
+    //    à la volée — elle reste attachée à l'identité perdue, qu'un humain
+    //    devra restaurer.
+    assert!(
+        !chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists(),
+        "l'ouverture refusée ne doit pas matérialiser une nouvelle identité"
+    );
+}
+
+/// Même témoin, en LECTURE SEULE : un lecteur d'une base avec données sans
+/// `domaine.id` refuse aussi — il ne régénère pas une identité éphémère qui
+/// divergerait de celle des écrivains.
+#[test]
+fn base_avec_donnees_sans_domaine_id_refuse_la_lecture_seule() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("kb");
+    {
+        let store = SubstrateStore::create(&chemin).unwrap();
+        let n = store.create_node(&["ressource"]);
+        store.set_node_property(n, "etat", Value::Int64(7));
+        store.close().unwrap();
+    }
+    std::fs::remove_file(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID)).unwrap();
+
+    let err = match SubstrateStore::open_read_only(&chemin) {
+        Ok(_) => panic!("un lecteur d'une base avec données sans domaine.id aurait dû refuser"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, SubstrateError::Io(e) if e.kind() == std::io::ErrorKind::InvalidData),
+        "refus explicite attendu (InvalidData), obtenu {err:?}"
+    );
+    assert!(!chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists());
 }

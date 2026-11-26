@@ -267,6 +267,47 @@ pub(crate) fn premier_sidecar_herite_non_vide(dir: &Path) -> Option<&'static str
     None
 }
 
+/// (identité de domaine #334) DISCRIMINANT « la base porte des données ».
+///
+/// Rendu `true` si le répertoire `dir` contient une donnée persistée, en
+/// relisant les marqueurs d'initialisation EXISTANTS — aucun format persisté
+/// nouveau :
+///   * `substrate.wal` non vide — des mutations non encore checkpointées ;
+///   * `substrate.dict` : `next_node_id` / `next_edge_id` / `next_engram_id`
+///     > 1 (des slots ont été alloués). Un dict ABSENT = base vierge (compteurs
+///     à 1) ; un dict ILLISIBLE ne prouve pas « vide » ⇒ côté sûr (données) ;
+///   * un sidecar hérité non vide (`substrate.props` / `substrate.edge_props` /
+///     `substrate.extedges`), ou la PropsZone v2 dont le compteur de pages > 0.
+///
+/// Sert de discriminant quand `domaine.id` est absent : base vide → identité
+/// neuve (legacy sans identité) ; base avec données → refus (fichier perdu).
+pub(crate) fn base_porte_des_donnees(dir: &Path) -> bool {
+    // (1) WAL non vide.
+    if std::fs::metadata(dir.join(crate::file::zone::WAL)).map_or(false, |m| m.len() > 0) {
+        return true;
+    }
+    // (2) Slots alloués (dictionnaire). Un dict ILLISIBLE ne prouve pas « vide ».
+    match crate::dict::DictSnapshot::load(&dir.join(DICT_FILENAME)) {
+        Ok(snap) => {
+            if snap.next_node_id > 1 || snap.next_edge_id > 1 || u64::from(snap.next_engram_id) > 1
+            {
+                return true;
+            }
+        }
+        Err(_) => return true,
+    }
+    // (3) Propriétés : sidecar hérité non vide, ou PropsZone v2 non vide.
+    if premier_sidecar_herite_non_vide(dir).is_some() {
+        return true;
+    }
+    match crate::file::ZoneFile::open_read_only_zone(
+        &dir.join(crate::props_zone::PROPS_V2_FILENAME),
+    ) {
+        Ok(zf) => crate::props_zone::PropsZone::compute_next_page_idx(&zf) > 1,
+        Err(_) => false,
+    }
+}
+
 /// Suffixe du FENCE de publication du dictionnaire : `substrate.dict` →
 /// `substrate.dict.lock`.
 ///
@@ -9575,17 +9616,24 @@ impl SubstrateStore {
         let ecriture_partagee = sub.est_ecriture_partagee() && !lecture_seule;
         let writer_id = crate::writer_id::writer_id(sub.path()).unwrap_or(0);
         // Identité de DOMAINE (#334) : fichier `domaine.id` SÉPARÉ, jamais dans
-        // le WAL ni dans une zone. `create` comme `open` passent ici : absence
-        // = matérielisation (base neuve OU legacy sans identité), corruption =
-        // refus explicite. Le mode mémoire n'a pas de répertoire : identité
-        // éphémère. La lecture seule ne matérialise PAS (contrat RO).
+        // le WAL ni dans une zone. `create` comme `open` passent ici. Absence :
+        // le DISCRIMINANT `base_porte_des_donnees` (évalué seulement si le
+        // fichier manque) tranche entre « base vide » (matérialisation — legacy
+        // sans identité) et « base avec données » (refus — fichier perdu).
+        // Corruption = refus explicite. Le mode mémoire n'a pas de répertoire :
+        // identité éphémère. La lecture seule ne matérialise PAS (contrat RO) :
+        // identité éphémère sur base vide, refus sur base avec données.
         let domaine_id = {
             if sub.is_memory() {
                 crate::domaine_id::tirer()
             } else if lecture_seule {
-                crate::domaine_id::lire(sub.path())?.unwrap_or_else(crate::domaine_id::tirer)
+                crate::domaine_id::lire_ou_ephemere(sub.path(), || {
+                    base_porte_des_donnees(sub.path())
+                })?
             } else {
-                crate::domaine_id::lire_ou_materieliser(sub.path())?
+                crate::domaine_id::lire_ou_materieliser(sub.path(), || {
+                    base_porte_des_donnees(sub.path())
+                })?
             }
         };
         // ══════ GARDE D'INTEGRITE DE LA REPERMUTATION ══════

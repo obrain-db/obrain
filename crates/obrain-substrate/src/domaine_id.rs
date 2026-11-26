@@ -16,20 +16,38 @@
 //!                 RFC 4122 canonique, bits version=4 / variant=0b10 posés)
 //! ```
 //!
-//! Longueur totale : 22 octets. Toute autre longueur, ou une entête inconnue
-//! (version non reconnue), est un refus EXPLICITE (`InvalidData`) — jamais une
-//! régénération silencieuse, qui masquerait une corruption ou un fork d'une
-//! version future.
+//! Longueur totale : 22 octets. Toute autre longueur, une entête inconnue
+//! (version non reconnue) ou une valeur NULLE (16 octets à zéro) est un refus
+//! EXPLICITE (`InvalidData`) — jamais une régénération silencieuse, qui
+//! masquerait une corruption ou un fork d'une version future.
 //!
 //! # Sémantique
 //!
-//! * `create` (base neuve)            → génère un UUID v4 et l'écrit.
-//! * `open` (base existante)          → lit `domaine.id` ; s'il est ABSENT
-//!   (base legacy antérieure à ce chantier), matérielise une identité NEUVE —
-//!   cas documenté « legacy sans identité », PAS une réinitialisation : un
-//!   domaine existant a toujours son fichier.
-//! * `open` (fichier corrompu)        → ERREUR explicite, pas de réinitialisation.
-//! * `forker` (fork DÉCLARÉ)          → tire et persiste un NOUVEAU domaine_id.
+//! * `create` (base neuve)       → génère un UUID v4 et l'écrit (atomiquement).
+//! * `open` (base existante)     → lit `domaine.id` :
+//!   * PRÉSENT et valide          → relu tel quel ;
+//!   * ABSENT et base VIDE         → matérielise une identité NEUVE (base legacy
+//!     antérieure à ce chantier, jamais identifiée) ;
+//!   * ABSENT et base AVEC DONNÉES → ERREUR explicite (fichier perdu), JAMAIS
+//!     une réattribution silencieuse : « jamais identifiée » et « identifiée
+//!     puis perdue » ne se distinguent plus, alors on refuse. Le discriminant
+//!     est fourni par l'appelant (`store::base_porte_des_donnees`), qui relit
+//!     les marqueurs EXISTANTS (taille du WAL, `next_node_id` du dictionnaire,
+//!     compteur de pages PropsZone) — aucun format persisté nouveau.
+//!   * CORROMPU (tronqué, entête inconnue, valeur nulle) → ERREUR explicite.
+//! * `forker` (fork DÉCLARÉ)     → tire et persiste un NOUVEAU domaine_id.
+//!
+//! # Durabilité et concurrence
+//!
+//! `domaine.id` est écrit par PUBLICATION ATOMIQUE : écriture de
+//! `domaine.id.tmp` (`sync_all`, données + métadonnées), `rename` vers
+//! `domaine.id` (atomique POSIX), puis fsync du répertoire (durabilité du
+//! rename). Un lecteur ne voit jamais un fichier partiel — il voit l'ancien
+//! fichier, le nouveau complet, ou rien. La matérialisation et le fork prennent
+//! le verrou de fichier `substrate.domaine.lock` (`flock`) : deux créateurs
+//! concurrents s'accordent sur UNE identité, deux forks concurrents se
+//! sérialisent. Le verrou est un fichier STABLE (jamais renommé), comme
+//! `substrate.dirlock`.
 //!
 //! Limite assumée : une copie intégrale NON déclarée (simple `cp -a` du
 //! répertoire) partage le MÊME `domaine_id` — le distinguer exige l'opération
@@ -37,11 +55,20 @@
 //! des répertoires byte-identiques ; seule l'intention de l'opérateur les
 //! distingue (voir le RFC `contrat-identite-domaine.md`, §5).
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::Path;
 
 /// Nom du fichier qui porte le `domaine_id` DANS le répertoire de la base.
 pub const FICHIER_DOMAINE_ID: &str = "domaine.id";
+
+/// Verrou de fichier du domaine : sérialise la matérialisation et le fork entre
+/// processus. Fichier STABLE, jamais renommé (le `rename` de `domaine.id`
+/// remplacerait l'inode et rendrait un `flock` posé dessus sans objet — même
+/// raison que `substrate.dirlock`). Contenu sans signification.
+pub(crate) const FICHIER_DOMAINE_VERROU: &str = "substrate.domaine.lock";
+
+/// Nom du fichier TEMPORAIRE de la publication atomique (`ecrire_atomique`).
+const TMP_DOMAINE_ID: &str = "domaine.id.tmp";
 
 /// Entête du format v1 : magic `OBRD` + version `1` + séparateur `\n`.
 const ENTETE: &[u8; 6] = b"OBRD1\n";
@@ -90,11 +117,12 @@ pub(crate) fn tirer() -> u128 {
 
 /// Lit `domaine.id` dans `dir`.
 ///
-/// * `Ok(Some(id))` — fichier présent et valide ;
+/// * `Ok(Some(id))` — fichier présent et valide (id non nul) ;
 /// * `Ok(None)` — fichier ABSENT (base legacy antérieure à ce chantier, ou base
 ///   en cours de création) ;
-/// * `Err(InvalidData)` — fichier corrompu (longueur ≠ 22) ou entête inconnue
-///   (version non reconnue) : refus EXPLICITE, jamais de régénération.
+/// * `Err(InvalidData)` — fichier corrompu (longueur ≠ 22), entête inconnue
+///   (version non reconnue) ou valeur NULLE (16 octets à zéro) : refus
+///   EXPLICITE, jamais de régénération.
 pub fn lire(dir: &Path) -> io::Result<Option<u128>> {
     let chemin = dir.join(FICHIER_DOMAINE_ID);
     match std::fs::File::open(&chemin) {
@@ -120,54 +148,105 @@ pub fn lire(dir: &Path) -> io::Result<Option<u128>> {
             let octets: [u8; 16] = buf[ENTETE.len()..]
                 .try_into()
                 .expect("TAILLE garantit 16 octets après l'entête");
-            Ok(Some(u128::from_be_bytes(octets)))
+            let id = u128::from_be_bytes(octets);
+            if id == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "domaine.id : identité nulle (16 octets à zéro) — corruption, refus, pas de régénération",
+                ));
+            }
+            Ok(Some(id))
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
 }
 
-/// Écrit `domaine.id` en ÉCRASANT (fork déclaré). Écriture directe + fsync.
-fn ecrire(dir: &Path, id: u128) -> io::Result<()> {
-    let chemin = dir.join(FICHIER_DOMAINE_ID);
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&chemin)?;
-    f.write_all(ENTETE)?;
-    f.write_all(&id.to_be_bytes())?;
-    f.sync_all()?;
+/// L'erreur « fichier d'identité perdu » : `domaine.id` absent sur une base qui
+/// porte des données. Refus EXPLICITE — matérialiser une identité neuve ferait
+/// d'une tentative passée une étrangère à sa propre base.
+fn erreur_fichier_perdu() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "domaine.id absent sur une base qui porte des données : fichier d'identité \
+         perdu — refus, pas de réattribution silencieuse",
+    )
+}
+
+/// Écrit `domaine.id` par PUBLICATION ATOMIQUE : `domaine.id.tmp` (écriture +
+/// `sync_all`), `rename` vers `domaine.id` (atomique POSIX), fsync du
+/// répertoire. Un lecteur concurrent ne voit jamais un fichier partiel.
+fn ecrire_atomique(dir: &Path, id: u128) -> io::Result<()> {
+    let final_chemin = dir.join(FICHIER_DOMAINE_ID);
+    let tmp_chemin = dir.join(TMP_DOMAINE_ID);
+    let mut buf = Vec::with_capacity(TAILLE);
+    buf.extend_from_slice(ENTETE);
+    buf.extend_from_slice(&id.to_be_bytes());
+    let es = crate::es::espace();
+    es.ecrire_synchronise(&tmp_chemin, &buf)?;
+    es.renommer(&tmp_chemin, &final_chemin)?;
+    es.synchroniser_repertoire(dir)?;
     Ok(())
 }
 
-/// Lit, et matérielise une identité NEUVE si le fichier est absent.
+/// Prend le verrou EXCLUSIF du domaine (fichier stable `substrate.domaine.lock`).
+/// Le verrou est tenu tant que l'objet rendu vit — la section critique vit donc
+/// dans la portée du résultat.
+fn verrouiller_domaine(dir: &Path) -> io::Result<Box<dyn crate::es::FichierVerrou>> {
+    let verrou = crate::es::espace().ouvrir_verrou(&dir.join(FICHIER_DOMAINE_VERROU))?;
+    verrou.exclusif()?;
+    Ok(verrou)
+}
+
+/// Lit, et matérielise une identité NEUVE si le fichier est absent ET que la
+/// base est vide.
 ///
-/// C'est le chemin `create` (base neuve) ET `open` sur une base legacy sans
-/// `domaine.id` : dans les deux cas le fichier est absent, on tire une identité
-/// neuve qu'on écrit. La distinction « legacy » est documentaire — un domaine
-/// EXISTANT a toujours son fichier ; une absence = jamais identifié.
-pub(crate) fn lire_ou_materieliser(dir: &Path) -> io::Result<u128> {
+/// `base_a_des_donnees` (lazy) est le DISCRIMINANT de l'appelant : il n'est
+/// évalué que si `domaine.id` est absent, et rend `true` si la base porte une
+/// donnée persistée (voir `store::base_porte_des_donnees`).
+///
+/// * fichier présent et valide → relu ;
+/// * absent + base VIDE         → identité neuve, écrite atomiquement ;
+/// * absent + base AVEC DONNÉES → ERREUR (fichier perdu), jamais une
+///   réattribution silencieuse.
+pub(crate) fn lire_ou_materieliser(
+    dir: &Path,
+    base_a_des_donnees: impl FnOnce() -> bool,
+) -> io::Result<u128> {
     match lire(dir)? {
         Some(id) => Ok(id),
         None => {
+            if base_a_des_donnees() {
+                return Err(erreur_fichier_perdu());
+            }
+            // Verrou : deux créateurs concurrents (même répertoire, plusieurs
+            // processus en écriture partagée) s'accordent sur UNE identité.
+            let _verrou = verrouiller_domaine(dir)?;
+            // Relecture SOUS verrou : un pair a pu matérialiser entre-temps.
+            if let Some(id) = lire(dir)? {
+                return Ok(id);
+            }
             let id = tirer();
-            // `create_new` : ne jamais écraser un `domaine.id` créé entre-temps
-            // par un pair — on relit alors sa valeur.
-            let chemin = dir.join(FICHIER_DOMAINE_ID);
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&chemin)
-            {
-                Ok(mut f) => {
-                    f.write_all(ENTETE)?;
-                    f.write_all(&id.to_be_bytes())?;
-                    f.sync_all()?;
-                    Ok(id)
-                }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => lire_ou_materieliser(dir),
-                Err(e) => Err(e),
+            ecrire_atomique(dir, id)?;
+            Ok(id)
+        }
+    }
+}
+
+/// Lecture SANS écriture (contrat lecture seule) : rend l'identité si présente ;
+/// si ABSENTE, identité ÉPHÉMÈRE sur base vide, ERREUR sur base avec données.
+pub(crate) fn lire_ou_ephemere(
+    dir: &Path,
+    base_a_des_donnees: impl FnOnce() -> bool,
+) -> io::Result<u128> {
+    match lire(dir)? {
+        Some(id) => Ok(id),
+        None => {
+            if base_a_des_donnees() {
+                Err(erreur_fichier_perdu())
+            } else {
+                // Éphémère : jamais persisté (un lecteur n'écrit rien).
+                Ok(tirer())
             }
         }
     }
@@ -178,9 +257,16 @@ pub(crate) fn lire_ou_materieliser(dir: &Path) -> io::Result<u128> {
 /// C'est l'opération explicite qui distingue un fork d'une copie : une copie
 /// intégrale non déclarée partage le même identifiant (limite assumée), un fork
 /// déclaré le régénère.
+///
+/// Le verrou de fichier sérialise les forks concurrents (plusieurs processus) :
+/// le dernier renommage atomique gagne, et aucun lecteur ne voit un fichier
+/// partiel. Limite : deux forks séquentiels produisent deux identités
+/// DIFFÉRENTES (c'est le sens du fork) — le verrou empêche la corruption de
+/// l'écriture, pas la divergence voulue.
 pub fn forker(dir: &Path) -> io::Result<u128> {
+    let _verrou = verrouiller_domaine(dir)?;
     let id = tirer();
-    ecrire(dir, id)?;
+    ecrire_atomique(dir, id)?;
     Ok(id)
 }
 
@@ -188,10 +274,15 @@ pub fn forker(dir: &Path) -> io::Result<u128> {
 mod tests {
     use super::*;
 
+    /// Discriminant « toujours vide » pour les tests qui ne portent pas de données.
+    fn sans_donnees() -> bool {
+        false
+    }
+
     #[test]
     fn ecriture_lecture_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        let id = lire_ou_materieliser(dir.path()).unwrap();
+        let id = lire_ou_materieliser(dir.path(), sans_donnees).unwrap();
         assert_eq!(lire(dir.path()).unwrap(), Some(id));
     }
 
@@ -200,8 +291,8 @@ mod tests {
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
         assert_ne!(
-            lire_ou_materieliser(a.path()).unwrap(),
-            lire_ou_materieliser(b.path()).unwrap()
+            lire_ou_materieliser(a.path(), sans_donnees).unwrap(),
+            lire_ou_materieliser(b.path(), sans_donnees).unwrap()
         );
     }
 
@@ -224,11 +315,108 @@ mod tests {
     }
 
     #[test]
+    fn valeur_nulle_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut buf = ENTETE.to_vec();
+        buf.extend_from_slice(&[0u8; 16]);
+        std::fs::write(dir.path().join(FICHIER_DOMAINE_ID), buf).unwrap();
+        let e = lire(dir.path()).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
     fn forker_regenerer_un_domaine_distinct() {
         let dir = tempfile::tempdir().unwrap();
-        let premier = lire_ou_materieliser(dir.path()).unwrap();
+        let premier = lire_ou_materieliser(dir.path(), sans_donnees).unwrap();
         let second = forker(dir.path()).unwrap();
         assert_ne!(premier, second);
         assert_eq!(lire(dir.path()).unwrap(), Some(second));
+    }
+
+    /// Base AVEC données + `domaine.id` absent → refus, pas de matérialisation.
+    #[test]
+    fn base_avec_donnees_sans_identite_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = lire_ou_materieliser(dir.path(), || true).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        // Rien n'a été écrit : pas de réattribution silencieuse.
+        assert!(!dir.path().join(FICHIER_DOMAINE_ID).exists());
+    }
+
+    /// Lecture seule : base vide sans identité → identité ÉPHÉMÈRE, rien d'écrit.
+    #[test]
+    fn lecture_ephemere_sur_base_vide_n_ecrit_rien() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = lire_ou_ephemere(dir.path(), sans_donnees).unwrap();
+        assert_ne!(id, 0);
+        assert!(!dir.path().join(FICHIER_DOMAINE_ID).exists());
+    }
+
+    /// Lecture seule : base avec données sans identité → refus.
+    #[test]
+    fn lecture_ephemere_sur_base_avec_donnees_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = lire_ou_ephemere(dir.path(), || true).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// L'écriture atomique ne laisse pas de fichier partiel lisible.
+    #[test]
+    fn ecriture_atomique_renomme_sans_partiel() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = tirer();
+        ecrire_atomique(dir.path(), id).unwrap();
+        assert_eq!(lire(dir.path()).unwrap(), Some(id));
+        // Le temporaire a disparu (renommé), le final est complet.
+        assert!(!dir.path().join(TMP_DOMAINE_ID).exists());
+    }
+
+    /// Création CONCURRENTE (deux threads, même répertoire) : le verrou de
+    /// fichier les sérialise — ils s'accordent sur UNE seule identité.
+    #[test]
+    fn creation_concurrente_un_identifiant_unique() {
+        use std::sync::Arc;
+        let dir = Arc::new(tempfile::tempdir().unwrap());
+        let mut mains = Vec::new();
+        for _ in 0..8 {
+            let d = Arc::clone(&dir);
+            mains.push(std::thread::spawn(move || {
+                lire_ou_materieliser(d.path(), sans_donnees).unwrap()
+            }));
+        }
+        let identifiants: Vec<u128> = mains
+            .into_iter()
+            .map(|m| m.join().expect("thread paniqué"))
+            .collect();
+        let premier = identifiants[0];
+        assert!(
+            identifiants.iter().all(|&i| i == premier),
+            "tous les créateurs concurrents doivent lire la MÊME identité, obtenu {identifiants:?}"
+        );
+    }
+
+    /// Interruption APRÈS écriture du temporaire (crash avant le rename) : le
+    /// `.tmp` orphelin est écrasé à la prochaine matérialisation, sans erreur.
+    #[test]
+    fn tmp_orphelin_repris_par_la_materialisation() {
+        let dir = tempfile::tempdir().unwrap();
+        // Simule un crash entre l'écriture du .tmp et le rename.
+        std::fs::write(dir.path().join(TMP_DOMAINE_ID), b"partiel orphelin").unwrap();
+        let id = lire_ou_materieliser(dir.path(), sans_donnees).unwrap();
+        assert_eq!(lire(dir.path()).unwrap(), Some(id));
+        // Le temporaire a été consommé par le rename.
+        assert!(!dir.path().join(TMP_DOMAINE_ID).exists());
+    }
+
+    /// Un `.tmp` orphelin laissé après un `forker` interrompu est de même repris.
+    #[test]
+    fn fork_apres_tmp_orphelin_est_sain() {
+        let dir = tempfile::tempdir().unwrap();
+        let premier = lire_ou_materieliser(dir.path(), sans_donnees).unwrap();
+        std::fs::write(dir.path().join(TMP_DOMAINE_ID), b"partiel").unwrap();
+        let second = forker(dir.path()).unwrap();
+        assert_ne!(premier, second);
+        assert_eq!(lire(dir.path()).unwrap(), Some(second));
+        assert!(!dir.path().join(TMP_DOMAINE_ID).exists());
     }
 }
