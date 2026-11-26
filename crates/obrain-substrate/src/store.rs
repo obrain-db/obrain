@@ -3455,18 +3455,25 @@ impl ReferenceTentative {
 }
 
 /// État d'UN effet d'une tentative, dans l'histoire canonique accessible.
+///
+/// Source de vérité UNIQUE : `etat_courant` (l'état [`EtatPropriete`] relu sous
+/// le verrou de nœud, dans la MÊME lecture que la résolution historique).
+/// L'estampille et la valeur courantes se DÉRIVENT de cet état via les
+/// accesseurs [`Self::estampille_courante`] / [`Self::valeur_courante`] :
+/// aucune copie redondante, aucun état contradictoire possible.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffetResolu {
     /// Clé écrite par la tentative.
     pub cle: String,
     /// `Engage` si l'entrée de CETTE tentative est dans la chaîne canonique
-    /// accessible (canonique **ou masquée**), `Indetermine` sinon.
+    /// accessible (canonique **ou masquée**), `Indetermine` sinon. C'est
+    /// l'engagement HISTORIQUE de la tentative, séparé de l'état courant.
     pub etat: ResolutionEffet,
     /// État CANONIQUE COURANT de la clé/nœud, lu dans la MÊME boucle, sous le
-    /// MÊME verrou de nœud, que `estampille_courante` et `valeur_courante`.
-    /// Réutilise [`EtatPropriete`] — l'autorité de lecture UNIQUE, jamais une
-    /// seconde — et distingue donc EXPLICITEMENT les cinq états : `Presente`
-    /// (valeur vivante), `Absente` (clé jamais écrite), `Supprimee` (tombstone),
+    /// MÊME verrou de nœud, que la résolution historique. Réutilise
+    /// [`EtatPropriete`] — l'autorité de lecture UNIQUE, jamais une seconde —
+    /// et distingue donc EXPLICITEMENT les cinq états : `Presente` (valeur
+    /// vivante), `Absente` (clé jamais écrite), `Supprimee` (tombstone),
     /// `RessourceInexistante` (nœud mort). Une erreur de lecture/corruption
     /// n'apparaît PAS ici : elle remonte en `Err`, jamais convertie en absence.
     ///
@@ -3474,16 +3481,28 @@ pub struct EffetResolu {
     /// est-elle dans la chaîne canonique) ; `etat_courant` = OBSERVATION
     /// courante de la clé/nœud, sans aucune réservation de validité future.
     pub etat_courant: EtatPropriete,
-    /// Estampille CANONIQUE COURANTE de la clé, relue maintenant. Elle diffère
-    /// de celle de la tentative quand l'effet a été masqué par une écriture
-    /// ultérieure — c'est la distinction « engagé et masqué » / « engagé et
-    /// canonique ». `None` : clé absente, ou nœud non vivant.
-    pub estampille_courante: Option<(u64, u64)>,
-    /// VALEUR CANONIQUE COURANTE de la clé, lue sous le MÊME verrou de nœud et
-    /// dans la MÊME lecture que `estampille_courante` : UNE SEULE observation
-    /// cohérente (valeur + estampille ne peuvent pas provenir de deux écritures
-    /// différentes). `Some` seulement si la clé est présente ; `None` si
-    /// supprimée (tombstone), absente, ou nœud non vivant.
+}
+
+impl EffetResolu {
+    /// Estampille CANONIQUE COURANTE de la clé, DÉRIVÉE de [`Self::etat_courant`].
+    /// Elle diffère de celle de la tentative quand l'effet a été masqué par une
+    /// écriture ultérieure — c'est la distinction « engagé et masqué » /
+    /// « engagé et canonique ». `None` : clé absente, ou nœud non vivant.
+    pub fn estampille_courante(&self) -> Option<(u64, u64)> {
+        match &self.etat_courant {
+            EtatPropriete::Presente { estampille, .. } => {
+                Some((estampille.auteur, estampille.horloge))
+            }
+            EtatPropriete::Supprimee(estampille) => {
+                Some((estampille.auteur, estampille.horloge))
+            }
+            EtatPropriete::Absente | EtatPropriete::RessourceInexistante => None,
+        }
+    }
+
+    /// VALEUR CANONIQUE COURANTE de la clé, DÉRIVÉE de [`Self::etat_courant`].
+    /// `Some` seulement si la clé est présente ; `None` si supprimée
+    /// (tombstone), absente, ou nœud non vivant.
     ///
     /// Ce n'est NI la valeur écrite par la tentative, NI une attestation de
     /// compatibilité de contenu, NI une promesse de validité au-delà de
@@ -3496,7 +3515,14 @@ pub struct EffetResolu {
     /// comparaison bit-exacte, l'appelant compare lui-même `f64::to_bits` :
     /// le substrate ne l'impose pas et `EffetResolu` ne l'applique pas — aucune
     /// comparaison partielle n'est introduite ici.
-    pub valeur_courante: Option<Value>,
+    pub fn valeur_courante(&self) -> Option<Value> {
+        match &self.etat_courant {
+            EtatPropriete::Presente { valeur, .. } => Some(valeur.clone()),
+            EtatPropriete::Supprimee(_)
+            | EtatPropriete::Absente
+            | EtatPropriete::RessourceInexistante => None,
+        }
+    }
 }
 
 /// Intégrité d'une tentative multi-effets. N'est JAMAIS déduite d'un seul effet.
@@ -3836,8 +3862,8 @@ impl SubstrateStore {
     /// store, une entrée dont l'estampille persistée égale `(auteur, horloge)`.
     ///
     /// Ce que cela ne prouve PAS : que l'effet correspond à l'intention.
-    /// `Engage` + `estampille_courante` différente de la référence = « engagé
-    /// puis masqué ». La `valeur_courante` rendue est l'état courant observé
+    /// `Engage` + `estampille_courante()` différente de la référence = « engagé
+    /// puis masqué ». La `valeur_courante()` rendue est l'état courant observé
     /// sous le même verrou : ce n'est PAS une attestation de compatibilité de
     /// contenu avec ce que la tentative écrivait, ni une promesse de validité
     /// au-delà de l'instant de la résolution.
@@ -3857,35 +3883,23 @@ impl SubstrateStore {
                 reference.auteur,
                 reference.horloge,
             )?;
-            // UNE SEULE lecture `lire_etat_propriete` fournit l'état canonique
-            // COMPLET (`etat_courant`) ET, dérivés de CE même résultat,
-            // l'estampille et la valeur courantes — jamais une seconde autorité
-            // de lecture ni une relecture indépendante après libération.
+            // UNE SEULE lecture `lire_etat_propriete` fournit l'état courant
+            // (estampille + valeur) sous le verrou de nœud déjà tenu — jamais
+            // une seconde autorité de lecture ni une relecture indépendante.
+            // L'état est stocké TEL QUEL dans `etat_courant` (source unique) :
+            // estampille et valeur courantes se dérivent, aucun état
+            // contradictoire possible.
             //
             // CONTRAT DE LECTURE CANONIQUE : `lire_etat_propriete` distingue
             // les états légitimes (Absente, RessourceInexistante) des ERREURS
-            // de lecture/corruption, qui remontent via `SubstrateResult`. On
-            // propage donc l'erreur (`?`) au lieu de l'avaler en `(None, None)` :
-            // une erreur de lecture n'est JAMAIS confondue avec une absence.
-            // « Nœud disparu » n'est pas une erreur : c'est déjà rendu par
-            // `Ok(EtatPropriete::RessourceInexistante)`, pas par un `Err`.
+            // de lecture/corruption, qui remontent via `SubstrateResult` (`?`) :
+            // une erreur n'est JAMAIS convertie en absence. « Nœud disparu »
+            // n'est pas une erreur : `Ok(EtatPropriete::RessourceInexistante)`.
             let etat_courant = self.lire_etat_propriete(reference.cible, cle)?;
-            let (estampille_courante, valeur_courante) = match &etat_courant {
-                EtatPropriete::Presente { estampille, valeur } => (
-                    Some((estampille.auteur, estampille.horloge)),
-                    Some(valeur.clone()),
-                ),
-                EtatPropriete::Supprimee(estampille) => {
-                    (Some((estampille.auteur, estampille.horloge)), None)
-                }
-                EtatPropriete::Absente | EtatPropriete::RessourceInexistante => (None, None),
-            };
             par_cle.push(EffetResolu {
                 cle: cle.clone(),
                 etat,
                 etat_courant,
-                estampille_courante,
-                valeur_courante,
             });
             // Point d'interleaving DÉTERMINISTE (test-only) : suspend après la
             // première clé, PENDANT que le verrou de nœud est tenu (implémentation
@@ -49284,7 +49298,7 @@ mod publication_conditionnelle_native {
         );
         assert_eq!(res.integrite, IntegriteTentative::Integrale);
         for e in &res.par_cle {
-            assert_eq!(e.estampille_courante, Some((reference.auteur(), reference.horloge())));
+            assert_eq!(e.estampille_courante(), Some((reference.auteur(), reference.horloge())));
         }
     }
 
@@ -49407,8 +49421,8 @@ mod publication_conditionnelle_native {
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(40)));
 
         // DISCRIMINANT : les deux clés portent la MÊME estampille courante (V0)
-        let s0 = res.par_cle[0].estampille_courante;
-        let s1 = res.par_cle[1].estampille_courante;
+        let s0 = res.par_cle[0].estampille_courante();
+        let s1 = res.par_cle[1].estampille_courante();
         assert_eq!(s0, s1, "jamais un mélange de deux états qui n'ont pas coexisté");
         assert_eq!(s0, Some((reference.auteur(), reference.horloge())), "V0, pas V1");
 
@@ -49490,9 +49504,9 @@ mod publication_conditionnelle_native {
         // lue atomiquement (V1), pas une relecture indépendante.
         let (v_payload, s_payload) = attendu("payload");
         let e = par_cle("payload");
-        assert_eq!(e.estampille_courante, s_payload);
-        assert_eq!(e.valeur_courante, v_payload);
-        assert_eq!(e.valeur_courante, Some(Value::Bytes(payload1.clone())));
+        assert_eq!(e.estampille_courante(), s_payload);
+        assert_eq!(e.valeur_courante(), v_payload);
+        assert_eq!(e.valeur_courante(), Some(Value::Bytes(payload1.clone())));
         // etat_courant = la MÊME observation complète (V1), pas une seconde
         // lecture : l'engagement historique (etat=Engage, V0) ne masque pas
         // l'état courant observé.
@@ -49511,9 +49525,9 @@ mod publication_conditionnelle_native {
         // OBSERVATION COURANTE — Float64.
         let (v_score, s_score) = attendu("score");
         let e = par_cle("score");
-        assert_eq!(e.estampille_courante, s_score);
-        assert_eq!(e.valeur_courante, v_score);
-        assert_eq!(e.valeur_courante, Some(Value::Float64(0.75)));
+        assert_eq!(e.estampille_courante(), s_score);
+        assert_eq!(e.valeur_courante(), v_score);
+        assert_eq!(e.valeur_courante(), Some(Value::Float64(0.75)));
 
         // COHÉRENCE discriminante : l'estampille courante est celle de V1
         // (différente de la référence V0) et la valeur correspondante est V1 —
@@ -49529,8 +49543,8 @@ mod publication_conditionnelle_native {
     }
 
     /// P0 — MATRICE DES ÉTATS DE LECTURE CANONIQUE : pour Bytes(32) et Float64,
-    /// `resoudre_reference` rend `etat` + `estampille_courante` +
-    /// `valeur_courante` COHÉRENTS pour chaque état : PRÉSENTE, TOMBSTONE
+    /// `resoudre_reference` rend `etat` + `estampille_courante()` +
+    /// `valeur_courante()` COHÉRENTS pour chaque état : PRÉSENTE, TOMBSTONE
     /// (supprimée), ABSENTE. Une erreur de lecture n'est jamais convertie en
     /// absence (elle remonte) — cf. le test dédié. RESSOURCE INEXISTANTE est
     /// couverte par un test séparé (cible forgée).
@@ -49559,10 +49573,10 @@ mod publication_conditionnelle_native {
             let e = &res.par_cle[0];
             assert_eq!(e.etat, ResolutionEffet::Engage, "{cle} présente → Engage");
             assert_eq!(
-                e.estampille_courante,
+                e.estampille_courante(),
                 Some((reference.auteur(), reference.horloge()))
             );
-            assert_eq!(e.valeur_courante, Some(v.clone()));
+            assert_eq!(e.valeur_courante(), Some(v.clone()));
             // etat_courant DISTINGUE l'état : Presente avec la MÊME estampille
             // et la MÊME valeur (autorité unique, pas une seconde lecture).
             assert_eq!(
@@ -49590,8 +49604,8 @@ mod publication_conditionnelle_native {
                 e.etat, ResolutionEffet::Engage,
                 "{cle} : l'engagement survit au tombstone (historique)"
             );
-            assert_eq!(e.estampille_courante, Some(s));
-            assert_eq!(e.valeur_courante, None, "tombstone → pas de valeur courante");
+            assert_eq!(e.estampille_courante(), Some(s));
+            assert_eq!(e.valeur_courante(), None, "tombstone → pas de valeur courante");
             assert_eq!(
                 e.etat_courant,
                 EtatPropriete::Supprimee(EstampilleComplete {
@@ -49617,8 +49631,8 @@ mod publication_conditionnelle_native {
             let res = store.resoudre_reference(&ref_absente).unwrap();
             let e = &res.par_cle[0];
             assert_eq!(e.etat, ResolutionEffet::Indetermine);
-            assert_eq!(e.estampille_courante, None);
-            assert_eq!(e.valeur_courante, None);
+            assert_eq!(e.estampille_courante(), None);
+            assert_eq!(e.valeur_courante(), None);
             // DISTINCTION EXPLICITE : clé jamais écrite = Absente (pas
             // RessourceInexistante, pas une erreur).
             assert_eq!(
@@ -49656,8 +49670,8 @@ mod publication_conditionnelle_native {
         assert_eq!(res.integrite, IntegriteTentative::Indeterminee);
         let e = &res.par_cle[0];
         assert_eq!(e.etat, ResolutionEffet::Indetermine);
-        assert_eq!(e.estampille_courante, None, "nœud inexistant → pas d'estampille");
-        assert_eq!(e.valeur_courante, None, "nœud inexistant → pas de valeur");
+        assert_eq!(e.estampille_courante(), None, "nœud inexistant → pas d'estampille");
+        assert_eq!(e.valeur_courante(), None, "nœud inexistant → pas de valeur");
         // DISTINCTION EXPLICITE : nœud mort = RessourceInexistante (pas Absente,
         // pas une erreur) — la vivacité se lit sur le record du nœud.
         assert_eq!(
@@ -51125,8 +51139,8 @@ fn collision_hlc_controlee_faux_positif_croise() {
 
     // (4) le seul écart observable entre les deux résolutions est la valeur
     //     courante — qui n'appartient PAS à l'identité de la référence.
-    assert_eq!(r_aa.par_cle[0].valeur_courante, Some(Value::Int64(10)));
-    assert_eq!(r_ab.par_cle[0].valeur_courante, Some(Value::Int64(20)));
+    assert_eq!(r_aa.par_cle[0].valeur_courante(), Some(Value::Int64(10)));
+    assert_eq!(r_ab.par_cle[0].valeur_courante(), Some(Value::Int64(20)));
 
     eprintln!(
         "COLLISION_OK : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A ET B ; \
@@ -51369,8 +51383,8 @@ fn collision_hlc_contenu_identique_faux_positif_indetectable() {
     assert_eq!(r_ab.par_cle[0].etat, ResolutionEffet::Engage);
 
     // (2) les valeurs relues sont IDENTIQUES : l'écart observable du scénario 1 a disparu.
-    assert_eq!(r_aa.par_cle[0].valeur_courante, Some(Value::Int64(42)));
-    assert_eq!(r_ab.par_cle[0].valeur_courante, Some(Value::Int64(42)));
+    assert_eq!(r_aa.par_cle[0].valeur_courante(), Some(Value::Int64(42)));
+    assert_eq!(r_ab.par_cle[0].valeur_courante(), Some(Value::Int64(42)));
 
     // (3) auteur_resolvant identique : writer.id ne discrimine PAS les bases.
     assert_eq!(r_aa.auteur_resolvant, r_ab.auteur_resolvant);
@@ -51380,8 +51394,8 @@ fn collision_hlc_contenu_identique_faux_positif_indetectable() {
     //     valeur courante, ni l'auteur résolvant. La comparaison de valeurs ne
     //     se substitue pas à l'identité de domaine — elle la rend même inopérante.
     assert_eq!(
-        r_aa.par_cle[0].valeur_courante,
-        r_ab.par_cle[0].valeur_courante,
+        r_aa.par_cle[0].valeur_courante(),
+        r_ab.par_cle[0].valeur_courante(),
         "même valeur relue : aucun écart observable ne sépare la tentative de A de celle de B"
     );
 
