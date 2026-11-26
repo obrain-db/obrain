@@ -246,6 +246,22 @@ impl EngramZone {
         Ok(n)
     }
 
+    /// Refuse l'identifiant RÉSERVÉ de l'engramme nul (0).
+    ///
+    /// À appeler AVANT toute écriture, record WAL compris : un record pour
+    /// l'engramme 0 n'est pas rejouable, puisque le rejeu le refuse ici même.
+    /// Le journaliser rendait la base INOUVRABLE pour une mutation qui n'a
+    /// jamais eu lieu (mesuré, #414) — une opération refusée ne laisse aucune
+    /// trace durable.
+    pub fn verifier_engram_id(engram_id: u16) -> SubstrateResult<()> {
+        if engram_id == 0 {
+            return Err(SubstrateError::WalBadFrame(
+                "engram_id 0 is reserved (null engram)".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Write the full membership list for `engram_id`. Appends a new snapshot
     /// at the tail of the payload region, updates the directory entry, and
     /// advances `payload_used` in the header. Leaves the previous snapshot
@@ -262,11 +278,7 @@ impl EngramZone {
         engram_id: u16,
         members: &[u32],
     ) -> SubstrateResult<()> {
-        if engram_id == 0 {
-            return Err(SubstrateError::WalBadFrame(
-                "engram_id 0 is reserved (null engram)".into(),
-            ));
-        }
+        Self::verifier_engram_id(engram_id)?;
         Self::init(zf)?;
 
         // Handle the empty case: clear the directory slot without touching payload.

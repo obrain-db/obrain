@@ -80,3 +80,33 @@ pub fn point_entre_ancre_et_miroir() {
         std::process::abort();
     }
 }
+
+/// 0 = désarmé ; sinon `rang + 1` du point d'arrêt dans l'écriture du couple
+/// (membres, poids) d'un engramme — voir `Writer::set_engram_state` dans
+/// `obrain-substrate`.
+static ARRET_ETAT_ENGRAM: AtomicU64 = AtomicU64::new(0);
+
+/// Arme l'arrêt (`abort`, état d'un SIGKILL) au point `rang` de l'écriture du
+/// couple d'un engramme :
+///
+/// - `rang = 0` : le record WAL est écrit, AUCUNE zone n'a été touchée ;
+/// - `rang = 1` : les membres sont écrits, les poids ne le sont pas encore
+///   (c'est la fenêtre où un demi-état existe dans les zones).
+///
+/// Sert à mesurer que le WAL fait AUTORITÉ : quelle que soit la zone où la
+/// panne tombe, le rejeu rend le couple COMPLET du nouvel état — jamais
+/// « membres neufs + poids anciens ». Deux bancs le mesurent dans
+/// `obrain-substrate/tests/autorite_etat_engram.rs`.
+#[doc(hidden)]
+pub fn armer_arret_etat_engram(rang: u64) {
+    ARRET_ETAT_ENGRAM.store(rang + 1, Ordering::SeqCst);
+}
+
+/// À appeler au point `rang` de l'écriture du couple d'un engramme.
+#[doc(hidden)]
+#[inline]
+pub fn point_etat_engram(rang: u64) {
+    if ARRET_ETAT_ENGRAM.load(Ordering::Relaxed) == rang + 1 {
+        std::process::abort();
+    }
+}

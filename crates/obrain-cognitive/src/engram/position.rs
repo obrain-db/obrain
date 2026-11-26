@@ -1584,6 +1584,7 @@ mod scale_tests {
     /// candidat à coût quasi nul. Retiré. Le fait est consigné ici pour que
     /// personne ne le réécrive en croyant à une évidence.
     #[test]
+    #[ignore = "perf : job CI de performance dédié (sans instrumentation)"]
     fn latency_at_scale_on_both_regimes() {
         const TOKEN_MS: f64 = 115.0; // 8,7 tok/s (formule-wdt.md)
         let dim = 16;

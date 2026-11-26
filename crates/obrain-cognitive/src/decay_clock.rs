@@ -536,7 +536,9 @@ mod tests {
 
     #[test]
     fn decode_anchor_refuse_e_ref_invalide_et_octets_mal_formes() {
-        for e in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        // e_ref == 0 est une décroissance complète VALIDE (51bd7e5) : seuls
+        // négatif / non fini sont refusés.
+        for e in [-1.0, f64::NAN, f64::INFINITY] {
             let v = anchor_value(e, 1.0, 1.0, 64.0);
             assert!(decode_anchor(&v).is_none(), "e_ref invalide {e} → None");
         }
