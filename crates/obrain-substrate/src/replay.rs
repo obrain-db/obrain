@@ -1698,6 +1698,7 @@ fn apply(
                     engram_members_zone,
                     engram_weights_zone,
                     engram_bitset_zone,
+                    permutation,
                     engram_members,
                     engram_bitsets,
                 )?;
@@ -1776,16 +1777,10 @@ fn apply(
                 touches,
                 ecartes,
             )?;
-            apply_engram_states(
-                substrate,
-                engram_members_zone,
-                engram_weights_zone,
-                engram_bitset_zone,
-                engram_members,
-                engram_bitsets,
-            )?;
             // Side-cars : permutation totale équivalente (identité +
-            // échanges old ↔ new), auto-gardée par en-tête.
+            // échanges old ↔ new), auto-gardée par en-tête. Calculée AVANT
+            // l'application des états engram : le ré-attachement en dérive
+            // les membres PRÉ-remap pour vérifier l'identité des poids.
             let domain = relocations
                 .iter()
                 .map(|&(old, new)| old.max(new))
@@ -1793,6 +1788,15 @@ fn apply(
                 .unwrap_or(0)
                 .saturating_add(1);
             let total_perm = crate::slot_remap::permutation_from_relocations(relocations, domain)?;
+            apply_engram_states(
+                substrate,
+                engram_members_zone,
+                engram_weights_zone,
+                engram_bitset_zone,
+                &total_perm,
+                engram_members,
+                engram_bitsets,
+            )?;
             // I3 — barrière de durabilité AVANT la confirmation, puis
             // side-cars (auto-gardés par leurs epochs d'en-tête).
             for z in [
@@ -2001,10 +2005,22 @@ fn apply_engram_states(
     engram_members_zone: &mut Option<ZoneFile>,
     engram_weights_zone: &mut Option<ZoneFile>,
     engram_bitset_zone: &mut Option<ZoneFile>,
+    old_to_new: &[u32],
     members: &[(u16, Vec<u32>)],
     bitsets: &[(u32, u64)],
 ) -> SubstrateResult<()> {
     if !members.is_empty() {
+        // Inverse de la permutation : retrouve les membres PRÉ-remap
+        // de chaque engramme SANS lire la zone membres (qui peut déjà
+        // être POST-remap si le rejeu repart après une interruption).
+        // C'est ce qui permet au ré-attachement de vérifier l'identité
+        // et de rester idempotent (AVANT / INTERMÉDIAIRE / APRÈS).
+        let mut new_to_old = vec![0u32; old_to_new.len()];
+        for (old, &new) in old_to_new.iter().enumerate() {
+            if let Some(cell) = new_to_old.get_mut(new as usize) {
+                *cell = old as u32;
+            }
+        }
         if engram_members_zone.is_none() {
             *engram_members_zone = Some(substrate.open_zone(Zone::EngramMembers)?);
         }
@@ -2014,11 +2030,15 @@ fn apply_engram_states(
         let mz = engram_members_zone.as_mut().unwrap();
         let wz = engram_weights_zone.as_mut().unwrap();
         for (engram_id, list) in members {
+            // Membres PRÉ-remap dérivés de la permutation inverse : la zone
+            // membres est peut-être déjà POST-remap (rejeu interrompu), on
+            // ne la lit donc pas pour établir l'identité à vérifier.
+            let old_members: Vec<u32> = list
+                .iter()
+                .map(|&m| new_to_old.get(m as usize).copied().unwrap_or(m))
+                .collect();
             crate::engram::EngramZone::set_members_raw(mz, *engram_id, list)?;
-            // (V4) Même contrat que le chemin vif (`Writer`), le rejeu du
-            // remap doit ré-attacher les poids LIÉS : sans cela, l'empreinte
-            // périmée rendrait `read_engram_state` → `EngramIncoherent`.
-            crate::engram::EngramZone::rebind_weights_after_remap(wz, *engram_id, list)?;
+            crate::engram::EngramZone::rebind_weights_after_remap(wz, *engram_id, &old_members, list)?;
         }
     }
     if !bitsets.is_empty() {
