@@ -247,7 +247,11 @@ mod dimension_comparison {
     use super::*;
 
     fn l2(x: &[f64], y: &[f64]) -> f64 {
-        x.iter().zip(y).map(|(u, v)| (u - v).powi(2)).sum::<f64>().sqrt()
+        x.iter()
+            .zip(y)
+            .map(|(u, v)| (u - v).powi(2))
+            .sum::<f64>()
+            .sqrt()
     }
 
     /// Comparaison 32/64/128/256 dims sur le même corpus (nombre de paires
@@ -407,7 +411,9 @@ mod hybrid_recall {
     fn rappel_hybride_candidats() {
         let mut rng = 0x9E3779B97F4A7C15u64;
         let mut next = || {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (rng >> 33) as usize
         };
         // 80 ensembles sur 120 nœuds, tailles 3..10, poids 0.5..1.5.

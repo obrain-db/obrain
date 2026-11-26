@@ -5,14 +5,18 @@
 
 use std::collections::HashMap;
 
-use obrain_common::types::NodeId;
 use obrain_cognitive::engram::SpectralEncoder;
+use obrain_common::types::NodeId;
 
 fn norm(x: &[f64]) -> f64 {
     x.iter().map(|u| u * u).sum::<f64>().sqrt()
 }
 fn l2(x: &[f64], y: &[f64]) -> f64 {
-    x.iter().zip(y).map(|(u, v)| (u - v).powi(2)).sum::<f64>().sqrt()
+    x.iter()
+        .zip(y)
+        .map(|(u, v)| (u - v).powi(2))
+        .sum::<f64>()
+        .sqrt()
 }
 fn key(x: &[f64]) -> Vec<u64> {
     x.iter().map(|v| v.to_bits()).collect()
@@ -36,7 +40,10 @@ fn collisions_annulations_discrimination() {
             collisions += 1;
         }
     }
-    println!("nœuds individuels = {}, collisions exactes = {}, signatures nulles = {}", n, collisions, null_single);
+    println!(
+        "nœuds individuels = {}, collisions exactes = {}, signatures nulles = {}",
+        n, collisions, null_single
+    );
 
     // 2. Annulations sur paires {i,j} (ensemble non vide -> vecteur nul).
     let p = 300u64;
@@ -58,7 +65,8 @@ fn collisions_annulations_discrimination() {
         let mut base = 1u64;
         while base + 2 * k <= 512 {
             let e1: Vec<(NodeId, f64)> = (base..base + k).map(|x| (NodeId(x), 1.0)).collect();
-            let e2: Vec<(NodeId, f64)> = (base + k..base + 2 * k).map(|x| (NodeId(x), 1.0)).collect();
+            let e2: Vec<(NodeId, f64)> =
+                (base + k..base + 2 * k).map(|x| (NodeId(x), 1.0)).collect();
             let d = l2(&enc.encode(&e1), &enc.encode(&e2));
             if d < min_d {
                 min_d = d;
@@ -66,7 +74,10 @@ fn collisions_annulations_discrimination() {
             base += 2 * k;
             cnt += 1;
         }
-        println!("k={}: L2 min (ensembles disjoints, {} paires) = {:.6}", k, cnt, min_d);
+        println!(
+            "k={}: L2 min (ensembles disjoints, {} paires) = {:.6}",
+            k, cnt, min_d
+        );
     }
 
     assert_eq!(collisions, 0, "aucune collision exacte sur ce corpus");
