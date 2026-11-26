@@ -654,7 +654,7 @@ impl<'a> Composition<'a> {
     /// une simple erreur de lecture. Conditions PROUVÉES, sinon refus :
     /// - marqueur d'état EXPLICITE `pending` (construction non scellée) ;
     /// - aucune connaissance ne le référence par une arête `child`.
-    /// Refus → `AbandonRefused` ; échec de suppression → `AbandonFailed`.
+    ///   Refus → `AbandonRefused` ; échec de suppression → `AbandonFailed`.
     pub fn abandon_incomplete(&self, id: NodeId) -> Result<(), ResolveError> {
         let Some(node) = self.db.get_node(id) else {
             return Err(ResolveError::RootMissing(id));
@@ -693,8 +693,7 @@ impl<'a> Composition<'a> {
                     && self
                         .db
                         .get_edge(eid)
-                        .map(|e| e.edge_type.as_str() == EDGE_CHILD)
-                        .unwrap_or(false)
+                        .is_some_and(|e| e.edge_type.as_str() == EDGE_CHILD)
             })
     }
 
