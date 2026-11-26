@@ -7410,6 +7410,11 @@ impl SubstrateStore {
     /// verrou d'écriture de publication est tenu pendant les deux mutations,
     /// donc un lecteur cohérent (lire_deux_proprietes_coherent) ne peut observer
     /// que V0 ou V1, jamais le mélange. EXPÉRIMENTAL.
+    /// OBSOLÈTE — supersédée par [`Self::publier_si_precondition_intacte`] :
+    /// elle synchronise sur `verrou_publication` (RwLock statique global), une
+    /// autorité DIFFÉRENTE du `verrou_ecriture_noeud` que prennent
+    /// `set_node_property` ET la publication conditionnelle. Deux chemins qui ne
+    /// partagent pas la même autorité peuvent s'entrelacer. À ne plus utiliser.
     pub fn publier_deux_proprietes_atomiquement(
         &self,
         cible: NodeId,
@@ -7426,15 +7431,19 @@ impl SubstrateStore {
         Ok(())
     }
 
-    /// Lecture cohérente de DEUX propriétés : attend le verrou de lecture de
-    /// publication, donc ne traverse jamais une publication atomique en cours.
+    /// Lecture cohérente de DEUX propriétés : prend le VERROU D'ÉCRITURE DU
+    /// NŒUD (`verrou_ecriture_noeud`), l'autorité commune que prennent aussi
+    /// `set_node_property` et `publier_si_precondition_intacte`. Elle ne traverse
+    /// donc jamais une publication conditionnelle ni une écriture unitaire en
+    /// cours sur ce nœud. (L'ancienne synchronisation sur `verrou_publication`
+    /// était une autorité DIFFÉRENTE — corrigée.)
     pub fn lire_deux_proprietes_coherent(
         &self,
         cible: NodeId,
         cle1: &str,
         cle2: &str,
     ) -> (Option<Value>, Option<Value>) {
-        let _g = verrou_publication(cible).read();
+        let _g = self.verrou_ecriture_noeud(cible).lock();
         (
             self.get_node_property(cible, &PropertyKey::new(cle1)),
             self.get_node_property(cible, &PropertyKey::new(cle2)),
@@ -47097,6 +47106,11 @@ mod publication_atomique {
     use std::thread;
     use std::time::Duration;
 
+    /// AUTORITÉ COMMUNE : `lire_deux_proprietes_coherent` prend le VERROU DE
+    /// NŒUD (celui que tiennent aussi `set_node_property` et
+    /// `publier_si_precondition_intacte`). Un lecteur cohérent BLOQUE donc tant
+    /// qu'un écrivain tient ce verrou — il ne traverse jamais une publication en
+    /// cours (contrairement à deux `get_node_property` historiques séparés).
     #[test]
     fn lecteur_coherent_ne_voit_pas_le_melange() {
         let td = tempfile::tempdir().unwrap();
@@ -47104,26 +47118,28 @@ mod publication_atomique {
         let id = store.create_node(&["ressource"]);
         store.set_node_property(id, "a", Value::Int64(1));
         store.set_node_property(id, "b", Value::Int64(2));
-        let (tx, rx) = mpsc::channel();
         let store2 = Arc::clone(&store);
+        let (tx, rx) = mpsc::channel();
         let ecrivain = thread::spawn(move || {
-            let _g = verrou_publication(id).write();
-            store2.set_node_property(id, "a", Value::Int64(10));
-            tx.send(()).unwrap();
-            // fenêtre pendant laquelle le verrou est tenu et a est déjà muté
-            thread::sleep(Duration::from_millis(120));
-            store2.set_node_property(id, "b", Value::Int64(20));
+            // tient l'autorité commune (verrou de nœud) comme le ferait une publication
+            let _g = store2.verrou_ecriture_noeud(id).lock();
+            tx.send(()).unwrap(); // le verrou EST acquis
+            thread::sleep(Duration::from_millis(150));
         });
-        rx.recv().unwrap();
-        let store3 = Arc::clone(&store);
-        let lecteur = thread::spawn(move || store3.lire_deux_proprietes_coherent(id, "a", "b"));
+        rx.recv().unwrap(); // attend DÉTERMINISTE : l'écrivain tient le verrou
+        let debut = std::time::Instant::now();
+        let (a, b) = store.lire_deux_proprietes_coherent(id, "a", "b");
+        let el = debut.elapsed();
+        eprintln!("LECTEUR_COHERENT a={a:?} b={b:?} attente={el:?}");
         ecrivain.join().unwrap();
-        let (a, b) = lecteur.join().unwrap();
-        eprintln!("APRES_PUBLICATION a={a:?} b={b:?}");
         assert_eq!(
             (a, b),
-            (Some(Value::Int64(10)), Some(Value::Int64(20))),
-            "V1 cohérent, jamais le mélange (a=10,b=2)"
+            (Some(Value::Int64(1)), Some(Value::Int64(2))),
+            "V0 cohérent"
+        );
+        assert!(
+            el >= Duration::from_millis(50),
+            "le lecteur a bloqué sur l'autorité commune (verrou de nœud)"
         );
     }
 }
@@ -48131,5 +48147,37 @@ mod projections_publiees {
         eprintln!("APRES_REOUVERTURE direct={direct:?} age=40 -> {cherche_40:?}");
         assert_eq!(direct, Some(Value::Int64(40)), "lecture directe après réouverture : 40 conservé");
         assert_eq!(cherche_40, vec![id], "après réouverture, l'index retrouve 40");
+    }
+
+    /// P0 — réouverture SANS recherche intermédiaire : après publication on
+    /// ferme IMMÉDIATEMENT (aucune recherche ne « répare » l'index en session).
+    /// À la réouverture, la recherche doit retrouver la valeur publiée par
+    /// reconstruction depuis les chaînes — pas par une réparation antérieure.
+    #[test]
+    fn reouverture_sans_recherche_intermediaire() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let id = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = store.create_node(&["personne"]);
+            store.set_node_property(id, "age", Value::Int64(30));
+            let avant = store.find_nodes_by_property("age", &Value::Int64(30));
+            assert_eq!(avant, vec![id], "index initial construit");
+            let pre = store.capturer_precondition(id, &["age"]).unwrap();
+            let prep = store
+                .preparer_transformation(id, &[("age", Value::Int64(40))], &pre, ModePublication::Strict)
+                .unwrap();
+            let r = store.publier_si_precondition_intacte(prep).unwrap();
+            assert_eq!(r, IssuePublication::PublieIntegrale);
+            // AUCUNE recherche entre la publication et la fermeture.
+            store.close().unwrap();
+            id
+        };
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        let direct = store2.get_node_property(id, &PropertyKey::new("age"));
+        let cherche_40 = store2.find_nodes_by_property("age", &Value::Int64(40));
+        eprintln!("REOUVERTURE_SANS_RECHERCHE direct={direct:?} age=40 -> {cherche_40:?}");
+        assert_eq!(direct, Some(Value::Int64(40)));
+        assert_eq!(cherche_40, vec![id], "réouverture retrouve 40 sans recherche intermédiaire");
     }
 }
