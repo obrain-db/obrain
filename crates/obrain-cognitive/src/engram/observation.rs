@@ -528,6 +528,7 @@ impl<L: AtomicEventLedger> CognitiveObservationAdapter<L> {
 
     /// Applique une observation (check-and-set identité + révision, état
     /// résultant atomique).
+    #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &self,
         observation_id: ObservationId,
@@ -745,8 +746,7 @@ impl AtomicEventLedger for InMemoryAtomicEventLedger {
             .lock()
             .unwrap()
             .get(resource_id)
-            .map(|(_, r)| *r)
-            .unwrap_or(0))
+            .map_or(0, |(_, r)| *r))
     }
 
     fn resource_state(&self, resource_id: &[u8]) -> Result<Option<(Vec<u8>, u64)>, String> {
@@ -804,7 +804,7 @@ impl AtomicEventLedger for InMemoryAtomicEventLedger {
         // 2) Précondition de révision (point A) : l'observation a été calculée
         //    depuis `precondition_revision`. Si la ressource a avancé, c'est un
         //    conflit de révision (recalculer, même identité).
-        let current = resources.get(resource_id).map(|(_, r)| *r).unwrap_or(0);
+        let current = resources.get(resource_id).map_or(0, |(_, r)| *r);
         if precondition_revision != current {
             return Ok(LedgerOutcome::PreconditionFailed {
                 current_revision: current,

@@ -268,6 +268,9 @@ impl EngramStore {
             .swap(false, std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Vrai si la faute de matérialisation est armée (consommée).
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
     pub fn take_fail_materialise(&self) -> bool {
         self.fail_materialise
             .swap(false, std::sync::atomic::Ordering::Relaxed)
@@ -754,11 +757,11 @@ impl EngramStore {
         // l'appartenance est vérifiée sur l'ensemble pondéré, même si le bit
         // manque. Ne présente pas une projection dégradée comme une absence.
         for eid in self.degraded.read().iter() {
-            if let Some(engram) = self.cache.get(eid) {
-                if engram.ensemble.iter().any(|(n, _)| *n == query_nid) && !candidates.contains(eid)
-                {
-                    candidates.push(*eid);
-                }
+            if let Some(engram) = self.cache.get(eid)
+                && engram.ensemble.iter().any(|(n, _)| *n == query_nid)
+                && !candidates.contains(eid)
+            {
+                candidates.push(*eid);
             }
         }
         candidates.sort_by_key(|eid| eid.0);
@@ -881,6 +884,7 @@ impl EngramStore {
     ///
     /// Le contenu ET la révision avancent ENSEMBLE ; la signature spectrale est
     /// remplacée (plus de projection périmée).
+    #[allow(clippy::too_many_arguments)]
     pub fn materialize_state(
         &self,
         id: EngramId,

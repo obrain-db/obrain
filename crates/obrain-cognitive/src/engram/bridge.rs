@@ -174,7 +174,7 @@ impl EngramObservationBridge {
                 out.push((e.id, overlap));
             }
         });
-        out.sort_by(|a, b| b.1.cmp(&a.1));
+        out.sort_by_key(|(_, overlap)| std::cmp::Reverse(*overlap));
         out
     }
 
@@ -821,7 +821,7 @@ mod tests {
                 assert!(
                     msg.contains("revision read error"),
                     "erreur propagée : {msg}"
-                )
+                );
             }
             other => panic!("attendu Failed (lecture de révision), reçu {other:?}"),
         }

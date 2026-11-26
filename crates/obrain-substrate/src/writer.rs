@@ -2768,11 +2768,11 @@ impl Writer {
     /// d'identifiants.
     pub fn validate_engram_zones(&self) -> SubstrateResult<()> {
         self.with_engram_state_zones(|mz, wz| {
-            if mz.len() == 0 {
+            if mz.is_empty() {
                 return Ok(());
             }
             crate::engram::EngramZone::validate_header(mz)?;
-            if wz.len() > 0 {
+            if !wz.is_empty() {
                 crate::engram::EngramZone::validate_header(wz)?;
             }
             Ok(())

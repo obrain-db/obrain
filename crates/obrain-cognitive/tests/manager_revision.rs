@@ -3,6 +3,7 @@
 //! indépendance de la signature, réouverture avec tolérances f32.
 
 #![cfg(all(feature = "engram", feature = "substrate"))]
+#![allow(clippy::many_single_char_names)]
 
 use std::sync::{Arc, Mutex};
 
@@ -14,10 +15,7 @@ use obrain_common::types::NodeId;
 use obrain_substrate::{SubstrateFile, SyncMode, Writer as SubstrateWriter};
 
 fn weight_of(ens: &[(NodeId, f64)], n: NodeId) -> f64 {
-    ens.iter()
-        .find(|(m, _)| *m == n)
-        .map(|(_, w)| *w)
-        .unwrap_or(0.0)
+    ens.iter().find(|(m, _)| *m == n).map_or(0.0, |(_, w)| *w)
 }
 
 fn members_of(ens: &[(NodeId, f64)]) -> Vec<NodeId> {
@@ -537,7 +535,7 @@ fn reouverture_apres_ecriture_partielle() {
     // Cohérence des deux chemins de rappel RESTAURÉE (plus de divergence).
     let native = manager.store().recall(c).expect("rappel natif");
     assert!(
-        native.iter().any(|e| *e == id),
+        native.contains(&id),
         "rappel natif trouve C (bitset réparé)"
     );
     let mgr = manager.recall(&[c], 5);
@@ -593,14 +591,12 @@ fn reouverture_saine_ne_reecrit_pas_les_bitsets() {
     // Réouverture saine : les bits sont déjà présents → ensure renvoie false.
     let sub = SubstrateFile::open(&path).unwrap();
     let writer = SubstrateWriter::new(sub, SyncMode::Never).unwrap();
-    assert_eq!(
-        writer.ensure_engram_bit(a.0 as u32, id.0 as u16).unwrap(),
-        false,
+    assert!(
+        !writer.ensure_engram_bit(a.0 as u32, id.0 as u16).unwrap(),
         "bit A déjà présent : aucune écriture"
     );
-    assert_eq!(
-        writer.ensure_engram_bit(b.0 as u32, id.0 as u16).unwrap(),
-        false,
+    assert!(
+        !writer.ensure_engram_bit(b.0 as u32, id.0 as u16).unwrap(),
         "bit B déjà présent : aucune écriture"
     );
 }
