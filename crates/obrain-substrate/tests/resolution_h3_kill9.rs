@@ -153,10 +153,11 @@ fn tuer_9(child: &mut Child) {
     );
 }
 
-fn resolution_reference(store: &SubstrateStore, dir: &Path) -> ResolutionTentative {
+fn reference_et_resolution(store: &SubstrateStore, dir: &Path) -> (ReferenceTentative, ResolutionTentative) {
     let octets = std::fs::read(dir.join("reference.bin")).unwrap();
     let reference = ReferenceTentative::from_bytes(&octets).unwrap();
-    store.resoudre_reference(&reference).unwrap()
+    let res = store.resoudre_reference(&reference).unwrap();
+    (reference, res)
 }
 
 fn node_id(dir: &Path) -> NodeId {
@@ -174,8 +175,9 @@ fn h3_kill9_avant_publication() {
 
     let store = SubstrateStore::open(td.path().join("kb")).unwrap();
     let id = node_id(td.path());
-    let res = resolution_reference(&store, td.path());
+    let (reference, res) = reference_et_resolution(&store, td.path());
     assert_eq!(res.cible, id);
+    assert_eq!(res.auteur_resolvant, reference.auteur(), "autorité résolvante = auteur de la référence");
     assert_eq!(
         res.integrite,
         IntegriteTentative::Indeterminee,
@@ -185,6 +187,12 @@ fn h3_kill9_avant_publication() {
     assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
     for e in &res.par_cle {
         assert_eq!(e.etat, ResolutionEffet::Indetermine, "chaque clé est indéterminée");
+        // estampille COURANTE = valeur initiale (jamais remplacée par la tentative)
+        assert_ne!(
+            e.estampille_courante,
+            Some((reference.auteur(), reference.horloge())),
+            "l'estampille de la tentative n'est PAS la courante (jamais engagée)"
+        );
     }
     eprintln!("H3_KILL9_AVANT_OK : résolution indéterminée sans republication");
 }
@@ -199,8 +207,9 @@ fn h3_kill9_apres_publication() {
 
     let store = SubstrateStore::open(td.path().join("kb")).unwrap();
     let id = node_id(td.path());
-    let res = resolution_reference(&store, td.path());
+    let (reference, res) = reference_et_resolution(&store, td.path());
     assert_eq!(res.cible, id);
+    assert_eq!(res.auteur_resolvant, reference.auteur(), "autorité résolvante = auteur de la référence");
     assert_eq!(
         res.integrite,
         IntegriteTentative::Integrale,
@@ -210,11 +219,15 @@ fn h3_kill9_apres_publication() {
     assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
     for e in &res.par_cle {
         assert_eq!(e.etat, ResolutionEffet::Engage, "chaque clé est engagée");
-        assert!(e.estampille_courante.is_some(), "estampille historique disponible");
+        assert_eq!(
+            e.estampille_courante,
+            Some((reference.auteur(), reference.horloge())),
+            "IDENTITÉ exacte de l'estampille (auteur + horloge), pas seulement son existence"
+        );
     }
     // masquage ultérieur : l'événement historique reste attesté
     store.set_node_property(id, "a", Value::Int64(99));
-    let res2 = resolution_reference(&store, td.path());
+    let (_reference, res2) = reference_et_resolution(&store, td.path());
     assert_eq!(res2.integrite, IntegriteTentative::Integrale, "masqué mais engagé");
     assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(99)));
     eprintln!("H3_KILL9_APRES_OK : résolution Engage + masquage, sans republication");
