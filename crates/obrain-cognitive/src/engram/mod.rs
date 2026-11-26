@@ -64,6 +64,14 @@ mod spectral;
 pub use spectral::SpectralEncoder;
 
 #[cfg(feature = "engram")]
+mod hybrid_recall;
+#[cfg(feature = "engram")]
+pub use hybrid_recall::{
+    DEFAULT_N_PROBE, HybridHit, HybridOutcome, HybridRecallConfig, HybridRecallError, HybridStats,
+    RecallVariant, STRUCTURAL_CLOSURE_CAP, parse_engram_id,
+};
+
+#[cfg(feature = "engram")]
 mod recall;
 #[cfg(feature = "engram")]
 pub use recall::{

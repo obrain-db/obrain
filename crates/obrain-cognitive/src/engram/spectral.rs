@@ -281,3 +281,232 @@ mod tests {
         eprintln!("E2 L1(uniformes -> 0.5/0.5/0.5) = {l1_13:e}");
     }
 }
+
+#[cfg(test)]
+mod dimension_comparison {
+    use super::*;
+
+    fn l2(x: &[f64], y: &[f64]) -> f64 {
+        x.iter()
+            .zip(y)
+            .map(|(u, v)| (u - v).powi(2))
+            .sum::<f64>()
+            .sqrt()
+    }
+
+    /// Comparaison 32/64/128/256 dims sur le même corpus (nombre de paires
+    /// CONSTANT = 200, ensembles disjoints de taille 2).
+    #[test]
+    fn discrimination_par_dimension() {
+        let n_pairs = 200usize;
+        for dims in [32usize, 64, 128, 256] {
+            let enc = DefaultSpectralEncoder::new(dims);
+            let mut min_d = f64::INFINITY;
+            let mut sum = 0.0f64;
+            for p in 0..n_pairs {
+                let base = (p * 4) as u64 + 1;
+                let e1 = [(NodeId(base), 1.0), (NodeId(base + 1), 1.0)];
+                let e2 = [(NodeId(base + 2), 1.0), (NodeId(base + 3), 1.0)];
+                let d = l2(&enc.encode(&e1), &enc.encode(&e2));
+                if d < min_d {
+                    min_d = d;
+                }
+                sum += d;
+            }
+            println!(
+                "dims={}: L2 min={:.6} moyenne={:.6} ({} paires disjointes taille 2)",
+                dims,
+                min_d,
+                sum / n_pairs as f64,
+                n_pairs
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod ranking_fidelity {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    /// Référence EXACTE de similarité structurelle pondérée : cosinus des
+    /// vecteurs de poids (sparse) sur l'univers des nœuds.
+    fn ref_cosine(a: &[(NodeId, f64)], b: &[(NodeId, f64)]) -> f64 {
+        let ma: HashMap<NodeId, f64> = a.iter().copied().collect();
+        let mb: HashMap<NodeId, f64> = b.iter().copied().collect();
+        let dot: f64 = ma.iter().map(|(k, v)| v * mb.get(k).unwrap_or(&0.0)).sum();
+        let na = ma.values().map(|v| v * v).sum::<f64>().sqrt();
+        let nb = mb.values().map(|v| v * v).sum::<f64>().sqrt();
+        if na == 0.0 || nb == 0.0 {
+            return 0.0;
+        }
+        dot / (na * nb)
+    }
+
+    fn cosine(x: &[f64], y: &[f64]) -> f64 {
+        let dot: f64 = x.iter().zip(y).map(|(u, v)| u * v).sum();
+        let nx = x.iter().map(|u| u * u).sum::<f64>().sqrt();
+        let ny = y.iter().map(|u| u * u).sum::<f64>().sqrt();
+        if nx == 0.0 || ny == 0.0 {
+            return 0.0;
+        }
+        dot / (nx * ny)
+    }
+
+    /// Fidélité du classement : Recall@1 = fraction d'ensembles dont le plus
+    /// proche voisin (référence exacte) est aussi le plus proche en projection.
+    #[test]
+    fn fidelite_classement_par_dimension() {
+        let mut rng = 0x9E3779B97F4A7C15u64;
+        let mut next = || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng >> 33) as usize
+        };
+        let mut corpus: Vec<Vec<(NodeId, f64)>> = Vec::new();
+        for _ in 0..40 {
+            let size = 2 + next() % 7; // 2..8 membres
+            let mut ens = Vec::new();
+            let mut seen = HashSet::new();
+            while ens.len() < size {
+                let n = NodeId((next() % 60 + 1) as u64);
+                if seen.insert(n) {
+                    ens.push((n, 0.5 + (next() % 11) as f64 * 0.1)); // 0.5..1.5
+                }
+            }
+            corpus.push(ens);
+        }
+
+        for dims in [32usize, 64, 128, 256] {
+            let enc = DefaultSpectralEncoder::new(dims);
+            let sigs: Vec<Vec<f64>> = corpus.iter().map(|e| enc.encode(e)).collect();
+            let mut recall1 = 0usize;
+            for i in 0..corpus.len() {
+                let (mut tn, mut ts) = (usize::MAX, f64::NEG_INFINITY);
+                for j in 0..corpus.len() {
+                    if i == j {
+                        continue;
+                    }
+                    let s = ref_cosine(&corpus[i], &corpus[j]);
+                    if s > ts {
+                        (ts, tn) = (s, j);
+                    }
+                }
+                let (mut sn, mut ss) = (usize::MAX, f64::NEG_INFINITY);
+                for j in 0..corpus.len() {
+                    if i == j {
+                        continue;
+                    }
+                    let s = cosine(&sigs[i], &sigs[j]);
+                    if s > ss {
+                        (ss, sn) = (s, j);
+                    }
+                }
+                if sn == tn {
+                    recall1 += 1;
+                }
+            }
+            println!(
+                "dims={}: Recall@1 = {}/{} = {:.3}",
+                dims,
+                recall1,
+                corpus.len(),
+                recall1 as f64 / corpus.len() as f64
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod hybrid_recall {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    fn ref_cosine(a: &[(NodeId, f64)], b: &[(NodeId, f64)]) -> f64 {
+        let ma: HashMap<NodeId, f64> = a.iter().copied().collect();
+        let mb: HashMap<NodeId, f64> = b.iter().copied().collect();
+        let dot: f64 = ma.iter().map(|(k, v)| v * mb.get(k).unwrap_or(&0.0)).sum();
+        let na = ma.values().map(|v| v * v).sum::<f64>().sqrt();
+        let nb = mb.values().map(|v| v * v).sum::<f64>().sqrt();
+        if na == 0.0 || nb == 0.0 {
+            return 0.0;
+        }
+        dot / (na * nb)
+    }
+    fn cosine(x: &[f64], y: &[f64]) -> f64 {
+        let dot: f64 = x.iter().zip(y).map(|(u, v)| u * v).sum();
+        let nx = x.iter().map(|u| u * u).sum::<f64>().sqrt();
+        let ny = y.iter().map(|u| u * u).sum::<f64>().sqrt();
+        if nx == 0.0 || ny == 0.0 {
+            return 0.0;
+        }
+        dot / (nx * ny)
+    }
+
+    /// Probabilité que le vrai plus proche voisin (cosinus EXACT) soit présent
+    /// dans les k premiers candidats projetés — mesure la qualité du filtrage
+    /// candidat (rappel hybride), pour k=1/5/10 et dims=32/64/128/256.
+    #[test]
+    fn rappel_hybride_candidats() {
+        let mut rng = 0x9E3779B97F4A7C15u64;
+        let mut next = || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng >> 33) as usize
+        };
+        // 80 ensembles sur 120 nœuds, tailles 3..10, poids 0.5..1.5.
+        let mut corpus: Vec<Vec<(NodeId, f64)>> = Vec::new();
+        for _ in 0..80 {
+            let size = 3 + next() % 8;
+            let mut ens = Vec::new();
+            let mut seen = HashSet::new();
+            while ens.len() < size {
+                let n = NodeId((next() % 120 + 1) as u64);
+                if seen.insert(n) {
+                    ens.push((n, 0.5 + (next() % 11) as f64 * 0.1));
+                }
+            }
+            corpus.push(ens);
+        }
+
+        for dims in [32usize, 64, 128, 256] {
+            let enc = DefaultSpectralEncoder::new(dims);
+            let sigs: Vec<Vec<f64>> = corpus.iter().map(|e| enc.encode(e)).collect();
+            for k in [1usize, 5, 10] {
+                let mut hit = 0usize;
+                for i in 0..corpus.len() {
+                    // vrai plus proche voisin (exact).
+                    let (mut tn, mut ts) = (usize::MAX, f64::NEG_INFINITY);
+                    for j in 0..corpus.len() {
+                        if i == j {
+                            continue;
+                        }
+                        let c = ref_cosine(&corpus[i], &corpus[j]);
+                        if c > ts {
+                            (ts, tn) = (c, j);
+                        }
+                    }
+                    // top-k candidats projetés (cosinus de signature), tie-break déterministe.
+                    let mut cands: Vec<(f64, usize)> = (0..corpus.len())
+                        .filter(|&j| j != i)
+                        .map(|j| (cosine(&sigs[i], &sigs[j]), j))
+                        .collect();
+                    cands.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(a.1.cmp(&b.1)));
+                    if cands.iter().take(k).any(|(_, j)| *j == tn) {
+                        hit += 1;
+                    }
+                }
+                println!(
+                    "dims={} k={}: Recall@k(candidat) = {}/{} = {:.3}",
+                    dims,
+                    k,
+                    hit,
+                    corpus.len(),
+                    hit as f64 / corpus.len() as f64
+                );
+            }
+        }
+    }
+}

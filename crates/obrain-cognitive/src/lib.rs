@@ -347,10 +347,11 @@ pub use engram::{
     CrystallizationConfig, CrystallizationDetector, CrystallizationProposal, CrystallizationResult,
     DetailLevel, EngramFormationTrigger, EngramManager, EngramMetricsCollector, EngramStore,
     FormationConfig, FsrsConfig, FsrsScheduler, HebbianWithSurprise, HomeostasisConfig,
-    HomeostasisEngine, HomeostasisSignal, IMMUNE_FP_RATE_THRESHOLD, LABEL_CRYSTALLIZED_NOTE,
+    HomeostasisEngine, HomeostasisSignal, HybridHit, HybridOutcome, HybridRecallConfig,
+    HybridRecallError, HybridStats, IMMUNE_FP_RATE_THRESHOLD, LABEL_CRYSTALLIZED_NOTE,
     LOW_PRECISION_BETA_THRESHOLD, MmrResult, REL_CRYSTALLIZED_IN, RecallEngine, RecallResult,
-    ReviewRating, SpectralEncoder, WarmupConfig, WarmupSelector, crystallize, generate_summary,
-    hopfield_retrieve, max_marginal_relevance, softmax_compete,
+    RecallVariant, ReviewRating, SpectralEncoder, WarmupConfig, WarmupSelector, crystallize,
+    generate_summary, hopfield_retrieve, max_marginal_relevance, softmax_compete,
 };
 
 #[cfg(feature = "immune")]
