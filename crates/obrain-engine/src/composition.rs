@@ -65,6 +65,8 @@ pub const EDGE_SRC: &str = "src";
 pub const EDGE_DST: &str = "dst";
 /// Clé de propriété stockant le type d'une relation.
 pub const KEY_REL_TYPE: &str = "rel_type";
+/// Clé de propriété d'ÉTAT de construction (`pending` / `complete`).
+pub const KEY_STATE: &str = "construction_state";
 /// Profondeur maximale de résolution (garde anti-épuisement de pile).
 pub const MAX_RESOLVE_DEPTH: usize = 1024;
 
@@ -156,11 +158,17 @@ impl KnowledgeSpec {
         k
     }
 
-    /// Clé au format HISTORIQUE v2 (avant rôle de child et multiplicité) :
-    /// membres, enfants (cible seule, sans rôle) et relations (sans multiplicité).
-    /// Sert à RECONNAÎTRE une définition legacy et la migrer explicitement vers
-    /// v3 — sans quoi une même définition serait dupliquée (clé v2 ≠ clé v3).
-    pub fn legacy_v2_key(&self) -> String {
+    /// Clé au format v2 ORIGINAL (avant rôle de child ET avant multiplicité) :
+    /// enfants = cible seule, relations sans multiplicité. `None` si la structure
+    /// n'est PAS représentable ainsi (un enfant porte un rôle, ou une
+    /// multiplicité ≠ 1) : on ne l'accepte donc pas comme historique.
+    pub fn legacy_v2_original_key(&self) -> Option<String> {
+        if self.children.keys().any(|c| c.role.is_some())
+            || self.children.values().any(|&n| n != 1)
+            || self.relations.values().any(|&n| n != 1)
+        {
+            return None;
+        }
         let mut k = String::from("v2|");
         enc_str(&mut k, &self.members.len().to_string());
         for m in &self.members {
@@ -177,7 +185,33 @@ impl KnowledgeSpec {
             enc_str(&mut k, &r.dst.0.to_string());
             enc_opt(&mut k, r.role.as_deref());
         }
-        k
+        Some(k)
+    }
+
+    /// Clé au format v2 INTERMÉDIAIRE (720e189 : rôle de child, SANS
+    /// multiplicité). `None` si une multiplicité ≠ 1.
+    pub fn legacy_v2_intermediate_key(&self) -> Option<String> {
+        if self.children.values().any(|&n| n != 1) || self.relations.values().any(|&n| n != 1) {
+            return None;
+        }
+        let mut k = String::from("v2|");
+        enc_str(&mut k, &self.members.len().to_string());
+        for m in &self.members {
+            enc_str(&mut k, &m.0.to_string());
+        }
+        enc_str(&mut k, &self.children.len().to_string());
+        for c in self.children.keys() {
+            enc_str(&mut k, &c.target.0.to_string());
+            enc_opt(&mut k, c.role.as_deref());
+        }
+        enc_str(&mut k, &self.relations.len().to_string());
+        for r in self.relations.keys() {
+            enc_str(&mut k, &r.rel_type);
+            enc_str(&mut k, &r.src.0.to_string());
+            enc_str(&mut k, &r.dst.0.to_string());
+            enc_opt(&mut k, r.role.as_deref());
+        }
+        Some(k)
     }
 
     /// Clé de PROJECTION « membres directs » (relations et références ignorées).
@@ -242,6 +276,16 @@ pub enum ResolveError {
     NonTextualRole,
     /// Clé recalculée ≠ clé persistée (corruption ou structure incomplète).
     KeyDivergence,
+    /// Une clé est occupée par une construction incomplète non abandonnée.
+    IncompleteConstruction(NodeId),
+    /// Abandon refusé : preuve d'abandon insuffisante ou nœud référencé.
+    AbandonRefused(NodeId),
+    /// Échec de la suppression lors d'un abandon explicite.
+    AbandonFailed(NodeId),
+    /// Multiplicité nulle (une occurrence comptée zéro fois n'a pas de sens).
+    InvalidMultiplicity,
+    /// Écriture demandée sur une base ouverte en lecture seule.
+    ReadOnly,
 }
 
 /// Interface compositionnelle sur le graphe natif (construire, résoudre).
@@ -260,33 +304,43 @@ impl<'a> Composition<'a> {
     ///
     /// Complétude ≠ atomicité : `read_spec` (`KeyDivergence`) est un MARQUEUR de
     /// structure complète, PAS une publication atomique durable. `construct`
-    /// n'est pas transactionnel : `create_node`, puis `canonical_key`, puis les
-    /// arêtes une à une ; une interruption laisse un nœud à demi-né. Ce dernier
-    /// est alors ABANDONNÉ explicitement (tombstoné) et la clé est réoccupée par
-    /// une construction fraîche — détecter n'est pas récupérer, mais la clé ne
-    /// reste jamais bloquée. Une publication atomique exigerait une transaction
-    /// substrat (hors de ce module).
+    /// n'est pas transactionnel : `create_node`, `canonical_key`, marqueur d'état
+    /// `pending`, puis les arêtes une à une, enfin marqueur `complete`. Une
+    /// interruption laisse un nœud à l'état `pending`. `construct` ne le SUPPRIME
+    /// JAMAIS : il signale l'occupation (`IncompleteConstruction`). L'abandon est
+    /// explicite et prouvé (`abandon_incomplete` : état `pending` + non référencé),
+    /// puis la clé peut être réoccupée. Une publication atomique exigerait une
+    /// transaction substrat (hors de ce module).
     ///
     /// Concurrence : deux `construct` simultanés de la même définition ne sont
     /// PAS sérialisés (pas de verrou/transaction) — limite de #419, ce module
     /// n'introduit PAS de seconde autorité de réservation.
     pub fn construct(&self, spec: &KnowledgeSpec) -> Result<NodeId, ResolveError> {
+        // Rejette explicitement les multiplicités nulles.
+        if spec.children.values().any(|&n| n == 0) || spec.relations.values().any(|&n| n == 0) {
+            return Err(ResolveError::InvalidMultiplicity);
+        }
         let key = spec.structural_key();
-        if let Some(existing) = self.find_or_migrate_by_key(&key) {
-            // Un nœud COMPLET est réutilisé. Un nœud INCOMPLET (construction
-            // interrompue) est ABANDONNÉ explicitement : la clé est libérée et une
-            // construction fraîche la réoccupe. Détecter n'est pas récupérer ;
-            // KeyDivergence seul n'est PAS une récupération.
+        if let Some(existing) = self.find_by_key_or_legacy(&key) {
+            // Un nœud lisible est réutilisé (migration legacy EXPLICITE ensuite).
+            // Une erreur de lecture NE prouve JAMAIS un abandon : corruption,
+            // incompatibilité de version, lecture concurrente, référence
+            // temporairement inaccessible sont indistinguables. On ne SUPPRIME
+            // donc jamais ici ; on SIGNALE l'occupation. L'abandon est une
+            // décision séparée, explicite et prouvée (`abandon_incomplete`).
             match self.read_spec(existing) {
-                Ok(_) => return Ok(existing),
-                Err(_) => {
-                    self.db.delete_node(existing);
+                Ok(_) => {
+                    self.migrate_encoding(existing)?;
+                    return Ok(existing);
                 }
+                Err(_) => return Err(ResolveError::IncompleteConstruction(existing)),
             }
         }
         let id = self.db.create_node(&[LABEL_KNOWLEDGE]);
         self.db
             .set_node_property(id, KEY_CANONICAL, Value::from(key));
+        self.db
+            .set_node_property(id, KEY_STATE, Value::from("pending"));
         for m in &spec.members {
             self.db.create_edge(id, *m, EDGE_MEMBER);
         }
@@ -313,6 +367,8 @@ impl<'a> Composition<'a> {
                 self.db.create_edge(id, occ, EDGE_RELATION);
             }
         }
+        self.db
+            .set_node_property(id, KEY_STATE, Value::from("complete"));
         Ok(id)
     }
 
@@ -397,23 +453,54 @@ impl<'a> Composition<'a> {
         Ok(spec)
     }
 
-    /// Lecture d'une connaissance : reconstruit la définition puis vérifie la
-    /// cohérence de la clé persistée. Un nœud en encodage HISTORIQUE (v2) dont
-    /// la structure est valide est MIGRÉ vers v3 (clé réécrite) ; une clé
-    /// réellement divergente est REFUSÉE (`KeyDivergence`).
+    /// Lecture d'une connaissance. LECTURE SEULE : n'écrit JAMAIS (pas de
+    /// migration pendant une lecture). Accepte l'encodage courant v3 OU un
+    /// encodage historique valide (v2 original / v2 intermédiaire, compatibles
+    /// avec la structure) ; refuse toute autre clé (`KeyDivergence`).
     pub fn read_spec(&self, id: NodeId) -> Result<KnowledgeSpec, ResolveError> {
+        let spec = self.reconstruct_structure(id)?;
+        let persisted = self.structural_key_of(id);
+        if self.key_encoding_matches(&spec, persisted.as_deref()) {
+            return Ok(spec);
+        }
+        Err(ResolveError::KeyDivergence)
+    }
+
+    /// Vrai si la clé persistée est l'encodage courant OU un legacy COMPATIBLE.
+    fn key_encoding_matches(&self, spec: &KnowledgeSpec, persisted: Option<&str>) -> bool {
+        if persisted == Some(spec.structural_key().as_str()) {
+            return true;
+        }
+        [
+            spec.legacy_v2_original_key(),
+            spec.legacy_v2_intermediate_key(),
+        ]
+        .iter()
+        .flatten()
+        .any(|k| persisted == Some(k.as_str()))
+    }
+
+    /// MIGRE explicitement la clé d'une connaissance vers v3. Écriture EXPLICITE
+    /// (jamais pendant une lecture). Retourne `true` si réécrite, `false` si déjà
+    /// en v3. Refuse une clé non legacy (`KeyDivergence`) et toute écriture sur
+    /// une base en LECTURE SEULE (`ReadOnly`). Une erreur de persistance du
+    /// substrat est propagée par le substrat lui-même (pas masquée).
+    pub fn migrate_encoding(&self, id: NodeId) -> Result<bool, ResolveError> {
         let spec = self.reconstruct_structure(id)?;
         let recomputed = spec.structural_key();
         let persisted = self.structural_key_of(id);
-        if persisted.as_deref() != Some(recomputed.as_str()) {
-            if persisted.as_deref() == Some(spec.legacy_v2_key().as_str()) {
-                self.db
-                    .set_node_property(id, KEY_CANONICAL, Value::from(recomputed.clone()));
-            } else {
-                return Err(ResolveError::KeyDivergence);
-            }
+        if persisted.as_deref() == Some(recomputed.as_str()) {
+            return Ok(false);
         }
-        Ok(spec)
+        if !self.key_encoding_matches(&spec, persisted.as_deref()) {
+            return Err(ResolveError::KeyDivergence);
+        }
+        if self.db.is_read_only() {
+            return Err(ResolveError::ReadOnly);
+        }
+        self.db
+            .set_node_property(id, KEY_CANONICAL, Value::from(recomputed));
+        Ok(true)
     }
 
     /// Lit une occurrence relationnelle : type, rôle, source, destination.
@@ -529,10 +616,10 @@ impl<'a> Composition<'a> {
     }
 
     /// Trouve un nœud par clé, y compris un nœud LEGACY (clé v2) dont la
-    /// structure reconstruite donne `key` en v3 — auquel cas `construct` le
-    /// réutilisera et `read_spec` le migrera. Évite qu'une même définition soit
-    /// dupliquée après changement d'encodage.
-    fn find_or_migrate_by_key(&self, key: &str) -> Option<NodeId> {
+    /// structure reconstruite donne `key` en v3. LECTURE SEULE : ne migre pas
+    /// (la migration est explicite, via `migrate_encoding`). Évite qu'une même
+    /// définition soit dupliquée après changement d'encodage.
+    fn find_by_key_or_legacy(&self, key: &str) -> Option<NodeId> {
         if let Some(id) = self.find_by_key(key) {
             return Some(id);
         }
@@ -557,6 +644,55 @@ impl<'a> Composition<'a> {
             }
         }
         None
+    }
+
+    /// ABANDON EXPLICITE d'une construction incomplète. C'est la SEULE voie qui
+    /// supprime un nœud de composition ; JAMAIS automatique, JAMAIS fondée sur
+    /// une simple erreur de lecture. Conditions PROUVÉES, sinon refus :
+    /// - marqueur d'état EXPLICITE `pending` (construction non scellée) ;
+    /// - aucune connaissance ne le référence par une arête `child`.
+    /// Refus → `AbandonRefused` ; échec de suppression → `AbandonFailed`.
+    pub fn abandon_incomplete(&self, id: NodeId) -> Result<(), ResolveError> {
+        let Some(node) = self.db.get_node(id) else {
+            return Err(ResolveError::RootMissing(id));
+        };
+        if !node.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
+            return Err(ResolveError::RootNotKnowledge(id));
+        }
+        if self.construction_state_of(id).as_deref() != Some("pending") {
+            return Err(ResolveError::AbandonRefused(id));
+        }
+        if self.is_referenced(id) {
+            return Err(ResolveError::AbandonRefused(id));
+        }
+        if !self.db.delete_node(id) {
+            return Err(ResolveError::AbandonFailed(id));
+        }
+        Ok(())
+    }
+
+    /// État de construction explicite d'une connaissance (`pending`/`complete`).
+    pub fn construction_state_of(&self, id: NodeId) -> Option<String> {
+        let node = self.db.get_node(id)?;
+        node.properties
+            .get(&PropertyKey::from(KEY_STATE))
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+    }
+
+    /// Vrai si une AUTRE connaissance référence `id` par une arête `child`.
+    fn is_referenced(&self, id: NodeId) -> bool {
+        self.db
+            .data_store()
+            .edges_from(id, Direction::Incoming)
+            .into_iter()
+            .any(|(src, eid)| {
+                src != id
+                    && self
+                        .db
+                        .get_edge(eid)
+                        .map(|e| e.edge_type.as_str() == EDGE_CHILD)
+                        .unwrap_or(false)
+            })
     }
 
     fn find_by_key(&self, key: &str) -> Option<NodeId> {

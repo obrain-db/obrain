@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use obrain_common::types::{NodeId, Value};
+use obrain_common::types::NodeId;
 use obrain_engine::ObrainDB;
 use obrain_engine::composition::{ChildRef, Composition, KnowledgeSpec, Relation, ResolveError};
 
@@ -138,34 +138,6 @@ fn diamant_recursif_sous_connaissance_partagee() {
         assert_eq!(comp.resolve(k).unwrap(), set(&[a, b, c, d]), "resolve(K)");
         db.close().unwrap();
     }
-}
-
-#[test]
-fn interruption_de_construction_recuperee() {
-    let td = tempfile::tempdir().unwrap();
-    let db = ObrainDB::open_substrate(td.path().join("kb")).unwrap();
-    let comp = Composition::new(&db);
-    let a = db.create_node(&["fn"]);
-    let b = db.create_node(&["fn"]);
-    let spec = KnowledgeSpec {
-        members: [a, b].iter().copied().collect(),
-        children: BTreeMap::new(),
-        relations: BTreeMap::new(),
-    };
-    // Demi-né : clé v3 écrite, AUCUNE arête (construction interrompue).
-    let half = db.create_node(&["structure"]);
-    db.set_node_property(half, "canonical_key", Value::from(spec.structural_key()));
-    // Le demi-né OCCUPE la clé : read_spec refuse (pas une connaissance complète).
-    assert!(comp.read_spec(half).is_err());
-    // RÉCUPÉRATION : construct abandonne le demi-né et reconstruit proprement.
-    let k = comp.construct(&spec).expect("construct récupère");
-    assert_eq!(k, k);
-    assert!(db.get_node(half).is_none(), "demi-né abandonné (tombstoné)");
-    let r = comp
-        .read_spec(k)
-        .expect("structure complète après récupération");
-    assert_eq!(r.members, set(&[a, b]), "structure reconstruite complète");
-    db.close().unwrap();
 }
 
 #[test]
