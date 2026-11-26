@@ -3396,6 +3396,18 @@ pub struct EffetResolu {
     /// `Engage` si l'entrée de CETTE tentative est dans la chaîne canonique
     /// accessible (canonique **ou masquée**), `Indetermine` sinon.
     pub etat: ResolutionEffet,
+    /// État CANONIQUE COURANT de la clé/nœud, lu dans la MÊME boucle, sous le
+    /// MÊME verrou de nœud, que `estampille_courante` et `valeur_courante`.
+    /// Réutilise [`EtatPropriete`] — l'autorité de lecture UNIQUE, jamais une
+    /// seconde — et distingue donc EXPLICITEMENT les cinq états : `Presente`
+    /// (valeur vivante), `Absente` (clé jamais écrite), `Supprimee` (tombstone),
+    /// `RessourceInexistante` (nœud mort). Une erreur de lecture/corruption
+    /// n'apparaît PAS ici : elle remonte en `Err`, jamais convertie en absence.
+    ///
+    /// Distinction de contrat : `etat` = engagement HISTORIQUE (cette tentative
+    /// est-elle dans la chaîne canonique) ; `etat_courant` = OBSERVATION
+    /// courante de la clé/nœud, sans aucune réservation de validité future.
+    pub etat_courant: EtatPropriete,
     /// Estampille CANONIQUE COURANTE de la clé, relue maintenant. Elle diffère
     /// de celle de la tentative quand l'effet a été masqué par une écriture
     /// ultérieure — c'est la distinction « engagé et masqué » / « engagé et
@@ -3410,6 +3422,14 @@ pub struct EffetResolu {
     /// Ce n'est NI la valeur écrite par la tentative, NI une attestation de
     /// compatibilité de contenu, NI une promesse de validité au-delà de
     /// l'instant de la résolution : c'est l'état courant observé.
+    ///
+    /// COMPARAISON FLOTTANTE (documentation, pas une nouvelle API) : `Value`
+    /// dérive `PartialEq`, donc un `Float64` se compare par `==` IEEE-754, PAS
+    /// par égalité binaire. Conséquences : `NaN != NaN` (une valeur courante
+    /// `NaN` n'est jamais égale à elle-même) et `-0.0 == 0.0`. Pour une
+    /// comparaison bit-exacte, l'appelant compare lui-même `f64::to_bits` :
+    /// le substrate ne l'impose pas et `EffetResolu` ne l'applique pas — aucune
+    /// comparaison partielle n'est introduite ici.
     pub valeur_courante: Option<Value>,
 }
 
@@ -3763,10 +3783,10 @@ impl SubstrateStore {
                 reference.auteur,
                 reference.horloge,
             )?;
-            // UNE SEULE lecture `lire_etat_propriete` fournit estampille ET
-            // valeur courantes : elles sont issues de la MÊME observation sous
-            // le verrou de nœud déjà tenu — jamais une seconde autorité de
-            // lecture ni une relecture indépendante après libération.
+            // UNE SEULE lecture `lire_etat_propriete` fournit l'état canonique
+            // COMPLET (`etat_courant`) ET, dérivés de CE même résultat,
+            // l'estampille et la valeur courantes — jamais une seconde autorité
+            // de lecture ni une relecture indépendante après libération.
             //
             // CONTRAT DE LECTURE CANONIQUE : `lire_etat_propriete` distingue
             // les états légitimes (Absente, RessourceInexistante) des ERREURS
@@ -3775,20 +3795,21 @@ impl SubstrateStore {
             // une erreur de lecture n'est JAMAIS confondue avec une absence.
             // « Nœud disparu » n'est pas une erreur : c'est déjà rendu par
             // `Ok(EtatPropriete::RessourceInexistante)`, pas par un `Err`.
-            let (estampille_courante, valeur_courante) =
-                match self.lire_etat_propriete(reference.cible, cle)? {
-                    EtatPropriete::Presente { estampille, valeur } => (
-                        Some((estampille.auteur, estampille.horloge)),
-                        Some(valeur),
-                    ),
-                    EtatPropriete::Supprimee(estampille) => {
-                        (Some((estampille.auteur, estampille.horloge)), None)
-                    }
-                    EtatPropriete::Absente | EtatPropriete::RessourceInexistante => (None, None),
-                };
+            let etat_courant = self.lire_etat_propriete(reference.cible, cle)?;
+            let (estampille_courante, valeur_courante) = match &etat_courant {
+                EtatPropriete::Presente { estampille, valeur } => (
+                    Some((estampille.auteur, estampille.horloge)),
+                    Some(valeur.clone()),
+                ),
+                EtatPropriete::Supprimee(estampille) => {
+                    (Some((estampille.auteur, estampille.horloge)), None)
+                }
+                EtatPropriete::Absente | EtatPropriete::RessourceInexistante => (None, None),
+            };
             par_cle.push(EffetResolu {
                 cle: cle.clone(),
                 etat,
+                etat_courant,
                 estampille_courante,
                 valeur_courante,
             });
@@ -49058,6 +49079,20 @@ mod publication_conditionnelle_native {
         assert_eq!(e.estampille_courante, s_payload);
         assert_eq!(e.valeur_courante, v_payload);
         assert_eq!(e.valeur_courante, Some(Value::Bytes(payload1.clone())));
+        // etat_courant = la MÊME observation complète (V1), pas une seconde
+        // lecture : l'engagement historique (etat=Engage, V0) ne masque pas
+        // l'état courant observé.
+        assert_eq!(
+            e.etat_courant,
+            EtatPropriete::Presente {
+                estampille: EstampilleComplete {
+                    auteur: s_payload.expect("estampille présente").0,
+                    horloge: s_payload.expect("estampille présente").1,
+                },
+                valeur: Value::Bytes(payload1.clone()),
+            },
+            "payload : etat_courant = Presente(V1)"
+        );
 
         // OBSERVATION COURANTE — Float64.
         let (v_score, s_score) = attendu("score");
@@ -49092,6 +49127,7 @@ mod publication_conditionnelle_native {
         let id = store.create_node(&["ressource"]);
 
         let cas: Vec<(&str, Value)> = vec![
+            ("k_int", Value::Int64(42)),
             ("k_bytes", Value::Bytes((0..32u8).collect::<Vec<u8>>().into())),
             ("k_float", Value::Float64(0.25)),
         ];
@@ -49113,6 +49149,19 @@ mod publication_conditionnelle_native {
                 Some((reference.auteur(), reference.horloge()))
             );
             assert_eq!(e.valeur_courante, Some(v.clone()));
+            // etat_courant DISTINGUE l'état : Presente avec la MÊME estampille
+            // et la MÊME valeur (autorité unique, pas une seconde lecture).
+            assert_eq!(
+                e.etat_courant,
+                EtatPropriete::Presente {
+                    estampille: EstampilleComplete {
+                        auteur: reference.auteur(),
+                        horloge: reference.horloge(),
+                    },
+                    valeur: v.clone(),
+                },
+                "{cle} présente → etat_courant = Presente"
+            );
 
             // TOMBSTONE : suppression → Engage (historique) + estampille de
             // l'effacement + valeur_courante = None.
@@ -49129,6 +49178,14 @@ mod publication_conditionnelle_native {
             );
             assert_eq!(e.estampille_courante, Some(s));
             assert_eq!(e.valeur_courante, None, "tombstone → pas de valeur courante");
+            assert_eq!(
+                e.etat_courant,
+                EtatPropriete::Supprimee(EstampilleComplete {
+                    auteur: s.0,
+                    horloge: s.1,
+                }),
+                "{cle} tombstone → etat_courant = Supprimee"
+            );
 
             // ABSENTE : référence à une clé jamais écrite → Indetermine + (None, None).
             let cle_absente = format!("{cle}_jamais_ecrite");
@@ -49148,8 +49205,14 @@ mod publication_conditionnelle_native {
             assert_eq!(e.etat, ResolutionEffet::Indetermine);
             assert_eq!(e.estampille_courante, None);
             assert_eq!(e.valeur_courante, None);
+            // DISTINCTION EXPLICITE : clé jamais écrite = Absente (pas
+            // RessourceInexistante, pas une erreur).
+            assert_eq!(
+                e.etat_courant, EtatPropriete::Absente,
+                "{cle} jamais écrite → etat_courant = Absente"
+            );
         }
-        eprintln!("MATRICE_OK : présente/tombstone/absente cohérents (Bytes32 + Float64)");
+        eprintln!("MATRICE_OK : présente/tombstone/absente cohérents (Int64 + Bytes32 + Float64)");
     }
 
     /// P0 — RESSOURCE INEXISTANTE : référence dont la cible n'existe pas. La
@@ -49181,7 +49244,13 @@ mod publication_conditionnelle_native {
         assert_eq!(e.etat, ResolutionEffet::Indetermine);
         assert_eq!(e.estampille_courante, None, "nœud inexistant → pas d'estampille");
         assert_eq!(e.valeur_courante, None, "nœud inexistant → pas de valeur");
-        eprintln!("INEXISTANT_OK : cible fantôme → (None, None), jamais une erreur");
+        // DISTINCTION EXPLICITE : nœud mort = RessourceInexistante (pas Absente,
+        // pas une erreur) — la vivacité se lit sur le record du nœud.
+        assert_eq!(
+            e.etat_courant, EtatPropriete::RessourceInexistante,
+            "cible fantôme → etat_courant = RessourceInexistante"
+        );
+        eprintln!("INEXISTANT_OK : cible fantôme → RessourceInexistante, jamais une erreur");
     }
 
     /// P0 — ERREUR DE LECTURE ≠ ABSENCE : une corruption de la valeur stockée
@@ -49247,6 +49316,67 @@ mod publication_conditionnelle_native {
             "une erreur de lecture ne doit pas être convertie en absence (valeur_courante=None)"
         );
         eprintln!("ERREUR_OK : corruption → Err propagé, pas (None, None)");
+    }
+
+    /// P0 — MULTI-CLÉS : une erreur de lecture sur UNE clé produit un `Err`
+    /// GLOBAL — jamais une résolution partielle qui rendrait les autres clés
+    /// (potentiellement saines) en masquant l'échec. `resoudre_reference`
+    /// accumule les `EffetResolu` dans `par_cle` mais ne les retourne qu'en fin
+    /// de boucle : l'erreur d'une clé court-circuite le résultat entier.
+    #[test]
+    fn multi_cles_une_erreur_produit_err_globale() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+
+        // Deux clés : "saine" (Int64, lue en premier) et "corrompue" (Bytes).
+        store.set_node_property(id, "saine", Value::Int64(1));
+        store.set_node_property(
+            id,
+            "corrompue",
+            Value::Bytes((0..32u8).collect::<Vec<u8>>().into()),
+        );
+        let pre = store.capturer_precondition(id, &["saine", "corrompue"]).unwrap();
+        let prep = store
+            .preparer_transformation(
+                id,
+                &[
+                    ("saine", Value::Int64(2)),
+                    ("corrompue", Value::Bytes((100..132u8).collect::<Vec<u8>>().into())),
+                ],
+                &pre,
+                ModePublication::Strict,
+            )
+            .unwrap();
+        let reference = prep.reference_tentative();
+        store.publier_si_precondition_intacte(prep).unwrap();
+
+        // CORRUPTION de "corrompue" : on append une entrée BytesRef dont le
+        // HeapRef est hors zone, estampillée à horloge maximale (devient la
+        // plus récente en LWW). La clé "saine" reste parfaitement lisible.
+        let prop = store.prop_keys.read().lookup("corrompue").unwrap();
+        let slot = id.0 as u32;
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let corrompu = PropertyEntry::new_stamped(
+                prop,
+                PropertyValue::BytesRef(crate::page::HeapRef {
+                    page_id: u32::MAX,
+                    offset: 0,
+                }),
+                99,
+                u64::MAX,
+            );
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &corrompu)
+                .unwrap();
+        }
+
+        // La clé "saine" est intacte, mais l'échec de "corrompue" doit faire
+        // échouer TOUTE la résolution : pas de `par_cle` partiel trompeur.
+        assert!(store.resoudre_reference(&reference).is_err());
+        eprintln!("MULTICLES_ERR_OK : une clé corrompue → Err globale, pas de résolution partielle");
     }
 
     fn f64_de_capture(pre: &Precondition) -> f64 {
