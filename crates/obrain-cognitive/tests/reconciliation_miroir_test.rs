@@ -51,3 +51,48 @@ fn un_miroir_obsolete_est_reconcilie_a_temps_constant() {
     let stats2 = decay_clock::advance_all(sub.as_ref(), &law, 0, BASE).unwrap();
     assert_eq!(stats2.advanced + stats2.reconciled, 0, "miroir déjà conforme : aucune écriture");
 }
+
+
+#[test]
+fn ancre_nulle_miroir_positif_repare_vers_zero() {
+    let td = tempfile::tempdir().unwrap();
+    let sub = Arc::new(SubstrateStore::create(td.path().join("kb_a")).unwrap());
+    let n: NodeId = sub.create_node(&["n"]);
+    sub.set_node_property(n, "_cog_energy_anchor", ancre(0.0)); // valide, nulle
+    sub.set_node_energy_f32(n, 0.5).unwrap(); // miroir obsolète (positif)
+    sub.flush().unwrap();
+    let law = DecayLaw::new(H);
+    let stats = decay_clock::advance_all(sub.as_ref(), &law, 0, BASE).unwrap();
+    assert_eq!(stats.reconciled, 1, "miroir positif réparé vers zéro");
+    let miroir = sub.get_node_energy_f32(n).unwrap().unwrap();
+    assert!(miroir == 0.0, "miroir réparé à zéro : {miroir}");
+}
+
+#[test]
+fn ancre_conforme_ne_produit_aucune_ecriture() {
+    let td = tempfile::tempdir().unwrap();
+    let sub = Arc::new(SubstrateStore::create(td.path().join("kb_b")).unwrap());
+    let n: NodeId = sub.create_node(&["n"]);
+    sub.set_node_property(n, "_cog_energy_anchor", ancre(0.1));
+    // Miroir Q1.15 déjà conforme à 0,1 : round(0,1*32768)/32768 = 3277/32768.
+    let q = (0.1f32 * 32768.0).round() / 32768.0;
+    sub.set_node_energy_f32(n, q).unwrap();
+    sub.flush().unwrap();
+    let law = DecayLaw::new(H);
+    let stats = decay_clock::advance_all(sub.as_ref(), &law, 0, BASE).unwrap();
+    assert_eq!(stats.advanced + stats.reconciled, 0, "miroir conforme : aucune écriture");
+}
+
+#[test]
+fn ancre_corrompue_miroir_nul_est_signalee_sans_reparation() {
+    let td = tempfile::tempdir().unwrap();
+    let sub = Arc::new(SubstrateStore::create(td.path().join("kb_c")).unwrap());
+    let n: NodeId = sub.create_node(&["n"]);
+    sub.set_node_property(n, "_cog_energy_anchor", Value::Bytes(Arc::from(vec![1u8, 2, 3].as_slice())));
+    sub.set_node_energy_f32(n, 0.0).unwrap();
+    sub.flush().unwrap();
+    let law = DecayLaw::new(H);
+    let stats = decay_clock::advance_all(sub.as_ref(), &law, 0, BASE).unwrap();
+    assert_eq!(stats.corrupted, 1, "corruption signalée");
+    assert_eq!(stats.reconciled, 0, "pas de réparation implicite d'une ancre corrompue");
+}
