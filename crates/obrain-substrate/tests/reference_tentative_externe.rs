@@ -237,11 +237,11 @@ fn decodage_controle_refuse_les_octets_invalides() {
     let mut excedent = valide.clone();
     excedent.push(0);
     assert!(ReferenceTentative::from_bytes(&excedent).is_err());
-    // décompte d'effets absurde (4 G effets annoncés) — n_effets est à
-    // l'offset 29 : magic(0..4) version(4) auteur(5..13) horloge(13..21)
-    // cible(21..29) puis le décompte (29..33).
+    // décompte d'effets absurde (4 G effets annoncés) — en v2, n_effets est à
+    // l'offset 45 : magic(0..4) version(4) auteur(5..13) horloge(13..21)
+    // cible(21..29) domaine(29..45) puis le décompte (45..49).
     let mut absurde = valide.clone();
-    absurde[29..33].copy_from_slice(&u32::MAX.to_le_bytes());
+    absurde[45..49].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(ReferenceTentative::from_bytes(&absurde).is_err());
     // entrée vide
     assert!(ReferenceTentative::from_bytes(&[]).is_err());
