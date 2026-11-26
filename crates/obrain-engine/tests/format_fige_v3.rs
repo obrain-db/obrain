@@ -1,18 +1,21 @@
 //! LE FORMAT ON-DISK EST FIGÉ EN v0.0.1 — et ce fichier le verrouille.
 //!
 //! Deux choses sont prouvées :
-//!   1. une base créée par ce binaire porte `format_version = 3` dans
-//!      `substrate.meta` (magic `SUBSTRT\0`), et les fichiers attendus ;
+//!   1. une base créée par ce binaire porte `format_version = 4` (la version
+//!      COURANTE, arbitrage V4) dans `substrate.meta` (magic `SUBSTRT\0`),
+//!      et les fichiers attendus ;
 //!   2. la FIXTURE de référence `tests/golden/v3-mini.tgz` (écrite une fois
 //!      par ce même test, sous `OBRAIN_GOLDEN_WRITE=1`, puis commitée) se
 //!      rouvre avec ce binaire et rend exactement les comptes attendus. Une
 //!      base neuve pèse ~21 Mo de zones pré-allouées et 27 Ko compressée :
 //!      c'est l'archive qui est versionnée, extraite dans un tempdir par `tar`.
 //!
-//! Si le format change (version, layout, nom de fichier), le test 2 rougit :
-//! c'est voulu. La réponse n'est jamais « régénérer la fixture en silence »,
-//! c'est une migration dans `migration.rs::table()` ET une entrée de
-//! CHANGELOG — puis seulement une nouvelle fixture, à côté de l'ancienne.
+//! Si le format change (version, layout, nom de fichier), le témoin de base
+//! neuve (test 1) suit la version courante, et la fixture V3 (test 2) rougit
+//! si elle ne se rouvre plus : c'est voulu. La réponse n'est jamais
+//! « régénérer la fixture en silence », c'est une migration dans
+//! `migration.rs::table()` ET une entrée de CHANGELOG — puis seulement une
+//! nouvelle fixture, à côté de l'ancienne.
 //!
 //! La fixture est EXTRAITE dans un répertoire temporaire avant ouverture : un
 //! `open` rejoue le WAL, pose un verrou et peut écrire un checkpoint — rien
@@ -23,7 +26,12 @@ use obrain_common::types::Value;
 use obrain_engine::ObrainDB;
 use std::path::{Path, PathBuf};
 
-const VERSION_FIGEE: u32 = 3;
+/// Version de format des FIXTURES V3 historiques : leur témoin de lecture,
+/// migration et conservation des données reste verrouillé sur 3 (le format
+/// qu'elles portent sur disque), indépendamment de la version COURANTE.
+const VERSION_FIXTURE_V3: u32 = 3;
+/// Version de format écrite par ce binaire pour une base NEUVE (arbitrage V4).
+const VERSION_NEUVE: u32 = 4;
 const MAGIC: &[u8; 8] = b"SUBSTRT\0";
 
 fn golden_tgz() -> PathBuf {
@@ -82,7 +90,7 @@ fn version_meta(dir: &Path) -> (Vec<u8>, u32) {
 }
 
 #[test]
-fn une_base_neuve_porte_le_format_3_et_ses_fichiers() {
+fn une_base_neuve_porte_le_format_4_et_ses_fichiers() {
     let td = tempfile::tempdir().unwrap();
     let dir = td.path().join("base");
     {
@@ -92,7 +100,7 @@ fn une_base_neuve_porte_le_format_3_et_ses_fichiers() {
     }
     let (magic, version) = version_meta(&dir);
     assert_eq!(&magic[..], MAGIC, "magic de substrate.meta");
-    assert_eq!(version, VERSION_FIGEE, "format_version de substrate.meta");
+    assert_eq!(version, VERSION_NEUVE, "format_version de substrate.meta");
     for f in [
         "substrate.meta",
         "substrate.nodes",
@@ -133,7 +141,7 @@ fn la_fixture_de_reference_v3_se_rouvre_et_rend_les_memes_comptes() {
     let (magic, version) = version_meta(&copie);
     assert_eq!(&magic[..], MAGIC);
     assert_eq!(
-        version, VERSION_FIGEE,
+        version, VERSION_FIXTURE_V3,
         "la fixture n'est plus au format figé : migration + CHANGELOG, pas de régénération silencieuse"
     );
     let db = ObrainDB::open(&copie).expect("la fixture v3 doit s'ouvrir avec ce binaire");
@@ -264,7 +272,7 @@ fn la_fixture_v3_avec_un_opcode_futur_est_refusee_en_le_nommant() {
     let (magic, version) = version_meta(&copie);
     assert_eq!(&magic[..], MAGIC);
     assert_eq!(
-        version, VERSION_FIGEE,
+        version, VERSION_FIXTURE_V3,
         "la fixture est au format figé v3 : seul le WAL vient du futur"
     );
     let wal = copie.join("substrate.wal");

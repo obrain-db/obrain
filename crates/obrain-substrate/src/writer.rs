@@ -197,6 +197,7 @@ fn interpret_engram_weights(
     bits: &[u32],
 ) -> SubstrateResult<Vec<f32>> {
     use crate::engram::EngramZone;
+    use crate::error::EngramIncoherence;
     let m = members.len();
     if bits.len() == m {
         // NON LIÉ (legacy, `set_engram_weights` 0x76) : état pondéré NON
@@ -206,10 +207,7 @@ fn interpret_engram_weights(
         // disparu. Refus nommé — jamais de fallback positionnel silencieux.
         return Err(crate::SubstrateError::EngramIncoherent {
             engram_id,
-            raison: format!(
-                "poids non liés (legacy positionnel) : {m} membres, {m} poids sans empreinte — \
-                 réassociation par position refusée"
-            ),
+            incoherence: EngramIncoherence::PoidsNonLies { membres: m },
         });
     }
     if bits.len() == m + EngramZone::WEIGHTS_FP_U32S {
@@ -224,14 +222,18 @@ fn interpret_engram_weights(
         }
         return Err(crate::SubstrateError::EngramIncoherent {
             engram_id,
-            raison: format!(
-                "les poids sont liés à d'autres membres (empreinte {stored:#016x} != {actual:#016x})"
-            ),
+            incoherence: EngramIncoherence::EmpreinteDivergente {
+                empreinte_stockee: stored,
+                empreinte_attendue: actual,
+            },
         });
     }
     Err(crate::SubstrateError::EngramIncoherent {
         engram_id,
-        raison: format!("cardinalité incohérente : {m} membres, {} poids", bits.len()),
+        incoherence: EngramIncoherence::CardinaliteIncoherente {
+            membres: m,
+            poids: bits.len(),
+        },
     })
 }
 

@@ -105,7 +105,7 @@ pub use engram::{
 };
 pub use engram_bitset::{BITSET_ENTRY_SIZE, EngramBitsetColumn, engram_bit_mask};
 pub use engram_recall::{scan_overlap, scan_overlap_scalar, top_k_by_overlap};
-pub use error::{SubstrateError, SubstrateResult};
+pub use error::{EngramIncoherence, SubstrateError, SubstrateResult};
 pub use file::{SubstrateFile, Zone, ZoneFile, zone};
 pub use geometric::{
     CsrAdjacency, HKS_DT, HKS_HUTCHINSON_PROBES, HKS_T_GLOBAL, HKS_T_LOCAL, HKS_T_MESO,

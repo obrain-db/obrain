@@ -42,7 +42,7 @@ use super::types::{Engram, EngramId};
 
 #[cfg(feature = "substrate")]
 use obrain_substrate::{
-    SubstrateError, SubstrateResult, Writer as SubstrateWriter, engram_bit_mask,
+    EngramIncoherence, SubstrateError, SubstrateResult, Writer as SubstrateWriter, engram_bit_mask,
 };
 #[cfg(feature = "substrate")]
 use parking_lot::RwLock as PlRwLock;
@@ -531,6 +531,30 @@ impl EngramStore {
             let (members, weights) = match writer.read_engram_state(eid_u16) {
                 Ok(Some(v)) => v,
                 Ok(None) => continue, // slot vide
+                Err(SubstrateError::EngramIncoherent {
+                    incoherence: EngramIncoherence::CardinaliteIncoherente { membres, poids },
+                    ..
+                }) => {
+                    // Incohérence STRUCTURELLE membres↔poids (cardinalité
+                    // incohérente) : rejetée avec sa cause DÉDIÉE, jamais une
+                    // erreur de lecture. Identifiant réservé (jamais réalloué),
+                    // engramme en quarantaine, aucun poids inventé.
+                    tracing::error!(
+                        engram_id = eid_u16,
+                        membres = membres,
+                        poids = poids,
+                        "incohérence membres/poids : engramme en quarantaine (aucun poids inventé)"
+                    );
+                    max_id = max_id.max(eid_u16 as u64);
+                    report.rejected.push((
+                        EngramId(eid_u16 as u64),
+                        RejectCause::InconsistentWeights {
+                            members: membres,
+                            weights: poids,
+                        },
+                    ));
+                    continue;
+                }
                 Err(e) => {
                     // Zone corrompue : on RÉSERVE l'identifiant (pour ne jamais
                     // le réallouer) et on met l'engramme en quarantaine.

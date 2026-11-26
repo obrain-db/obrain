@@ -90,7 +90,7 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use crate::error::{SubstrateError, SubstrateResult};
+use crate::error::{EngramIncoherence, SubstrateError, SubstrateResult};
 use crate::file::zone;
 use crate::meta::{SUBSTRATE_FORMAT_VERSION, SUBSTRATE_MAGIC, meta_flags};
 use crate::record::{NODES_ZONE_V3_MAGIC, NodeRecord, U48, node_flags};
@@ -328,14 +328,24 @@ fn migration_3_vers_4(dir: &Path) -> SubstrateResult<()> {
                 continue;
             }
         }
-        // CORROMPU : cardinalité incohérente ou empreinte en contradiction.
+        // CORROMPU : cardinalité incohérente OU empreinte en contradiction.
+        // Classifié comme à la lecture (interpréteur V4) : la cardinalité
+        // incohérente est une incohérence STRUCTURELLE, l'empreinte divergente
+        // une corruption d'association.
+        let incoherence = if bits.len() == m_len + EngramZone::WEIGHTS_FP_U32S {
+            EngramIncoherence::EmpreinteDivergente {
+                empreinte_stockee: (bits[0] as u64) | ((bits[1] as u64) << 32),
+                empreinte_attendue: EngramZone::fingerprint_members(m),
+            }
+        } else {
+            EngramIncoherence::CardinaliteIncoherente {
+                membres: m_len,
+                poids: bits.len(),
+            }
+        };
         return Err(SubstrateError::EngramIncoherent {
             engram_id: id,
-            raison: format!(
-                "migration V3→V4 : poids d'engramme corrompus ({} membres, {} lanes)",
-                m_len,
-                bits.len()
-            ),
+            incoherence,
         });
     }
     Ok(())

@@ -2,6 +2,58 @@
 
 use thiserror::Error;
 
+/// Classification structurée d'une incohérence membres/poids d'engramme.
+///
+/// Trois familles disjointes, matchables sans décoder un message textuel :
+/// - [`EngramIncoherence::PoidsNonLies`] — état pondéré NON QUALIFIÉ (legacy
+///   positionnel 0x76) : la cardinalité coïncide avec celle des membres mais
+///   aucune identité n'est enregistrée ; réassocier par position serait faux.
+/// - [`EngramIncoherence::EmpreinteDivergente`] — poids liés à d'AUTRES
+///   membres (empreinte en contradiction avec les membres courants) :
+///   corruption d'association.
+/// - [`EngramIncoherence::CardinaliteIncoherente`] — incohérence STRUCTURELLE
+///   membres↔poids : les longueurs comptables diffèrent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngramIncoherence {
+    /// Poids non liés (legacy positionnel) : `membres` membres et autant de
+    /// poids, mais aucune empreinte d'identité enregistrée.
+    PoidsNonLies { membres: usize },
+    /// Poids liés à d'autres membres : l'empreinte stockée ne correspond pas
+    /// à celle des membres courants.
+    EmpreinteDivergente {
+        /// Empreinte lue en tête de la zone des poids.
+        empreinte_stockee: u64,
+        /// Empreinte recalculée depuis les membres courants.
+        empreinte_attendue: u64,
+    },
+    /// Cardinalité incohérente : `membres` membres, `poids` poids lus.
+    CardinaliteIncoherente { membres: usize, poids: usize },
+}
+
+impl std::fmt::Display for EngramIncoherence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PoidsNonLies { membres } => write!(
+                f,
+                "poids non liés (legacy positionnel) : {membres} membres, {membres} poids \
+                 sans empreinte — réassociation par position refusée"
+            ),
+            Self::EmpreinteDivergente {
+                empreinte_stockee,
+                empreinte_attendue,
+            } => write!(
+                f,
+                "les poids sont liés à d'autres membres (empreinte {empreinte_stockee:#016x} \
+                 != {empreinte_attendue:#016x})"
+            ),
+            Self::CardinaliteIncoherente { membres, poids } => write!(
+                f,
+                "cardinalité incohérente : {membres} membres, {poids} poids"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SubstrateError {
     #[error("I/O error: {0}")]
@@ -305,10 +357,13 @@ pub enum SubstrateError {
     /// d'un membre disparu. La lecture refuse donc, en nommant la cause, au
     /// lieu de réassocier en silence.
     #[error(
-        "engram {engram_id} : état membres/poids incohérent ({raison}) — lecture refusée \
+        "engram {engram_id} : état membres/poids incohérent ({incoherence}) — lecture refusée \
          (pas de réassociation par position)"
     )]
-    EngramIncoherent { engram_id: u16, raison: String },
+    EngramIncoherent {
+        engram_id: u16,
+        incoherence: EngramIncoherence,
+    },
 
     /// Une référence de tentative ne peut pas être ATTRIBUÉE en l'état — cas
     /// nommé : le chemin de préparation différée, où l'estampille n'existe
