@@ -9,7 +9,7 @@ use std::sync::Arc;
 use obrain_cognitive::InMemoryVectorIndex;
 use obrain_cognitive::engram::{EngramManager, EngramManagerConfig, EngramObservationBridge};
 use obrain_common::types::{EdgeId, NodeId};
-use obrain_reactive::{EdgeSnapshot, MutationEvent, NodeSnapshot};
+use obrain_reactive::{EdgeSnapshot, MutationEvent, MutationListener, NodeSnapshot};
 
 fn manager() -> Arc<EngramManager> {
     Arc::new(EngramManager::new(
