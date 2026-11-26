@@ -104,7 +104,10 @@ pub struct KnowledgeSpec {
     pub members: BTreeSet<NodeId>,
     /// Sous-connaissances référencées : MULTIPLICITÉ de (cible, rôle). Deux
     /// occurrences de même cible ET même rôle ont une multiplicité de 2 — elles
-    /// ne fusionnent pas.
+    /// ne fusionnent pas. Ce champ porte la CARDINALITÉ (combien d'occurrences),
+    /// PAS l'identité INDIVIDUELLE d'une occurrence : une occurrence n'a pas
+    /// d'identifiant propre au-delà de son appartenance à la multiplicité. La
+    /// projection ensembliste (`projection_children`) ne retient que les cibles.
     pub children: BTreeMap<ChildRef, usize>,
     /// Relations orientées : MULTIPLICITÉ de (type, src, dst, rôle). Deux
     /// occurrences identiques ont une multiplicité de 2.
