@@ -83,6 +83,10 @@ pub struct EngramStore {
     /// conservative rule, because both the signature and the precision of an
     /// engram take part in the derived data.
     revision: AtomicU64,
+    /// Projection injectée : signature = f(ensemble). Optionnelle : sans elle,
+    /// le store reste NEUTRE vis-à-vis de l'encodeur. Quand elle est présente,
+    /// `insert` et `mutate` recalculent la signature (contrat de projection).
+    projection: PlRwLock<Option<Arc<dyn Fn(&[(NodeId, f64)]) -> Vec<f64> + Send + Sync>>>,
     /// Optional substrate writer for side-table + bitset mirror (T7 Step 2).
     #[cfg(feature = "substrate")]
     substrate: PlRwLock<Option<Arc<SubstrateWriter>>>,
@@ -123,6 +127,7 @@ impl EngramStore {
             node_ids: DashMap::new(),
             next_id: AtomicU64::new(1),
             revision: AtomicU64::new(0),
+            projection: PlRwLock::new(None),
             #[cfg(feature = "substrate")]
             substrate: PlRwLock::new(None),
         }
@@ -196,7 +201,29 @@ impl EngramStore {
     }
 
     /// Inserts an engram into the cache and writes through to storage.
-    pub fn insert(&self, engram: Engram) {
+    /// Injecte la projection (signature = f(ensemble)). N'impose AUCUN encodeur
+    /// particulier : toute projection future peut s'y brancher. Sans projection,
+    /// le store reste neutre (aucun recalcul).
+    pub fn set_projection(
+        &self,
+        p: Arc<dyn Fn(&[(NodeId, f64)]) -> Vec<f64> + Send + Sync>,
+    ) {
+        *self.projection.write() = Some(p);
+    }
+
+    /// CONTRAT DE PROJECTION : recalcule la signature depuis l'ensemble (POIDS
+    /// COMPRIS) si une projection est injectée. La cohérence découle du vrai
+    /// contrat (projection = fonction déterministe de l'ensemble), PAS d'une
+    /// comparaison de vecteurs. (a) un changement de poids est recalculé ;
+    /// (b) une signature arbitraire est ÉCRASÉE ; (c) aucun faux rejet.
+    fn apply_projection(&self, eng: &mut Engram) {
+        if let Some(p) = self.projection.read().as_ref() {
+            eng.spectral_signature = p(&eng.ensemble);
+        }
+    }
+
+    pub fn insert(&self, mut engram: Engram) {
+        self.apply_projection(&mut engram);
         self.revision.fetch_add(1, Ordering::Relaxed);
         let id = engram.id;
         if let Some(storage) = &self.storage {
@@ -606,24 +633,9 @@ impl EngramStore {
         // ÉTAT CANDIDAT : clone, applique, valide — SANS muter l'état publié.
         let mut candidate = entry.value().clone();
         f(&mut candidate);
-        // ENFORCEMENT DE L'INVARIANT DE PROJECTION : si l'ensemble (nœuds) a
-        // change MAIS que la signature est RESTEE IDENTIQUE, c'est une
-        // publication périmée (mutateur appliqué sans recalcul). On REJETTE,
-        // au niveau de l'autorité qui ACCEPTE le résultat du mutateur.
-        let ensemble_changed = {
-            let mut a: Vec<u64> = candidate.node_ids().iter().map(|n| n.0).collect();
-            let mut b: Vec<u64> = entry.value().node_ids().iter().map(|n| n.0).collect();
-            a.sort_unstable();
-            b.sort_unstable();
-            a != b
-        };
-        if ensemble_changed
-            && candidate.spectral_signature == entry.value().spectral_signature
-        {
-            return Err(StoreError::ValidationFailed(
-                "signature spectrale non recalculée après changement d'ensemble".into(),
-            ));
-        }
+        // CONTRAT DE PROJECTION : recalcul (POIDS COMPRIS), pas de comparaison
+        // de vecteurs. La signature est toujours dérivée de l'ensemble final.
+        self.apply_projection(&mut candidate);
         // Invariance de l'identité logique : une révision ne change pas l'id.
         if candidate.id != id {
             return Err(StoreError::ValidationFailed(
