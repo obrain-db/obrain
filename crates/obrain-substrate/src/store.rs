@@ -3158,6 +3158,21 @@ pub enum IssuePublication {
     ConflitPrecondition,
 }
 
+/// Résultat d'une consultation HISTORIQUE d'un effet (par identité de tentative
+/// `(auteur, horloge)`), limitée à l'histoire accessible depuis la tête
+/// canonique. Une page privée orpheline n'est JAMAIS une preuve d'engagement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolutionEffet {
+    /// L'entrée figure dans la chaîne canonique accessible : l'effet a été
+    /// ENGAGÉ (qu'il soit aujourd'hui canonique ou masqué par une écriture
+    /// ultérieure).
+    Engage,
+    /// L'entrée est absente de l'histoire accessible : soit jamais engagé, soit
+    /// retirée par compaction. INDÉTERMINÉ — pas une attestation d'absence
+    /// définitive.
+    Indetermine,
+}
+
 /// Mode de publication : détermine si les propriétés ÉCRITES mais non DÉCLARÉES
 /// comme dépendances sont permises (LWW) ou refusées (Strict).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3225,6 +3240,10 @@ impl TransformationPrete {
     #[cfg(test)]
     pub(crate) fn tete_privee_pour_test(&self) -> u64 {
         self.tete_privee
+    }
+    #[cfg(test)]
+    pub(crate) fn horloge_effet_pour_test(&self) -> u64 {
+        self.horloge_effet
     }
 }
 
@@ -3322,6 +3341,48 @@ impl SubstrateStore {
             let valeur = decode_value(&pz, &entry.value)?;
             Ok(EtatPropriete::Presente { estampille, valeur })
         }
+    }
+
+    /// Consultation HISTORIQUE d'un effet par identité de tentative
+    /// `(auteur, horloge)` : parcourt la chaîne CANONIQUE (depuis `first_prop_off`)
+    /// et cherche une entrée estampillée correspondant à cette clé. Une entrée
+    /// préparée mais NON engagée (page privée orpheline) n'est pas atteinte.
+    /// Un effet engagé puis masqué reste dans la chaîne : `Engage`. L'absence
+    /// dans l'histoire accessible (jamais engagé OU compacté) est `Indetermine`.
+    pub fn resoudre_effet_historique(
+        &self,
+        cible: NodeId,
+        key: &str,
+        auteur: u64,
+        horloge: u64,
+    ) -> SubstrateResult<ResolutionEffet> {
+        let Some(pz_lock) = self.props_zone.as_ref() else {
+            return Err(SubstrateError::Internal(
+                "resoudre_effet_historique : pas de props_zone".to_string(),
+            ));
+        };
+        if !self.is_live_on_disk(cible) {
+            return Ok(ResolutionEffet::Indetermine);
+        }
+        let rec = self.writer.read_node(cible.0 as u32)?.ok_or_else(|| {
+            SubstrateError::Internal("resoudre_effet_historique : nœud absent".to_string())
+        })?;
+        let tete = (rec.first_prop_off.to_u64() != 0).then(|| rec.first_prop_off.to_u64());
+        let Some(prop_key_id) = self.prop_keys.read().lookup(key) else {
+            return Ok(ResolutionEffet::Indetermine);
+        };
+        let pz = pz_lock.read();
+        let mut trouve = false;
+        pz.walk_chain_unite_avec_tombstones(tete, |e| {
+            if e.prop_key == prop_key_id && e.auteur == Some(auteur) && e.horloge == Some(horloge) {
+                trouve = true;
+            }
+        })?;
+        Ok(if trouve {
+            ResolutionEffet::Engage
+        } else {
+            ResolutionEffet::Indetermine
+        })
     }
 
     /// Capture COHÉRENTE de plusieurs propriétés d'un nœud sous le verrou
@@ -48077,6 +48138,89 @@ mod publication_conditionnelle_native {
         let id3 = prep3.empreinte();
         assert_ne!(id1, id3, "effet différent → empreinte différente");
         eprintln!("EMPREINTE_OK : empreinte stable entre tentatives, distincte selon l'effet");
+    }
+
+    /// P0-B — RÉSOLUTION HISTORIQUE : distingue préparation privée (page
+    /// orpheline, jamais engagée) de l'engagement réel, et atteste un effet
+    /// engagé puis masqué par une écriture ultérieure.
+    #[test]
+    fn resolution_historique_distingue_preparation_et_engagement() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let auteur = store.writer_id;
+
+        // A : préparation privée SANS publication → Indetermine (page orpheline)
+        let pre = precond(&store, id);
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
+        let horloge_orpheline = prep.horloge_effet_pour_test();
+        assert_eq!(
+            store.resoudre_effet_historique(id, "a", auteur, horloge_orpheline).unwrap(),
+            ResolutionEffet::Indetermine,
+            "A : préparation privée non engagée → indéterminé"
+        );
+
+        // B : publication réelle → Engage
+        let pre2 = precond(&store, id);
+        let prep2 = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre2, ModePublication::Lww)
+            .unwrap();
+        let horloge_engagee = prep2.horloge_effet_pour_test();
+        let r = store.publier_si_precondition_intacte(prep2).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale);
+        assert_eq!(
+            store.resoudre_effet_historique(id, "a", auteur, horloge_engagee).unwrap(),
+            ResolutionEffet::Engage,
+            "B : publication réelle → engagé"
+        );
+
+        // C : remplacement ultérieur → l'effet reste historiquement engagé (masqué)
+        store.set_node_property(id, "a", Value::Int64(99));
+        assert_eq!(
+            store.resoudre_effet_historique(id, "a", auteur, horloge_engagee).unwrap(),
+            ResolutionEffet::Engage,
+            "C : masqué par une écriture ultérieure mais historiquement engagé"
+        );
+        eprintln!("RESOLUTION_OK : préparation privée ≠ engagement, masquage ≠ absence");
+    }
+
+    /// P0-B — H3 : publication réelle, réponse perdue, résolution après
+    /// réouverture SANS republier, puis masquage ultérieur.
+    #[test]
+    fn h3_publication_reelle_reponse_perdue() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (auteur, horloge) = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = store.create_node(&["ressource"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            store.set_node_property(id, "b", Value::Int64(2));
+            let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+            let prep = store
+                .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Strict)
+                .unwrap();
+            let auteur = store.writer_id;
+            let horloge = prep.horloge_effet_pour_test();
+            // réponse « perdue » : le verdict n'est pas reçu, mais l'engagement a eu lieu
+            let _verdict_perdu = store.publier_si_precondition_intacte(prep).unwrap();
+            store.close().unwrap();
+            (auteur, horloge)
+        };
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        let id = NodeId(1);
+        // résolution SANS republier
+        let res = store2.resoudre_effet_historique(id, "a", auteur, horloge).unwrap();
+        assert_eq!(res, ResolutionEffet::Engage, "H3 : l'engagement est attesté après réouverture, réponse perdue");
+        // masquage ultérieur : l'historique atteste toujours l'engagement
+        store2.set_node_property(id, "a", Value::Int64(99));
+        assert_eq!(
+            store2.resoudre_effet_historique(id, "a", auteur, horloge).unwrap(),
+            ResolutionEffet::Engage,
+            "H3 : masqué mais l'événement historique reste attesté"
+        );
+        eprintln!("H3_OK : réponse perdue résolue par consultation historique sans republier");
     }
 
     /// P0 — écriture répétée d'une même clé : refusée à la préparation.
