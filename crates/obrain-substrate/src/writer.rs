@@ -175,6 +175,52 @@ pub(crate) struct SimplexZones<'a> {
 /// État cohérent d'un engramme : membres (u32) + poids optionnels (f32).
 pub type EngramState = (Vec<u32>, Option<Vec<f32>>);
 
+/// Interprète le payload brut de la zone des poids pour un engramme dont les
+/// membres sont connus. Deux formes coexistent :
+///
+///  - NON LIÉE (legacy, `set_engram_weights` 0x76, ou rejeu) : `[w1..wN]`,
+///    `len == membres.len()`. Les poids sont réassociés PAR POSITION — la
+///    seule lecture possible sans identité enregistrée.
+///  - LIÉE (nouveau moteur, `set_engram_state` 0x77) : `[fp_lo, fp_hi, w1..wN]`,
+///    `len == membres.len() + 2`. L'empreinte est vérifiée contre les membres
+///    courants : une mutation des membres SANS réécriture des poids (chemin
+///    « membres seuls ») laisse une empreinte périmée, donc un refus.
+///
+/// Toute autre longueur (cardinalité incohérente) est un refus nommé.
+fn interpret_engram_weights(
+    engram_id: u16,
+    members: &[u32],
+    bits: &[u32],
+) -> SubstrateResult<Vec<f32>> {
+    use crate::engram::EngramZone;
+    let m = members.len();
+    if bits.len() == m {
+        // Non lié : cardinalité cohérente, réassociation positionnelle.
+        return Ok(bits.iter().map(|b| f32::from_bits(*b)).collect());
+    }
+    if bits.len() == m + EngramZone::WEIGHTS_FP_U32S {
+        // Lié : vérifie l'IDENTITÉ (empreinte), pas seulement la position.
+        let stored = (bits[0] as u64) | ((bits[1] as u64) << 32);
+        let actual = EngramZone::fingerprint_members(members);
+        if stored == actual {
+            return Ok(bits[EngramZone::WEIGHTS_FP_U32S..]
+                .iter()
+                .map(|b| f32::from_bits(*b))
+                .collect());
+        }
+        return Err(crate::SubstrateError::EngramIncoherent {
+            engram_id,
+            raison: format!(
+                "les poids sont liés à d'autres membres (empreinte {stored:#016x} != {actual:#016x})"
+            ),
+        });
+    }
+    Err(crate::SubstrateError::EngramIncoherent {
+        engram_id,
+        raison: format!("cardinalité incohérente : {m} membres, {} poids", bits.len()),
+    })
+}
+
 impl Writer {
     /// Construct a writer. The WAL is opened at `substrate.wal_path()`.
     pub fn new(substrate: SubstrateFile, sync_mode: SyncMode) -> SubstrateResult<Self> {
@@ -2732,7 +2778,7 @@ impl Writer {
             obrain_common::utils::panne::point_etat_engram(0);
             crate::engram::EngramZone::set_members_raw(mz, engram_id, &members)?;
             obrain_common::utils::panne::point_etat_engram(1);
-            crate::engram::EngramZone::set_weights_raw(wz, engram_id, &weights)
+            crate::engram::EngramZone::set_weights_bound(wz, engram_id, &members, &weights)
         })
     }
 
@@ -2770,9 +2816,17 @@ impl Writer {
         engram_id: u16,
     ) -> SubstrateResult<Option<EngramState>> {
         self.with_engram_state_zones(|mz, wz| {
-            let members = crate::engram::EngramZone::members(mz, engram_id)?;
-            let weights = crate::engram::EngramZone::weights(wz, engram_id)?;
-            Ok(members.map(|m| (m, weights)))
+            let Some(members) = crate::engram::EngramZone::members(mz, engram_id)? else {
+                return Ok(None);
+            };
+            // Payload brut de la zone des poids (bits u32), PAS les f32 : la
+            // forme LIÉE porte une empreinte en tête qu'il faut interpréter.
+            let Some(bits) = crate::engram::EngramZone::members(wz, engram_id)? else {
+                // Base legacy : membres présents, zone de poids jamais écrite.
+                return Ok(Some((members, None)));
+            };
+            let weights = interpret_engram_weights(engram_id, &members, &bits)?;
+            Ok(Some((members, Some(weights))))
         })
     }
 

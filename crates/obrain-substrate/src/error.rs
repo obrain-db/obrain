@@ -295,6 +295,20 @@ pub enum SubstrateError {
     /// public error API.
     #[error("substrate invariant violated: {0}")]
     Internal(String),
+    /// ── LECTURE D'UN ÉTAT D'ENGRAMME INCOHÉRENT : REFUS NOMMÉ ───────────
+    ///
+    /// Les poids d'un engramme sont liés à l'IDENTITÉ des membres (empreinte
+    /// 64 bits), pas à leur position. Un écrivain qui mute les membres sans
+    /// réécrire les poids (chemin « membres seuls », 0x70) laisse une
+    /// empreinte périmée dans la zone des poids ; réassocier les poids PAR
+    /// POSITION ferait hériter silencieusement à un membre nouveau le poids
+    /// d'un membre disparu. La lecture refuse donc, en nommant la cause, au
+    /// lieu de réassocier en silence.
+    #[error(
+        "engram {engram_id} : état membres/poids incohérent ({raison}) — lecture refusée \
+         (pas de réassociation par position)"
+    )]
+    EngramIncoherent { engram_id: u16, raison: String },
 
     /// Une référence de tentative ne peut pas être ATTRIBUÉE en l'état — cas
     /// nommé : le chemin de préparation différée, où l'estampille n'existe

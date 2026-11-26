@@ -188,6 +188,48 @@ impl EngramZone {
         Self::set_members_raw(zf, engram_id, &bits)
     }
 
+    /// Nombre de lanes u32 que l'empreinte occupe en tête d'un snapshot de
+    /// poids LIÉ (voir [`Self::set_weights_bound`]) : 2 lanes = un u64.
+    pub const WEIGHTS_FP_U32S: usize = 2;
+
+    /// Empreinte 64 bits des membres d'un engramme (FNV-1a sur les u32
+    /// little-endian). L'ORDRE compte : les poids sont positionnels, donc une
+    /// permutation de membres change l'empreinte.
+    pub fn fingerprint_members(members: &[u32]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &m in members {
+            for b in m.to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        h
+    }
+
+    /// Écrire les poids (f32) d'un engramme LIÉS à l'IDENTITÉ des membres : le
+    /// snapshot payload est `[fp_lo, fp_hi, w1_bits, .., wN_bits]`. Le lecteur
+    /// (`Writer::read_engram_state`) vérifie l'empreinte contre les membres
+    /// courants ; un écrivain qui mute les membres SANS réécrire les poids
+    /// (chemin « membres seuls ») laisse une empreinte périmée, donc une
+    /// lecture refusée. Une suppression (membres vides) vide la zone.
+    pub fn set_weights_bound(
+        zf: &mut ZoneFile,
+        engram_id: u16,
+        members: &[u32],
+        weights: &[f32],
+    ) -> SubstrateResult<()> {
+        if members.is_empty() {
+            // Suppression atomique ([], []) : les deux zones se vident.
+            return Self::set_members_raw(zf, engram_id, &[]);
+        }
+        let fp = Self::fingerprint_members(members);
+        let mut payload: Vec<u32> = Vec::with_capacity(weights.len() + Self::WEIGHTS_FP_U32S);
+        payload.push((fp & 0xFFFF_FFFF) as u32);
+        payload.push((fp >> 32) as u32);
+        payload.extend(weights.iter().map(|w| w.to_bits()));
+        Self::set_members_raw(zf, engram_id, &payload)
+    }
+
     /// Lire les poids (f32) d'un engramme, dans le même ordre que les membres.
     pub fn weights(zf: &ZoneFile, engram_id: u16) -> SubstrateResult<Option<Vec<f32>>> {
         Ok(Self::members(zf, engram_id)?.map(|ids| ids.into_iter().map(f32::from_bits).collect()))

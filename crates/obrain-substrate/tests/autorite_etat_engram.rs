@@ -468,9 +468,10 @@ fn enfant_ecrit_l_etat_puis_meurt_dans_la_fenetre() {
 }
 
 /// Tue l'enfant aux DEUX points de la fenêtre, puis vérifie trois choses :
-/// (a) le dérivé seul est bien ce qu'on croit (A intact, ou le MÉLANGE membres
-///     neufs + poids anciens — c'est la preuve que la fenêtre est réelle et que
-///     le banc n'est pas vide) ;
+/// (a) le dérivé seul est bien ce qu'on croit (A intact au point 0 ; au point 1
+///     les membres neufs sont écrits mais pas les poids, donc `read_engram_state`
+///     REFUSE le demi-état — la preuve que la fenêtre est réelle et que le banc
+///     n'est pas vide) ;
 /// (b) le rejeu rend le couple COMPLET de B, jamais un mélange ;
 /// (c) le journal ne porte que les deux états demandés (A puis B).
 #[test]
@@ -482,17 +483,9 @@ fn le_couple_membres_poids_survit_a_une_panne_dans_la_fenetre() {
     let b = (vec![7u32, 8], Some(vec![0.75f32, 0.25]));
     let melange = (vec![7u32, 8], Some(vec![0.1f32, 0.2, 0.3]));
 
-    for (rang, apres_le_point, attendu_brut) in [
-        (
-            0u64,
-            "le record est journalisé, aucune zone touchée",
-            a.clone(),
-        ),
-        (
-            1u64,
-            "les membres sont écrits, les poids ne le sont pas",
-            melange.clone(),
-        ),
+    for (rang, apres_le_point) in [
+        (0u64, "le record est journalisé, aucune zone touchée"),
+        (1u64, "les membres sont écrits, les poids ne le sont pas"),
     ] {
         let td = tempfile::tempdir().expect("tempdir");
         let base = td.path().join("kb");
@@ -522,11 +515,33 @@ fn le_couple_membres_poids_survit_a_une_panne_dans_la_fenetre() {
         );
 
         // (a) Le dérivé seul : la fenêtre est RÉELLE.
-        assert_eq!(
-            etat_brut(&base, 9),
-            Some(attendu_brut),
-            "point {rang} ({apres_le_point}) : état des zones avant rejeu"
-        );
+        if rang == 0 {
+            // Rien n'a été écrit : l'état A (cohérent) se relit tel quel.
+            assert_eq!(
+                etat_brut(&base, 9),
+                Some(a.clone()),
+                "point {rang} ({apres_le_point}) : état des zones avant rejeu"
+            );
+        } else {
+            // Les membres neufs sont écrits, pas les poids : le couple est
+            // INCOHÉRENT, donc `read_engram_state` REFUSE (plus de réassociation
+            // silencieuse par position). On observe les deux faces séparément
+            // pour prouver que la panne est tombée DANS la fenêtre.
+            let sub = SubstrateFile::open(&base).expect("ouvrir");
+            let w = Writer::new(sub, SyncMode::Never).expect("writer");
+            assert_eq!(
+                w.engram_members(9).unwrap(),
+                Some(vec![7u32, 8]),
+                "point {rang} ({apres_le_point}) : les membres neufs sont bien écrits"
+            );
+            assert!(
+                matches!(
+                    w.read_engram_state(9),
+                    Err(SubstrateError::EngramIncoherent { .. })
+                ),
+                "point {rang} ({apres_le_point}) : le couple incohérent doit être REFUSÉ"
+            );
+        }
 
         // (b) Le journal fait autorité : le couple COMPLET de B.
         let apres = etat_reconstruit(&base, 9);
@@ -554,4 +569,63 @@ fn le_couple_membres_poids_survit_a_une_panne_dans_la_fenetre() {
             "point {rang} : le second record est l'état B complet"
         );
     }
+}
+
+// ===========================================================================
+// 6. PROTECTION STRUCTURELLE : POIDS LIÉS À L'IDENTITÉ, PAS À LA POSITION
+// ===========================================================================
+
+/// Le scénario de corruption silencieuse (note validateur 22816000) : le
+/// nouveau moteur écrit membres `[1,2,3]` + poids `[0.2,0.3,0.5]` ; un ancien
+/// moteur (qui ignore la zone de poids) mute les membres en `[1,2,4]` via
+/// `set_engram_members` seul. Le lecteur doit REFUSER le couple — le membre 4
+/// ne doit PAS hériter silencieusement du poids du membre 3.
+#[test]
+fn mutation_des_membres_seule_est_refusee_a_la_lecture() {
+    let td = tempfile::tempdir().unwrap();
+    let base = td.path().join("kb");
+    let sub = SubstrateFile::create(&base).unwrap();
+    let w = Writer::new(sub, SyncMode::Never).unwrap();
+
+    // Nouveau moteur : couple membres+poids sous le même verrou.
+    w.set_engram_state(7, vec![1, 2, 3], vec![0.2, 0.3, 0.5])
+        .unwrap();
+    assert_eq!(
+        w.read_engram_state(7).unwrap(),
+        Some((vec![1, 2, 3], Some(vec![0.2, 0.3, 0.5]))),
+        "état écrit relu intact"
+    );
+
+    // Ancien moteur : mutation des membres SEULE (ignore la zone de poids).
+    w.set_engram_members(7, vec![1, 2, 4]).unwrap();
+
+    // Le nouveau lecteur REFUSE le couple incohérent — pas de réassociation
+    // silencieuse du poids du membre 3 vers le membre 4.
+    match w.read_engram_state(7) {
+        Err(SubstrateError::EngramIncoherent { engram_id: 7, .. }) => {}
+        Err(autre) => panic!("refus nommé attendu, obtenu {autre:?}"),
+        Ok(v) => panic!("la mutation des membres seule devait être refusée, obtenu {v:?}"),
+    }
+}
+
+/// Même protection après une augmentation de cardinalité : 4 membres mais
+/// encore 3 poids (l'ancien moteur a ajouté un membre sans réécrire les poids).
+#[test]
+fn cardinalite_incoherente_est_refusee_a_la_lecture() {
+    let td = tempfile::tempdir().unwrap();
+    let base = td.path().join("kb");
+    let sub = SubstrateFile::create(&base).unwrap();
+    let w = Writer::new(sub, SyncMode::Never).unwrap();
+
+    w.set_engram_state(7, vec![1, 2, 3], vec![0.2, 0.3, 0.5])
+        .unwrap();
+    w.set_engram_members(7, vec![1, 2, 3, 4]).unwrap();
+
+    assert!(
+        matches!(
+            w.read_engram_state(7),
+            Err(SubstrateError::EngramIncoherent { .. })
+        ),
+        "la cardinalité incohérente (4 membres / 3 poids) doit être refusée"
+    );
 }
