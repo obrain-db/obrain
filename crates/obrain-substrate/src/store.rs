@@ -3247,6 +3247,28 @@ impl TransformationPrete {
     }
 }
 
+/// Préparation LOGIQUE DIFFÉRÉE d'une transformation conditionnelle : stocke
+/// les nouvelles valeurs, la précondition CAPTURÉE (lien préparation↔capture
+/// CONSERVÉ) et la provenance (incarnation + cible), SANS allouer de page
+/// PropsZone. La matérialisation physique (chaîne de pages privées, estampille,
+/// interning) n'a lieu qu'à la PUBLICATION, via le chemin natif
+/// [`SubstrateStore::preparer_transformation`] puis
+/// [`SubstrateStore::publier_si_precondition_intacte`].
+///
+/// CONTRASTE AVEC [`TransformationPrete`] : l'ABANDON (ne jamais publier) ne
+/// provoque AUCUNE croissance permanente du stockage — aucune page allouée,
+/// aucune clé internée, aucune estampille attribuée, aucune écriture WAL à la
+/// préparation. C'est le mode adapté à une cognition par champs/diffusion qui
+/// évalue des milliers d'hypothèses et n'en retient qu'une poignée.
+#[derive(Debug)]
+pub struct PreparationDifferee {
+    incarnation: u64,
+    cible: NodeId,
+    precondition: Precondition,
+    ecritures: Vec<(String, Value)>,
+    mode: ModePublication,
+}
+
 /// Deux états correspondent si leur espèce et, pour présent/supprimé, leur
 /// estampille complète (auteur + horloge) sont identiques. La valeur n'entre
 /// PAS en compte : c'est l'identité d'écriture qui porte la précondition.
@@ -3663,6 +3685,94 @@ impl SubstrateStore {
         } else {
             IssuePublication::PubliePartielle
         })
+    }
+
+    /// Prépare une transformation en mode LOGIQUE DIFFÉRÉ : aucune page
+    /// PropsZone allouée, aucune clé internée, aucune estampille attribuée.
+    /// Le descripteur rendu est une captation en mémoire (nouvelles valeurs +
+    /// précondition + provenance), OPAQUE et CONSOMMABLE.
+    ///
+    /// Les MÊMES refus que [`SubstrateStore::preparer_transformation`]
+    /// s'appliquent (incarnation étrangère, cible étrangère, écriture répétée,
+    /// mode strict) — mais SANS aucun effet de bord sur le stockage.
+    pub fn preparer_transformation_differee(
+        &self,
+        cible: NodeId,
+        nouvelles: &[(&str, Value)],
+        precondition: &Precondition,
+        mode: ModePublication,
+    ) -> SubstrateResult<PreparationDifferee> {
+        // Liaison de la précondition à CE store et à CETTE cible.
+        if precondition.incarnation != self.incarnation {
+            return Err(SubstrateError::Internal(
+                "preparer_transformation_differee : précondition d'un autre store".to_string(),
+            ));
+        }
+        if precondition.cible != cible {
+            return Err(SubstrateError::Internal(
+                "preparer_transformation_differee : précondition d'une autre cible".to_string(),
+            ));
+        }
+        // ÉCRITURE RÉPÉTÉE : même règle que la préparation physique.
+        for (i, (cle, _)) in nouvelles.iter().enumerate() {
+            if nouvelles[..i].iter().any(|(c, _)| c == cle) {
+                return Err(SubstrateError::Internal(format!(
+                    "preparer_transformation_differee : écriture répétée de {cle}"
+                )));
+            }
+        }
+        // MODE STRICT : toute propriété ÉCRITE doit être DÉCLARÉE.
+        if mode == ModePublication::Strict {
+            for (cle, _) in nouvelles {
+                if !precondition.dependances.iter().any(|d| d.cle == *cle) {
+                    return Err(SubstrateError::Internal(format!(
+                        "preparer_transformation_differee : écriture de {cle} non déclarée en mode strict"
+                    )));
+                }
+            }
+        }
+        Ok(PreparationDifferee {
+            incarnation: self.incarnation,
+            cible,
+            precondition: precondition.clone(),
+            ecritures: nouvelles
+                .iter()
+                .map(|(c, v)| ((*c).to_string(), v.clone()))
+                .collect(),
+            mode,
+        })
+    }
+
+    /// Publie une préparation DIFFÉRÉE : matérialise la transformation via le
+    /// chemin natif [`SubstrateStore::preparer_transformation`] (allocation de
+    /// pages privées + estampille + interning), PUIS bascule la tête via
+    /// [`SubstrateStore::publier_si_precondition_intacte`]. La précondition est
+    /// celle CAPTURÉE à la préparation logique (lien préparation↔capture
+    /// conservé) : aucune substitution possible.
+    pub fn publier_si_precondition_intacte_differee(
+        &self,
+        prep: PreparationDifferee,
+    ) -> SubstrateResult<IssuePublication> {
+        // Liaison au store : même incarnation (descripteur périmé après
+        // réouverture). Miroir du garde de `publier_si_precondition_intacte`.
+        if prep.incarnation != self.incarnation {
+            return Err(SubstrateError::Internal(
+                "publier_si_precondition_intacte_differee : descripteur d'un autre store"
+                    .to_string(),
+            ));
+        }
+        let nouvelles: Vec<(&str, Value)> = prep
+            .ecritures
+            .iter()
+            .map(|(c, v)| (c.as_str(), v.clone()))
+            .collect();
+        let physique = self.preparer_transformation(
+            prep.cible,
+            &nouvelles,
+            &prep.precondition,
+            prep.mode,
+        )?;
+        self.publier_si_precondition_intacte(physique)
     }
 }
 
@@ -48921,5 +49031,218 @@ mod concurrence_reelle {
         assert_eq!(lire_i64(&store_a, id_a, "b"), 20);
         assert_eq!(lire_i64(&store_b, id_b, "b"), 200);
         eprintln!("CONCUR_4_OK : deux stores progressent indépendamment, sans blocage croisé");
+    }
+}
+
+#[cfg(test)]
+mod preparation_differee {
+    use super::*;
+    use std::time::Instant;
+
+    fn base(store: &SubstrateStore) -> NodeId {
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        store.set_node_property(id, "c", Value::Int64(3));
+        id
+    }
+
+    fn pages_allouees(store: &SubstrateStore) -> u32 {
+        store
+            .props_zone
+            .as_ref()
+            .unwrap()
+            .read()
+            .allocated_page_count()
+    }
+
+    fn taille_props(chemin: &std::path::Path) -> u64 {
+        std::fs::metadata(chemin.join(crate::props_zone::PROPS_V2_FILENAME))
+            .map(|m| m.len())
+            .unwrap_or(0)
+    }
+
+    /// Lien préparation↔capture conservé : la précondition LIÉE est relue à la
+    /// publication (pas de substitution possible) ; aucune page allouée avant.
+    #[test]
+    fn differee_conserve_lien_capture_transformation() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let p0 = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let prep = store
+            .preparer_transformation_differee(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &p0,
+                ModePublication::Lww,
+            )
+            .unwrap();
+        // Les dépendances capturées sont conservées dans le descripteur.
+        assert_eq!(prep.precondition.nb_dependances(), 2);
+        // Aucune page allouée à la préparation logique.
+        let avant = pages_allouees(&store);
+        assert_eq!(pages_allouees(&store), avant);
+        // Une dépendance change APRÈS la capture : la publication relit la
+        // précondition LIÉE et refuse.
+        store.set_node_property(id, "a", Value::Int64(5));
+        let r = store.publier_si_precondition_intacte_differee(prep).unwrap();
+        assert_eq!(r, IssuePublication::ConflitPrecondition);
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(5)));
+        eprintln!("LIEN_DIFFERE_OK : précondition liée relue, substitution impossible");
+    }
+
+    /// Publication heureuse : matérialisation (pages) uniquement à la publication.
+    #[test]
+    fn differee_publication_heureuse() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let p0 = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let prep = store
+            .preparer_transformation_differee(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &p0,
+                ModePublication::Lww,
+            )
+            .unwrap();
+        let avant = pages_allouees(&store);
+        let r = store.publier_si_precondition_intacte_differee(prep).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale);
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+        assert!(pages_allouees(&store) > avant, "la matérialisation alloue des pages à la publication");
+        eprintln!("HEUREUX_OK : matérialisation à la publication, effet canonique");
+    }
+
+    /// ABANDON différé : aucune croissance permanente (pages et fichier).
+    #[test]
+    fn differee_abandon_aucune_croissance() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let store = SubstrateStore::create(&chemin).unwrap();
+        let id = base(&store);
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let pages_avant = pages_allouees(&store);
+        let props_avant = taille_props(&chemin);
+        let n = 10_000;
+        for _ in 0..n {
+            let _prep = store
+                .preparer_transformation_differee(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
+            // abandonné : jamais publié.
+        }
+        let pages_apres = pages_allouees(&store);
+        let props_apres = taille_props(&chemin);
+        eprintln!("ABANDON_DIFFERE {n} : pages {pages_avant}->{pages_apres}, props {props_avant}->{props_apres}");
+        assert_eq!(pages_apres, pages_avant, "aucune page allouée");
+        assert_eq!(props_apres, props_avant, "aucune croissance du fichier props");
+    }
+
+    /// ABANDON physique : les pages orphelines PERSISTENT (fuite mesurée), y
+    /// compris après réouverture (non récupérées).
+    #[test]
+    fn physique_abandon_orphelines_persistantes() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (pages_avant, pages_apres) = {
+            let store = SubstrateStore::create(&chemin).unwrap();
+            let id = base(&store);
+            let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+            let pages_avant = pages_allouees(&store);
+            for _ in 0..1_000 {
+                let _prep = store
+                    .preparer_transformation(
+                        id,
+                        &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                        &pre,
+                        ModePublication::Lww,
+                    )
+                    .unwrap();
+            }
+            let pages_apres = pages_allouees(&store);
+            store.close().unwrap();
+            (pages_avant, pages_apres)
+        };
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        let pages_reopen = pages_allouees(&store2);
+        eprintln!("ORPHELINES_PHYSIQUE : {pages_avant}->{pages_apres}, après réouverture {pages_reopen}");
+        assert!(pages_apres > pages_avant, "la préparation physique alloue des pages");
+        assert_eq!(pages_reopen, pages_apres, "les pages orphelines persistent après réouverture (fuite)");
+    }
+
+    /// MESURE COMPARATIVE : physique vs logique (temps/pages/octets) + coût de
+    /// publication. Les chiffres sortent en `eprintln!` (--nocapture).
+    #[test]
+    fn comparaison_physique_vs_logique() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let store = SubstrateStore::create(&chemin).unwrap();
+        let id = base(&store);
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+
+        let pages_debut = pages_allouees(&store);
+        let props_debut = taille_props(&chemin);
+
+        // PHYSIQUE — N=1000 puis N=10000, jamais publiées.
+        let n1000 = 1_000usize;
+        let n10000 = 10_000usize;
+        let t = Instant::now();
+        for _ in 0..n1000 {
+            let _ = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        }
+        let phys_1000_ns = t.elapsed().as_nanos() as f64 / n1000 as f64;
+        let pages_1000 = pages_allouees(&store);
+
+        let t = Instant::now();
+        for _ in 0..n10000 {
+            let _ = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        }
+        let phys_10000_ns = t.elapsed().as_nanos() as f64 / n10000 as f64;
+        let pages_physique = pages_allouees(&store);
+        let props_physique = taille_props(&chemin);
+
+        // LOGIQUE — N=1000 puis N=10000.
+        let pages_avant_logique = pages_allouees(&store);
+        let props_avant_logique = taille_props(&chemin);
+        let t = Instant::now();
+        for _ in 0..n1000 {
+            let _ = store.preparer_transformation_differee(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        }
+        let log_1000_ns = t.elapsed().as_nanos() as f64 / n1000 as f64;
+        let t = Instant::now();
+        for _ in 0..n10000 {
+            let _ = store.preparer_transformation_differee(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        }
+        let log_10000_ns = t.elapsed().as_nanos() as f64 / n10000 as f64;
+        let pages_apres_logique = pages_allouees(&store);
+        let props_apres_logique = taille_props(&chemin);
+
+        // COÛT DE PUBLICATION (matérialisation + bascule) d'une hypothèse retenue.
+        let prep_ret = store.preparer_transformation_differee(id, &[("a", Value::Int64(11)), ("b", Value::Int64(21))], &pre, ModePublication::Lww).unwrap();
+        let t = Instant::now();
+        let r = store.publier_si_precondition_intacte_differee(prep_ret).unwrap();
+        let pub_ns = t.elapsed().as_nanos() as f64;
+
+        eprintln!("=== COMPARAISON (2 props / transformation, jamais publiées) ===");
+        eprintln!("PHYSIQUE  N=1000 : {phys_1000_ns:.0} ns/prép   N=10000 : {phys_10000_ns:.0} ns/prép");
+        eprintln!("LOGIQUE   N=1000 : {log_1000_ns:.0} ns/prép   N=10000 : {log_10000_ns:.0} ns/prép");
+        eprintln!("PAGES     physique : {pages_debut}->{pages_physique} (+{})   logique : {pages_avant_logique}->{pages_apres_logique} (+{})",
+            pages_physique - pages_debut,
+            pages_apres_logique - pages_avant_logique);
+        eprintln!("substrate.props.v2  début={props_debut}  après physique={props_physique}  après logique={props_apres_logique}  (Δ logique = {})",
+            props_apres_logique - props_avant_logique);
+        eprintln!("PUBLICATION (matérialisation + bascule) : {pub_ns:.0} ns");
+
+        assert_eq!(r, IssuePublication::PublieIntegrale);
+        assert!(pages_1000 >= pages_debut + 1_000, "chaque prép physique alloue au moins 1 page");
+        assert_eq!(pages_apres_logique, pages_avant_logique, "logique n'alloue aucune page");
+        assert_eq!(props_apres_logique, props_avant_logique, "logique ne fait pas croître le fichier");
     }
 }
