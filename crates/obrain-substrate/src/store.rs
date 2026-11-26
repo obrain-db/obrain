@@ -3190,6 +3190,10 @@ pub struct TransformationPrete {
     /// Clés écrites par la transformation (chaque clé au plus une fois), pour
     /// vérifier l'intégralité de l'effet après publication.
     ecritures: Vec<String>,
+    /// Mode de publication (Strict / Lww), CONSERVÉ dans le contrat préparé :
+    /// le mode strict établit la canonicité de tous les effets AVANT la bascule,
+    /// le mode Lww autorise les écritures aveugles masquables.
+    mode: ModePublication,
     /// Estampille HLC (composante horloge) attribuée à TOUTES les écritures à
     /// la préparation. L'auteur est le `writer_id` du store.
     horloge_effet: u64,
@@ -3398,6 +3402,7 @@ impl SubstrateStore {
             precondition: precondition.clone(),
             ecritures: nouvelles.iter().map(|(c, _)| (*c).to_string()).collect(),
             horloge_effet: horloge,
+            mode,
             tete_origine,
             point_attache,
             tete_privee,
@@ -3488,10 +3493,16 @@ impl SubstrateStore {
         // l'index depuis les chaînes — qui, elles, portent tout.
         self.index_batis_depuis_v2.clear();
         self.egalite_couverte.clear();
-        // Vérification de l'INTÉGRALITÉ de l'effet : relire l'estampille de
-        // chaque propriété écrite ; si l'une ne porte plus NOTRE estampille
-        // (une écriture concurrente plus récente l'a masquée), l'application
-        // est PARTIELLE. Toujours sous le verrou de nœud, donc stable.
+        // MODE STRICT : la canonicité de TOUS les effets est établie AVANT la
+        // bascule — le mode strict exige W ⊆ R (toute propriété écrite est une
+        // dépendance validée par la précondition), donc la validation ci-dessus
+        // suffit. Aucun verdict postérieur ne peut rendre la bascule inexistante.
+        if prep.mode == ModePublication::Strict {
+            return Ok(IssuePublication::PublieIntegrale);
+        }
+        // MODE LWW : les écritures aveugles peuvent être masquées — on relit
+        // l'estampille de chaque propriété écrite pour distinguer application
+        // INTÉGRALE / PARTIELLE. Toujours sous le verrou de nœud, donc stable.
         let mut integrale = true;
         for cle in &prep.ecritures {
             match self.lire_etat_propriete(prep.cible, cle)? {
@@ -47875,6 +47886,26 @@ mod publication_conditionnelle_native {
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)), "rien publié");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(99)));
         eprintln!("STRICT_CANONIQUE_OK : mode strict refuse un effet non intégralement canonique");
+    }
+
+    /// P0-A — MODE STRICT réussi : tous les effets écrits sont canoniques, le
+    /// verdict INTÉGRAL est rendu SANS lecture-retour post-bascule (la garantie
+    /// est établie AVANT le point de linéarisation par W ⊆ R + validation).
+    #[test]
+    fn mode_strict_succes_integral() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = store.capturer_precondition(id, &["a", "b", "c"]).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Strict)
+            .unwrap();
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PublieIntegrale, "strict : succès intégral");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(30)));
+        eprintln!("STRICT_SUCCES_OK : strict réussi → intégral, sans lecture-retour");
     }
 
     /// P0 — écriture répétée d'une même clé : refusée à la préparation.
