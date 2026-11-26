@@ -2660,6 +2660,10 @@ impl Writer {
     /// (no payload bytes written). `engram_id = 0` is reserved and rejected.
     #[tracing::instrument(level = "trace", skip(self, members))]
     pub fn set_engram_members(&self, engram_id: u16, members: Vec<u32>) -> SubstrateResult<()> {
+        // (#414) L'identifiant nul est refusé AVANT le journal : un record pour
+        // l'engramme 0 n'est pas rejouable (le rejeu le refuse), donc le
+        // journaliser rendrait la base inouvrable pour une mutation refusée.
+        crate::engram::EngramZone::verifier_engram_id(engram_id)?;
         // (1) WAL first — payload carries full state for idempotent replay.
         let rec = WalRecord {
             lsn: 0,
@@ -2692,6 +2696,9 @@ impl Writer {
         members: Vec<u32>,
         weights: Vec<f32>,
     ) -> SubstrateResult<()> {
+        // (#414) Refus AVANT toute écriture : l'identifiant réservé, puis la
+        // forme du couple. Un refus ne laisse ni record ni mutation.
+        crate::engram::EngramZone::verifier_engram_id(engram_id)?;
         if members.len() != weights.len() {
             return Err(crate::SubstrateError::Internal(format!(
                 "engram {engram_id}: membres({}) != poids({})",
@@ -2716,7 +2723,14 @@ impl Writer {
                     weights: bits.clone(),
                 },
             })?;
+            // (#414, périmètre B) Points d'arrêt : la fenêtre entre l'AUTORITÉ
+            // (le record, déjà journalisé) et le DÉRIVÉ (les zones), puis entre
+            // les DEUX zones. Un rejeu doit rendre le couple COMPLET quelle que
+            // soit la zone où la panne tombe — jamais membres neufs + poids
+            // anciens. Mesuré par `tests/autorite_etat_engram.rs`.
+            obrain_common::utils::panne::point_etat_engram(0);
             crate::engram::EngramZone::set_members_raw(mz, engram_id, &members)?;
+            obrain_common::utils::panne::point_etat_engram(1);
             crate::engram::EngramZone::set_weights_raw(wz, engram_id, &weights)
         })
     }
@@ -2724,6 +2738,8 @@ impl Writer {
     /// Écrire les poids d'engramme (f32) — WAL-first, idempotent, même ordre
     /// que les membres. Les f32 sont stockés en bits u32 dans le payload WAL.
     pub fn set_engram_weights(&self, engram_id: u16, weights: Vec<f32>) -> SubstrateResult<()> {
+        // (#414) Même garde que les deux autres portes : refus avant le journal.
+        crate::engram::EngramZone::verifier_engram_id(engram_id)?;
         let bits: Vec<u32> = weights.iter().map(|w| w.to_bits()).collect();
         let rec = WalRecord {
             lsn: 0,
