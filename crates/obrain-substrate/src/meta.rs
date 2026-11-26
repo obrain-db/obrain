@@ -17,7 +17,18 @@ pub const SUBSTRATE_MAGIC: [u8; 8] = *b"SUBSTRT\0";
 /// ([`crate::record::NODES_ZONE_V3_MAGIC`]). Migration 2→3 : reecriture de
 /// la zone nodes vers un fichier temporaire + rename atomique, tenant 0
 /// (public DECLARE : [`meta_flags::MONO_TENANT_PUBLIC`]) sur chaque record.
-pub const SUBSTRATE_FORMAT_VERSION: u32 = 3;
+///
+/// v4 (jalon 3 — protection de format V4 des poids d'engramme) : les poids
+/// d'un engramme sont LIES a l'IDENTITE de ses membres (empreinte FNV-1a
+/// 64 bits en tete du snapshot des poids), plus a leur POSITION. Le rejeu et
+/// le checkpoint restaurent cette association liee (jamais un fallback
+/// positionnel silencieux) ; la suppression logique d'un engramme invalide
+/// ses poids (aucune resurgence apres vidage/repeuplement). Un binaire v3 ne
+/// sait pas lire ce format : l'ouverture d'un store v4 rend
+/// [`crate::error::SubstrateError::UnsupportedVersion`]`(4, 3)`. Migration
+/// 3→4 : `migration::migration_3_vers_4` (classification des poids v3 :
+/// absence legitime / provenance verifiable / ambigu / corrompu).
+pub const SUBSTRATE_FORMAT_VERSION: u32 = 4;
 pub const META_HEADER_SIZE: usize = 96;
 pub const META_FILE_SIZE: usize = 4096;
 

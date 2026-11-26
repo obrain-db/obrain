@@ -321,11 +321,10 @@ fn l_etat_reconstruit_egale_l_etat_ecrit_et_se_rejoue_deux_fois() {
 // 3. L'ORDRE DU JOURNAL EST L'ORDRE D'APPLICATION
 // ===========================================================================
 
-/// Les records de types DIFFÉRENTS s'appliquent dans l'ordre du journal : un
-/// `EngramWeightsSet` écrit APRÈS un `EngramStateSet` a le dernier mot sur les
-/// poids. Le premier record est en plus un `EngramWeightsSet` seul, ce qui
-/// ouvre la zone des poids avant la zone des membres : les deux ouvertures
-/// paresseuses du rejeu sont donc prises dans un ordre différent.
+/// Les records d'état COMPLET (`EngramStateSet`, couple membres+poids LIÉ)
+/// s'appliquent dans l'ordre du journal : le DERNIER record a le dernier mot
+/// sur membres ET poids. Le rejeu reconstruit le même état final, dans le même
+/// ordre, avec l'association liée (empreinte) restaurée.
 #[test]
 fn l_ordre_du_journal_est_l_ordre_d_application() {
     let td = tempfile::tempdir().unwrap();
@@ -334,12 +333,12 @@ fn l_ordre_du_journal_est_l_ordre_d_application() {
     let wal = sub.wal_path();
     let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
 
-    // 1. Des POIDS seuls pour 20 (ouvre la zone des poids la première au rejeu).
-    w.set_engram_weights(20, vec![0.1, 0.2]).unwrap();
+    // 1. Un état COMPLET pour 20.
+    w.set_engram_state(20, vec![1, 2], vec![0.1, 0.2]).unwrap();
     // 2. L'état COMPLET de 9.
     w.set_engram_state(9, vec![3, 4], vec![0.3, 0.7]).unwrap();
-    // 3. Des poids NEUFS pour 9 : le DERNIER mot.
-    w.set_engram_weights(9, vec![0.9, 0.1]).unwrap();
+    // 3. Un état COMPLET NEUF pour 9 : le DERNIER mot.
+    w.set_engram_state(9, vec![3, 4], vec![0.9, 0.1]).unwrap();
     w.commit().unwrap();
     w.wal().fsync().unwrap();
 
@@ -351,14 +350,13 @@ fn l_ordre_du_journal_est_l_ordre_d_application() {
         "les poids du 3e record écrasent ceux du 2e"
     );
 
-    // Le journal porte UN record d'état pour 9, et il est bien celui du 2e
-    // appel (poids 0,3 / 0,7) — les poids neufs sont dans un autre record.
+    // Le journal porte DEUX records d'état pour 9, dans l'ordre.
     let etats_9 = records_etat(&wal, 9);
-    assert_eq!(etats_9.len(), 1, "un seul EngramStateSet pour 9");
+    assert_eq!(etats_9.len(), 2, "deux EngramStateSet pour 9");
     assert_eq!(
-        etats_9[0],
-        (vec![3u32, 4], vec![0.3f32.to_bits(), 0.7f32.to_bits()]),
-        "le record d'état porte les poids du moment, pas ceux d'après"
+        etats_9[1],
+        (vec![3u32, 4], vec![0.9f32.to_bits(), 0.1f32.to_bits()]),
+        "le dernier record porte les poids du moment"
     );
 
     w.msync_zones().unwrap();
@@ -374,7 +372,11 @@ fn l_ordre_du_journal_est_l_ordre_d_application() {
         ecrit_9,
         "l'ordre du journal reconstruit le même état final"
     );
-    assert_eq!(w2.read_engram_state(20).unwrap(), ecrit_20);
+    assert_eq!(
+        w2.read_engram_state(20).unwrap(),
+        ecrit_20,
+        "l'état de 20 survit"
+    );
 }
 
 // ===========================================================================
@@ -468,9 +470,10 @@ fn enfant_ecrit_l_etat_puis_meurt_dans_la_fenetre() {
 }
 
 /// Tue l'enfant aux DEUX points de la fenêtre, puis vérifie trois choses :
-/// (a) le dérivé seul est bien ce qu'on croit (A intact, ou le MÉLANGE membres
-///     neufs + poids anciens — c'est la preuve que la fenêtre est réelle et que
-///     le banc n'est pas vide) ;
+/// (a) le dérivé seul est bien ce qu'on croit (A intact au point 0 ; au point 1
+///     les membres neufs sont écrits mais pas les poids, donc `read_engram_state`
+///     REFUSE le demi-état — la preuve que la fenêtre est réelle et que le banc
+///     n'est pas vide) ;
 /// (b) le rejeu rend le couple COMPLET de B, jamais un mélange ;
 /// (c) le journal ne porte que les deux états demandés (A puis B).
 #[test]
@@ -482,17 +485,9 @@ fn le_couple_membres_poids_survit_a_une_panne_dans_la_fenetre() {
     let b = (vec![7u32, 8], Some(vec![0.75f32, 0.25]));
     let melange = (vec![7u32, 8], Some(vec![0.1f32, 0.2, 0.3]));
 
-    for (rang, apres_le_point, attendu_brut) in [
-        (
-            0u64,
-            "le record est journalisé, aucune zone touchée",
-            a.clone(),
-        ),
-        (
-            1u64,
-            "les membres sont écrits, les poids ne le sont pas",
-            melange.clone(),
-        ),
+    for (rang, apres_le_point) in [
+        (0u64, "le record est journalisé, aucune zone touchée"),
+        (1u64, "les membres sont écrits, les poids ne le sont pas"),
     ] {
         let td = tempfile::tempdir().expect("tempdir");
         let base = td.path().join("kb");
@@ -522,11 +517,33 @@ fn le_couple_membres_poids_survit_a_une_panne_dans_la_fenetre() {
         );
 
         // (a) Le dérivé seul : la fenêtre est RÉELLE.
-        assert_eq!(
-            etat_brut(&base, 9),
-            Some(attendu_brut),
-            "point {rang} ({apres_le_point}) : état des zones avant rejeu"
-        );
+        if rang == 0 {
+            // Rien n'a été écrit : l'état A (cohérent) se relit tel quel.
+            assert_eq!(
+                etat_brut(&base, 9),
+                Some(a.clone()),
+                "point {rang} ({apres_le_point}) : état des zones avant rejeu"
+            );
+        } else {
+            // Les membres neufs sont écrits, pas les poids : le couple est
+            // INCOHÉRENT, donc `read_engram_state` REFUSE (plus de réassociation
+            // silencieuse par position). On observe les deux faces séparément
+            // pour prouver que la panne est tombée DANS la fenêtre.
+            let sub = SubstrateFile::open(&base).expect("ouvrir");
+            let w = Writer::new(sub, SyncMode::Never).expect("writer");
+            assert_eq!(
+                w.engram_members(9).unwrap(),
+                Some(vec![7u32, 8]),
+                "point {rang} ({apres_le_point}) : les membres neufs sont bien écrits"
+            );
+            assert!(
+                matches!(
+                    w.read_engram_state(9),
+                    Err(SubstrateError::EngramIncoherent { .. })
+                ),
+                "point {rang} ({apres_le_point}) : le couple incohérent doit être REFUSÉ"
+            );
+        }
 
         // (b) Le journal fait autorité : le couple COMPLET de B.
         let apres = etat_reconstruit(&base, 9);
@@ -554,4 +571,203 @@ fn le_couple_membres_poids_survit_a_une_panne_dans_la_fenetre() {
             "point {rang} : le second record est l'état B complet"
         );
     }
+}
+
+// ===========================================================================
+// 6. PROTECTION STRUCTURELLE : POIDS LIÉS À L'IDENTITÉ, PAS À LA POSITION
+// ===========================================================================
+
+/// Le scénario de corruption silencieuse (note validateur 22816000) : le
+/// nouveau moteur écrit membres `[1,2,3]` + poids `[0.2,0.3,0.5]` ; un ancien
+/// moteur (qui ignore la zone de poids) mute les membres en `[1,2,4]` via
+/// `set_engram_members` seul. Le lecteur doit REFUSER le couple — le membre 4
+/// ne doit PAS hériter silencieusement du poids du membre 3.
+#[test]
+fn mutation_des_membres_seule_est_refusee_a_la_lecture() {
+    let td = tempfile::tempdir().unwrap();
+    let base = td.path().join("kb");
+    let sub = SubstrateFile::create(&base).unwrap();
+    let w = Writer::new(sub, SyncMode::Never).unwrap();
+
+    // Nouveau moteur : couple membres+poids sous le même verrou.
+    w.set_engram_state(7, vec![1, 2, 3], vec![0.2, 0.3, 0.5])
+        .unwrap();
+    assert_eq!(
+        w.read_engram_state(7).unwrap(),
+        Some((vec![1, 2, 3], Some(vec![0.2, 0.3, 0.5]))),
+        "état écrit relu intact"
+    );
+
+    // Ancien moteur : mutation des membres SEULE (ignore la zone de poids).
+    w.set_engram_members(7, vec![1, 2, 4]).unwrap();
+
+    // Le nouveau lecteur REFUSE le couple incohérent — pas de réassociation
+    // silencieuse du poids du membre 3 vers le membre 4.
+    match w.read_engram_state(7) {
+        Err(SubstrateError::EngramIncoherent { engram_id: 7, .. }) => {}
+        Err(autre) => panic!("refus nommé attendu, obtenu {autre:?}"),
+        Ok(v) => panic!("la mutation des membres seule devait être refusée, obtenu {v:?}"),
+    }
+}
+
+/// Même protection après une augmentation de cardinalité : 4 membres mais
+/// encore 3 poids (l'ancien moteur a ajouté un membre sans réécrire les poids).
+#[test]
+fn cardinalite_incoherente_est_refusee_a_la_lecture() {
+    let td = tempfile::tempdir().unwrap();
+    let base = td.path().join("kb");
+    let sub = SubstrateFile::create(&base).unwrap();
+    let w = Writer::new(sub, SyncMode::Never).unwrap();
+
+    w.set_engram_state(7, vec![1, 2, 3], vec![0.2, 0.3, 0.5])
+        .unwrap();
+    w.set_engram_members(7, vec![1, 2, 3, 4]).unwrap();
+
+    assert!(
+        matches!(
+            w.read_engram_state(7),
+            Err(SubstrateError::EngramIncoherent { .. })
+        ),
+        "la cardinalité incohérente (4 membres / 3 poids) doit être refusée"
+    );
+}
+
+// ===========================================================================
+// 7. WIPE + REJEU PRÉSERVE LA PROTECTION LIÉE (pas de réassociation)
+// ===========================================================================
+
+/// Le scénario du validateur : le nouveau moteur écrit membres+poids LIÉS ;
+/// les DEUX zones sont effacées puis reconstruites depuis le WAL seul ; UN
+/// ANCIEN moteur mute alors les membres SEULS. La protection doit TENIR : le
+/// rejeu a RESTAURÉ l'empreinte (pas un fallback positionnel), donc la
+/// mutation des membres seule est REFUSÉE — le membre 4 n'hérite pas du poids
+/// du membre 3.
+#[test]
+fn wipe_et_rejeu_preserve_la_protection_liee() {
+    let td = tempfile::tempdir().unwrap();
+    let base = td.path().join("kb");
+    let sub = SubstrateFile::create(&base).unwrap();
+    let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+
+    // Nouveau moteur : couple membres+poids liés.
+    w.set_engram_state(7, vec![1, 2, 3], vec![0.2, 0.3, 0.5])
+        .unwrap();
+    w.commit().unwrap();
+    w.msync_zones().unwrap();
+    w.wal().fsync().unwrap();
+    drop(w);
+
+    // Wipe du dérivé + reconstruction depuis le WAL seul.
+    effacer_zones_engram(&base);
+    let sub2 = SubstrateFile::open(&base).unwrap();
+    let stats = replay_from(&sub2, 0).unwrap();
+    assert_eq!(stats.decode_errors, 0);
+
+    // L'état reconstruit est LIÉ (empreinte restaurée, pas dégradée).
+    let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
+    assert_eq!(
+        w2.read_engram_state(7).unwrap(),
+        Some((vec![1, 2, 3], Some(vec![0.2, 0.3, 0.5]))),
+        "après wipe+rejeu, le couple lié est intact"
+    );
+
+    // Ancien moteur : mutation des membres SEULE (ignore la zone de poids).
+    w2.set_engram_members(7, vec![1, 2, 4]).unwrap();
+
+    // La protection TIENT : refus nommé, PAS de réassociation positionnelle.
+    match w2.read_engram_state(7) {
+        Err(SubstrateError::EngramIncoherent { engram_id: 7, .. }) => {}
+        Err(autre) => panic!("refus nommé attendu, obtenu {autre:?}"),
+        Ok(v) => panic!(
+            "la mutation des membres seule devait être refusée après wipe+rejeu, obtenu {v:?}"
+        ),
+    }
+}
+
+// ===========================================================================
+// 8. UN ÉTAT PONDÉRÉ NON QUALIFIÉ EST REFUSÉ (distinct d'une absence)
+// ===========================================================================
+
+/// Un état pondéré NON QUALIFIÉ (poids non liés, legacy positionnel 0x76) est
+/// REFUSÉ à la lecture — distinct d'une absence legacy LÉGITIME (`None`).
+/// Aucun fallback positionnel silencieux.
+#[test]
+fn poids_non_lies_legacy_sont_refuses_a_la_lecture() {
+    let td = tempfile::tempdir().unwrap();
+    let base = td.path().join("kb");
+    let sub = SubstrateFile::create(&base).unwrap();
+    let w = Writer::new(sub, SyncMode::Never).unwrap();
+
+    // Membres + poids NON LIÉS (chemin legacy 0x76).
+    w.set_engram_members(7, vec![1, 2, 3]).unwrap();
+    w.set_engram_weights(7, vec![0.2, 0.3, 0.5]).unwrap();
+
+    // La lecture du couple REFUSE : poids non liés = non qualifiés.
+    assert!(
+        matches!(
+            w.read_engram_state(7),
+            Err(SubstrateError::EngramIncoherent { .. })
+        ),
+        "un état pondéré non lié doit être refusé (pas de réassociation par position)"
+    );
+
+    // À l'inverse, des membres SANS poids = absence legacy LÉGITIME.
+    let td2 = tempfile::tempdir().unwrap();
+    let sub2 = SubstrateFile::create(td2.path().join("kb")).unwrap();
+    let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
+    w2.set_engram_members(7, vec![1, 2, 3]).unwrap();
+    assert_eq!(
+        w2.read_engram_state(7).unwrap(),
+        Some((vec![1, 2, 3], None)),
+        "membres sans zone de poids = absence légitime (None), pas un refus"
+    );
+}
+
+// ===========================================================================
+// 9. UNE SUPPRESSION LOGIQUE INVALIDE LES POIDS (pas de résurgence)
+// ===========================================================================
+
+/// Une suppression LOGIQUE via le chemin « membres seuls » (0x70) INVALIDE les
+/// poids : après vidage puis repeuplement avec les MÊMES membres, les anciens
+/// poids ne ressuscitent PAS (le lien membre/poids est structurel).
+#[test]
+fn suppression_membres_seule_invalide_les_poids() {
+    let td = tempfile::tempdir().unwrap();
+    let base = td.path().join("kb");
+    let sub = SubstrateFile::create(&base).unwrap();
+    let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+
+    w.set_engram_state(7, vec![1, 2, 3], vec![0.2, 0.3, 0.5])
+        .unwrap();
+
+    // Vidage par l'ancien moteur (membres seuls, 0x70).
+    w.set_engram_members(7, Vec::new()).unwrap();
+    assert_eq!(
+        w.read_engram_state(7).unwrap(),
+        None,
+        "après suppression membres-seule, le couple est vide"
+    );
+
+    // Repeuplement avec les MÊMES membres : aucune résurgence des poids.
+    w.set_engram_members(7, vec![1, 2, 3]).unwrap();
+    assert_eq!(
+        w.read_engram_state(7).unwrap(),
+        Some((vec![1, 2, 3], None)),
+        "les poids supprimés ne ressuscitent pas (absence légitime)"
+    );
+
+    // Et après wipe+rejeu, la suppression logique tient aussi.
+    w.commit().unwrap();
+    w.msync_zones().unwrap();
+    w.wal().fsync().unwrap();
+    drop(w);
+    effacer_zones_engram(&base);
+    let sub2 = SubstrateFile::open(&base).unwrap();
+    replay_from(&sub2, 0).unwrap();
+    let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
+    assert_eq!(
+        w2.read_engram_state(7).unwrap(),
+        Some((vec![1, 2, 3], None)),
+        "après wipe+rejeu, les poids supprimés ne ressuscitent pas"
+    );
 }
