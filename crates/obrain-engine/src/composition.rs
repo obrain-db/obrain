@@ -14,9 +14,10 @@
 //! 2. identité de DÉFINITION STRUCTURELLE = `structural_key()` — implémentée
 //!    (encodage canonique versionné, non ambigu, injectif) ; l'IMMUTABILITÉ
 //!    n'est pas encore imposée par le moteur (aucune barrière d'écriture) ;
-//! 3. identité d'OCCURRENCE — `children` reste un `BTreeSet<NodeId>` : deux
-//!    occurrences d'une même cible avec des rôles différents NE sont PAS
-//!    distinguées (limite) ;
+//! 3. identité d'OCCURRENCE — `children` est un `BTreeSet<ChildRef>` : deux
+//!    occurrences d'une même cible avec des rôles différents SONT distinguées
+//!    (rôle porté par l'arête `child`) ; la projection ensembliste
+//!    (`projection_children`) les réduit volontairement à une cible ;
 //! 4. ÉQUIVALENCE selon une projection = `projection_members_key()` — membres
 //!    DIRECTS seulement, pas la fermeture transitive (limite) ;
 //! 5. ÉQUIVALENCE sémantique — déclarée explicitement, hors module.
@@ -72,14 +73,26 @@ pub struct Relation {
     pub role: Option<String>,
 }
 
+/// Référence d'OCCURRENCE vers une sous-connaissance : cible + rôle contextuel.
+/// Deux références vers la même cible avec des rôles différents sont deux
+/// occurrences distinctes (identité d'occurrence) ; la projection ensembliste
+/// (`KnowledgeSpec::projection_children`) les réduit à une seule cible.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ChildRef {
+    /// Sous-connaissance référencée.
+    pub target: NodeId,
+    /// Rôle contextuel de l'occurrence (ex. « sujet », « objet »).
+    pub role: Option<String>,
+}
+
 /// Spécification d'une connaissance : participants feuilles, sous-connaissances
 /// référencées et relations orientées. L'ordre n'importe pas (`BTreeSet`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnowledgeSpec {
     /// Participants feuilles.
     pub members: BTreeSet<NodeId>,
-    /// Sous-connaissances référencées.
-    pub children: BTreeSet<NodeId>,
+    /// Sous-connaissances référencées (occurrences, rôle contextuel).
+    pub children: BTreeSet<ChildRef>,
     /// Relations orientées.
     pub relations: BTreeSet<Relation>,
 }
@@ -115,7 +128,8 @@ impl KnowledgeSpec {
         }
         enc_str(&mut k, &self.children.len().to_string());
         for c in &self.children {
-            enc_str(&mut k, &c.0.to_string());
+            enc_str(&mut k, &c.target.0.to_string());
+            enc_opt(&mut k, c.role.as_deref());
         }
         enc_str(&mut k, &self.relations.len().to_string());
         for r in &self.relations {
@@ -135,6 +149,14 @@ impl KnowledgeSpec {
             enc_str(&mut k, &m.0.to_string());
         }
         k
+    }
+
+    /// PROJECTION ensembliste des sous-connaissances : les cibles seules, rôles
+    /// ignorés. Deux occurrences d'une même cible (rôles différents) se réduisent
+    /// à UNE cible — perte documentée, par opposition à la représentation
+    /// constitutive (`children`).
+    pub fn projection_children(&self) -> BTreeSet<NodeId> {
+        self.children.iter().map(|c| c.target).collect()
     }
 }
 
@@ -198,7 +220,11 @@ impl<'a> Composition<'a> {
             self.db.create_edge(id, *m, EDGE_MEMBER);
         }
         for c in &spec.children {
-            self.db.create_edge(id, *c, EDGE_CHILD);
+            let eid = self.db.create_edge(id, c.target, EDGE_CHILD);
+            if let Some(role) = &c.role {
+                self.db
+                    .set_edge_property(eid, KEY_ROLE, Value::from(role.clone()));
+            }
         }
         for rel in &spec.relations {
             let occ = self.db.create_node(&[LABEL_RELATION]);
@@ -272,7 +298,11 @@ impl<'a> Composition<'a> {
                     if !child.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
                         return Err(ResolveError::NotKnowledge(dst));
                     }
-                    children.insert(dst);
+                    let role = edge
+                        .properties
+                        .get(&PropertyKey::from(KEY_ROLE))
+                        .and_then(|v| v.as_str().map(|s| s.to_string()));
+                    children.insert(ChildRef { target: dst, role });
                 }
                 EDGE_RELATION => {
                     relations.insert(self.read_relation_occurrence(dst)?);
@@ -342,10 +372,8 @@ impl<'a> Composition<'a> {
                 _ => {}
             }
         }
-        let src =
-            src.ok_or_else(|| ResolveError::MissingSource)?;
-        let dst = dst
-            .ok_or_else(|| ResolveError::MissingDestination)?;
+        let src = src.ok_or_else(|| ResolveError::MissingSource)?;
+        let dst = dst.ok_or_else(|| ResolveError::MissingDestination)?;
         Ok(Relation {
             rel_type,
             src,

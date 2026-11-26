@@ -9,12 +9,18 @@ use std::collections::BTreeSet;
 
 use obrain_common::types::NodeId;
 use obrain_engine::ObrainDB;
-use obrain_engine::composition::{Composition, KnowledgeSpec, Relation, ResolveError};
+use obrain_engine::composition::{ChildRef, Composition, KnowledgeSpec, Relation, ResolveError};
 
 fn spec(members: &[u64], children: &[u64], relations: &[Relation]) -> KnowledgeSpec {
     KnowledgeSpec {
         members: members.iter().map(|&n| NodeId(n)).collect(),
-        children: children.iter().map(|&n| NodeId(n)).collect(),
+        children: children
+            .iter()
+            .map(|&n| ChildRef {
+                target: NodeId(n),
+                role: None,
+            })
+            .collect(),
         relations: relations.iter().cloned().collect(),
     }
 }

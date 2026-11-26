@@ -2,15 +2,20 @@
 //! produit EXACTEMENT la variante typée attendue (pas une InvalidStructure
 //! générique, pas une divergence de clé qui masquerait la vraie cause).
 
-
 use obrain_common::types::{EdgeId, NodeId, Value};
 use obrain_engine::ObrainDB;
-use obrain_engine::composition::{Composition, KnowledgeSpec, Relation, ResolveError};
+use obrain_engine::composition::{ChildRef, Composition, KnowledgeSpec, Relation, ResolveError};
 
 fn spec(members: &[u64], children: &[u64], relations: &[Relation]) -> KnowledgeSpec {
     KnowledgeSpec {
         members: members.iter().map(|&n| NodeId(n)).collect(),
-        children: children.iter().map(|&n| NodeId(n)).collect(),
+        children: children
+            .iter()
+            .map(|&n| ChildRef {
+                target: NodeId(n),
+                role: None,
+            })
+            .collect(),
         relations: relations.iter().cloned().collect(),
     }
 }
@@ -26,11 +31,7 @@ fn rel(t: &str, src: u64, dst: u64) -> Relation {
 
 /// Construit une connaissance VALIDE (vraie clé) avec une occurrence
 /// relationnelle A--appelle-->B. Retourne (k, occ, src_eid, dst_eid).
-fn build_valid(
-    db: &ObrainDB,
-    a: NodeId,
-    b: NodeId,
-) -> (NodeId, NodeId, EdgeId, EdgeId) {
+fn build_valid(db: &ObrainDB, a: NodeId, b: NodeId) -> (NodeId, NodeId, EdgeId, EdgeId) {
     let valid = spec(&[a.0, b.0], &[], &[rel("appelle", a.0, b.0)]);
     let k = db.create_node(&["structure"]);
     db.set_node_property(k, "canonical_key", Value::from(valid.structural_key()));

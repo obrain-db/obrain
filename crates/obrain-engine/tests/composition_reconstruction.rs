@@ -6,12 +6,18 @@ use std::collections::BTreeSet;
 
 use obrain_common::types::{NodeId, Value};
 use obrain_engine::ObrainDB;
-use obrain_engine::composition::{Composition, KnowledgeSpec, Relation, ResolveError};
+use obrain_engine::composition::{ChildRef, Composition, KnowledgeSpec, Relation, ResolveError};
 
 fn spec(members: &[u64], children: &[u64], relations: &[Relation]) -> KnowledgeSpec {
     KnowledgeSpec {
         members: members.iter().map(|&n| NodeId(n)).collect(),
-        children: children.iter().map(|&n| NodeId(n)).collect(),
+        children: children
+            .iter()
+            .map(|&n| ChildRef {
+                target: NodeId(n),
+                role: None,
+            })
+            .collect(),
         relations: relations.iter().cloned().collect(),
     }
 }
@@ -114,7 +120,8 @@ fn corruption_relationnelle_discriminante() {
     db.create_edge(k, occ, "relation");
 
     // Valide : read_spec OK avant corruption.
-    comp.read_spec(k).expect("structure valide lue avant corruption");
+    comp.read_spec(k)
+        .expect("structure valide lue avant corruption");
 
     // Corruption ciblée : une 2e source.
     db.create_edge(occ, b, "src");
