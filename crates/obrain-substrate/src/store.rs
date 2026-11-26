@@ -3816,22 +3816,28 @@ impl SubstrateStore {
                 reference.auteur,
                 reference.horloge,
             )?;
-            // La relecture de l'état courant est INDICATIVE : son échec (nœud
-            // disparu) ne doit pas transformer une résolution en erreur.
             // UNE SEULE lecture `lire_etat_propriete` fournit estampille ET
             // valeur courantes : elles sont issues de la MÊME observation sous
             // le verrou de nœud déjà tenu — jamais une seconde autorité de
             // lecture ni une relecture indépendante après libération.
+            //
+            // CONTRAT DE LECTURE CANONIQUE : `lire_etat_propriete` distingue
+            // les états légitimes (Absente, RessourceInexistante) des ERREURS
+            // de lecture/corruption, qui remontent via `SubstrateResult`. On
+            // propage donc l'erreur (`?`) au lieu de l'avaler en `(None, None)` :
+            // une erreur de lecture n'est JAMAIS confondue avec une absence.
+            // « Nœud disparu » n'est pas une erreur : c'est déjà rendu par
+            // `Ok(EtatPropriete::RessourceInexistante)`, pas par un `Err`.
             let (estampille_courante, valeur_courante) =
-                match self.lire_etat_propriete(reference.cible, cle).ok() {
-                    Some(EtatPropriete::Presente { estampille, valeur }) => (
+                match self.lire_etat_propriete(reference.cible, cle)? {
+                    EtatPropriete::Presente { estampille, valeur } => (
                         Some((estampille.auteur, estampille.horloge)),
                         Some(valeur),
                     ),
-                    Some(EtatPropriete::Supprimee(estampille)) => {
+                    EtatPropriete::Supprimee(estampille) => {
                         (Some((estampille.auteur, estampille.horloge)), None)
                     }
-                    _ => (None, None),
+                    EtatPropriete::Absente | EtatPropriete::RessourceInexistante => (None, None),
                 };
             par_cle.push(EffetResolu {
                 cle: cle.clone(),
@@ -49337,6 +49343,176 @@ mod publication_conditionnelle_native {
         eprintln!(
             "OBSERVATION_OK : valeur + estampille courantes = même lecture V1 (Bytes32 + Float64)"
         );
+    }
+
+    /// P0 — MATRICE DES ÉTATS DE LECTURE CANONIQUE : pour Bytes(32) et Float64,
+    /// `resoudre_reference` rend `etat` + `estampille_courante` +
+    /// `valeur_courante` COHÉRENTS pour chaque état : PRÉSENTE, TOMBSTONE
+    /// (supprimée), ABSENTE. Une erreur de lecture n'est jamais convertie en
+    /// absence (elle remonte) — cf. le test dédié. RESSOURCE INEXISTANTE est
+    /// couverte par un test séparé (cible forgée).
+    #[test]
+    fn lecture_canonique_matrise_les_etats() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+
+        let cas: Vec<(&str, Value)> = vec![
+            ("k_bytes", Value::Bytes((0..32u8).collect::<Vec<u8>>().into())),
+            ("k_float", Value::Float64(0.25)),
+        ];
+        for (cle, val) in cas {
+            let v = val.clone();
+
+            // PRÉSENTE : publication → Engage + estampille = celle de la tentative.
+            let pre = store.capturer_precondition(id, &[cle]).unwrap();
+            let prep = store
+                .preparer_transformation(id, &[(cle, v.clone())], &pre, ModePublication::Strict)
+                .unwrap();
+            let reference = prep.reference_tentative();
+            store.publier_si_precondition_intacte(prep).unwrap();
+            let res = store.resoudre_reference(&reference).unwrap();
+            let e = &res.par_cle[0];
+            assert_eq!(e.etat, ResolutionEffet::Engage, "{cle} présente → Engage");
+            assert_eq!(
+                e.estampille_courante,
+                Some((reference.auteur(), reference.horloge()))
+            );
+            assert_eq!(e.valeur_courante, Some(v.clone()));
+
+            // TOMBSTONE : suppression → Engage (historique) + estampille de
+            // l'effacement + valeur_courante = None.
+            store.remove_node_property(id, cle);
+            let s = match store.lire_etat_propriete(id, cle).unwrap() {
+                EtatPropriete::Supprimee(s) => (s.auteur, s.horloge),
+                autre => panic!("{cle} attendue supprimée, lu {autre:?}"),
+            };
+            let res = store.resoudre_reference(&reference).unwrap();
+            let e = &res.par_cle[0];
+            assert_eq!(
+                e.etat, ResolutionEffet::Engage,
+                "{cle} : l'engagement survit au tombstone (historique)"
+            );
+            assert_eq!(e.estampille_courante, Some(s));
+            assert_eq!(e.valeur_courante, None, "tombstone → pas de valeur courante");
+
+            // ABSENTE : référence à une clé jamais écrite → Indetermine + (None, None).
+            let cle_absente = format!("{cle}_jamais_ecrite");
+            let pre_abs = store.capturer_precondition(id, &[cle_absente.as_str()]).unwrap();
+            let prep_abs = store
+                .preparer_transformation(
+                    id,
+                    &[(cle_absente.as_str(), v.clone())],
+                    &pre_abs,
+                    ModePublication::Strict,
+                )
+                .unwrap();
+            let ref_absente = prep_abs.reference_tentative();
+            // NON publiée : la clé n'a jamais été écrite.
+            let res = store.resoudre_reference(&ref_absente).unwrap();
+            let e = &res.par_cle[0];
+            assert_eq!(e.etat, ResolutionEffet::Indetermine);
+            assert_eq!(e.estampille_courante, None);
+            assert_eq!(e.valeur_courante, None);
+        }
+        eprintln!("MATRICE_OK : présente/tombstone/absente cohérents (Bytes32 + Float64)");
+    }
+
+    /// P0 — RESSOURCE INEXISTANTE : référence dont la cible n'existe pas. La
+    /// vivacité se lit sur le record du nœud ; l'état rendu est
+    /// `RessourceInexistante` (pas une erreur), donc `(None, None)` — cohérent
+    /// avec l'absence d'un `Engage`.
+    #[test]
+    fn lecture_canonique_ressource_inexistante() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Float64(1.0));
+        let pre = store.capturer_precondition(id, &["a"]).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Float64(2.0))], &pre, ModePublication::Strict)
+            .unwrap();
+        let reference = prep.reference_tentative();
+        store.publier_si_precondition_intacte(prep).unwrap();
+
+        // forge une référence dont la CIBLE est un nœud inexistant : magic(4) +
+        // version(1) + auteur(8) + horloge(8) → la cible commence à l'offset 21.
+        let mut octets = reference.to_bytes();
+        octets[21..29].copy_from_slice(&NodeId(999_999).0.to_le_bytes());
+        let ref_fantome = ReferenceTentative::from_bytes(&octets).unwrap();
+
+        let res = store.resoudre_reference(&ref_fantome).unwrap();
+        assert_eq!(res.integrite, IntegriteTentative::Indeterminee);
+        let e = &res.par_cle[0];
+        assert_eq!(e.etat, ResolutionEffet::Indetermine);
+        assert_eq!(e.estampille_courante, None, "nœud inexistant → pas d'estampille");
+        assert_eq!(e.valeur_courante, None, "nœud inexistant → pas de valeur");
+        eprintln!("INEXISTANT_OK : cible fantôme → (None, None), jamais une erreur");
+    }
+
+    /// P0 — ERREUR DE LECTURE ≠ ABSENCE : une corruption de la valeur stockée
+    /// (HeapRef hors zone) fait échouer `decode_value`. Avant correction, le
+    /// `.ok()` de `resoudre_reference` convertissait cette erreur en `(None,
+    /// None)` — la MÊME signature qu'une absence légitime. Après correction,
+    /// l'erreur REMONTE : `resoudre_reference` rend `Err`, jamais un
+    /// `valeur_courante=None` silencieux.
+    #[test]
+    fn erreur_de_lecture_n_est_pas_convertie_en_absence() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(
+            id,
+            "payload",
+            Value::Bytes((0..32u8).collect::<Vec<u8>>().into()),
+        );
+        let pre = store.capturer_precondition(id, &["payload"]).unwrap();
+        let prep = store
+            .preparer_transformation(
+                id,
+                &[(
+                    "payload",
+                    Value::Bytes((100..132u8).collect::<Vec<u8>>().into()),
+                )],
+                &pre,
+                ModePublication::Strict,
+            )
+            .unwrap();
+        let reference = prep.reference_tentative();
+        store.publier_si_precondition_intacte(prep).unwrap();
+
+        // CORROMPTION : on append une entrée BytesRef dont le HeapRef est hors
+        // zone, estampillée à horloge maximale pour devenir la plus récente
+        // (LWW : (horloge, auteur) décroissant).
+        let prop_payload = store.prop_keys.read().lookup("payload").unwrap();
+        let slot = id.0 as u32;
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let corrompu = PropertyEntry::new_stamped(
+                prop_payload,
+                PropertyValue::BytesRef(crate::page::HeapRef {
+                    page_id: u32::MAX,
+                    offset: 0,
+                }),
+                99,
+                u64::MAX,
+            );
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &corrompu)
+                .unwrap();
+        }
+
+        // L'erreur de lecture doit REMONTER, pas devenir une absence.
+        assert!(
+            store.lire_etat_propriete(id, "payload").is_err(),
+            "la corruption doit faire échouer la lecture directe"
+        );
+        assert!(
+            store.resoudre_reference(&reference).is_err(),
+            "une erreur de lecture ne doit pas être convertie en absence (valeur_courante=None)"
+        );
+        eprintln!("ERREUR_OK : corruption → Err propagé, pas (None, None)");
     }
 
     fn f64_de_capture(pre: &Precondition) -> f64 {
