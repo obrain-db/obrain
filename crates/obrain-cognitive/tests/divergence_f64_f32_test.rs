@@ -42,9 +42,10 @@ fn une_energie_f64_positive_arrondie_a_zero_en_f32() {
     // Balayage : la colonne f32 = 0 → le nœud est-il déclaré dormant ?
     let stats = decay_clock::advance_all(sub.as_ref(), &law, 0, BASE + 1_000_000).unwrap();
     eprintln!("stats: {stats:?}");
-    // Le nœud est DORMANT (colonne 0) alors que son ancre est positive : c'est
-    // la divergence à qualifier (politique de dormance vs arrondi numérique).
-    assert_eq!(stats.dormant, 1, "colonne f32 nulle → dormant (projection gouverne)");
+    // Après la migration (décodage AVANT dormance) : l'ancre f64 positive
+    // n'est PLUS dormante. La matérialisation est différée (dt=1s → énergie
+    // 2^-160 inchangée en f32), mais la dormance ne gouverne plus l'ancre.
+    assert_eq!(stats.dormant, 0, "l'ancre positive n'est PAS dormante (autorité f64)");
     assert_eq!(stats.corrupted, 0, "l'ancre n'est PAS corrompue");
-    assert_eq!(stats.advanced, 0, "pas d'avancement (dormant)");
+    assert_eq!(stats.advanced, 0, "matérialisation différée (pas de changement f32)");
 }

@@ -377,15 +377,17 @@ pub fn advance_all(
         Vec::new();
     for ((node_id, e_ref_col), ancre) in slots.into_iter().zip(ancres) {
         let e_ref_col = e_ref_col as f64;
-        if e_ref_col <= 0.0 {
-            stats.dormant += 1;
-            continue;
-        }
         let ancre_etat = decode_anchor_state(&ancre);
         if matches!(ancre_etat, AnchorState::Corrupted) {
             // Corruption : PAS de migration, PAS de décroissance. L'énergie
             // canonique (colonne) est préservée, le nœud est signalé.
             stats.corrupted += 1;
+            continue;
+        }
+        if matches!(ancre_etat, AnchorState::Absent) && e_ref_col <= 0.0 {
+            // Dormance EXPLICITE : pas d'ancre ET colonne nulle (politique de
+            // migration), pas un effet accidentel de la précision du miroir.
+            stats.dormant += 1;
             continue;
         }
         let ancre_dec = match ancre_etat {
