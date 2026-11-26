@@ -63,10 +63,9 @@ fn une_ancre_corrompue_preserve_l_energie_canonique() {
     // absente (migration historique). Le comportement actuel est observé ici.
     clock.store(BASE + JOUR, Ordering::Relaxed);
     let stats = decay_clock::advance_all(sub.as_ref(), &DecayLaw::new(H), 0, BASE + JOUR).unwrap();
-    eprintln!("après corruption : scanned={} advanced={} unanchored={}", stats.scanned, stats.advanced, stats.unanchored);
-    // DÉFAUT OBSERVÉ : une ancre corrompue est aujourd'hui migrée comme une
-    // ancre ABSENTE (unanchored=1). La distinction absence/corruption/validité
-    // (résultat typé) reste à implémenter — l'énergie, elle, est préservée.
+    eprintln!("après corruption : scanned={} advanced={} unanchored={} corrupted={}", stats.scanned, stats.advanced, stats.unanchored, stats.corrupted);
+    assert_eq!(stats.unanchored, 0, "une ancre corrompue ne doit PAS être migrée comme une ancre absente");
+    assert_eq!(stats.corrupted, 1, "la corruption est signalée (verdict typé), pas migrée");
 
     // Fermeture + réouverture : l'énergie canonique survit.
     drop(store);

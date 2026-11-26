@@ -106,6 +106,25 @@ pub fn read_anchor(sub: &SubstrateStore, node_id: NodeId) -> Option<EnergyAnchor
         .and_then(decode_anchor)
 }
 
+/// État typé de l'ancre composite : distingue ABSENCE légitime, VALIDITÉ et
+/// CORRUPTION. Une corruption ne doit jamais être confondue avec une absence.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnchorState {
+    Absent,
+    Valid(EnergyAnchor),
+    Corrupted,
+}
+
+fn decode_anchor_state(ancre: &Option<Value>) -> AnchorState {
+    match ancre {
+        None => AnchorState::Absent,
+        Some(v) => match decode_anchor(v) {
+            Some(a) => AnchorState::Valid(a),
+            None => AnchorState::Corrupted,
+        },
+    }
+}
+
 /// Ancre héritée (propriété `f64` séparée, avant l'ancre composite) : l'instant
 /// seul. L'énergie de référence est alors la colonne.
 pub fn legacy_anchor(store: &dyn GraphStoreMut, node_id: NodeId) -> Option<i64> {
@@ -251,6 +270,9 @@ pub struct DecayAdvance {
     pub deferred: u64,
     /// Nœuds SANS ancre (colonne posée hors de ce module) — ancrés maintenant.
     pub unanchored: u64,
+    /// Nœuds dont l'ancre composite est PRÉSENTE mais corrompue : non migrés,
+    /// non décrus, énergie canonique préservée (verdict de corruption).
+    pub corrupted: u64,
 }
 
 /// Avance jusqu'à `max_nodes` nœuds le long de LEUR propre loi, depuis LEUR
@@ -283,7 +305,17 @@ pub fn advance_all(
             stats.dormant += 1;
             continue;
         }
-        let ancre_dec = ancre.as_ref().and_then(decode_anchor);
+        let ancre_etat = decode_anchor_state(&ancre);
+        if matches!(ancre_etat, AnchorState::Corrupted) {
+            // Corruption : PAS de migration, PAS de décroissance. L'énergie
+            // canonique (colonne) est préservée, le nœud est signalé.
+            stats.corrupted += 1;
+            continue;
+        }
+        let ancre_dec = match ancre_etat {
+            AnchorState::Valid(a) => Some(a),
+            _ => None,
+        };
         let legacy = match &ancre_dec {
             Some(_) => None,
             None => legacy_anchor(sub, node_id),
