@@ -2795,6 +2795,10 @@ pub struct SubstrateStore {
     /// transformation préparée à LEUR store (refus d'un descripteur étranger
     /// ou périmé). N'est PAS persistée.
     incarnation: u64,
+    /// Sérialise `appliquer_evenement` PAR STORE (dédup + révision + écriture
+    /// sous une section critique commune). Jamais global : une suspension sur
+    /// un store ne bloque pas un événement sur un autre store.
+    verrou_evenements: parking_lot::Mutex<()>,
     /// Crochet de suspension d'écriture (test-only, PAR STORE — jamais global).
     #[cfg(test)]
     suspension: SuspensionEvenement,
@@ -3099,26 +3103,51 @@ pub enum EtatPropriete {
 
 /// Une dépendance nommée de la précondition : la clé et l'état capturé.
 #[derive(Debug, Clone)]
-pub struct Dependance {
-    pub cle: String,
-    pub etat: EtatPropriete,
+struct Dependance {
+    cle: String,
+    etat: EtatPropriete,
 }
 
-/// Précondition capturée : l'état (avec estampille complète) de chaque
-/// dépendance, lié à son store (incarnation) et à sa cible. La capture EST
-/// l'entrée de validation — `publier_si_precondition_intacte` la relit telle
-/// quelle, sans liste d'identifiants séparée.
+/// Précondition CAPTURÉE : l'état (avec estampille complète) de chaque
+/// dépendance, lié à son store (incarnation) et à sa cible. Champs PRIVÉS :
+/// la précondition est OPAQUE et non falsifiable — seule
+/// [`SubstrateStore::capturer_precondition`] la construit, l'appelant ne peut
+/// ni changer la cible, ni retirer une dépendance, ni substituer une estampille.
+/// La « précondition déclarée » n'existe donc pas séparément de la capture :
+/// ce que l'appelant détient EST une capture, dont la provenance est garantie
+/// par l'opacité du type (pas une garantie déclarative).
+///
+/// INCARNATION : `incarnation` identifie une OUVERTURE du store (descripteur
+/// périmé après réouverture). L'incarnation LOGIQUE d'une ressource est portée
+/// par son `NodeId` (alloué monotone, jamais réutilisé) et vérifiée par le test
+/// de vivacité à la publication — deux garanties distinctes, toutes deux exigées.
 #[derive(Debug, Clone)]
 pub struct Precondition {
-    pub incarnation: u64,
-    pub cible: NodeId,
-    pub dependances: Vec<Dependance>,
+    incarnation: u64,
+    cible: NodeId,
+    dependances: Vec<Dependance>,
+}
+
+#[cfg(test)]
+impl Precondition {
+    pub(crate) fn nb_dependances(&self) -> usize {
+        self.dependances.len()
+    }
+    pub(crate) fn etat_dependance(&self, i: usize) -> &EtatPropriete {
+        &self.dependances[i].etat
+    }
+    pub(crate) fn estampille_dependance(&self, i: usize) -> EstampilleComplete {
+        self.dependances[i].etat.clone().into_stamp()
+    }
 }
 
 /// Issue d'une publication conditionnelle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IssuePublication {
-    /// L'effet préparé est devenu canonique (la tête a basculé, l'effet lisible).
+    /// La tête a basculé ET les DÉPENDANCES déclarées sont canoniques. Les
+    /// écritures AVEUGLES (propriétés écrites mais non déclarées comme
+    /// dépendances) restent LWW : une écriture concurrente plus récente peut
+    /// les masquer — `Publie` n'en garantit pas la canonicité.
     Publie,
     /// Une dépendance de la précondition a changé depuis la capture : aucun effet.
     ConflitPrecondition,
@@ -3383,8 +3412,6 @@ impl SubstrateStore {
     }
 }
 
-static VERROU_EVENEMENTS: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-
 /// Application générique d'un événement identifiable sur une cible logique
 /// (nœud existant) : déduplication par identité d'événement, précondition de
 /// révision, transformation + preuve sous une section critique commune.
@@ -3401,7 +3428,7 @@ pub fn appliquer_evenement(
     etat_resultant: Value,
 ) -> SubstrateResult<IssueEvenement> {
     use obrain_core::graph::traits::{GraphStore, GraphStoreMut};
-    let _garde = VERROU_EVENEMENTS.lock();
+    let _garde = store.verrou_evenements.lock();
     // 1. Déduplication par identité d'événement.
     let cle = format!("ev:{evenement_id}");
     if let Some(existante) = store.get_node_property(cible, &PropertyKey::new(&cle)) {
@@ -9109,6 +9136,7 @@ impl SubstrateStore {
             epoque_index: AtomicU64::new(0),
             verrous_ecriture_noeud: (0..256).map(|_| Mutex::new(())).collect(),
             incarnation: INCARNATION_SUIVANTE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            verrou_evenements: parking_lot::Mutex::new(()),
             #[cfg(test)]
             suspension: SuspensionEvenement::nouvelle(),
             construction_index: Mutex::new(()),
@@ -47470,8 +47498,8 @@ mod publication_conditionnelle_native {
         };
         store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(h1)).unwrap();
         // estampilles a,b inchangées
-        assert_eq!(stamp(&store, id, "a"), pre.dependances[0].etat.clone().into_stamp(), "a inchangé");
-        assert_eq!(stamp(&store, id, "b"), pre.dependances[1].etat.clone().into_stamp(), "b inchangé");
+        assert_eq!(stamp(&store, id, "a"), pre.estampille_dependance(0), "a inchangé");
+        assert_eq!(stamp(&store, id, "b"), pre.estampille_dependance(1), "b inchangé");
         let r = store.publier_si_precondition_intacte(prep, &pre).unwrap();
         assert_eq!(r, IssuePublication::Publie, "validation logique réussit");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
@@ -47676,6 +47704,37 @@ mod publication_conditionnelle_native {
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         eprintln!("NON_DEP_OK : écriture sur propriété non dépendante préservée");
     }
+
+    /// P0 — EFFET RÉELLEMENT PUBLIÉ : une écriture AVEUGLE (c non déclarée
+    /// dépendance) est LWW — une écriture concurrente plus récente la masque.
+    /// `Publie` garantit la canonicité des DÉPENDANCES (a,b), pas des aveugles.
+    #[test]
+    fn effet_obsolete_pour_ecriture_aveugle() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pc = store.prop_keys.read().lookup("c").unwrap();
+        let pre = precond(&store, id); // dépendances : a,b — PAS c
+        let prep = store
+            .preparer_transformation(id, &[
+                (pa(&store), Value::Int64(10)),
+                (pb(&store), Value::Int64(20)),
+                (pc, Value::Int64(30)), // écriture AVEUGLE sur c
+            ])
+            .unwrap();
+        // écriture normale PLUS RÉCENTE sur c (non déclarée dépendance).
+        store.set_node_property(id, "c", Value::Int64(99));
+        let r = store.publier_si_precondition_intacte(prep, &pre).unwrap();
+        assert_eq!(r, IssuePublication::Publie, "tête basculée");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)), "dépendance a canonique");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)), "dépendance b canonique");
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(99)),
+            "écriture aveugle c=30 OBSOLÈTE : la plus récente (99) gagne en LWW"
+        );
+        eprintln!("OBSOLETE_OK : Publie distingue dépendance canonique et aveugle obsolète");
+    }
 }
 
 #[cfg(test)]
@@ -47758,12 +47817,12 @@ mod mission4_lecture_coherente {
         store.set_node_property(id, "a", Value::Int64(1));
         store.set_node_property(id, "b", Value::Int64(2));
         let cap = store.capturer_precondition(id, &["a", "b"]).unwrap();
-        assert_eq!(cap.dependances.len(), 2);
-        let va = match &cap.dependances[0].etat {
+        assert_eq!(cap.nb_dependances(), 2);
+        let va = match cap.etat_dependance(0) {
             EtatPropriete::Presente { valeur, .. } => valeur.clone(),
             autre => panic!("a attendue présente, lu {autre:?}"),
         };
-        let vb = match &cap.dependances[1].etat {
+        let vb = match cap.etat_dependance(1) {
             EtatPropriete::Presente { valeur, .. } => valeur.clone(),
             autre => panic!("b attendue présente, lu {autre:?}"),
         };
