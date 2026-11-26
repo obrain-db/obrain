@@ -44,10 +44,13 @@
 //! ## Limites assumées
 //!
 //! La variante `Exact` balaie le store : son coût est linéaire en nombre
-//! d'engrammes et en taille d'ensemble. Les variantes indexées ne gagnent que
-//! si l'index est sous-linéaire : sur un index force brute (celui des tests), le
-//! coût de `nearest` est déjà linéaire, et le gain annoncé serait faux. Les
-//! mesures du test d'intégration disent lequel des deux régimes a été mesuré.
+//! d'engrammes et en taille d'ensemble. Les variantes indexées n'ont de gain que
+//! si l'index coûte MOINS PAR COMPARAISON (empreintes compactes, quantification)
+//! ou s'il évite des comparaisons — deux choses différentes, qu'aucune latence
+//! seule ne départage. **Aucun index du dépôt n'est sous-linéaire en n** : les
+//! paliers substrate balaient tous les vecteurs au niveau L0 (16 octets,
+//! popcount) et ne gagnent donc qu'une constante, dans certaines configurations.
+//! Les mesures du banc disent laquelle des deux causes a produit quel chiffre.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;

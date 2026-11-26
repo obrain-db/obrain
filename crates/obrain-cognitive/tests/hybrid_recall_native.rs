@@ -528,6 +528,17 @@ fn banc_rappel_hybride_natif() {
                 );
 
                 let top_all: Vec<EngramId> = ids(&outcome.hits);
+                // ── LE PLAFOND SE LIT SUR LE VIVIER BRUT, PAS SUR LES HITS ──
+                // Les hits sont DÉJÀ reclassés (et, pour la variante structurelle,
+                // déjà filtrés). Calculer le plafond dessus revient à se comparer à
+                // soi-même. On interroge donc l'index une seconde fois, directement,
+                // et on compare l'ENSEMBLE des candidats à la référence exacte.
+                let sig = encoder.encode(&cues.iter().map(|&n| (n, 1.0)).collect::<Vec<_>>());
+                let vivier_brut: HashSet<EngramId> = index
+                    .nearest(&sig, n_probe)
+                    .iter()
+                    .filter_map(|(raw, _)| parse_engram_id(raw))
+                    .collect();
                 // Avec `exact_weight = 1.0`, le rerank exact ordonne les candidats par
                 // score exact : l'accord doit ÉGALER le plafond du vivier. Ce n'est pas
                 // un résultat empirique mais une propriété du chemin — l'assertion
@@ -535,20 +546,35 @@ fn banc_rappel_hybride_natif() {
                 let top: Vec<EngramId> = top_all.iter().copied().take(K).collect();
                 let ref_top: Vec<EngramId> =
                     refs[q].ranked.iter().take(K).map(|(id, _)| *id).collect();
+                let vivier_brut_hit = vivier_brut.iter().filter(|id| ref_top.contains(id)).count();
+                let pooled_brut = vivier_brut_hit as f64 / ref_top.len() as f64;
                 let pool_hit = overlap(&top_all, &ref_top);
                 let pooled = pool_hit as f64 / ref_top.len() as f64;
                 let acc = overlap(&top, &ref_top) as f64 / ref_top.len() as f64;
+                // Le chemin ne doit ni ajouter ni retirer de candidats au vivier de
+                // l'index : hors porte structurelle, les deux ensembles coïncident.
+                if variant != RecallVariant::HybridStructural {
+                    assert!(
+                        (pooled_brut - pooled).abs() < 1e-9,
+                        "{} : vivier de l'index ({pooled_brut}) ≠ candidats du chemin ({pooled})",
+                        variant.label()
+                    );
+                } else {
+                    assert!(
+                        pooled <= pooled_brut + 1e-9,
+                        "la porte structurelle ne peut que RÉDUIRE le vivier : {pooled} > {pooled_brut}"
+                    );
+                }
                 if variant == RecallVariant::Hybrid {
                     assert!(
-                        (acc - pooled).abs() < 1e-9,
-                        "rerank exact : accord {acc} ≠ plafond {pooled} — le classement \
-                         ne restitue pas l'ordre exact des candidats"
+                        (acc - pooled_brut).abs() < 1e-9,
+                        "rerank exact : accord {acc} ≠ plafond du vivier brut {pooled_brut} — \
+                         le classement ne restitue pas l'ordre exact des candidats"
                     );
                 }
                 assert!(
-                    acc <= pooled + 1e-9,
-                    "invariant violé : accord {acc} > plafond candidat {pooled} \
-                     (le classement dépasserait son vivier)"
+                    acc <= pooled_brut + 1e-9,
+                    "invariant violé : accord {acc} > plafond du vivier brut {pooled_brut}"
                 );
 
                 let query: Vec<(NodeId, f64)> = cues.iter().map(|&n| (n, 1.0)).collect();
@@ -603,7 +629,7 @@ fn banc_rappel_hybride_natif() {
                 }
 
                 accord.push(acc);
-                ceiling.push(pooled);
+                ceiling.push(pooled_brut);
                 candidates.push(outcome.stats.candidates as f64);
                 validations.push(outcome.stats.exact_validations as f64);
                 returned.push(outcome.hits.len() as f64);
@@ -988,13 +1014,12 @@ fn banc_rappel_hybride_natif() {
 
     println!("\n-- limites expérimentales --");
     println!(
-        "1. L'index sous-jacent est à force brute (InMemoryVectorIndex) : nearest coûte O(n·d),"
+        "1. L'index sous-jacent est à force brute (InMemoryVectorIndex) : nearest coûte O(n·d)."
     );
-    println!("   donc les latences ci-dessus ne montrent AUCUN gain d'index — elles comparent des");
-    println!(
-        "   chemins, pas des complexités. Un index sous-linéaire (paliers substrate) est requis"
-    );
-    println!("   pour que le gain candidat se traduise en temps.");
+    println!("   Les latences ci-dessus comparent donc des CHEMINS, pas des complexités, et aucun");
+    println!("   index du dépôt n'est sous-linéaire en n : ce qui peut se gagner est un coût PAR");
+    println!("   COMPARAISON (empreintes compactes, quantification), pas un ordre de grandeur.");
+    println!("   Le banc d'échelle (`hybrid_recall_scale.rs`) chiffre ce point.)");
     println!("2. Le taux de scores exacts nuls N'EST PAS une mesure de fidélité de l'encodeur :");
     println!(
         "   il mesure l'intersection des ensembles du corpus. La fidélité de la projection se"

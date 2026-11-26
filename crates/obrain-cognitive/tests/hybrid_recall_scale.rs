@@ -43,7 +43,8 @@ use std::time::Instant;
 use obrain_cognitive::engram::substrate_adapter::SubstrateVectorIndexAdapter;
 use obrain_cognitive::engram::traits::{InMemoryVectorIndex, VectorIndex};
 use obrain_cognitive::engram::{
-    Engram, EngramId, EngramStore, HybridRecallConfig, RecallEngine, RecallVariant, SpectralEncoder,
+    Engram, EngramId, EngramStore, HybridRecallConfig, RecallEngine, RecallVariant,
+    SpectralEncoder, parse_engram_id,
 };
 use obrain_common::types::NodeId;
 use obrain_substrate::retrieval::{
@@ -323,6 +324,8 @@ fn median(mut v: Vec<f64>) -> f64 {
 
 #[derive(Default, Clone, Copy)]
 struct Qualite {
+    /// Plafond mesuré sur le VIVIER BRUT de l'index (ensemble des candidats),
+    /// indépendamment de tout classement et de tout filtrage du chemin.
     ceiling: f64,
     accord: f64,
     tau: f64,
@@ -408,22 +411,48 @@ fn mesurer(ctx: &Ctx<'_>, index: &dyn VectorIndex, variant: RecallVariant, reps:
 
         let ref_top: Vec<EngramId> = refs[q].iter().take(K).map(|(id, _)| *id).collect();
         let pool: Vec<EngramId> = outcome.hits.iter().map(|h| h.engram_id).collect();
+
+        // ── PLAFOND SUR LE VIVIER BRUT ─────────────────────────────────────
+        // Les hits sont déjà reclassés (et filtrés pour la variante structurelle) :
+        // y lire le plafond serait circulaire. On interroge l'index directement et
+        // on compare l'ENSEMBLE des candidats à la référence exacte.
+        let sig = encoder.encode(&cues.iter().map(|&n| (n, 1.0)).collect::<Vec<_>>());
+        let vivier: HashSet<EngramId> = index
+            .nearest(&sig, N_PROBE)
+            .iter()
+            .filter_map(|(raw, _)| parse_engram_id(raw))
+            .collect();
+        let vivier_hit = vivier.iter().filter(|id| ref_top.contains(id)).count();
+        let pooled_brut = vivier_hit as f64 / ref_top.len() as f64;
+        if variant != RecallVariant::HybridStructural {
+            let hits_hit = pool.iter().filter(|id| ref_top.contains(id)).count();
+            let pooled_hits = hits_hit as f64 / ref_top.len() as f64;
+            assert!(
+                (pooled_brut - pooled_hits).abs() < 1e-9,
+                "{} : vivier de l'index ({pooled_brut}) ≠ candidats du chemin ({pooled_hits})",
+                variant.label()
+            );
+        }
         let top: Vec<EngramId> = pool.iter().copied().take(K).collect();
         let pool_hit = pool.iter().filter(|id| ref_top.contains(id)).count();
         let pooled = pool_hit as f64 / ref_top.len() as f64;
         let acc =
             top.iter().filter(|id| ref_top.contains(id)).count() as f64 / ref_top.len() as f64;
         assert!(
-            acc <= pooled + 1e-9,
-            "invariant : accord {acc} > plafond {pooled}"
+            acc <= pooled_brut + 1e-9,
+            "invariant : accord {acc} > plafond du vivier brut {pooled_brut}"
+        );
+        assert!(
+            pooled <= pooled_brut + 1e-9,
+            "le chemin ne peut pas trouver plus que le vivier de l'index : {pooled} > {pooled_brut}"
         );
         if variant == RecallVariant::Hybrid {
             assert!(
-                (acc - pooled).abs() < 1e-9,
-                "rerank exact : accord {acc} ≠ plafond {pooled}"
+                (acc - pooled_brut).abs() < 1e-9,
+                "rerank exact : accord {acc} ≠ plafond du vivier brut {pooled_brut}"
             );
         }
-        ceiling += pooled;
+        ceiling += pooled_brut;
         accord += acc;
         candidates += outcome.stats.candidates as f64;
 
@@ -752,25 +781,24 @@ fn banc_echelle_et_fidelite() {
         );
     }
     println!("   (250→500, 500→1000, 1000→2000, 2000→4000)");
+    println!("   → Ces rapports ne mesurent PAS une complexité, dans aucun sens.");
     println!(
-        "   → AUCUNE complexité n'est déduite de ces rapports. Les paliers L0 balaient TOUS les"
+        "     La cascade n'est PAS sous-linéaire : le palier L0 balaie TOUS les vecteurs (16 o,"
     );
+    println!("     popcount). Son coût reste LINÉAIRE en n. Ce qu'elle change, c'est le coût PAR");
+    println!("     COMPARAISON et le nombre de comparaisons pleines (L1 sur k0, L2 sur k1).");
     println!(
-        "     vecteurs (16 o, popcount) : c'est linéaire. Un rapport ~1,0 sur l'index seul ne"
+        "     Un rapport ~1,0 sur l'index seul ne dit donc rien d'une asymptote : il dit que le"
     );
+    println!("     balayage L0 est encore SOUS le coût fixe (projection de la requête en 384d,");
     println!(
-        "     prouve pas une sous-linéarité — il dit que le balayage L0 est encore SOUS le coût"
+        "     allocations) aux tailles mesurées. Pour que le balayage domine à nouveau, il faut"
     );
+    println!("     des tailles beaucoup plus grandes — mesuré à la section 1bis.");
     println!(
-        "     fixe (projection de la requête en 384d, allocations) aux tailles mesurées. Le point"
+        "     Le chemin complet suit l'index : la validation exacte de {N_PROBE} candidats est un"
     );
-    println!(
-        "     où le balayage redevient visible n'est pas atteint ici : le dire exigerait N ≫ 4000."
-    );
-    println!(
-        "     Le chemin complet, lui, suit l'index : la validation exacte de {N_PROBE} candidats"
-    );
-    println!("     est un coût constant qui pèse surtout à petit N.");
+    println!("     coût constant, qui pèse surtout à petit N.");
 
     // ---- 2) Frontière qualité/coût des largeurs (index déjà construit) ----
     let n_frontiere = 4000usize;
@@ -936,8 +964,11 @@ fn banc_echelle_et_fidelite() {
     println!(
         "   en 384) ; son avantage n'apparaît qu'à la dimension pour laquelle les paliers sont"
     );
-    println!("   faits. Un index réellement sous-linéaire (graphe navigable, IVF) demanderait un");
-    println!("   autre banc, avec un rappel à budget fixé qui ne s'effondre pas — non mesuré ici.");
+    println!("   faits. Rien ici n'est sous-linéaire en n, et rien ne l'affirme : un index");
+    println!(
+        "   réellement sous-linéaire (graphe navigable, IVF) demanderait un autre banc, avec un"
+    );
+    println!("   rappel à budget fixé qui ne s'effondre pas — non mesuré ici.");
     println!("b. Le cascade est construit EN MÉMOIRE (`SubstrateTieredIndex::new`). Sa");
     println!("   persistance en zones, son chargement mmap et la repermutation de slots ne sont");
     println!("   pas mesurés : le coût d'ouverture d'une base réelle n'entre dans aucun chiffre.");
