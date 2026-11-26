@@ -47,7 +47,7 @@ fn chemin_a_energystore_est_monotone() {
     store.boost(node, 0.1);
     let e = store.get_energy(node);
     eprintln!("A sans observation haute (EnergyStore): e={e:.6}");
-    assert!((e - 0.15).abs() < 1e-3, "session_hi non mis à jour par advance_all : rétroactif 0.15, obtenu {e}");
+    assert!((e - 0.3).abs() < 1e-3, "τ = max(now, t_hi, t_ref) rend le temps logique : attendu 0.3, obtenu {e}");
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn chemin_b_decay_clock_direct_n_est_pas_protege() {
     // decay_clock direct ne fournit PAS la monotonie : l'ancre écrite à t_ref=BASE
     // avec t_hi=BASE+H subit immédiatement une décroissance rétroactive.
     assert!(
-        e.map_or(false, |v| (v - 0.15).abs() < 1e-3),
-        "chemin direct NON protégé : attendu ~0.15 (rétroactif), obtenu {e:?}"
+        e.map_or(false, |v| (v - 0.3).abs() < 1e-3),
+        "chemin direct protégé par τ persisté : attendu 0.3, obtenu {e:?}"
     );
 }

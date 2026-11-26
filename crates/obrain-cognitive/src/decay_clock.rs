@@ -246,15 +246,12 @@ pub fn reinforce(
     max_energy: f64,
     now_micros: i64,
 ) -> Option<f64> {
-    let e_courante = energy_at(sub, node_id, law, now_micros)?;
-    let plafond = max_energy.min(1.0);
-    let nouvelle = (e_courante + delta).clamp(0.0, plafond);
-
-    // Demi-vie FIGÉE : celle de l'ancre existante, sinon celle de l'appelant.
-    // Le high-water mark ne recule jamais.
-    let (t_hi, h) = match read_anchor_state(sub, node_id) {
+    // Temps logique de la mutation : τ = max(now, t_hi, t_ref) lu depuis
+    // l'ancre PERSISTÉE. L'autorité temporelle ne dépend ni du chemin d'accès
+    // ni du session_hi volatil du wrapper.
+    let (tau, h) = match read_anchor_state(sub, node_id) {
         AnchorState::Valid(a) => (
-            a.t_hi_micros.max(now_micros),
+            now_micros.max(a.t_hi_micros).max(a.t_ref_micros),
             if a.half_life.is_zero() {
                 law.half_life()
             } else {
@@ -267,9 +264,14 @@ pub fn reinforce(
         // pas réparer une ancre temporellement invalide.
         AnchorState::Corrupted => return None,
     };
+    // L'énergie est calculée au MÊME temps logique τ auquel l'ancre est ancrée :
+    // jamais de décroissance entre le calcul et l'ancrage.
+    let e_courante = energy_at(sub, node_id, law, tau)?;
+    let plafond = max_energy.min(1.0);
+    let nouvelle = (e_courante + delta).clamp(0.0, plafond);
 
-    // UNE mutation atomique porte tout l'état temporel.
-    write_anchor(sub, node_id, nouvelle, now_micros, t_hi, h);
+    // UNE mutation atomique porte tout l'état temporel, ancrée à τ.
+    write_anchor(sub, node_id, nouvelle, tau, tau, h);
     // Point d'injection (test de durabilité) : un SIGKILL ICI laisse l'ancre
     // écrite mais pas le miroir — la lecture expose alors 0,5 ou 0,75, jamais
     // une ancre déchirée (0,375 / 1,0).
