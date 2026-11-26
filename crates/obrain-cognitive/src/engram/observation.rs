@@ -473,11 +473,11 @@ pub struct CognitiveObservationAdapter<L: AtomicEventLedger> {
 /// Préfixe d'effet : révision. Suit : cible u64 (engramme) puis
 /// `ResultingState` sérialisé. La CIBLE est conservée dans la PREUVE de
 /// transformation, même hors de la définition brute.
-const EFFECT_REVISION: u8 = 0x01;
+pub(crate) const EFFECT_REVISION: u8 = 0x01;
 /// Préfixe d'effet : formation TERMINÉE (activation effectuée).
-const EFFECT_FORMATION_DONE: u8 = 0x02;
+pub(crate) const EFFECT_FORMATION_DONE: u8 = 0x02;
 /// Préfixe d'effet : formation RÉSERVÉE, activation pas encore confirmée.
-const EFFECT_FORMATION_PENDING: u8 = 0x03;
+pub(crate) const EFFECT_FORMATION_PENDING: u8 = 0x03;
 
 impl<L: AtomicEventLedger> CognitiveObservationAdapter<L> {
     /// Construit un adaptateur au-dessus d'une primitive d'observation.

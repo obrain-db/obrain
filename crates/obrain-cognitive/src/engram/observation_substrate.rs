@@ -2,62 +2,81 @@
 //! substrat (`capturer_precondition` / `preparer_transformation` /
 //! `publier_si_precondition_intacte` / `resoudre_reference`).
 //!
-//! # Ce qu'il remplace
+//! # Autorité canonique GLOBALE (correction du défaut 52406858)
 //!
-//! [`super::observation::InMemoryAtomicEventLedger`] est un mock VOLATIL : il
-//! prouve le contrat (atomicité/visibilité sous un mutex) mais aucune
-//! DURABILITÉ. [`SubstrateAtomicEventLedger`] porte le même trait
-//! [`super::observation::AtomicEventLedger`] sur l'autorité transactionnelle
-//! NATIVE du substrat, sans second registre : tout est des propriétés d'UN
-//! nœud substrat (la ressource), et chaque application est UNE tentative
-//! `capturer → préparer → publier_si_precondition_intacte` en mode STRICT.
+//! L'`ObservationId` a une identité CANONIQUE dans son domaine d'autorité :
+//! le même K ne doit JAMAIS autoriser deux définitions incompatibles, et la
+//! ressource n'est PAS implicitement une partie de K. Le registre précédent
+//! écrivait `obs:<hex>` comme propriété DU NŒUD ressource
+//! (`capturer_precondition` mono-cible) : le même K appliqué sur A puis sur B
+//! produisait DEUX enregistrements indépendants (portée PAR-RESSOURCE), alors
+//! que le registre MÉMOIRE (`InMemoryAtomicEventLedger`) déduplique
+//! GLOBALEMENT. Ce fichier corrige l'implémentation durable pour respecter la
+//! portée GLOBALE.
 //!
-//! # Lien atomique exigé (une même tentative)
+//! # L'autorité canonique est UN nœud substrat dédié
 //!
-//! Sur le nœud de la ressource, une application écrit ATOMIQUEMENT (même
-//! bascule de tête) :
-//! * `obs:revision` → `Int64` : la révision résultante (précondition = la
-//!   révision ATTENDUE relue au même instant) ;
-//! * `obs:effect` → `Bytes` : l'effet (état résultant) du dernier événement —
-//!   c'est ce que `resource_state` rend pour rattraper un store en retard ;
-//! * `obs:<ObservationId en hex>` → `Bytes` : l'enregistrement par identité
-//!   (définition + effet + révision), qui fait preuve d'égalité au rejeu et
-//!   de résolution par identité.
+//! Un nœud unique, découvert/créé sous le label réservé `__obs_autorite__`,
+//! porte TOUS les enregistrements d'identité `obs:<hex>`. Comme
+//! `capturer_precondition` est MONO-CIBLE, c'est ce nœud unique — et non la
+//! ressource — qui est le domaine d'autorité de l'identité : la déduplication
+//! y est GLOBALE par construction. Il n'y a PAS de second registre : ce nœud
+//! est bâti SUR la même autorité transactionnelle native. Le nœud ressource,
+//! lui, continue de porter la RÉVISION (`obs:revision`) et l'EFFET (`obs:effect`)
+//! de la ressource — c'est la PROJECTION par ressource, pas l'autorité.
 //!
-//! L'`ObservationId` EST la clé de propriété ; la `ObservationDefinition`, la
-//! ressource, la révision attendue, l'état résultant et les effets sont DANS
-//! l'enregistrement et les propriétés écrites ; le « résultat de publication »
-//! est la garantie du mode STRICT (`PublieIntegrale` : tous les effets écrits
-//! sont canoniques, aucun effet partiel masqué).
+//! # Frontière d'engagement (PAS d'atomicité multi-ressources)
 //!
-//! # Limites déclarées (à qualifier, pas à deviner)
+//! Une application de RÉVISION engage DEUX nœuds : le nœud autorité (identité)
+//! et le nœud ressource (effet + révision). `capturer_precondition` étant
+//! mono-cible, ces deux engagements NE SONT PAS atomiques. L'ordre est :
 //!
-//! 1. **UNE ressource = UN nœud.** `publier_si_precondition_intacte` couvre un
-//!    nœud + sa PropsZone. Ce registre n'offre PAS d'atomicité multi-ressources :
-//!    une mutation cognitive qui touche plusieurs ressources devra définir un
-//!    contrat multi-nœuds (hors du présent fichier).
-//! 2. **`resolve` / `abandon` / `complete_formation` du trait sont SANS
-//!    ressource**, alors que l'autorité native est PAR-RESSOURCE (par nœud).
-//!    Le registre fournit les variantes SCOPÉES (`resolve_on`, `abandon_on`) ;
-//!    les méthodes du trait rendent une erreur NOMMÉE (jamais un `None`
-//!    silencieux, jamais une ressource devinée). C'est le contrat manquant à
-//!    définir avec le secondaire (adressage ressource-scopé de la résolution).
-//! 3. **Formations hors portée.** `apply_formation` cible des ressources
-//!    arbitraires (ex. `b"F:obs1"`), pas un `NodeId` de 8 octets. Le registre
-//!    durable ne couvre QUE le chemin de RÉVISION (ressource = nœud substrat).
-//! 4. **La durabilité suit le contrat de la publication native** : la bascule
-//!    de tête est WAL-journalisée (`NodePropHeadUpdate`), le contenu des pages
-//!    privées suit le flush/checkpoint de la PropsZone (même contrat que
-//!    `set_node_property` v2 — la publication n'est pas un fsync).
+//! 1. **Pré-vérification** (lecture seule) : la précondition de révision est
+//!    contrôlée AVANT tout engagement — une révision périmée est refusée sans
+//!    rien écrire.
+//! 2. **Commit d'identité** (nœud autorité, atomique) : `obs:<hex>` est écrit
+//!    `APPLIQUE` (identité + définition + ressource + effet + révision). C'est
+//!    le point de sérialisation GLOBAL de l'identité : deux tentatives
+//!    concurrentes du même K n'en laissent qu'UNE.
+//! 3. **Matérialisation de l'effet** (nœud ressource, atomique) : check-and-set
+//!    de la précondition, écriture de `obs:revision` + `obs:effect`.
+//!
+//! Un arrêt entre 2 et 3 laisse l'identité COMMISE mais l'effet NON matérialisé
+//! sur la ressource (« autorisé mais non matérialisé »). L'autorité canonique
+//! porte l'effet : `resolve` le restitue, et un rejeu (`AlreadyApplied`) répare
+//! la matérialisation via le manager. Une compensation n'est PAS une transaction
+//! atomique : cette frontière est RÉELLE et qualifiée, jamais devinée.
+//!
+//! # Formations (démarrage à froid)
+//!
+//! Une formation cible une ressource SYNTHÉTIQUE (`b"F:<16 octets>"`), PAS un
+//! `NodeId` de 8 octets : aucune ressource cognitive n'existe encore. Le
+//! registre la porte ENTIÈREMENT sur le nœud autorité (une seule écriture
+//! canonique, atomique) : `APPLIQUE` + effet `FORMATION_PENDING` (0x03), que
+//! `complete_formation` fait passer à `FORMATION_DONE` (0x02). Aucun nœud
+//! ressource n'est exigé.
+//!
+//! # Contrat manquant (nommé, pas contourné)
+//!
+//! L'atomicité RÉELLE (une seule bascule couvrant les deux nœuds) n'existe pas
+//! dans le substrat : `capturer_precondition`/`publier_si_precondition_intacte`
+//! sont MONO-CIBLE. La primitive manquante est une **transaction multi-nœuds**
+//! (capture + publication atomiques sur un ENSEMBLE de nœuds). Ce registre ne
+//! la simule pas : il rend les frontières explicites et récupérables, et nomme
+//! la primitive pour le secondaire.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use obrain_common::types::{NodeId, Value};
+use obrain_core::graph::traits::GraphStoreMut;
 use obrain_substrate::{
     EtatPropriete, IssuePublication, ModePublication, ReferenceTentative, SubstrateStore,
 };
 
-use super::observation::{AbandonOutcome, AtomicEventLedger, LedgerOutcome, ResolvedState};
+use super::observation::{
+    AbandonOutcome, AtomicEventLedger, LedgerOutcome, ResolvedState, EFFECT_FORMATION_DONE,
+    EFFECT_FORMATION_PENDING,
+};
 
 /// Clé de la révision courante d'une ressource.
 const CLE_REVISION: &str = "obs:revision";
@@ -66,23 +85,38 @@ const CLE_EFFET: &str = "obs:effect";
 /// Préfixe de clé d'un enregistrement par identité d'observation.
 const CLE_EVENEMENT_PREFIXE: &str = "obs:";
 
-/// Préfixe d'enregistrement : appliquée (définition + effet + révision).
+/// Label RÉSERVÉ du nœud d'autorité canonique des observations.
+const LABEL_AUTORITE: &str = "__obs_autorite__";
+
+/// Préfixe d'enregistrement : APPLIQUÉE (révision confirmée OU formation).
 const RECORD_APPLIQUE: u8 = 0x01;
-/// Préfixe d'enregistrement : abandonnée (jamais appliquée, ne le sera pas).
+/// Préfixe d'enregistrement : ABANDONNÉE (jamais appliquée, ne le sera pas).
 const RECORD_ABANDONNE: u8 = 0x02;
 
-/// Nombre maximal de ré-évaluations en cas de `ConflitPrecondition` (course
-/// capture→publication). Au-delà, on rend `Indeterminate` : l'appelant résout.
+/// Nombre maximal de ré-évaluations en cas de `ConflitPrecondition`.
 const NB_REESSAIS: usize = 8;
 
-/// Registre d'observations DURABLE, un nœud substrat par ressource.
+/// Registre d'observations DURABLE : autorité canonique globale (un nœud) +
+/// projection par ressource (révision + effet).
 pub struct SubstrateAtomicEventLedger {
     store: Arc<SubstrateStore>,
+    /// Cache du nœud d'autorité (découvert/créé paresseusement). Réinitialisé
+    /// à la construction : après réouverture, le label est re-balayé.
+    autorite: Mutex<Option<NodeId>>,
 }
 
-/// Décode un `resource_id` opaque en `NodeId` : 8 octets big-endian (le format
-/// produit par `engram_id.0.to_be_bytes()`). Toute autre longueur est refusée
-/// par un nom précis, jamais interprétée.
+/// Contenu d'un enregistrement d'identité (hors préfixe).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PayloadEnregistrement {
+    resource: Vec<u8>,
+    definition: Vec<u8>,
+    effet: Vec<u8>,
+    revision: u64,
+}
+
+/// Décode un `resource_id` opaque en `NodeId` : 8 octets big-endian. Toute
+/// autre longueur est refusée par un nom précis (les formations, elles, portent
+/// une ressource synthétique et ne passent PAS par ce décodeur).
 fn decoder_cible(resource_id: &[u8]) -> Result<NodeId, String> {
     if resource_id.len() != 8 {
         return Err(format!(
@@ -105,37 +139,74 @@ fn cle_evenement(event_id: &[u8; 16]) -> String {
     s
 }
 
-fn encode_record_applique(definition: &[u8], effet: &[u8], revision: u64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + 4 + definition.len() + 4 + effet.len() + 8);
-    out.push(RECORD_APPLIQUE);
-    out.extend_from_slice(&(definition.len() as u32).to_le_bytes());
-    out.extend_from_slice(definition);
-    out.extend_from_slice(&(effet.len() as u32).to_le_bytes());
-    out.extend_from_slice(effet);
+fn pousse_champ(out: &mut Vec<u8>, octets: &[u8]) {
+    out.extend_from_slice(&(octets.len() as u32).to_le_bytes());
+    out.extend_from_slice(octets);
+}
+
+/// Encode un enregistrement d'identité.
+/// Format : préfixe | ressource(len+octets) | définition(len+octets) |
+/// effet(len+octets) | révision u64 LE.
+fn encode_record(
+    prefixe: u8,
+    resource: &[u8],
+    definition: &[u8],
+    effet: &[u8],
+    revision: u64,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + 4 + resource.len() + 4 + definition.len() + 4 + effet.len() + 8);
+    out.push(prefixe);
+    pousse_champ(&mut out, resource);
+    pousse_champ(&mut out, definition);
+    pousse_champ(&mut out, effet);
     out.extend_from_slice(&revision.to_le_bytes());
     out
 }
 
-/// Décode un enregistrement « appliquée ». Refus nommé, jamais de panique.
-fn decode_record_applique(record: &[u8]) -> Result<(Vec<u8>, Vec<u8>, u64), String> {
-    if record.first() != Some(&RECORD_APPLIQUE) {
-        return Err("enregistrement d'événement sans préfixe « appliquée »".to_string());
-    }
-    let mut pos = 1usize;
-    let mut take = |n: usize| -> Result<&[u8], String> {
-        let fin = pos.checked_add(n).ok_or("débordement de taille")?;
-        let tranche = record
-            .get(pos..fin)
-            .ok_or("enregistrement d'événement tronqué")?;
-        pos = fin;
-        Ok(tranche)
+/// Décode un enregistrement d'identité. Refus nommé, jamais de panique.
+fn decode_record(record: &[u8]) -> Result<(u8, Option<PayloadEnregistrement>), String> {
+    let Some((&prefixe, reste)) = record.split_first() else {
+        return Err("enregistrement d'événement vide".to_string());
     };
-    let def_len = u32::from_le_bytes(take(4)?.try_into().unwrap()) as usize;
-    let definition = take(def_len)?.to_vec();
-    let eff_len = u32::from_le_bytes(take(4)?.try_into().unwrap()) as usize;
-    let effet = take(eff_len)?.to_vec();
-    let revision = u64::from_le_bytes(take(8)?.try_into().unwrap());
-    Ok((definition, effet, revision))
+    match prefixe {
+        RECORD_ABANDONNE => return Ok((prefixe, None)),
+        RECORD_APPLIQUE => {}
+        _ => {
+            return Err(format!(
+                "enregistrement d'événement invalide (préfixe {prefixe:#04x})"
+            ))
+        }
+    }
+    let mut pos = 0usize;
+    let mut prend_champ = |reste: &[u8], pos: &mut usize| -> Result<Vec<u8>, String> {
+        if reste.len() < *pos + 4 {
+            return Err("enregistrement d'événement tronqué (longueur)".to_string());
+        }
+        let len = u32::from_le_bytes(reste[*pos..*pos + 4].try_into().unwrap()) as usize;
+        *pos += 4;
+        if reste.len() < *pos + len {
+            return Err("enregistrement d'événement tronqué (corps)".to_string());
+        }
+        let v = reste[*pos..*pos + len].to_vec();
+        *pos += len;
+        Ok(v)
+    };
+    let resource = prend_champ(reste, &mut pos)?;
+    let definition = prend_champ(reste, &mut pos)?;
+    let effet = prend_champ(reste, &mut pos)?;
+    if reste.len() < pos + 8 {
+        return Err("enregistrement d'événement tronqué (révision)".to_string());
+    }
+    let revision = u64::from_le_bytes(reste[pos..pos + 8].try_into().unwrap());
+    Ok((
+        prefixe,
+        Some(PayloadEnregistrement {
+            resource,
+            definition,
+            effet,
+            revision,
+        }),
+    ))
 }
 
 fn err_substrat(e: obrain_substrate::SubstrateError) -> String {
@@ -143,22 +214,61 @@ fn err_substrat(e: obrain_substrate::SubstrateError) -> String {
 }
 
 impl SubstrateAtomicEventLedger {
-    /// Construit le registre au-dessus d'un [`SubstrateStore`] partagé.
+    /// Construit le registre au-dessus d'un `SubstrateStore` partagé.
     pub fn new(store: Arc<SubstrateStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            autorite: Mutex::new(None),
+        }
     }
 
-    /// Accès au store sous-jacent (tests, diagnostics, résolution par
-    /// [`SubstrateStore::resoudre_reference`]).
+    /// Accès au store sous-jacent (tests, diagnostics).
     pub fn store(&self) -> &SubstrateStore {
         &self.store
     }
 
-    /// Applique un événement et rend, en plus de l'issue, la
-    /// [`ReferenceTentative`] NATIVE de la tentative (si une publication a eu
-    /// lieu). Cette référence permet de résoudre une réponse PERDUE via
-    /// [`SubstrateStore::resoudre_reference`] (consultation historique), sans
-    /// rejouer.
+    /// Le nœud d'autorité canonique : découvert par label, créé paresseusement.
+    /// Ce nœud UNIQUE est le domaine d'autorité GLOBALE des identités.
+    fn autorite_canonique(&self) -> Result<NodeId, String> {
+        let mut cache = self.autorite.lock().unwrap();
+        if let Some(id) = *cache {
+            return Ok(id);
+        }
+        let mut noeuds = self.store.nodes_by_label_balayage(LABEL_AUTORITE);
+        let id = match noeuds.first() {
+            Some(&id) => id,
+            None => self.store.create_node(&[LABEL_AUTORITE]),
+        };
+        *cache = Some(id);
+        Ok(id)
+    }
+
+    /// Lit et décode l'enregistrement canonique d'une identité, s'il existe.
+    fn lire_record(
+        &self,
+        event_id: &[u8; 16],
+    ) -> Result<Option<(u8, Option<PayloadEnregistrement>)>, String> {
+        let autorite = self.autorite_canonique()?;
+        let cle_ev = cle_evenement(event_id);
+        match self
+            .store
+            .lire_etat_propriete(autorite, &cle_ev)
+            .map_err(err_substrat)?
+        {
+            EtatPropriete::Presente { valeur, .. } => {
+                let record = valeur
+                    .as_bytes()
+                    .ok_or("enregistrement d'événement non-binaire")?;
+                decode_record(record).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Applique un événement et rend, en plus de l'issue, la `ReferenceTentative`
+    /// NATIVE de la tentative (si une publication a eu lieu). Pour une révision,
+    /// c'est la référence de l'écriture sur le NŒUD RESSOURCE ; pour une
+    /// formation, celle de l'écriture sur le nœud autorité.
     #[allow(clippy::too_many_arguments)]
     pub fn apply_avec_reference(
         &self,
@@ -169,87 +279,84 @@ impl SubstrateAtomicEventLedger {
         resulting_state: &[u8],
         resulting_revision: u64,
     ) -> Result<(LedgerOutcome, Option<ReferenceTentative>), String> {
-        let cible = decoder_cible(resource_id)?;
-        // Ressource inexistante : refus NOMÉ (le registre durable exige un
-        // nœud substrat par ressource), pas un état fantôme.
-        if matches!(
-            self.store
-                .lire_etat_propriete(cible, CLE_REVISION)
-                .map_err(err_substrat)?,
-            EtatPropriete::RessourceInexistante
-        ) {
-            return Err(format!(
-                "ressource {cible:?} inexistante : le registre durable exige un nœud substrat par ressource"
-            ));
+        // Routage par la FORME de la ressource : une révision vise un nœud
+        // substrat (NodeId big-endian 8 octets) ; une formation vise une
+        // ressource SYNTHÉTIQUE (b"F:<16 octets>"), sans nœud substrat.
+        match decoder_cible(resource_id) {
+            Ok(cible) => self.apply_revision_durable(
+                cible,
+                event_id,
+                resource_id,
+                definition,
+                precondition_revision,
+                resulting_state,
+                resulting_revision,
+            ),
+            Err(_) => {
+                self.apply_formation_durable(event_id, resource_id, definition, resulting_revision)
+            }
         }
-        let cle_ev = cle_evenement(event_id);
-        // Ordre des clés : les trois sont ÉCRITES, donc toutes déclarées en
-        // dépendances (mode STRICT : W ⊆ R).
-        let cles = [CLE_REVISION, CLE_EFFET, cle_ev.as_str()];
+    }
 
+    /// FORMATION : une seule écriture canonique (la ressource est synthétique,
+    /// aucune ressource cognitive n'existe encore). Le préfixe d'enregistrement
+    /// est APPLIQUE directement ; le statut pending/done est porté par l'effet.
+    fn apply_formation_durable(
+        &self,
+        event_id: &[u8; 16],
+        resource_id: &[u8],
+        definition: &[u8],
+        resulting_revision: u64,
+    ) -> Result<(LedgerOutcome, Option<ReferenceTentative>), String> {
+        let autorite = self.autorite_canonique()?;
+        let cle_ev = cle_evenement(event_id);
         for _ in 0..NB_REESSAIS {
             let pre = self
                 .store
-                .capturer_precondition(cible, &cles)
+                .capturer_precondition(autorite, &[cle_ev.as_str()])
                 .map_err(err_substrat)?;
-
-            // 1) Déduplication par identité (AVANT la précondition, comme le
-            //    registre de référence) : rejeu / conflit d'identité / abandon.
             if let Some(valeur) = pre.valeur_capturee(&cle_ev) {
                 let record = valeur
                     .as_bytes()
                     .ok_or("enregistrement d'événement non-binaire")?;
-                return match record.first() {
-                    Some(&RECORD_APPLIQUE) => {
-                        let (def_enregistree, effet, rev) = decode_record_applique(record)?;
-                        if def_enregistree == definition {
+                let (prefixe, payload) = decode_record(record)?;
+                return match prefixe {
+                    RECORD_APPLIQUE => {
+                        let Some(p) = payload else {
+                            return Err("enregistrement d'événement sans charge".to_string());
+                        };
+                        if p.definition == definition {
                             Ok((
                                 LedgerOutcome::AlreadyApplied {
-                                    state: effet,
-                                    revision: rev,
+                                    state: p.effet,
+                                    revision: p.revision,
                                 },
                                 None,
                             ))
                         } else {
                             Ok((
                                 LedgerOutcome::IdentityConflict {
-                                    recorded_definition: def_enregistree,
+                                    recorded_definition: p.definition,
                                 },
                                 None,
                             ))
                         }
                     }
-                    Some(&RECORD_ABANDONNE) => Ok((LedgerOutcome::Abandoned, None)),
+                    RECORD_ABANDONNE => Ok((LedgerOutcome::Abandoned, None)),
                     _ => Err("enregistrement d'événement invalide (préfixe inconnu)".to_string()),
                 };
             }
-
-            // 2) Précondition de révision.
-            let courant = pre
-                .valeur_capturee(CLE_REVISION)
-                .and_then(|v| v.as_int64())
-                .map(|v| v as u64)
-                .unwrap_or(0);
-            if courant != precondition_revision {
-                return Ok((
-                    LedgerOutcome::PreconditionFailed {
-                        current_revision: courant,
-                    },
-                    None,
-                ));
-            }
-
-            // 3) Transformation atomique : identité + définition + état + effet
-            //    + révision, dans une même bascule (mode STRICT).
-            let record = encode_record_applique(definition, resulting_state, resulting_revision);
-            let nouvelles = [
-                (CLE_REVISION, Value::from(resulting_revision as i64)),
-                (CLE_EFFET, Value::from(resulting_state.to_vec())),
-                (cle_ev.as_str(), Value::from(record)),
-            ];
+            let record = encode_record(
+                RECORD_APPLIQUE,
+                resource_id,
+                definition,
+                &[EFFECT_FORMATION_PENDING],
+                resulting_revision,
+            );
+            let nouvelles = [(cle_ev.as_str(), Value::from(record))];
             let prep = self
                 .store
-                .preparer_transformation(cible, &nouvelles, &pre, ModePublication::Strict)
+                .preparer_transformation(autorite, &nouvelles, &pre, ModePublication::Strict)
                 .map_err(err_substrat)?;
             let reference = prep.reference_tentative();
             match self
@@ -260,82 +367,247 @@ impl SubstrateAtomicEventLedger {
                 IssuePublication::PublieIntegrale => {
                     return Ok((LedgerOutcome::Applied, Some(reference)));
                 }
-                // Le mode STRICT établit la canonicité AVANT la bascule : un
-                // effet partiel y est impossible. On le signale, jamais avalé.
                 IssuePublication::PubliePartielle => {
                     return Ok((LedgerOutcome::Indeterminate, Some(reference)));
                 }
-                IssuePublication::ConflitPrecondition => {
-                    // Écriture concurrente intercalée : re-capturer et
-                    // ré-évaluer (boucle bornée).
-                    continue;
-                }
+                IssuePublication::ConflitPrecondition => continue,
             }
         }
-        // Conflit persistant : indéterminé, l'appelant résout au lieu de rejouer.
         Ok((LedgerOutcome::Indeterminate, None))
     }
 
-    /// Résolution SCOPÉE par ressource : interroge l'enregistrement durable de
-    /// l'identité, sans deviner ni rejouer.
-    pub fn resolve_on(&self, resource_id: &[u8], event_id: &[u8; 16]) -> Result<ResolvedState, String> {
-        let cible = decoder_cible(resource_id)?;
+    /// RÉVISION : commit d'identité canonique (déduplication GLOBALE) puis
+    /// matérialisation de l'effet sur le nœud ressource. Frontières explicites,
+    /// jamais d'atomicité multi-nœuds prétendue.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_revision_durable(
+        &self,
+        cible: NodeId,
+        event_id: &[u8; 16],
+        resource_id: &[u8],
+        definition: &[u8],
+        precondition_revision: u64,
+        resulting_state: &[u8],
+        resulting_revision: u64,
+    ) -> Result<(LedgerOutcome, Option<ReferenceTentative>), String> {
+        // Ressource inexistante : refus NOMÉ (le registre durable exige un nœud
+        // substrat par ressource de RÉVISION), pas un état fantôme.
+        if matches!(
+            self.store
+                .lire_etat_propriete(cible, CLE_REVISION)
+                .map_err(err_substrat)?,
+            EtatPropriete::RessourceInexistante
+        ) {
+            return Err(format!(
+                "ressource {cible:?} inexistante : le registre durable exige un nœud substrat par ressource"
+            ));
+        }
+        let autorite = self.autorite_canonique()?;
         let cle_ev = cle_evenement(event_id);
-        match self
-            .store
-            .lire_etat_propriete(cible, &cle_ev)
-            .map_err(err_substrat)?
-        {
-            EtatPropriete::Presente { valeur, .. } => {
+
+        for _ in 0..NB_REESSAIS {
+            // ── Étape A : déduplication GLOBALE (nœud autorité). ──
+            let pre_canon = self
+                .store
+                .capturer_precondition(autorite, &[cle_ev.as_str()])
+                .map_err(err_substrat)?;
+            if let Some(valeur) = pre_canon.valeur_capturee(&cle_ev) {
                 let record = valeur
                     .as_bytes()
                     .ok_or("enregistrement d'événement non-binaire")?;
-                match record.first() {
-                    Some(&RECORD_APPLIQUE) => {
-                        let (definition, state, revision) = decode_record_applique(record)?;
-                        Ok(ResolvedState::Applied {
-                            definition,
-                            state,
-                            revision,
-                        })
+                let (prefixe, payload) = decode_record(record)?;
+                return match prefixe {
+                    RECORD_APPLIQUE => {
+                        let Some(p) = payload else {
+                            return Err("enregistrement d'événement sans charge".to_string());
+                        };
+                        if p.definition == definition {
+                            Ok((
+                                LedgerOutcome::AlreadyApplied {
+                                    state: p.effet,
+                                    revision: p.revision,
+                                },
+                                None,
+                            ))
+                        } else {
+                            Ok((
+                                LedgerOutcome::IdentityConflict {
+                                    recorded_definition: p.definition,
+                                },
+                                None,
+                            ))
+                        }
                     }
-                    Some(&RECORD_ABANDONNE) => Ok(ResolvedState::Abandoned),
-                    _ => Err("enregistrement d'événement invalide (préfixe inconnu)".to_string()),
-                }
+                    RECORD_ABANDONNE => Ok((LedgerOutcome::Abandoned, None)),
+                    _ => {
+                        Err("enregistrement d'événement invalide (préfixe inconnu)".to_string())
+                    }
+                };
             }
-            // Absente / supprimée / ressource inexistante : jamais appliquée.
-            _ => Ok(ResolvedState::NotApplied),
+
+            // ── Étape 0 : pré-vérification (lecture seule) — refuse une
+            //    révision périmée SANS commettre d'identité. ──
+            let courant = self.resource_revision(resource_id)?;
+            if courant != precondition_revision {
+                return Ok((
+                    LedgerOutcome::PreconditionFailed {
+                        current_revision: courant,
+                    },
+                    None,
+                ));
+            }
+
+            // ── Étape 1 : COMMIT d'identité (APPLIQUE) — point de sérialisation
+            //    GLOBAL. Identité + définition + ressource + effet + révision
+            //    durables d'un coup, sur le nœud autorité. ──
+            let record = encode_record(
+                RECORD_APPLIQUE,
+                resource_id,
+                definition,
+                resulting_state,
+                resulting_revision,
+            );
+            let prep = self
+                .store
+                .preparer_transformation(
+                    autorite,
+                    &[(cle_ev.as_str(), Value::from(record))],
+                    &pre_canon,
+                    ModePublication::Strict,
+                )
+                .map_err(err_substrat)?;
+            match self
+                .store
+                .publier_si_precondition_intacte(prep)
+                .map_err(err_substrat)?
+            {
+                IssuePublication::PublieIntegrale => {}
+                IssuePublication::PubliePartielle => {
+                    return Ok((LedgerOutcome::Indeterminate, None))
+                }
+                IssuePublication::ConflitPrecondition => continue,
+            }
+
+            // ── Étape 2 : matérialisation de l'effet (PROJECTION par ressource),
+            //    précondition re-vérifiée sous le verrou du nœud ressource. ──
+            let pre_res = self
+                .store
+                .capturer_precondition(cible, &[CLE_REVISION, CLE_EFFET])
+                .map_err(err_substrat)?;
+            let courant = pre_res
+                .valeur_capturee(CLE_REVISION)
+                .and_then(|v| v.as_int64())
+                .map(|v| v as u64)
+                .unwrap_or(0);
+            if courant != precondition_revision {
+                // Course : la révision a avancé entre la pré-vérification et
+                // ici. L'identité est DÉJÀ commise (APPLIQUE) : frontière réelle
+                // « autorisé mais non matérialisé ». Un rejeu réparera.
+                return Ok((
+                    LedgerOutcome::PreconditionFailed {
+                        current_revision: courant,
+                    },
+                    None,
+                ));
+            }
+            let nouvelles = [
+                (CLE_REVISION, Value::from(resulting_revision as i64)),
+                (CLE_EFFET, Value::from(resulting_state.to_vec())),
+            ];
+            let prep = self
+                .store
+                .preparer_transformation(cible, &nouvelles, &pre_res, ModePublication::Strict)
+                .map_err(err_substrat)?;
+            let reference = prep.reference_tentative();
+            match self
+                .store
+                .publier_si_precondition_intacte(prep)
+                .map_err(err_substrat)?
+            {
+                IssuePublication::PublieIntegrale => {
+                    return Ok((LedgerOutcome::Applied, Some(reference)));
+                }
+                IssuePublication::PubliePartielle => {
+                    return Ok((LedgerOutcome::Indeterminate, Some(reference)));
+                }
+                IssuePublication::ConflitPrecondition => continue,
+            }
+        }
+        Ok((LedgerOutcome::Indeterminate, None))
+    }
+
+    /// Résolution SCOPÉE par ressource : l'identité appartient-elle à CETTE
+    /// ressource ? (substitution incompatible → NotApplied, jamais devinée).
+    pub fn resolve_on(
+        &self,
+        resource_id: &[u8],
+        event_id: &[u8; 16],
+    ) -> Result<ResolvedState, String> {
+        decoder_cible(resource_id)?;
+        let Some((prefixe, payload)) = self.lire_record(event_id)? else {
+            return Ok(ResolvedState::NotApplied);
+        };
+        match prefixe {
+            RECORD_ABANDONNE => Ok(ResolvedState::Abandoned),
+            RECORD_APPLIQUE => {
+                let Some(p) = payload else {
+                    return Err("enregistrement d'événement sans charge".to_string());
+                };
+                if p.resource != resource_id {
+                    // L'identité est enregistrée pour une AUTRE ressource : elle
+                    // ne migre pas vers celle-ci.
+                    return Ok(ResolvedState::NotApplied);
+                }
+                Ok(ResolvedState::Applied {
+                    definition: p.definition,
+                    state: p.effet,
+                    revision: p.revision,
+                })
+            }
+            _ => Err("enregistrement d'événement invalide (préfixe inconnu)".to_string()),
         }
     }
 
     /// Abandon conditionnel SCOPÉ par ressource (refusé si déjà appliquée).
-    pub fn abandon_on(&self, resource_id: &[u8], event_id: &[u8; 16]) -> Result<AbandonOutcome, String> {
-        let cible = decoder_cible(resource_id)?;
+    pub fn abandon_on(
+        &self,
+        resource_id: &[u8],
+        event_id: &[u8; 16],
+    ) -> Result<AbandonOutcome, String> {
+        // La ressource doit être un NodeId (refus nommé sinon) ; l'abandon,
+        // lui, s'opère sur le nœud autorité (l'identité y est globale).
+        let _cible = decoder_cible(resource_id)?;
+        let autorite = self.autorite_canonique()?;
         let cle_ev = cle_evenement(event_id);
         for _ in 0..NB_REESSAIS {
             let pre = self
                 .store
-                .capturer_precondition(cible, &[cle_ev.as_str()])
+                .capturer_precondition(autorite, &[cle_ev.as_str()])
                 .map_err(err_substrat)?;
             match pre.valeur_capturee(&cle_ev) {
                 Some(valeur) => {
                     let record = valeur
                         .as_bytes()
                         .ok_or("enregistrement d'événement non-binaire")?;
-                    return match record.first() {
-                        Some(&RECORD_APPLIQUE) => {
-                            let (_, _, revision) = decode_record_applique(record)?;
-                            Ok(AbandonOutcome::AlreadyApplied { revision })
+                    let (prefixe, payload) = decode_record(record)?;
+                    match prefixe {
+                        RECORD_APPLIQUE => {
+                            let revision = payload.map(|p| p.revision).unwrap_or(0);
+                            return Ok(AbandonOutcome::AlreadyApplied { revision });
                         }
-                        Some(&RECORD_ABANDONNE) => Ok(AbandonOutcome::Abandoned),
-                        _ => Err("enregistrement d'événement invalide (préfixe inconnu)".to_string()),
-                    };
+                        RECORD_ABANDONNE => return Ok(AbandonOutcome::Abandoned),
+                        _ => {
+                            return Err(
+                                "enregistrement d'événement invalide (préfixe inconnu)".to_string()
+                            )
+                        }
+                    }
                 }
                 None => {
                     let nouvelles = [(cle_ev.as_str(), Value::from(vec![RECORD_ABANDONNE]))];
                     let prep = self
                         .store
-                        .preparer_transformation(cible, &nouvelles, &pre, ModePublication::Strict)
+                        .preparer_transformation(autorite, &nouvelles, &pre, ModePublication::Strict)
                         .map_err(err_substrat)?;
                     match self
                         .store
@@ -344,7 +616,10 @@ impl SubstrateAtomicEventLedger {
                     {
                         IssuePublication::PublieIntegrale => return Ok(AbandonOutcome::Abandoned),
                         IssuePublication::PubliePartielle => {
-                            return Err("abandon : publication partielle (inattendu en mode strict)".to_string());
+                            return Err(
+                                "abandon : publication partielle (inattendu en mode strict)"
+                                    .to_string(),
+                            )
                         }
                         IssuePublication::ConflitPrecondition => continue,
                     }
@@ -363,7 +638,9 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
             .lire_etat_propriete(cible, CLE_REVISION)
             .map_err(err_substrat)?
         {
-            EtatPropriete::Presente { valeur, .. } => Ok(valeur.as_int64().map(|v| v as u64).unwrap_or(0)),
+            EtatPropriete::Presente { valeur, .. } => {
+                Ok(valeur.as_int64().map(|v| v as u64).unwrap_or(0))
+            }
             _ => Ok(0),
         }
     }
@@ -386,7 +663,9 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
             .lire_etat_propriete(cible, CLE_REVISION)
             .map_err(err_substrat)?
         {
-            EtatPropriete::Presente { valeur, .. } => valeur.as_int64().map(|v| v as u64).unwrap_or(0),
+            EtatPropriete::Presente { valeur, .. } => {
+                valeur.as_int64().map(|v| v as u64).unwrap_or(0)
+            }
             _ => 0,
         };
         Ok(Some((effet, revision)))
@@ -412,32 +691,138 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
         .map(|(issue, _)| issue)
     }
 
-    fn resolve(&self, _event_id: &[u8; 16]) -> Result<ResolvedState, String> {
-        Err(
-            "resolve() SANS ressource : l'autorité native est PAR-RESSOURCE (un nœud substrat). \
-             Utilisez SubstrateAtomicEventLedger::resolve_on(resource_id, event_id)."
-                .to_string(),
-        )
+    /// Résolution depuis l'identité SEULE : l'enregistrement canonique porte le
+    /// lien vers la ressource (projection reconstructible, pas un index séparé).
+    fn resolve(&self, event_id: &[u8; 16]) -> Result<ResolvedState, String> {
+        let Some((prefixe, payload)) = self.lire_record(event_id)? else {
+            return Ok(ResolvedState::NotApplied);
+        };
+        match prefixe {
+            RECORD_ABANDONNE => Ok(ResolvedState::Abandoned),
+            RECORD_APPLIQUE => {
+                let Some(p) = payload else {
+                    return Err("enregistrement d'événement sans charge".to_string());
+                };
+                Ok(ResolvedState::Applied {
+                    definition: p.definition,
+                    state: p.effet,
+                    revision: p.revision,
+                })
+            }
+            _ => Err("enregistrement d'événement invalide (préfixe inconnu)".to_string()),
+        }
     }
 
-    fn abandon(&self, _event_id: &[u8; 16]) -> Result<AbandonOutcome, String> {
-        Err(
-            "abandon() SANS ressource : l'autorité native est PAR-RESSOURCE (un nœud substrat). \
-             Utilisez SubstrateAtomicEventLedger::abandon_on(resource_id, event_id)."
-                .to_string(),
-        )
+    /// Abandon conditionnel depuis l'identité seule (refusé si déjà appliquée).
+    fn abandon(&self, event_id: &[u8; 16]) -> Result<AbandonOutcome, String> {
+        let autorite = self.autorite_canonique()?;
+        let cle_ev = cle_evenement(event_id);
+        for _ in 0..NB_REESSAIS {
+            let pre = self
+                .store
+                .capturer_precondition(autorite, &[cle_ev.as_str()])
+                .map_err(err_substrat)?;
+            match pre.valeur_capturee(&cle_ev) {
+                Some(valeur) => {
+                    let record = valeur
+                        .as_bytes()
+                        .ok_or("enregistrement d'événement non-binaire")?;
+                    let (prefixe, payload) = decode_record(record)?;
+                    match prefixe {
+                        RECORD_APPLIQUE => {
+                            let revision = payload.map(|p| p.revision).unwrap_or(0);
+                            return Ok(AbandonOutcome::AlreadyApplied { revision });
+                        }
+                        RECORD_ABANDONNE => return Ok(AbandonOutcome::Abandoned),
+                        _ => {
+                            return Err(
+                                "enregistrement d'événement invalide (préfixe inconnu)".to_string()
+                            )
+                        }
+                    }
+                }
+                None => {
+                    let nouvelles = [(cle_ev.as_str(), Value::from(vec![RECORD_ABANDONNE]))];
+                    let prep = self
+                        .store
+                        .preparer_transformation(autorite, &nouvelles, &pre, ModePublication::Strict)
+                        .map_err(err_substrat)?;
+                    match self
+                        .store
+                        .publier_si_precondition_intacte(prep)
+                        .map_err(err_substrat)?
+                    {
+                        IssuePublication::PublieIntegrale => return Ok(AbandonOutcome::Abandoned),
+                        IssuePublication::PubliePartielle => {
+                            return Err(
+                                "abandon : publication partielle (inattendu en mode strict)"
+                                    .to_string(),
+                            )
+                        }
+                        IssuePublication::ConflitPrecondition => continue,
+                    }
+                }
+            }
+        }
+        Err("abandon : conflit persistant (résoudre au lieu de rejouer)".to_string())
     }
 
-    fn complete_formation(&self, _event_id: &[u8; 16]) -> Result<bool, String> {
-        Err(
-            "complete_formation() : les FORMATIONS ciblent des ressources arbitraires \
-             (non-NodeId) et ne sont pas couvertes par le registre durable par-ressource. \
-             Contrat manquant à définir (ressource-nœud pour la formation)."
-                .to_string(),
-        )
+    /// Confirme une formation réservée (effet FORMATION_PENDING → DONE).
+    fn complete_formation(&self, event_id: &[u8; 16]) -> Result<bool, String> {
+        let autorite = self.autorite_canonique()?;
+        let cle_ev = cle_evenement(event_id);
+        for _ in 0..NB_REESSAIS {
+            let pre = self
+                .store
+                .capturer_precondition(autorite, &[cle_ev.as_str()])
+                .map_err(err_substrat)?;
+            let Some(valeur) = pre.valeur_capturee(&cle_ev) else {
+                return Ok(false);
+            };
+            let record = valeur
+                .as_bytes()
+                .ok_or("enregistrement d'événement non-binaire")?;
+            let (prefixe, payload) = decode_record(record)?;
+            if prefixe != RECORD_APPLIQUE {
+                return Ok(false);
+            }
+            let Some(p) = payload else {
+                return Ok(false);
+            };
+            if p.effet.first() != Some(&EFFECT_FORMATION_PENDING) {
+                // Déjà DONE (0x02) ou révision (0x01) : pas de transition.
+                return Ok(false);
+            }
+            let nouvel = encode_record(
+                RECORD_APPLIQUE,
+                &p.resource,
+                &p.definition,
+                &[EFFECT_FORMATION_DONE],
+                p.revision,
+            );
+            let nouvelles = [(cle_ev.as_str(), Value::from(nouvel))];
+            let prep = self
+                .store
+                .preparer_transformation(autorite, &nouvelles, &pre, ModePublication::Strict)
+                .map_err(err_substrat)?;
+            match self
+                .store
+                .publier_si_precondition_intacte(prep)
+                .map_err(err_substrat)?
+            {
+                IssuePublication::PublieIntegrale => return Ok(true),
+                IssuePublication::PubliePartielle => {
+                    return Err(
+                        "complete_formation : publication partielle (inattendu en mode strict)"
+                            .to_string(),
+                    )
+                }
+                IssuePublication::ConflitPrecondition => continue,
+            }
+        }
+        Err("complete_formation : conflit persistant".to_string())
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,6 +850,13 @@ mod tests {
         e.extend_from_slice(&cible.0.to_be_bytes());
         e.push(marqueur);
         e
+    }
+
+    /// Ressource SYNTHÉTIQUE d'une formation (pas un NodeId) : `b"F:" + 16 octets`.
+    fn ressource_formation(n: u128) -> Vec<u8> {
+        let mut r = b"F:".to_vec();
+        r.extend_from_slice(&n.to_be_bytes());
+        r
     }
 
     // 1) première application : Applied, révision 1, état enregistré.
@@ -723,13 +1115,258 @@ mod tests {
         assert!(err.contains("NodeId big-endian de 8 octets"), "vu : {err}");
     }
 
-    // 14) les méthodes du trait SANS ressource rendent une erreur NOMMÉE
-    //     (le contrat ressource-scopé manque), jamais un état deviné.
+    // 14) résolution depuis l'identité SEULE (sans ressource) : opérationnelle.
     #[test]
-    fn methodes_sans_ressource_nomment_le_contrat_manquant() {
+    fn resolution_depuis_identite_seule() {
+        let (ledger, id) = ledger_memoire();
+        let rid = ressource_bytes(id);
+        let def = b"def-1".to_vec();
+        let eff = effet_revision(id, 7);
+        ledger.apply_event(&oid(1), &rid, &def, 0, &eff, 1).unwrap();
+        match ledger.resolve(&oid(1)).unwrap() {
+            ResolvedState::Applied {
+                definition,
+                state,
+                revision,
+            } => {
+                assert_eq!(definition, def);
+                assert_eq!(state, eff);
+                assert_eq!(revision, 1);
+            }
+            other => panic!("attendu Applied, reçu {other:?}"),
+        }
+        // Identité inconnue : NotApplied (une absence n'est pas une erreur).
+        assert_eq!(ledger.resolve(&oid(999)).unwrap(), ResolvedState::NotApplied);
+    }
+
+    // 15) abandon depuis l'identité SEULE (sans ressource) : opérationnel.
+    #[test]
+    fn abandon_depuis_identite_seule() {
+        let (ledger, id) = ledger_memoire();
+        let rid = ressource_bytes(id);
+        // Abandon d'une identité neuve : accepté.
+        assert_eq!(ledger.abandon(&oid(7)).unwrap(), AbandonOutcome::Abandoned);
+        // Rejeu d'une identité abandonnée : Abandoned.
+        assert_eq!(
+            ledger
+                .apply_event(&oid(7), &rid, b"d7", 0, &effet_revision(id, 7), 1)
+                .unwrap(),
+            LedgerOutcome::Abandoned
+        );
+        // Abandon d'une appliquée : refusé (une appliquée reste appliquée).
+        ledger
+            .apply_event(&oid(8), &rid, b"d8", 0, &effet_revision(id, 8), 1)
+            .unwrap();
+        assert_eq!(
+            ledger.abandon(&oid(8)).unwrap(),
+            AbandonOutcome::AlreadyApplied { revision: 1 }
+        );
+    }
+
+    // 16) complete_formation opérationnelle : PENDING → DONE, puis idempotente.
+    #[test]
+    fn complete_formation_operationnelle() {
         let (ledger, _id) = ledger_memoire();
-        assert!(ledger.resolve(&oid(1)).unwrap_err().contains("PAR-RESSOURCE"));
-        assert!(ledger.abandon(&oid(1)).unwrap_err().contains("PAR-RESSOURCE"));
-        assert!(ledger.complete_formation(&oid(1)).unwrap_err().contains("FORMATION"));
+        let k = oid(100);
+        let res = ressource_formation(100);
+        let def = b"def-F".to_vec();
+        let out = ledger
+            .apply_event(&k, &res, &def, 0, &[EFFECT_FORMATION_PENDING], 1)
+            .unwrap();
+        assert_eq!(out, LedgerOutcome::Applied);
+        assert!(ledger.complete_formation(&k).unwrap(), "PENDING → DONE");
+        match ledger.resolve(&k).unwrap() {
+            ResolvedState::Applied { state, .. } => {
+                assert_eq!(state, vec![EFFECT_FORMATION_DONE])
+            }
+            other => panic!("attendu Applied, reçu {other:?}"),
+        }
+        assert!(!ledger.complete_formation(&k).unwrap(), "déjà DONE : pas de transition");
+        assert!(!ledger.complete_formation(&oid(101)).unwrap(), "identité inconnue : pas de transition");
+    }
+
+    // 17) formation : rejeu idempotent + conflit d'identité, aucune création double.
+    #[test]
+    fn formation_rejeu_idempotent() {
+        let (ledger, _id) = ledger_memoire();
+        let k = oid(102);
+        let res = ressource_formation(102);
+        let def = b"def-F".to_vec();
+        assert_eq!(
+            ledger
+                .apply_event(&k, &res, &def, 0, &[EFFECT_FORMATION_PENDING], 1)
+                .unwrap(),
+            LedgerOutcome::Applied
+        );
+        match ledger
+            .apply_event(&k, &res, &def, 0, &[EFFECT_FORMATION_PENDING], 1)
+            .unwrap()
+        {
+            LedgerOutcome::AlreadyApplied { state, .. } => {
+                assert_eq!(state, vec![EFFECT_FORMATION_PENDING])
+            }
+            other => panic!("attendu AlreadyApplied, reçu {other:?}"),
+        }
+        match ledger
+            .apply_event(&k, &res, b"def-AUTRE", 0, &[EFFECT_FORMATION_PENDING], 1)
+            .unwrap()
+        {
+            LedgerOutcome::IdentityConflict {
+                recorded_definition,
+            } => assert_eq!(recorded_definition, def),
+            other => panic!("attendu IdentityConflict, reçu {other:?}"),
+        }
+    }
+
+    // 18) formation : redémarrage — la réservation canonique survit.
+    #[test]
+    fn formation_redemarrage() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let k = oid(103);
+        let res = ressource_formation(103);
+        let def = b"def-F".to_vec();
+        {
+            let store = Arc::new(SubstrateStore::create(&chemin).unwrap());
+            let ledger = SubstrateAtomicEventLedger::new(store.clone());
+            ledger
+                .apply_event(&k, &res, &def, 0, &[EFFECT_FORMATION_PENDING], 1)
+                .unwrap();
+            ledger.complete_formation(&k).unwrap();
+            store.close().unwrap();
+        }
+        let store = Arc::new(SubstrateStore::open(&chemin).unwrap());
+        let ledger = SubstrateAtomicEventLedger::new(store);
+        match ledger.resolve(&k).unwrap() {
+            ResolvedState::Applied {
+                definition,
+                state,
+                revision,
+            } => {
+                assert_eq!(definition, def);
+                assert_eq!(state, vec![EFFECT_FORMATION_DONE]);
+                assert_eq!(revision, 1);
+            }
+            other => panic!("attendu Applied, reçu {other:?}"),
+        }
+    }
+
+    // 19) formation : interruption avant confirmation — reste PENDING, le rejeu
+    //     réactive (jamais « déjà fait » alors que l'apprentissage est absent).
+    #[test]
+    fn formation_interruption_avant_confirmation() {
+        let (ledger, _id) = ledger_memoire();
+        let k = oid(104);
+        let res = ressource_formation(104);
+        let def = b"def-F".to_vec();
+        ledger
+            .apply_event(&k, &res, &def, 0, &[EFFECT_FORMATION_PENDING], 1)
+            .unwrap();
+        // complete_formation jamais appelé : resolve rend PENDING.
+        match ledger.resolve(&k).unwrap() {
+            ResolvedState::Applied { state, .. } => {
+                assert_eq!(state, vec![EFFECT_FORMATION_PENDING])
+            }
+            other => panic!("attendu Applied, reçu {other:?}"),
+        }
+        match ledger
+            .apply_event(&k, &res, &def, 0, &[EFFECT_FORMATION_PENDING], 1)
+            .unwrap()
+        {
+            LedgerOutcome::AlreadyApplied { state, .. } => {
+                assert_eq!(state, vec![EFFECT_FORMATION_PENDING])
+            }
+            other => panic!("attendu AlreadyApplied, reçu {other:?}"),
+        }
+    }
+
+    // 20) formation : abandon d'une identité neuve bloque la formation.
+    #[test]
+    fn formation_abandon() {
+        let (ledger, _id) = ledger_memoire();
+        let k = oid(105);
+        let res = ressource_formation(105);
+        assert_eq!(ledger.abandon(&k).unwrap(), AbandonOutcome::Abandoned);
+        assert_eq!(
+            ledger
+                .apply_event(&k, &res, b"def-F", 0, &[EFFECT_FORMATION_PENDING], 1)
+                .unwrap(),
+            LedgerOutcome::Abandoned
+        );
+    }
+
+    // 21) formation : concurrence — une seule réservation canonique.
+    #[test]
+    fn formation_concurrente() {
+        let (ledger, _id) = ledger_memoire();
+        let ledger = Arc::new(ledger);
+        let k = oid(106);
+        let res = ressource_formation(106);
+        let def = b"def-F".to_vec();
+        let t1 = {
+            let ledger = Arc::clone(&ledger);
+            let res = res.clone();
+            let def = def.clone();
+            std::thread::spawn(move || {
+                ledger
+                    .apply_event(&k, &res, &def, 0, &[EFFECT_FORMATION_PENDING], 1)
+                    .unwrap()
+            })
+        };
+        let t2 = {
+            let ledger = Arc::clone(&ledger);
+            let res = res.clone();
+            let def = def.clone();
+            std::thread::spawn(move || {
+                ledger
+                    .apply_event(&k, &res, &def, 0, &[EFFECT_FORMATION_PENDING], 1)
+                    .unwrap()
+            })
+        };
+        let out1 = t1.join().unwrap();
+        let out2 = t2.join().unwrap();
+        let n_applied = [&out1, &out2]
+            .iter()
+            .filter(|o| matches!(o, LedgerOutcome::Applied))
+            .count();
+        let n_rejoues = [&out1, &out2]
+            .iter()
+            .filter(|o| matches!(o, LedgerOutcome::AlreadyApplied { .. }))
+            .count();
+        assert_eq!(n_applied, 1, "exactement une application (out1={out1:?} out2={out2:?})");
+        assert_eq!(n_rejoues, 1, "l'autre est un rejeu");
+    }
+
+    // 22) déduplication GLOBALE inter-ressources (miroir unitaire du scénario S1).
+    #[test]
+    fn deduplication_globale_inter_ressources() {
+        let store = Arc::new(SubstrateStore::open_memory().unwrap());
+        let a = store.create_node(&["ressource"]);
+        let b = store.create_node(&["ressource"]);
+        let ledger = SubstrateAtomicEventLedger::new(store);
+        let k = oid(107);
+        let def = b"def-D".to_vec();
+        let out_a = ledger
+            .apply_event(&k, &ressource_bytes(a), &def, 0, b"eff-A", 1)
+            .unwrap();
+        let out_b = ledger
+            .apply_event(&k, &ressource_bytes(b), &def, 0, b"eff-B", 1)
+            .unwrap();
+        assert_eq!(out_a, LedgerOutcome::Applied);
+        // Même K + même définition sur une AUTRE ressource : rejeu (l'effet
+        // enregistré est celui de A), PAS une seconde application.
+        assert_eq!(
+            out_b,
+            LedgerOutcome::AlreadyApplied {
+                state: b"eff-A".to_vec(),
+                revision: 1
+            }
+        );
+        assert_eq!(ledger.resource_revision(&ressource_bytes(a)).unwrap(), 1);
+        assert_eq!(
+            ledger.resource_revision(&ressource_bytes(b)).unwrap(),
+            0,
+            "B jamais écrite"
+        );
     }
 }
