@@ -83,6 +83,12 @@ pub struct Engram {
     #[serde(default)]
     pub db_sources: Vec<String>,
 
+    /// Cle d IDENTITE STRUCTURELLE optionnelle (relations/directions/roles/
+    /// contexte). Deux engrams aux MEMES participants mais de cles structurelles
+    /// differentes NE FUSIONNENT PAS (voir `form_observation_with`).
+    #[serde(default)]
+    pub structural_key: Option<String>,
+
     /// Predictive model — P(outcome | context) for this engram.
     /// Stores mean + variance of observed outcomes. Used by the predictive
     /// coding layer (Layer 3+4) to compute prediction errors.
@@ -110,6 +116,7 @@ impl Engram {
             fsrs_state: FsrsState::default(),
             recall_count: 0,
             db_sources: Vec::new(),
+            structural_key: None,
             #[cfg(feature = "engram")]
             predictive_model: None,
         }
@@ -237,4 +244,54 @@ pub struct PredictionError {
     pub magnitude: f64,
     /// Surprise factor — how unexpected was this? (normalized 0-1)
     pub surprise: f64,
+}
+
+// ---------------------------------------------------------------------------
+// ObservationScope — portee epistemique d une observation
+// ---------------------------------------------------------------------------
+
+/// Portee EPISTEMIQUE d une observation : decide si l ABSENCE d un noeud est
+/// une preuve de disparition ou une simple NON-OBSERVATION.
+///
+/// C est le seul signal qui permet de differencier absence / ignorance /
+/// contradiction sans categorie fixe : c est le locuteur (l appelant) qui sait
+/// s il a observe la connaissance ENTIEREMENT ou seulement en partie.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ObservationScope {
+    /// Observation COMPLETE : un noeud absent a reellement disparu.
+    /// La revision peut decroitre puis RETIRER les noeuds non observes.
+    Complete,
+    /// Observation PARTIELLE : un noeud absent n a simplement pas ete vu.
+    /// La revision PRESERVE les noeuds non observes (aucune decroissance).
+    Partial,
+}
+
+// ---------------------------------------------------------------------------
+// AdaptiveRevisionParams — constantes MESURABLES de la revision non monotone
+// ---------------------------------------------------------------------------
+
+/// Parametres de la revision NON MONOTONE. Les valeurs par defaut ne sont PAS
+/// universelles : ce struct permet de MESURER leur effet (vitesse de
+/// decroissance, plancher de retrait) au lieu de les tenir pour acquises.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveRevisionParams {
+    /// Taux d alignement de base (renforcement vers l observation).
+    pub lr_base: f64,
+    /// Gain du taux d alignement par l erreur de prediction.
+    pub lr_error_gain: f64,
+    /// Plafond du taux d alignement.
+    pub lr_max: f64,
+    /// Plancher de retrait : un noeud decroisse sous ce poids est retire.
+    pub floor: f64,
+}
+
+impl Default for AdaptiveRevisionParams {
+    fn default() -> Self {
+        Self {
+            lr_base: 0.3,
+            lr_error_gain: 0.5,
+            lr_max: 0.8,
+            floor: 0.05,
+        }
+    }
 }

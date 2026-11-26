@@ -18,7 +18,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use obrain_common::types::NodeId;
-use obrain_cognitive::engram::{EngramManager, EngramManagerConfig, PredictiveAction, PredictivePolicy};
+use obrain_cognitive::engram::{
+    EngramManager, EngramManagerConfig, ObservationScope, PredictiveAction, PredictivePolicy,
+};
 use obrain_cognitive::InMemoryVectorIndex;
 
 type Ep = Vec<NodeId>;
@@ -296,7 +298,9 @@ fn b_sequence_non_monotone_et_changement_de_regime() {
 #[derive(Default)]
 struct Witnesses {
     ctx_history: HashMap<NodeId, Vec<Ep>>,
-    transitions: HashMap<Ep, HashMap<Ep, usize>>,
+    // TEMPOREL ordre-1 CONDITIONNÉ par le contexte : (ctx, prev) -> next.
+    // Meme information qu Obrain (contexte + issue precedente).
+    transitions: HashMap<(NodeId, Ep), HashMap<Ep, usize>>,
     global: HashMap<Ep, usize>,
     prev: Option<Ep>,
 }
@@ -307,7 +311,7 @@ impl Witnesses {
         if let Some(p) = &self.prev {
             *self
                 .transitions
-                .entry(p.clone())
+                .entry((ctx, p.clone()))
                 .or_default()
                 .entry(outcome.clone())
                 .or_insert(0) += 1;
@@ -339,11 +343,12 @@ impl Witnesses {
             .map(|(e, _)| e)
             .unwrap_or_default()
     }
-    /// TEMPOREL ordre-1 : issue la plus fréquente APRÈS l'issue précédente.
-    fn temporal(&self) -> Ep {
+    /// TEMPOREL ordre-1 CONDITIONNÉ par le contexte : issue la plus fréquente
+    /// APRÈS l'issue précédente DANS LE MÊME contexte (information égale à Obrain).
+    fn temporal(&self, ctx: NodeId) -> Ep {
         self.prev
             .as_ref()
-            .and_then(|p| self.transitions.get(p))
+            .and_then(|p| self.transitions.get(&(ctx, p.clone())))
             .and_then(|m| m.iter().max_by_key(|(_, c)| **c))
             .map(|(e, _)| e.clone())
             .unwrap_or_default()
@@ -382,7 +387,7 @@ fn run_case(
         let step = m.predictive_step(&[*ctx], obs, k).expect("pas");
         cl.push(set_error(m, &w.ctx_last(*ctx), obs));
         cf.push(set_error(m, &w.ctx_freq(*ctx), obs));
-        tp.push(set_error(m, &w.temporal(), obs));
+        tp.push(set_error(m, &w.temporal(*ctx), obs));
         mg.push(set_error(m, &w.marginal(), obs));
         ob.push(step.error);
         w.observe(*ctx, obs);
@@ -691,7 +696,7 @@ fn f_plasticite_revision_non_monotone_et_differenciation() {
     };
 
     let cons = run(PredictivePolicy::Consolidating);
-    let ada = run(PredictivePolicy::Adaptive);
+    let ada = run(PredictivePolicy::Adaptive(ObservationScope::Complete));
     let tail_cons = mean(&cons[cons.len().saturating_sub(2)..]);
     let tail_ada = mean(&ada[ada.len().saturating_sub(2)..]);
     eprintln!("[F] rétrécissement — résiduel consolidating={:.4} adaptive={:.4}", tail_cons, tail_ada);

@@ -27,7 +27,10 @@ use super::recall::{
 use super::spectral::SpectralEncoder;
 use super::store::{EngramStore, StoreError};
 use super::traits::VectorIndex;
-use super::types::{Engram, EngramHorizon, EngramId, RecallEvent, RecallFeedback};
+use super::types::{
+    AdaptiveRevisionParams, Engram, EngramHorizon, EngramId, ObservationScope, RecallEvent,
+    RecallFeedback,
+};
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -126,13 +129,26 @@ pub enum PredictiveStepError {
 pub enum PredictivePolicy {
     /// Formation Hebbienne + reconsolidation ADDITIVE (historique).
     Consolidating,
-    /// Formation Hebbienne + revision NON MONOTONE (les noeuds absents sont
-    /// decroisses puis retires : l ensemble peut se resserrer).
-    Adaptive,
+    /// Formation Hebbienne + revision NON MONOTONE. La portee decide si
+    /// l ABSENCE d un noeud est une preuve (Complete) ou une non-observation
+    /// (Partial, qui preserve).
+    Adaptive(ObservationScope),
     /// Formation EPISODIQUE : un engramme par ensemble observe, ce qui DIFFERENCIE
     /// deux contextes partageant des participants (la formation par composantes
     /// connexes les fusionne).
     Episodic,
+}
+
+/// Strategie de reconsolidation, traitee par UNE SEULE autorite (`revise_with`) :
+/// memes garanties de validation, persistance, coherence spectrale, publication
+/// d index, propagation d erreur et rejeu pour toutes les variantes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReconsolidationStrategy {
+    /// Additive (historique) : ajoute les noeuds manquants, ne retire rien.
+    Additive,
+    /// Non monotone : aligne l ensemble sur l observation selon la portee et
+    /// les parametres de decroissance/retrait.
+    Adaptive(ObservationScope, AdaptiveRevisionParams),
 }
 
 /// Action effectuee par un pas de boucle predictive.
@@ -376,6 +392,25 @@ impl EngramManager {
         new_nodes: &[NodeId],
         prediction_error: f64,
     ) -> Result<EngramRevision, RevisionError> {
+        self.revise_with(
+            engram_id,
+            new_nodes,
+            prediction_error,
+            ReconsolidationStrategy::Additive,
+        )
+    }
+
+    /// AUTORITE UNIQUE de reconsolidation : toutes les variantes passent ici
+    /// (memes garanties : validation, verrou par engramme, mutate candidat,
+    /// persistance, signature spectrale recomputee, publication d index,
+    /// propagation d erreur, rejeu).
+    pub fn revise_with(
+        &self,
+        engram_id: EngramId,
+        new_nodes: &[NodeId],
+        prediction_error: f64,
+        strategy: ReconsolidationStrategy,
+    ) -> Result<EngramRevision, RevisionError> {
         if !prediction_error.is_finite() || prediction_error < 0.0 {
             return Err(RevisionError::InvalidObservation(
                 "erreur de prédiction non finie ou négative".into(),
@@ -397,7 +432,14 @@ impl EngramManager {
         let _guard = lock.lock();
         self.store
             .mutate(engram_id, |e| {
-                reconsolidate(e, new_nodes, prediction_error);
+                match strategy {
+                    ReconsolidationStrategy::Additive => {
+                        reconsolidate(e, new_nodes, prediction_error)
+                    }
+                    ReconsolidationStrategy::Adaptive(scope, params) => {
+                        reconsolidate_adaptive(e, new_nodes, prediction_error, scope, params)
+                    }
+                }
                 // Projection dérivée : signature recalculée sur l'ensemble
                 // pondéré révisé, PAS conservée périmée.
                 e.spectral_signature = self.spectral.encode(&e.ensemble);
@@ -507,8 +549,8 @@ impl EngramManager {
                     PredictiveAction::FedFormation
                 }
             },
-            PredictivePolicy::Adaptive => match revise_target {
-                Some(eid) => match self.revise_adaptive(eid, observed, error) {
+            PredictivePolicy::Adaptive(scope) => match revise_target {
+                Some(eid) => match self.revise_adaptive(eid, observed, error, scope) {
                     Ok(rev) => PredictiveAction::Revised(rev),
                     Err(err) => PredictiveAction::RevisionFailed(err),
                 },
@@ -519,7 +561,7 @@ impl EngramManager {
             },
             PredictivePolicy::Episodic => {
                 let eid = self.form_observation(observed);
-                match self.revise_adaptive(eid, observed, error) {
+                match self.revise_adaptive(eid, observed, error, ObservationScope::Complete) {
                     Ok(rev) => PredictiveAction::Revised(rev),
                     Err(err) => PredictiveAction::RevisionFailed(err),
                 }
@@ -540,6 +582,17 @@ impl EngramManager {
     /// EXACTEMENT l observation. Deux contextes partageant des participants
     /// restent deux engrams distincts (pas de fusion par composante connexe).
     pub fn form_observation(&self, nodes: &[NodeId]) -> EngramId {
+        self.form_observation_with(nodes, None)
+    }
+
+    /// Formation EPISODIQUE avec IDENTITE STRUCTURELLE optionnelle. Deux
+    /// ensembles de MEMES participants mais de cles structurelles differentes
+    /// (relations/directions/roles/contexte) donnent DEUX engrams distincts.
+    pub fn form_observation_with(
+        &self,
+        nodes: &[NodeId],
+        structural_key: Option<&str>,
+    ) -> EngramId {
         let mut uniq: Vec<NodeId> = Vec::new();
         for &n in nodes {
             if !uniq.contains(&n) {
@@ -551,13 +604,14 @@ impl EngramManager {
         for e in self.store.list() {
             let mut k: Vec<u64> = e.node_ids().iter().map(|n| n.0).collect();
             k.sort_unstable();
-            if k == key {
+            if k == key && e.structural_key.as_deref() == structural_key {
                 return e.id;
             }
         }
         let id = self.store.next_id();
         let ensemble: Vec<(NodeId, f64)> = uniq.iter().map(|&n| (n, 1.0)).collect();
         let mut engram = Engram::new(id, ensemble);
+        engram.structural_key = structural_key.map(|s| s.to_string());
         let signature = self.spectral.encode(&engram.ensemble);
         engram.spectral_signature = signature.clone();
         self.store.insert(engram);
@@ -574,44 +628,33 @@ impl EngramManager {
         engram_id: EngramId,
         new_nodes: &[NodeId],
         prediction_error: f64,
+        scope: ObservationScope,
     ) -> Result<EngramRevision, RevisionError> {
-        if !prediction_error.is_finite() || prediction_error < 0.0 {
-            return Err(RevisionError::InvalidObservation(
-                "erreur de prediction non finie ou negative".into(),
-            ));
-        }
-        if new_nodes.is_empty() {
-            return Err(RevisionError::InvalidObservation("observation vide".into()));
-        }
-        let lock = {
-            let mut m = self.revise_locks.lock();
-            m.entry(engram_id)
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone()
-        };
-        let _guard = lock.lock();
-        self.store
-            .mutate(engram_id, |e| {
-                reconsolidate_adaptive(e, new_nodes, prediction_error);
-                e.spectral_signature = self.spectral.encode(&e.ensemble);
-            })
-            .map_err(|e| match e {
-                StoreError::EngramAbsent(id) => RevisionError::EngramAbsent(id),
-                StoreError::ValidationFailed(m) => RevisionError::ValidationFailed(m),
-                StoreError::PersistenceFailed(m) => RevisionError::PersistenceFailed(m),
-            })?;
-        let engram = self
-            .store
-            .get(engram_id)
-            .ok_or(RevisionError::EngramAbsent(engram_id))?;
-        let signature = engram.spectral_signature.clone();
-        self.vector_index.upsert(&engram_id.to_string(), &signature);
-        Ok(EngramRevision {
+        self.revise_adaptive_with(
             engram_id,
-            revision: self.store.revision(),
-            members: engram.ensemble.clone(),
-            signature,
-        })
+            new_nodes,
+            prediction_error,
+            scope,
+            AdaptiveRevisionParams::default(),
+        )
+    }
+
+    /// Variante PARAMETRABLE (pour MESURER l effet des constantes), meme
+    /// autorite `revise_with` donc memes garanties.
+    pub fn revise_adaptive_with(
+        &self,
+        engram_id: EngramId,
+        new_nodes: &[NodeId],
+        prediction_error: f64,
+        scope: ObservationScope,
+        params: AdaptiveRevisionParams,
+    ) -> Result<EngramRevision, RevisionError> {
+        self.revise_with(
+            engram_id,
+            new_nodes,
+            prediction_error,
+            ReconsolidationStrategy::Adaptive(scope, params),
+        )
     }
 
     // -----------------------------------------------------------------
