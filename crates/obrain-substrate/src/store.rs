@@ -3315,12 +3315,13 @@ pub enum ResolutionEffet {
 /// store n'est pas persistée, et une référence qui la contiendrait ne
 /// survivrait pas à la réouverture.
 ///
-/// LIMITE DÉCLARÉE — identité de base. `substrate.meta` est de taille figée et
-/// ne porte aucun identifiant de base : il n'en existe pas aujourd'hui.
-/// `writer.id` est tiré une fois par répertoire puis relu à chaque ouverture ;
-/// il tient donc lieu d'identité persistante de ce répertoire. Les notions
-/// « identité de base » et « identité d'écrivain » COÏNCIDENT ici par
-/// construction — c'est une limite mesurée, pas une identité déguisée.
+/// IDENTITÉ DE DOMAINE (#334). Depuis le codec v2, la référence porte le
+/// `domaine_id` de la base qui l'a émise (`domaine.id`, u128). C'est LUI — et
+/// non `writer.id` — qui distingue deux bases INDÉPENDANTES : deux bases qui
+/// partagent `writer.id` (copie du fichier) restent distinguables par leur
+/// domaine, sauf copie intégrale NON déclarée (qui partage aussi `domaine.id`,
+/// limite assumée du fork — voir `domaine_id.rs`). `domaine == 0` signifie
+/// « domaine non spécifié » : c'est le cas d'une référence v1 décodée (legacy).
 ///
 /// Une référence n'est JAMAIS, à elle seule, une preuve d'engagement : seule
 /// [`SubstrateStore::resoudre_reference`] en produit une, et `Indetermine` y
@@ -3330,13 +3331,23 @@ pub struct ReferenceTentative {
     auteur: u64,
     horloge: u64,
     cible: NodeId,
+    domaine: u128,
     effets: Vec<String>,
 }
 
 /// Magic des octets d'une [`ReferenceTentative`] encodée.
 pub const REFERENCE_TENTATIVE_MAGIC: [u8; 4] = *b"OBRT";
 /// Version du format d'encodage d'une [`ReferenceTentative`].
-pub const REFERENCE_TENTATIVE_VERSION: u8 = 1;
+///
+/// * v2 (courante, produite par [`Self::to_bytes`]) :
+///   `magic(4) | version(1) | auteur(8 LE) | horloge(8 LE) | cible(8 LE) |
+///   domaine(16 BE) | n(4 LE) | [len(4 LE) | octets]*n` — la référence porte
+///   l'identité de DOMAINE (u128, UUID RFC 4122, big-endian comme `domaine.id`).
+/// * v1 (lue par [`Self::from_bytes`], plus jamais produite) : MÊME format SANS
+///   le champ `domaine` — décode `domaine == 0`, « domaine non spécifié
+///   (legacy) ». Une référence v1 reste AMBIGUË entre domaines (limite
+///   historique documentée, jamais une confirmation fictive).
+pub const REFERENCE_TENTATIVE_VERSION: u8 = 2;
 
 /// Lit 8 octets little-endian à `pos`, en avance `pos`. Refus nommé, jamais de panique.
 fn lire_u64_le(octets: &[u8], pos: &mut usize) -> SubstrateResult<u64> {
@@ -3374,6 +3385,26 @@ fn lire_u32_le(octets: &[u8], pos: &mut usize) -> SubstrateResult<u32> {
     Ok(u32::from_le_bytes(buf))
 }
 
+/// Lit 16 octets big-endian à `pos`, en avance `pos`. Refus nommé, jamais de panique.
+/// Le domaine est un u128 (UUID RFC 4122 canonique, ordre big-endian comme
+/// `domaine.id`), contrairement aux champs u64 little-endian du reste du codec.
+fn lire_u128_be(octets: &[u8], pos: &mut usize) -> SubstrateResult<u128> {
+    let fin = pos
+        .checked_add(16)
+        .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+            raison: "dépassement d'index".to_string(),
+        })?;
+    let tranche = octets
+        .get(*pos..fin)
+        .ok_or_else(|| SubstrateError::ReferenceNonAttribuable {
+            raison: format!("troncature : 16 octets attendus à l'offset {pos}"),
+        })?;
+    *pos = fin;
+    let mut buf = [0u8; 16];
+    buf.copy_from_slice(tranche);
+    Ok(u128::from_be_bytes(buf))
+}
+
 impl ReferenceTentative {
     /// Auteur effectif de la tentative (identité persistée du répertoire).
     pub fn auteur(&self) -> u64 {
@@ -3390,22 +3421,34 @@ impl ReferenceTentative {
         self.cible
     }
 
+    /// Identité de DOMAINE de la base qui a émis la tentative (`domaine.id`,
+    /// u128). `0` = « domaine non spécifié (legacy) » : une référence v1
+    /// décodée, encore ambiguë entre domaines (limite historique documentée).
+    pub fn domaine(&self) -> u128 {
+        self.domaine
+    }
+
     /// Clés écrites, dans l'ordre de la préparation.
     pub fn effets(&self) -> &[String] {
         &self.effets
     }
 
-    /// Encodage STABLE et versionné :
+    /// Encodage STABLE et versionné (v2) :
     /// `magic(4) | version(1) | auteur(8 LE) | horloge(8 LE) | cible(8 LE) |
-    /// n(4 LE) | [len(4 LE) | octets]*n`
+    /// domaine(16 BE) | n(4 LE) | [len(4 LE) | octets]*n`
+    ///
+    /// `domaine` est encodé en BIG-ENDIAN (UUID RFC 4122 canonique, comme le
+    /// fichier `domaine.id`) ; les autres champs numériques restent en
+    /// little-endian. La v1 (sans `domaine`) n'est plus produite mais reste LUE.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out =
-            Vec::with_capacity(33 + self.effets.iter().map(|e| 4 + e.len()).sum::<usize>());
+            Vec::with_capacity(49 + self.effets.iter().map(|e| 4 + e.len()).sum::<usize>());
         out.extend_from_slice(&REFERENCE_TENTATIVE_MAGIC);
         out.push(REFERENCE_TENTATIVE_VERSION);
         out.extend_from_slice(&self.auteur.to_le_bytes());
         out.extend_from_slice(&self.horloge.to_le_bytes());
         out.extend_from_slice(&self.cible.0.to_le_bytes());
+        out.extend_from_slice(&self.domaine.to_be_bytes());
         out.extend_from_slice(&(self.effets.len() as u32).to_le_bytes());
         for cle in &self.effets {
             out.extend_from_slice(&(cle.len() as u32).to_le_bytes());
@@ -3424,9 +3467,12 @@ impl ReferenceTentative {
     /// les données persistées et ne peut rendre `Engage` que sur une entrée
     /// réellement présente dans la chaîne canonique.
     pub fn from_bytes(octets: &[u8]) -> SubstrateResult<Self> {
-        if octets.len() < 33 {
+        if octets.len() < 5 {
             return Err(SubstrateError::ReferenceNonAttribuable {
-                raison: format!("troncature : {} octets pour un en-tête de 33", octets.len()),
+                raison: format!(
+                    "troncature : {} octets pour un en-tête minimal de 5 (magic + version)",
+                    octets.len()
+                ),
             });
         }
         if octets[..4] != REFERENCE_TENTATIVE_MAGIC {
@@ -3434,11 +3480,14 @@ impl ReferenceTentative {
                 raison: "magic invalide — ce n'est pas une référence de tentative".to_string(),
             });
         }
-        if octets[4] != REFERENCE_TENTATIVE_VERSION {
+        // Rétro-compatibilité : v1 (sans domaine) est encore LUE ; v2 porte le
+        // domaine. Toute autre version est refusée.
+        let version = octets[4];
+        if version != 1 && version != REFERENCE_TENTATIVE_VERSION {
             return Err(SubstrateError::ReferenceNonAttribuable {
                 raison: format!(
-                    "version inconnue {} (attendu {})",
-                    octets[4], REFERENCE_TENTATIVE_VERSION
+                    "version inconnue {version} (attendu 1 ou {})",
+                    REFERENCE_TENTATIVE_VERSION
                 ),
             });
         }
@@ -3446,6 +3495,13 @@ impl ReferenceTentative {
         let auteur = lire_u64_le(octets, &mut pos)?;
         let horloge = lire_u64_le(octets, &mut pos)?;
         let cible = NodeId(lire_u64_le(octets, &mut pos)?);
+        // v2 : le domaine suit la cible (16 octets big-endian). v1 : pas de
+        // domaine — « domaine non spécifié (legacy) », jamais une confirmation.
+        let domaine = if version == 2 {
+            lire_u128_be(octets, &mut pos)?
+        } else {
+            0u128
+        };
         let n_effets = lire_u32_le(octets, &mut pos)? as usize;
         // Un décompte forgé ne doit pas faire boucler : chaque effet porte au
         // moins 4 octets de longueur.
@@ -3490,6 +3546,7 @@ impl ReferenceTentative {
             auteur,
             horloge,
             cible,
+            domaine,
             effets,
         })
     }
@@ -3621,6 +3678,12 @@ pub struct TransformationPrete {
     /// transformation. Conservé ici pour que la tentative puisse se nommer
     /// elle-même AVANT publication — voir [`Self::reference_tentative`].
     auteur: u64,
+    /// Identité de DOMAINE de la base au moment de la préparation
+    /// (`domaine_id`, #334). Inscrite dans la référence v2 pour rendre la
+    /// collision inter-domaines DÉTECTABLE : contrairement à `auteur`
+    /// (`writer.id`), le domaine distingue deux bases INDÉPENDANTES même
+    /// quand elles partagent `writer.id` par copie du fichier.
+    domaine: u128,
     /// Précondition CAPTURÉE qui a servi à calculer la transformation — LIÉE
     /// à la préparation : `publier_si_precondition_intacte` la relit telle
     /// quelle, l'appelant ne peut pas en substituer une autre (lien explicite
@@ -3671,8 +3734,15 @@ impl TransformationPrete {
             auteur: self.auteur,
             horloge: self.horloge_effet,
             cible: self.cible,
+            domaine: self.domaine_id(),
             effets: self.ecritures.clone(),
         }
+    }
+
+    /// Identité de DOMAINE de la base qui a préparé cette transformation
+    /// (`domaine.id`, #334) : c'est elle qui est inscrite dans la référence v2.
+    pub fn domaine_id(&self) -> u128 {
+        self.domaine
     }
 
     /// Estampille HLC complète `(auteur, horloge)` attribuée aux écritures de la
@@ -3912,6 +3982,35 @@ impl SubstrateStore {
         &self,
         reference: &ReferenceTentative,
     ) -> SubstrateResult<ResolutionTentative> {
+        // GARDE DE DOMAINE (#334) : une référence v2 porte le domaine de SA base.
+        // Si elle nomme un AUTRE domaine (non nul, ≠ celui de ce store), c'est
+        // une référence ÉTRANGÈRE : la résolution est INTÉGRALEMENT indéterminée,
+        // SANS consulter le contenu — une égalité de contenu entre deux bases ne
+        // doit JAMAIS produire un `Engage` croisé (c'était le faux positif #334).
+        // `domaine == 0` = référence v1 (legacy), sans domaine : comportement
+        // historique conservé (indétermination si l'entrée est absente), jamais
+        // une confirmation fictive.
+        if reference.domaine != 0 && reference.domaine != self.domaine_id() {
+            let par_cle = reference
+                .effets
+                .iter()
+                .map(|cle| EffetResolu {
+                    cle: cle.clone(),
+                    etat: ResolutionEffet::Indetermine,
+                    // NON CONSULTÉ : le contenu d'un domaine étranger n'est pas
+                    // lu. `Absente` est ici un sentinelle « aucune observation »,
+                    // PAS un constat de clé jamais écrite (`valeur_courante` et
+                    // `estampille_courante` rendent `None`).
+                    etat_courant: EtatPropriete::Absente,
+                })
+                .collect();
+            return Ok(ResolutionTentative {
+                cible: reference.cible,
+                auteur_resolvant: self.writer_id,
+                par_cle,
+                integrite: IntegriteTentative::Indeterminee,
+            });
+        }
         // UNE seule acquisition du verrou de nœud pour TOUTES les clés : l'agrégat
         // est un instantané COHÉRENT (toutes les clés lues contre le même état),
         // pas une concaténation d'observations issues d'états différents.
@@ -4143,6 +4242,7 @@ impl SubstrateStore {
             incarnation: self.incarnation,
             cible,
             auteur,
+            domaine: self.domaine_id(),
             precondition: precondition.clone(),
             ecritures: nouvelles.iter().map(|(c, _)| (*c).to_string()).collect(),
             horloge_effet: horloge,
@@ -51024,14 +51124,15 @@ mod cout_conflictuel_10000 {
 mod collision_hlc_controlee {
 //! ── COLLISION HLC CONTRÔLÉE — deux bases, même `writer.id`, même horloge ──
 //!
-//! Démonstration DÉTERMINISTE (sans temporisation) de l'ambiguïté d'une
-//! [`ReferenceTentative`] quand deux bases INDÉPENDANTES partagent le même
-//! `writer.id` (copie du fichier) et produisent la MÊME estampille `(auteur,
-//! horloge)` via le seam [`SubstrateStore::forcer_horloge_pour_test`].
+//! Démonstration DÉTERMINISTE (sans temporisation) de ce que change le DOMAINE
+//! (codec v2, #334) quand deux bases INDÉPENDANTES partagent le même `writer.id`
+//! (copie du fichier) et produisent la MÊME estampille `(auteur, horloge)` via
+//! le seam [`SubstrateStore::forcer_horloge_pour_test`].
 //!
 //! Les cinq identités à distinguer (contrat d'identité backend) :
-//!   * DOMAINE DE STOCKAGE  = la base (répertoire). N'apparaît NULLE PART dans
-//!     la référence ; le consommateur doit le conserver HORS-BANDE.
+//!   * DOMAINE DE STOCKAGE  = la base (répertoire). DEPUIS la v2, PORTÉ par la
+//!     référence (`domaine()`, u128) : c'est lui qui rend la collision
+//!     DÉTECTABLE.
 //!   * ÉCRIVAIN             = `writer_id` persisté dans `writer.id` (auteur).
 //!     N'est PAS une identité de base : deux bases peuvent le partager par
 //!     copie du fichier, et il ne garantit PAS l'unicité inter-bases.
@@ -51042,12 +51143,12 @@ mod collision_hlc_controlee {
 //!   * TENTATIVE PHYSIQUE   = l'entrée estampillée réellement posée dans la
 //!     chaîne canonique d'UNE base. C'est ce que résout `resoudre_reference`.
 //!
-//! La collision prouve : deux TENTATIVES PHYSIQUES distinctes (valeurs
-//! différentes) produisent des références BYTE-IDENTIQUES, qui résolvent
-//! `Engage` dans les DEUX bases. Une référence n'identifie donc PAS une
-//! opération logique unique : elle n'identifie qu'une estampille `(auteur,
-//! horloge)` LOCALE à une base — et cette localité n'est pas portée par la
-//! référence.
+//! La v2 PROUVE : deux TENTATIVES PHYSIQUES distinctes produisent des
+//! références DISTINCTES par leur domaine (byte-distinctes), et le résolveur
+//! REFUSE le domaine étranger — la référence de A résout `Engage` dans A et
+//! `Indetermine` dans B. La limite v1 (référence sans domaine, `domaine == 0`)
+//! reste AMBIGUË entre domaines : c'est la limite historique, documentée et
+//! éprouvée par `*_v1_legacy_*` ci-dessous.
 
 use super::*;
 use crate::writer_id::FICHIER_WRITER_ID;
@@ -51105,14 +51206,35 @@ fn publier_avec_horloge_forcee(
     reference
 }
 
-// ── Scénario 1 : la collision contrôlée (cœur de la démonstration) ─────────
+/// Référence v1 LEGACY (sans domaine, `domaine == 0`), forgée à la main au
+/// format v1. La v2 porte le domaine et est refusée hors de son domaine ; une
+/// v1 n'a pas de domaine et résout par (cible, clé, auteur, horloge) — c'est
+/// la limite historique : elle reste AMBIGUË entre domaines (jamais une
+/// confirmation fictive, mais jamais une détection non plus).
+fn reference_v1_legacy(auteur: u64, horloge: u64, cible: NodeId, cles: &[&str]) -> ReferenceTentative {
+    let mut out = Vec::new();
+    out.extend_from_slice(&REFERENCE_TENTATIVE_MAGIC);
+    out.push(1);
+    out.extend_from_slice(&auteur.to_le_bytes());
+    out.extend_from_slice(&horloge.to_le_bytes());
+    out.extend_from_slice(&cible.0.to_le_bytes());
+    out.extend_from_slice(&(cles.len() as u32).to_le_bytes());
+    for c in cles {
+        out.extend_from_slice(&(c.len() as u32).to_le_bytes());
+        out.extend_from_slice(c.as_bytes());
+    }
+    ReferenceTentative::from_bytes(&out).unwrap()
+}
+
+// ── Scénario 1 : la collision contrôlée devient DÉTECTABLE (v2) ────────────
 //
 // Deux bases indépendantes, même `writer.id` (copie), même horloge FORCÉE :
-// deux tentatives physiques distinctes (a=10 dans A, a=20 dans B) produisent
-// des références BYTE-IDENTIQUES, qui résolvent `Engage` dans les DEUX bases.
-// C'est le FAUX POSITIF CROISÉ : une base peut être confondue avec l'autre.
+// deux tentatives physiques distinctes (a=10 dans A, a=20 dans B) portent
+// désormais des DOMAINES distincts. Les références ne sont plus byte-identiques,
+// et le résolveur REFUSE le domaine étranger : la référence de A résout
+// `Engage` dans A et `Indetermine` dans B — le faux positif croisé est écarté.
 #[test]
-fn collision_hlc_controlee_faux_positif_croise() {
+fn collision_hlc_controlee_detectable_par_domaine() {
     let td = tempfile::tempdir().unwrap();
     let base_a = td.path().join("a");
     let base_b = td.path().join("b");
@@ -51150,14 +51272,16 @@ fn collision_hlc_controlee_faux_positif_croise() {
         (r, id)
     };
 
-    // mêmes (auteur, horloge, cible, effets) → références STRUCTURELLEMENT
-    // et BYTE-IDENTIQUES, pourtant issues de DEUX tentatives physiques.
+    // mêmes (auteur, horloge, cible, effets) MAIS domaines DISTINCTS → les
+    // références ne sont plus byte-identiques : le domaine les sépare.
     assert_eq!(ref_a.auteur(), ref_b.auteur(), "writer.id partagé");
     assert_eq!(ref_a.horloge(), ref_b.horloge(), "horloge forcée identique");
     assert_eq!(ref_a.horloge(), HORLOGE_FORCEE, "l'horloge forcée est celle de la référence");
     assert_eq!(ref_a.cible(), cible_b, "chaque base alloue son premier nœud à NodeId(1)");
     assert_eq!(ref_a.effets(), ref_b.effets());
-    assert_eq!(ref_a.to_bytes(), ref_b.to_bytes(), "références BYTE-IDENTIQUES");
+    assert_ne!(ref_a.domaine(), ref_b.domaine(), "deux bases indépendantes → deux domaines");
+    assert_ne!(ref_a.domaine(), 0, "une référence v2 porte toujours un domaine non nul");
+    assert_ne!(ref_a.to_bytes(), ref_b.to_bytes(), "le domaine rend les références byte-distinctes");
 
     // résolution dans chaque base
     let store_a = SubstrateStore::open(&base_a).unwrap();
@@ -51165,14 +51289,15 @@ fn collision_hlc_controlee_faux_positif_croise() {
     let r_aa = store_a.resoudre_reference(&ref_a).unwrap();
     let r_ab = store_b.resoudre_reference(&ref_a).unwrap();
 
-    // (1) la MÊME référence résout Engage dans les DEUX bases, indépendamment.
+    // (1) la référence de A résout Engage DANS SON domaine, et Indetermine
+    //     dans le domaine ÉTRANGER (B) — le faux positif croisé est écarté.
     assert_eq!(r_aa.integrite, IntegriteTentative::Integrale);
-    assert_eq!(r_ab.integrite, IntegriteTentative::Integrale);
+    assert_eq!(r_ab.integrite, IntegriteTentative::Indeterminee);
     assert_eq!(r_aa.par_cle[0].etat, ResolutionEffet::Engage);
-    assert_eq!(r_ab.par_cle[0].etat, ResolutionEffet::Engage);
+    assert_eq!(r_ab.par_cle[0].etat, ResolutionEffet::Indetermine);
 
-    // (2) FAUX POSITIF CROISÉ : la référence émise en A résout À TORT en B —
-    //     et pourtant les deux tentatives écrivent des valeurs DIFFÉRENTES.
+    // (2) les valeurs restent DIFFÉRENTES (a=10 dans A, a=20 dans B) : la
+    //     détection par domaine n'a pas besoin de comparer les contenus.
     match store_a.lire_etat_propriete(cible_a, "a").unwrap() {
         EtatPropriete::Presente { valeur, .. } => assert_eq!(valeur, Value::Int64(10)),
         autre => panic!("base A : attendu 10, lu {autre:?}"),
@@ -51185,14 +51310,15 @@ fn collision_hlc_controlee_faux_positif_croise() {
     // (3) auteur_resolvant identique : writer.id ne discrimine PAS les bases.
     assert_eq!(r_aa.auteur_resolvant, r_ab.auteur_resolvant);
 
-    // (4) le seul écart observable entre les deux résolutions est la valeur
-    //     courante — qui n'appartient PAS à l'identité de la référence.
+    // (4) la résolution dans SON domaine observe la valeur courante (a=10) ;
+    //     celle du domaine ÉTRANGER ne CONSULTE rien : aucune valeur courante
+    //     n'est rapportée (`None`), jamais une observation du contenu de B.
     assert_eq!(r_aa.par_cle[0].valeur_courante(), Some(Value::Int64(10)));
-    assert_eq!(r_ab.par_cle[0].valeur_courante(), Some(Value::Int64(20)));
+    assert_eq!(r_ab.par_cle[0].valeur_courante(), None);
 
     eprintln!(
-        "COLLISION_OK : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A ET B ; \
-         valeurs A=10 B=20 — la référence ne distingue PAS les deux bases",
+        "COLLISION_DETECTEE : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A, \
+         Indetermine dans B ; valeurs A=10 B=20 — la référence porte le DOMAINE et distingue les bases",
         ref_a.auteur(),
         ref_a.horloge(),
         ref_a.cible().as_u64()
@@ -51201,11 +51327,12 @@ fn collision_hlc_controlee_faux_positif_croise() {
 
 // ── Scénario 2 : même (auteur, horloge, cible) mais CLÉ différente ─────────
 //
-// Le faux positif exige que l'autre base ait écrit la MÊME clé sous la même
-// estampille. Même `writer.id`, même horloge forcée, même cible — mais la base
-// B écrit `b` au lieu de `a` : la référence de A (clé `a`) reste Indetermine
-// en B. La résolution est donc par (cible, clé, auteur, horloge) — pas par
-// l'identité d'écrivain seule.
+// Éprouvé via une référence v1 LEGACY (sans domaine, `domaine == 0`) : la
+// garde de domaine ne court-circuite pas, et la résolution procède par
+// (cible, clé, auteur, horloge). Même `writer.id`, même horloge forcée, même
+// cible — mais la base B écrit `b` au lieu de `a` : la référence de A (clé
+// `a`) reste Indetermine en B. C'est la limite v1 documentée : sans domaine,
+// seule la correspondance (cible, clé, auteur, horloge) discrimine.
 #[test]
 fn collision_hlc_sans_ecriture_de_la_cle_reste_indeterminee() {
     let td = tempfile::tempdir().unwrap();
@@ -51218,7 +51345,10 @@ fn collision_hlc_sans_ecriture_de_la_cle_reste_indeterminee() {
         store.set_node_property(id, "a", Value::Int64(1));
         let r = publier_avec_horloge_forcee(&store, id, "a", 10);
         store.close().unwrap();
-        r
+        // Version v1 LEGACY (sans domaine) : elle court-circuite la garde de
+        // domaine et résout par (cible, clé, auteur, horloge) — la limite v1
+        // éprouvée ici (une référence v1 reste ambiguë, jamais une confirmation).
+        reference_v1_legacy(r.auteur(), r.horloge(), r.cible(), &["a"])
     };
 
     // base B : writer.id partagé, même horloge forcée, mais on écrit "b".
@@ -51248,7 +51378,7 @@ fn collision_hlc_sans_ecriture_de_la_cle_reste_indeterminee() {
     );
     assert_eq!(r_ab.par_cle[0].etat, ResolutionEffet::Indetermine);
 
-    eprintln!("CONTRASTE_OK : collision sur (auteur, horloge, cible) mais clé différente → Indetermine en B");
+    eprintln!("CONTRASTE_V1_OK : référence v1 legacy (domaine=0), même (auteur, horloge, cible) mais clé différente → Indetermine en B");
 }
 
 // ── Scénario 3 : déplacement du répertoire ─────────────────────────────────
@@ -51361,22 +51491,17 @@ fn restauration_depuis_sauvegarde_perd_les_ecritures_posterieures() {
     eprintln!("RESTAURATION_OK : écriture pré-sauvegarde Engage, post-sauvegarde Indetermine ; auteur inchangé");
 }
 
-// ── Scénario 5 : CONTRE-ÉPREUVE — même CONTENU (même valeur) ──────────────
+// ── Scénario 5 : CONTENU IDENTIQUE — la collision reste DÉTECTABLE ─────────
 //
-// La contre-épreuve manquante : deux bases INDÉPENDANTES partageant `writer.id`
-// publient le MÊME contenu (la MÊME valeur) sous la MÊME horloge forcée. Les
-// références sont byte-identiques ET les valeurs relues sont identiques : le
-// faux positif croisé devient TOTALEMENT indétectable — aucune observation
-// (ni les octets de la référence, ni la valeur courante relue, ni l'auteur
-// résolvant) ne sépare la tentative de A de celle de B.
-//
-// Ceci démontre que la COMPARAISON DE VALEURS ne se substitue PAS à l'identité :
-// c'est au contraire le cas où l'ambiguïté est maximale, car le seul écart
-// observable du scénario 1 (valeurs 10 vs 20) a disparu. L'identité d'une
-// tentative ne porte que l'estampille `(auteur, horloge)` LOCALE à une base —
-// et cette localité n'est pas portée par la référence.
+// La contre-épreuve décisive : deux bases INDÉPENDANTES partageant `writer.id`
+// publient le MÊME contenu (la MÊME valeur 42) sous la MÊME horloge forcée.
+// AVANT le domaine, ce cas était le faux positif TOTALEMENT indétectable (octets
+// identiques, valeurs identiques, auteur identique). AVEC la v2, les références
+// portent des DOMAINES distincts : même contenu, même (auteur, horloge, cible),
+// la référence de A résout `Engage` dans A et `Indetermine` dans B — la
+// détection ne dépend d'AUCUNE comparaison de valeurs.
 #[test]
-fn collision_hlc_contenu_identique_faux_positif_indetectable() {
+fn collision_hlc_contenu_identique_detecte_par_domaine() {
     let td = tempfile::tempdir().unwrap();
     let base_a = td.path().join("a");
     let base_b = td.path().join("b");
@@ -51414,9 +51539,11 @@ fn collision_hlc_contenu_identique_faux_positif_indetectable() {
         (r, id)
     };
 
-    // Références BYTE-IDENTIQUES (même auteur, même horloge, même cible, mêmes effets).
+    // Même auteur, même horloge, même cible, mêmes effets — MAIS domaines
+    // DISTINCTS : les références ne sont plus byte-identiques.
     assert_eq!(ref_a.cible(), cible_b, "chaque base alloue son premier nœud à NodeId(1)");
-    assert_eq!(ref_a.to_bytes(), ref_b.to_bytes(), "références BYTE-IDENTIQUES");
+    assert_ne!(ref_a.domaine(), ref_b.domaine(), "deux bases indépendantes → deux domaines");
+    assert_ne!(ref_a.to_bytes(), ref_b.to_bytes(), "le domaine rend les références byte-distinctes");
 
     // résolution dans chaque base
     let store_a = SubstrateStore::open(&base_a).unwrap();
@@ -51424,36 +51551,100 @@ fn collision_hlc_contenu_identique_faux_positif_indetectable() {
     let r_aa = store_a.resoudre_reference(&ref_a).unwrap();
     let r_ab = store_b.resoudre_reference(&ref_a).unwrap();
 
-    // (1) la MÊME référence résout Engage dans les DEUX bases : faux positif croisé.
+    // (1) la référence de A résout Engage DANS SON domaine, Indetermine dans
+    //     le domaine ÉTRANGER (B) — MÊME CONTENU, la détection tient par le
+    //     domaine seul.
+    assert_eq!(r_aa.integrite, IntegriteTentative::Integrale);
+    assert_eq!(r_ab.integrite, IntegriteTentative::Indeterminee);
+    assert_eq!(r_aa.par_cle[0].etat, ResolutionEffet::Engage);
+    assert_eq!(r_ab.par_cle[0].etat, ResolutionEffet::Indetermine);
+
+    // (2) le contenu est IDENTIQUE (42 partout) : la valeur courante n'est
+    //     observée que dans SON domaine ; le domaine étranger n'est PAS lu.
+    assert_eq!(r_aa.par_cle[0].valeur_courante(), Some(Value::Int64(42)));
+    assert_eq!(r_ab.par_cle[0].valeur_courante(), None);
+
+    // (3) auteur_resolvant identique : writer.id ne discrimine PAS les bases —
+    //     la détection repose sur le domaine, pas sur l'auteur.
+    assert_eq!(r_aa.auteur_resolvant, r_ab.auteur_resolvant);
+
+    eprintln!(
+        "CONTENU_IDENTIQUE_DETECTE : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A, \
+         Indetermine dans B ; valeur IDENTIQUE 42 des deux côtés — la v2 porte le DOMAINE, \
+         la collision est détectable sans comparer les valeurs",
+        ref_a.auteur(),
+        ref_a.horloge(),
+        ref_a.cible().as_u64()
+    );
+}
+
+// ── Scénario 6 : LIMITE v1 — une référence legacy reste AMBIGUË ────────────
+//
+// Documente la limite historique : une référence v1 (SANS domaine, `domaine ==
+// 0`) n'est pas refusée par la garde de domaine et résout par (cible, clé,
+// auteur, horloge) seul. Deux bases INDÉPENDANTES partageant `writer.id`,
+// même contenu, même horloge forcée : une référence v1 forgée résout `Engage`
+// dans les DEUX bases — le faux positif persiste pour les références ANCIENNES.
+// Ce n'est JAMAIS une confirmation fictive (l'entrée est réellement présente
+// dans les deux chaînes), mais ce n'est pas non plus une détection de domaine.
+#[test]
+fn collision_hlc_v1_legacy_reste_ambigue_entre_domaines() {
+    let td = tempfile::tempdir().unwrap();
+    let base_a = td.path().join("a");
+    let base_b = td.path().join("b");
+
+    // base A : writer.id propre, premier nœud, contenu identique à B.
+    let cible_a = {
+        let store = SubstrateStore::create(&base_a).unwrap();
+        let id = store.create_node(&["n"]);
+        store.set_node_property(id, "a", Value::Int64(42));
+        store.close().unwrap();
+        id
+    };
+
+    // base B : neuve, puis writer.id partagé.
+    {
+        let store = SubstrateStore::create(&base_b).unwrap();
+        store.close().unwrap();
+    }
+    copier_writer_id(&base_a, &base_b);
+
+    // Dans CHAQUE base : même contenu 42, même horloge forcée.
+    let (auteur, horloge, cible) = {
+        let store = SubstrateStore::open(&base_a).unwrap();
+        let r = publier_avec_horloge_forcee(&store, cible_a, "a", 42);
+        let t = (r.auteur(), r.horloge(), r.cible());
+        store.close().unwrap();
+        t
+    };
+    {
+        let store = SubstrateStore::open(&base_b).unwrap();
+        let id = store.create_node(&["n"]);
+        store.set_node_property(id, "a", Value::Int64(42));
+        let _ = publier_avec_horloge_forcee(&store, id, "a", 42);
+        store.close().unwrap();
+    }
+
+    // Une référence v1 LEGACY (domaine == 0) est forgée à la main : elle ne
+    // porte PAS le domaine, donc la garde de domaine ne la refuse pas.
+    let legacy = reference_v1_legacy(auteur, horloge, cible, &["a"]);
+
+    let store_a = SubstrateStore::open(&base_a).unwrap();
+    let store_b = SubstrateStore::open(&base_b).unwrap();
+    let r_aa = store_a.resoudre_reference(&legacy).unwrap();
+    let r_ab = store_b.resoudre_reference(&legacy).unwrap();
+
+    // LIMITE v1 : la même référence v1 résout Engage dans les DEUX bases —
+    //     le faux positif persiste pour les références anciennes sans domaine.
+    assert_eq!(legacy.domaine(), 0, "une référence v1 a un domaine == 0 (legacy)");
     assert_eq!(r_aa.integrite, IntegriteTentative::Integrale);
     assert_eq!(r_ab.integrite, IntegriteTentative::Integrale);
     assert_eq!(r_aa.par_cle[0].etat, ResolutionEffet::Engage);
     assert_eq!(r_ab.par_cle[0].etat, ResolutionEffet::Engage);
 
-    // (2) les valeurs relues sont IDENTIQUES : l'écart observable du scénario 1 a disparu.
-    assert_eq!(r_aa.par_cle[0].valeur_courante(), Some(Value::Int64(42)));
-    assert_eq!(r_ab.par_cle[0].valeur_courante(), Some(Value::Int64(42)));
-
-    // (3) auteur_resolvant identique : writer.id ne discrimine PAS les bases.
-    assert_eq!(r_aa.auteur_resolvant, r_ab.auteur_resolvant);
-
-    // (4) les deux tentatives physiques sont DISTINCTES mais indistinguables par
-    //     toute observation disponible : ni les octets de la référence, ni la
-    //     valeur courante, ni l'auteur résolvant. La comparaison de valeurs ne
-    //     se substitue pas à l'identité de domaine — elle la rend même inopérante.
-    assert_eq!(
-        r_aa.par_cle[0].valeur_courante(),
-        r_ab.par_cle[0].valeur_courante(),
-        "même valeur relue : aucun écart observable ne sépare la tentative de A de celle de B"
-    );
-
     eprintln!(
-        "CONTRE_EPREUVE_OK : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A ET B ; \
-         valeur IDENTIQUE A=42 B=42 — la comparaison de valeurs ne substitue pas l'identité, \
-         elle rend le faux positif indétectable",
-        ref_a.auteur(),
-        ref_a.horloge(),
-        ref_a.cible().as_u64()
+        "LIMITE_V1_OK : ref v1 (domaine=0, auteur={auteur:#x}, horloge={horloge:#x}) Engage dans A ET B — \
+         une référence ancienne reste ambiguë entre domaines (jamais une confirmation fictive)",
     );
 }
 }

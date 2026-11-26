@@ -8,8 +8,8 @@
 //!   * ÉCRIVAIN           = `ReferenceTentative.auteur()` (writer_id persisté
 //!     dans `writer.id`). N'est PAS une identité de base : deux bases peuvent
 //!     le partager (copie du fichier).
-//!   * DOMAINE DE STOCKAGE = la base (répertoire). N'apparaît NULLE PART dans
-//!     la référence : le consommateur doit la conserver HORS-BANDE.
+//!   * DOMAINE DE STOCKAGE = la base (répertoire), porté par la référence v2
+//!     (`domaine()`), u128 — distinct d'`auteur` (writer.id) et de `cible`.
 //!   * INCARNATION DE RESSOURCE = `ReferenceTentative.cible()` (NodeId,
 //!     alloué monotone, jamais réutilisé). Un NodeId vivant ne prouve pas la
 //!     même incarnation.
@@ -250,8 +250,8 @@ fn deux_bases_independantes_partageant_writer_id() {
     );
 
     eprintln!(
-        "PARTAGE_OK : auteur identique (writer.id copié), cible identique (NodeId 1), \
-         horloge différente → ref_A Indetermine en B, ref_B Indetermine en A ; \
+        "PARTAGE_OK : auteur identique (writer.id copié), cible identique (NodeId 1) ; \
+         domaines DISTINCTS (v2) → ref_A Indetermine en B, ref_B Indetermine en A ; \
          auteur_resolvant identique dans les deux bases"
     );
 }
