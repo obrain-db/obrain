@@ -27,10 +27,27 @@
 //! ## Ce que le banc mesure (imprimé, jamais asserté)
 //!
 //! rappel/accord@10, précision@10, plafond candidat, coût (candidats, validations
-//! exactes), latence médiane, mémoire des signatures, et les ambiguïtés
-//! (scores exacts nuls, ex æquo à la frontière du top-k, collisions de
-//! signature). Aucun chiffre de latence n'est asserté : une machine chargée
+//! exactes), latence médiane, mémoire des signatures, structure du corpus
+//! (intersection des ensembles, ex æquo, collisions) et **fidélité de la
+//! projection**. Aucun chiffre de latence n'est asserté : une machine chargée
 //! n'est pas une régression.
+//!
+//! ## Comment la FIDÉLITÉ de l'encodeur est mesurée (et ce qu'elle n'est pas)
+//!
+//! Le taux de scores exacts nuls n'est PAS une mesure de fidélité : il décrit
+//! l'INTERSECTION des ensembles du corpus (deux engrammes sans vocable commun
+//! ont un cosinus exact nul par définition, quelle que soit la projection).
+//! La fidélité est la divergence entre l'ORDRE induit par la projection et
+//! l'ordre exact, mesurée dans le vivier rendu par l'index :
+//!
+//! | mesure | sens |
+//! |---|---|
+//! | `tau` | τ-b de Kendall entre score d'index et score exact, dans le vivier |
+//! | `top1` | fraction de requêtes où le meilleur du vivier est le même pour les deux ordres |
+//! | `pertinents` | \|vivier ∩ {score exact > 0}\| / \|{score exact > 0}\| : l'index a-t-il seulement trouvé ce qui compte ? |
+//!
+//! `tau` est indéfini (dénominateur nul) quand le vivier n'a que des ex æquo ;
+//! ces cas sont COMPTÉS et exclus de la moyenne, jamais remplacés par zéro.
 
 #![cfg(feature = "engram")]
 
@@ -263,6 +280,54 @@ struct Row {
     validations: f64,
     latency_us: f64,
     returned: f64,
+    /// τ-b de Kendall projection/exact dans le vivier (moyenne des cas définis).
+    tau: f64,
+    /// Nombre de requêtes où τ est indéfini (vivier sans paire discordante possible).
+    tau_undefined: usize,
+    /// Accord du top-1 DANS le vivier : même gagnant pour les deux ordres.
+    top1_pool: f64,
+    /// Rappel des pertinents : part des engrammes de score exact > 0 que l'index a ramenés.
+    relevant_recall: f64,
+}
+
+/// τ-b de Kendall entre deux séries appariées, `None` si le dénominateur est nul
+/// (toutes les valeurs d'une série sont ex æquo : il n'y a alors aucun ordre à
+/// comparer, et rendre 0 prétendrait qu'ils sont tous discordants).
+fn kendall_tau_b(pairs: &[(f64, f64)]) -> Option<f64> {
+    let n = pairs.len();
+    if n < 2 {
+        return None;
+    }
+    let (mut concordant, mut discordant) = (0i64, 0i64);
+    let (mut ties_x, mut ties_y) = (0i64, 0i64);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (x1, y1) = pairs[i];
+            let (x2, y2) = pairs[j];
+            let dx = (x1 - x2)
+                .partial_cmp(&0.0)
+                .unwrap_or(std::cmp::Ordering::Equal);
+            let dy = (y1 - y2)
+                .partial_cmp(&0.0)
+                .unwrap_or(std::cmp::Ordering::Equal);
+            match (dx, dy) {
+                (std::cmp::Ordering::Equal, std::cmp::Ordering::Equal) => {
+                    ties_x += 1;
+                    ties_y += 1;
+                }
+                (std::cmp::Ordering::Equal, _) => ties_x += 1,
+                (_, std::cmp::Ordering::Equal) => ties_y += 1,
+                (a, b) if a == b => concordant += 1,
+                _ => discordant += 1,
+            }
+        }
+    }
+    let n0 = (n * (n - 1) / 2) as f64;
+    let denom = ((n0 - ties_x as f64) * (n0 - ties_y as f64)).sqrt();
+    if denom <= 0.0 {
+        return None;
+    }
+    Some((concordant - discordant) as f64 / denom)
 }
 
 fn median(mut values: Vec<f64>) -> f64 {
@@ -428,6 +493,10 @@ fn banc_rappel_hybride_natif() {
             let mut validations = Vec::new();
             let mut latency = Vec::new();
             let mut returned = Vec::new();
+            let mut taus: Vec<f64> = Vec::new();
+            let mut tau_undefined = 0usize;
+            let mut top1_hits = 0usize;
+            let mut relevant_recalls: Vec<f64> = Vec::new();
 
             for (q, cues) in queries.iter().enumerate() {
                 let mut samples = Vec::with_capacity(LATENCY_REPS);
@@ -484,6 +553,55 @@ fn banc_rappel_hybride_natif() {
 
                 let query: Vec<(NodeId, f64)> = cues.iter().map(|&n| (n, 1.0)).collect();
                 precision.push(harness_precision(&store, &top, &query));
+
+                // ── FIDÉLITÉ : divergence projection/référence DANS le vivier ──
+                // Les scores exacts sont recalculés par le banc, pas lus dans le
+                // hit : c'est l'ordre qui est comparé, pas une valeur qu'on se
+                // donnerait à soi-même.
+                let mut pairs: Vec<(f64, f64)> = Vec::with_capacity(top_all.len());
+                for id in &top_all {
+                    let Some(engram) = store.get(*id) else {
+                        continue;
+                    };
+                    let index_score = outcome
+                        .hits
+                        .iter()
+                        .find(|h| h.engram_id == *id)
+                        .map_or(0.0, |h| h.index_score);
+                    pairs.push((index_score, harness_cosine(&query, &engram.ensemble)));
+                }
+                match kendall_tau_b(&pairs) {
+                    Some(tau) => taus.push(tau),
+                    None => tau_undefined += 1,
+                }
+                let best_index = pairs
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| {
+                        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i);
+                let best_exact = pairs
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| {
+                        a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i);
+                if best_index.is_some() && best_index == best_exact {
+                    top1_hits += 1;
+                }
+                let relevant: HashSet<EngramId> = refs[q]
+                    .ranked
+                    .iter()
+                    .filter(|(_, score)| *score > 0.0)
+                    .map(|(id, _)| *id)
+                    .collect();
+                let found = relevant.iter().filter(|id| top_all.contains(id)).count();
+                if !relevant.is_empty() {
+                    relevant_recalls.push(found as f64 / relevant.len() as f64);
+                }
+
                 accord.push(acc);
                 ceiling.push(pooled);
                 candidates.push(outcome.stats.candidates as f64);
@@ -515,6 +633,10 @@ fn banc_rappel_hybride_natif() {
             }
 
             rows.push(Row {
+                tau: moyenne(&taus),
+                tau_undefined,
+                top1_pool: top1_hits as f64 / N_QUERIES as f64,
+                relevant_recall: moyenne(&relevant_recalls),
                 variant: variant.label(),
                 n_probe,
                 accord: moyenne(&accord),
@@ -766,28 +888,36 @@ fn banc_rappel_hybride_natif() {
 
     println!(
         "\n-- variantes indexées (budget de candidats) --\n\
-         {:<20} {:>7} {:>9} {:>12} {:>11} {:>8} {:>11} {:>13} {:>12}",
+         {:<20} {:>7} {:>9} {:>12} {:>7} {:>6} {:>11} {:>10} {:>6} {:>8} {:>7} {:>7} {:>12}",
         "variante",
         "budget",
         "accord@10",
         "plafond cand",
+        "tau",
+        "top1",
+        "pertinents",
         "précision",
+        "cand",
         "rendus",
-        "candidats",
-        "validations",
+        "valid",
+        "τ n/d",
         "latence µs"
     );
     for row in &rows {
         println!(
-            "{:<20} {:>7} {:>9.3} {:>12.3} {:>10.3} {:>8.1} {:>11.1} {:>13.1} {:>12.1}",
+            "{:<20} {:>7} {:>9.3} {:>12.3} {:>7.3} {:>6.2} {:>11.3} {:>10.3} {:>6.0} {:>8.1} {:>7.0} {:>7} {:>12.1}",
             row.variant,
             row.n_probe,
             row.accord,
             row.ceiling,
+            row.tau,
+            row.top1_pool,
+            row.relevant_recall,
             row.precision,
-            row.returned,
             row.candidates,
+            row.returned,
             row.validations,
+            row.tau_undefined,
             row.latency_us
         );
     }
@@ -828,14 +958,23 @@ fn banc_rappel_hybride_natif() {
         );
     }
 
-    println!("\n-- ambiguïtés de la référence exacte --");
+    println!("\n-- structure du corpus (ce que le taux de scores nuls dit, et ne dit pas) --");
     let zeros: Vec<f64> = refs.iter().map(|r| r.zeros as f64).collect();
     println!(
-        "scores exacts nuls par requête : moyenne {:.1} / {} engrammes ({:.1} %)",
+        "intersection : {:.1} / {} engrammes par requête ont un score exact nul ({:.1} %)",
         moyenne(&zeros),
         N_ENGRAMS,
         100.0 * moyenne(&zeros) / N_ENGRAMS as f64
     );
+    println!(
+        "   → ce taux décrit la FAIBLE INTERSECTION des ensembles (3..8 vocables par ensemble",
+    );
+    println!(
+        "     sur {}), PAS une perte de fidélité de l'encodeur : deux ensembles sans vocable",
+        N_CLUSTERS * CLUSTER_SIZE
+    );
+    println!("     commun ont un cosinus exact nul par définition, quelle que soit la projection.");
+    println!("     La fidélité est la ligne « tau / top1 / pertinents » du tableau ci-dessus.");
     println!(
         "requêtes avec ex æquo à la frontière du top-{K} : {} / {}",
         refs.iter().filter(|r| r.tie_at_k).count(),
@@ -856,9 +995,16 @@ fn banc_rappel_hybride_natif() {
         "   chemins, pas des complexités. Un index sous-linéaire (paliers substrate) est requis"
     );
     println!("   pour que le gain candidat se traduise en temps.");
-    println!("2. L'encodeur est une projection par hachage : deux ensembles disjoints sont");
-    println!("   quasi orthogonaux et le score exact est nul (voir « ambiguïtés »). Le plafond");
-    println!("   candidat mesure cette perte avant tout classement.");
+    println!("2. Le taux de scores exacts nuls N'EST PAS une mesure de fidélité de l'encodeur :");
+    println!(
+        "   il mesure l'intersection des ensembles du corpus. La fidélité de la projection se"
+    );
+    println!(
+        "   lit dans `tau` (τ-b de Kendall entre ordre d'index et ordre exact, dans le vivier),"
+    );
+    println!("   `top1` (même meilleur du vivier pour les deux ordres) et `pertinents` (part des");
+    println!("   engrammes réellement comparables que l'index a ramenés). Un τ indéfini (vivier");
+    println!("   sans paire ordonnable) est COMPTÉ, pas remplacé par zéro.");
     println!("3. Corpus synthétique structuré (clusters) : le recouvrement intra-cluster rend le");
     println!("   rappel exact non dégénéré. Un graphe réel a une distribution de degrés et de");
     println!("   co-activations différente ; les valeurs ne se transportent pas telles quelles.");
