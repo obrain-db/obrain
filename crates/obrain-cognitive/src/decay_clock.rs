@@ -261,7 +261,11 @@ pub fn reinforce(
                 a.half_life
             },
         ),
-        _ => (now_micros, law.half_life()),
+        // Absence légitime : migration (ancrage à now).
+        AnchorState::Absent => (now_micros, law.half_life()),
+        // Corruption : PAS de restauration implicite. Le renforcement ne peut
+        // pas réparer une ancre temporellement invalide.
+        AnchorState::Corrupted => return None,
     };
 
     // UNE mutation atomique porte tout l'état temporel.
