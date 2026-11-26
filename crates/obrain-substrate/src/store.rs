@@ -3199,7 +3199,7 @@ pub struct TransformationPrete {
     /// versionnées, mêmes effets), indépendante de la valeur actuellement
     /// visible et de l'estampille de préparation. Permet la résolution d'une
     /// publication indéterminée sans dépendre de la valeur courante.
-    identite_logique: u64,
+    empreinte: u64,
     /// Estampille HLC (composante horloge) attribuée à TOUTES les écritures à
     /// la préparation. L'auteur est le `writer_id` du store.
     horloge_effet: u64,
@@ -3213,9 +3213,12 @@ pub struct TransformationPrete {
 }
 
 impl TransformationPrete {
-    /// Identité logique de la transformation (stable entre tentatives).
-    pub fn identite_logique(&self) -> u64 {
-        self.identite_logique
+    /// Empreinte expérimentale du CONTENU (signature de transformation),
+    /// PAS une identité logique durable : `DefaultHasher` + `Debug` ne sont pas
+    /// stables entre versions et peuvent entrer en collision. À ne pas utiliser
+    /// comme clé d'idempotence durable. Stable entre tentatives d'un même build.
+    pub fn empreinte(&self) -> u64 {
+        self.empreinte
     }
 
     /// (tests) accès aux adresses physiques, pour les contre-épreuves naïves.
@@ -3228,11 +3231,14 @@ impl TransformationPrete {
 /// Deux états correspondent si leur espèce et, pour présent/supprimé, leur
 /// estampille complète (auteur + horloge) sont identiques. La valeur n'entre
 /// PAS en compte : c'est l'identité d'écriture qui porte la précondition.
-/// Identité logique d'une transformation : hash stable du CONTENU (cible,
+/// EMPREINTE expérimentale du contenu d'une transformation : hash `DefaultHasher`
+/// de (cible, mode, dépendances versionnées, effets). Ce n'est PAS une identité
+/// logique durable (pas de stabilité inter-versions, collisions possibles) :
+/// c'est une signature de contenu pour corréler des tentatives d'un même build.
 /// mode, dépendances versionnées, effets), indépendant de l'estampille de
 /// préparation et des adresses physiques. Deux tentatives de la même
 /// transformation rendent la même identité.
-fn identite_logique_de(
+fn empreinte_de(
     cible: NodeId,
     mode: ModePublication,
     precondition: &Precondition,
@@ -3408,18 +3414,25 @@ impl SubstrateStore {
         let horloge = self.horloge.lock().maintenant(millis).pack();
 
         // MODE STRICT — DOMINANCE : l'estampille de l'effet (horloge, auteur)
-        // doit dominer STRICTEMENT l'estampille capturée de chaque dépendance
-        // présente, sinon l'effet serait masqué par la valeur existante et ne
-        // deviendrait pas canonique (cas d'une estampille distante élevée ou
-        // maximale non observée par l'horloge locale). Refus AVANT allocation.
+        // doit dominer STRICTEMENT l'estampille capturée de chaque propriété
+        // EFFECTIVEMENT ÉCRITE (W ∩ R), PRÉSENTE ou SUPPRIMÉE (tombstone). Une
+        // dépendance seulement LUE (b ∈ R, b ∉ W) doit rester valide mais n'est
+        // PAS soumise à la dominance. Refus AVANT allocation.
         if mode == ModePublication::Strict {
-            for dep in &precondition.dependances {
-                if let EtatPropriete::Presente { estampille, .. } = &dep.etat {
-                    if (horloge, self.writer_id) <= (estampille.horloge, estampille.auteur) {
-                        return Err(SubstrateError::Internal(format!(
-                            "preparer_transformation : l'estampille de l'effet ne domine pas la dépendance {} (mode strict)",
-                            dep.cle
-                        )));
+            for (cle, _) in nouvelles {
+                if let Some(dep) = precondition.dependances.iter().find(|d| d.cle == *cle) {
+                    let estampille = match &dep.etat {
+                        EtatPropriete::Presente { estampille, .. }
+                        | EtatPropriete::Supprimee(estampille) => Some(estampille),
+                        _ => None,
+                    };
+                    if let Some(estampille) = estampille {
+                        if (horloge, self.writer_id) <= (estampille.horloge, estampille.auteur) {
+                            return Err(SubstrateError::Internal(format!(
+                                "preparer_transformation : l'estampille de l'effet ne domine pas {} (mode strict)",
+                                dep.cle
+                            )));
+                        }
                     }
                 }
             }
@@ -3464,7 +3477,7 @@ impl SubstrateStore {
             ecritures: nouvelles.iter().map(|(c, _)| (*c).to_string()).collect(),
             horloge_effet: horloge,
             mode,
-            identite_logique: identite_logique_de(cible, mode, precondition, nouvelles),
+            empreinte: empreinte_de(cible, mode, precondition, nouvelles),
             tete_origine,
             point_attache,
             tete_privee,
@@ -47994,11 +48007,57 @@ mod publication_conditionnelle_native {
         eprintln!("DOMINANCE_OK : strict refuse un effet non dominant (estampille maximale)");
     }
 
+    /// P0-A — DOMINANCE RESTREINTE À W : une dépendance seulement LUE (b ∈ R,
+    /// b ∉ W) portant une estampille élevée ne déclenche PAS la dominance.
+    #[test]
+    fn mode_strict_dependance_lue_non_dominee_acceptee() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let slot = id.0 as u32;
+        let prop_b = store.prop_keys.read().lookup("b").unwrap();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e = PropertyEntry::new_stamped(prop_b, PropertyValue::I64(999), 99, u64::MAX);
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e).unwrap();
+        }
+        // R = {a, b}, W = {a} : b est seulement LUE, a est écrit.
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        let r = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict);
+        assert!(r.is_ok(), "b (lue, non écrite) ne doit pas déclencher la dominance");
+        eprintln!("DOMINANCE_W_OK : dépendance lue non dominée acceptée (seul W est soumis)");
+    }
+
+    /// P0-A — TOMBSTONE : une suppression versionnée à estampille maximale
+    /// domine une écriture ultérieure d'estampille inférieure — strict refuse.
+    #[test]
+    fn mode_strict_tombstone_estampille_elevee_refuse() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        let slot = id.0 as u32;
+        let prop_a = store.prop_keys.read().lookup("a").unwrap();
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e = PropertyEntry::tombstone_stamped(prop_a, 99, u64::MAX);
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e).unwrap();
+        }
+        let pre = store.capturer_precondition(id, &["a"]).unwrap();
+        let r = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict);
+        assert!(r.is_err(), "strict refuse : l'effet ne domine pas le tombstone à estampille maximale");
+        eprintln!("TOMBSTONE_OK : strict refuse un effet non dominant sur un tombstone");
+    }
+
     /// P0-B — IDENTITÉ LOGIQUE : stable entre deux tentatives de la MÊME
     /// transformation (indépendante de l'estampille de préparation), distincte
     /// quand l'effet diffère.
     #[test]
-    fn identite_logique_stable_entre_tentatives() {
+    fn empreinte_stable_entre_tentatives() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
@@ -48006,18 +48065,18 @@ mod publication_conditionnelle_native {
         let prep1 = store
             .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
             .unwrap();
-        let id1 = prep1.identite_logique();
+        let id1 = prep1.empreinte();
         let prep2 = store
             .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
             .unwrap();
-        let id2 = prep2.identite_logique();
-        assert_eq!(id1, id2, "même transformation logique → même identité");
+        let id2 = prep2.empreinte();
+        assert_eq!(id1, id2, "même contenu → même empreinte");
         let prep3 = store
             .preparer_transformation(id, &[("a", Value::Int64(99)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
             .unwrap();
-        let id3 = prep3.identite_logique();
-        assert_ne!(id1, id3, "effet différent → identité différente");
-        eprintln!("IDENTITE_OK : id stable entre tentatives, distincte selon l'effet");
+        let id3 = prep3.empreinte();
+        assert_ne!(id1, id3, "effet différent → empreinte différente");
+        eprintln!("EMPREINTE_OK : empreinte stable entre tentatives, distincte selon l'effet");
     }
 
     /// P0 — écriture répétée d'une même clé : refusée à la préparation.
