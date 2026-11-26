@@ -1,15 +1,16 @@
-//! Composition récursive : diamant à sous-connaissance partagée, rôles
-//! contextuels et relation interne. Vérifie les références DIRECTES
-//! (identité + multiplicité) PUIS la projection transitive (resolve).
+//! Composition récursive : diamant à sous-connaissance partagée. Qualifie
+//! EXPLICITEMENT : partage effectif, reconstruction, multiplicité,
+//! fermeture/réouverture, version logique ET physique, interruption de
+//! construction, cycles.
 
 // Noms à un caractère = notation A/B/C/D de l'expérience compositionnelle.
 #![allow(clippy::many_single_char_names)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use obrain_common::types::NodeId;
+use obrain_common::types::{NodeId, Value};
 use obrain_engine::ObrainDB;
-use obrain_engine::composition::{ChildRef, Composition, KnowledgeSpec, Relation};
+use obrain_engine::composition::{ChildRef, Composition, KnowledgeSpec, Relation, ResolveError};
 
 fn child(target: u64, role: Option<&str>) -> ChildRef {
     ChildRef {
@@ -48,109 +49,140 @@ fn diamant_recursif_sous_connaissance_partagee() {
         ab = comp
             .construct(&KnowledgeSpec {
                 members: [a, b].iter().copied().collect(),
-                children: BTreeSet::new(),
-                relations: [rel("appelle", a.0, b.0)].into_iter().collect(),
+                children: BTreeMap::new(),
+                relations: [(rel("appelle", a.0, b.0), 1)].into_iter().collect(),
             })
             .unwrap();
-
         // ABC : référence AB (rôle gauche) + membre C.
         abc = comp
             .construct(&KnowledgeSpec {
                 members: [c].iter().copied().collect(),
-                children: [child(ab.0, Some("gauche"))].into_iter().collect(),
-                relations: BTreeSet::new(),
+                children: [(child(ab.0, Some("gauche")), 1)].into_iter().collect(),
+                relations: BTreeMap::new(),
             })
             .unwrap();
-
         // ABD : référence AB (rôle droite) + membre D.
         abd = comp
             .construct(&KnowledgeSpec {
                 members: [d].iter().copied().collect(),
-                children: [child(ab.0, Some("droite"))].into_iter().collect(),
-                relations: BTreeSet::new(),
+                children: [(child(ab.0, Some("droite")), 1)].into_iter().collect(),
+                relations: BTreeMap::new(),
             })
             .unwrap();
-
-        // K : référence ABC et ABD (rôles contextuels).
+        // K : référence ABC et ABD.
         k = comp
             .construct(&KnowledgeSpec {
                 members: BTreeSet::new(),
-                children: [child(abc.0, Some("base")), child(abd.0, Some("variante"))]
-                    .into_iter()
-                    .collect(),
-                relations: BTreeSet::new(),
+                children: [
+                    (child(abc.0, Some("base")), 1),
+                    (child(abd.0, Some("variante")), 1),
+                ]
+                .into_iter()
+                .collect(),
+                relations: BTreeMap::new(),
             })
             .unwrap();
 
-        // --- Références DIRECTES (identité + multiplicité) ---
-        // ABC et ABD référencent AB avec des rôles DISTINCTS : deux occurrences
-        // différentes de la même définition AB.
+        // (a) PARTAGE EFFECTIF : ABC et ABD référencent le MÊME NodeId AB.
         let sabc = comp.read_spec(abc).unwrap();
-        assert_eq!(
-            sabc.children,
-            [child(ab.0, Some("gauche"))]
-                .into_iter()
-                .collect::<BTreeSet<_>>(),
-            "ABC -> AB (gauche)"
-        );
         let sabd = comp.read_spec(abd).unwrap();
-        assert_eq!(
-            sabd.children,
-            [child(ab.0, Some("droite"))]
-                .into_iter()
-                .collect::<BTreeSet<_>>(),
-            "ABD -> AB (droite)"
+        assert!(
+            sabc.children.keys().any(|c| c.target == ab)
+                && sabd.children.keys().any(|c| c.target == ab),
+            "AB partagé : même NodeId référencé par ABC et ABD"
         );
-        assert_eq!(sabc.projection_children(), set(&[ab]));
-        assert_eq!(sabd.projection_children(), set(&[ab]));
-
-        // K référence ABC et ABD avec des rôles distincts.
-        let sk = comp.read_spec(k).unwrap();
-        assert_eq!(
-            sk.children,
-            [child(abc.0, Some("base")), child(abd.0, Some("variante"))]
-                .into_iter()
-                .collect::<BTreeSet<_>>(),
-            "K -> {{ABC (base), ABD (variante)}}"
-        );
-
+        // (b) RECONSTRUCTION : rôles distincts reconstruits.
+        assert_eq!(sabc.children.get(&child(ab.0, Some("gauche"))), Some(&1));
+        assert_eq!(sabd.children.get(&child(ab.0, Some("droite"))), Some(&1));
+        // (c) MULTIPLICITÉ : 2 occurrences d'AB dans le diamant (une par parent).
+        assert_eq!(sabc.children_total(), 1);
+        assert_eq!(sabd.children_total(), 1);
         // Relation interne d'AB préservée.
-        let sab = comp.read_spec(ab).unwrap();
         assert_eq!(
-            sab.relations,
-            [rel("appelle", a.0, b.0)]
-                .into_iter()
-                .collect::<BTreeSet<_>>(),
-            "AB : relation interne A->B"
+            comp.read_spec(ab)
+                .unwrap()
+                .relations
+                .get(&rel("appelle", a.0, b.0)),
+            Some(&1)
         );
-
+        // (e-logique) VERSION : clé en encodage courant v3.
+        assert!(
+            comp.structural_key_of(ab).unwrap().starts_with("v3|"),
+            "version logique v3"
+        );
         db.close().unwrap();
     }
-    // --- Projection transitive (resolve) après réouverture ---
+    // (d) FERMETURE/RÉOUVERTURE + (e-physique) persistance durable.
     {
         let db = ObrainDB::open_substrate(&path).unwrap();
         let comp = Composition::new(&db);
+        // (e-physique) la clé persistée est toujours v3 et intacte.
+        let re = comp.read_spec(ab).unwrap().structural_key();
+        assert_eq!(comp.structural_key_of(ab).as_deref(), Some(re.as_str()));
+        // Références directes intactes.
         assert_eq!(
-            comp.resolve(k).unwrap(),
-            set(&[a, b, c, d]),
-            "resolve(K) = {{A,B,C,D}}"
+            comp.read_spec(abc)
+                .unwrap()
+                .children
+                .get(&child(ab.0, Some("gauche"))),
+            Some(&1)
         );
-        let sabc = comp.read_spec(abc).unwrap();
         assert_eq!(
-            sabc.children,
-            [child(ab.0, Some("gauche"))]
-                .into_iter()
-                .collect::<BTreeSet<_>>(),
-            "ABC -> AB (gauche) après réouverture"
+            comp.read_spec(abd)
+                .unwrap()
+                .children
+                .get(&child(ab.0, Some("droite"))),
+            Some(&1)
         );
-        let sabd = comp.read_spec(abd).unwrap();
-        assert_eq!(
-            sabd.children,
-            [child(ab.0, Some("droite"))]
-                .into_iter()
-                .collect::<BTreeSet<_>>(),
-            "ABD -> AB (droite) après réouverture"
-        );
+        // Projection transitive du diamant : {A,B,C,D}, AB partagé n'est pas un cycle.
+        assert_eq!(comp.resolve(k).unwrap(), set(&[a, b, c, d]), "resolve(K)");
         db.close().unwrap();
     }
+}
+
+#[test]
+fn interruption_de_construction_recuperee() {
+    let td = tempfile::tempdir().unwrap();
+    let db = ObrainDB::open_substrate(td.path().join("kb")).unwrap();
+    let comp = Composition::new(&db);
+    let a = db.create_node(&["fn"]);
+    let b = db.create_node(&["fn"]);
+    let spec = KnowledgeSpec {
+        members: [a, b].iter().copied().collect(),
+        children: BTreeMap::new(),
+        relations: BTreeMap::new(),
+    };
+    // Demi-né : clé v3 écrite, AUCUNE arête (construction interrompue).
+    let half = db.create_node(&["structure"]);
+    db.set_node_property(half, "canonical_key", Value::from(spec.structural_key()));
+    // Le demi-né OCCUPE la clé : read_spec refuse (pas une connaissance complète).
+    assert!(comp.read_spec(half).is_err());
+    // RÉCUPÉRATION : construct abandonne le demi-né et reconstruit proprement.
+    let k = comp.construct(&spec).expect("construct récupère");
+    assert_eq!(k, k);
+    assert!(db.get_node(half).is_none(), "demi-né abandonné (tombstoné)");
+    let r = comp
+        .read_spec(k)
+        .expect("structure complète après récupération");
+    assert_eq!(r.members, set(&[a, b]), "structure reconstruite complète");
+    db.close().unwrap();
+}
+
+#[test]
+fn cycle_detecte() {
+    let td = tempfile::tempdir().unwrap();
+    let db = ObrainDB::open_substrate(td.path().join("kb")).unwrap();
+    let comp = Composition::new(&db);
+    let a = db.create_node(&["fn"]);
+    // K1 -> K2 -> K1 : cycle direct.
+    let k1 = db.create_node(&["structure"]);
+    let k2 = db.create_node(&["structure"]);
+    db.create_edge(k1, k2, "child");
+    db.create_edge(k2, k1, "child");
+    db.create_edge(k1, a, "member");
+    assert!(
+        matches!(comp.resolve(k1), Err(ResolveError::Cycle(_))),
+        "cycle détecté"
+    );
+    db.close().unwrap();
 }

@@ -16,12 +16,17 @@ fn spec(members: &[u64], children: &[u64], relations: &[Relation]) -> KnowledgeS
         members: members.iter().map(|&n| NodeId(n)).collect(),
         children: children
             .iter()
-            .map(|&n| ChildRef {
-                target: NodeId(n),
-                role: None,
+            .map(|&n| {
+                (
+                    ChildRef {
+                        target: NodeId(n),
+                        role: None,
+                    },
+                    1,
+                )
             })
             .collect(),
-        relations: relations.iter().cloned().collect(),
+        relations: relations.iter().cloned().map(|r| (r, 1)).collect(),
     }
 }
 

@@ -13,12 +13,17 @@ fn spec(members: &[u64], children: &[u64], relations: &[Relation]) -> KnowledgeS
         members: members.iter().map(|&n| NodeId(n)).collect(),
         children: children
             .iter()
-            .map(|&n| ChildRef {
-                target: NodeId(n),
-                role: None,
+            .map(|&n| {
+                (
+                    ChildRef {
+                        target: NodeId(n),
+                        role: None,
+                    },
+                    1,
+                )
             })
             .collect(),
-        relations: relations.iter().cloned().collect(),
+        relations: relations.iter().cloned().map(|r| (r, 1)).collect(),
     }
 }
 
@@ -71,7 +76,7 @@ fn reconstruction_relationnelle_apres_reouverture() {
     let r3 = comp2.read_spec(k3).expect("read_spec(k3)");
     let r4 = comp2.read_spec(k4).expect("read_spec(k4)");
 
-    let only = |s: &KnowledgeSpec| s.relations.iter().next().unwrap().clone();
+    let only = |s: &KnowledgeSpec| s.relations.keys().next().unwrap().clone();
     let x1 = only(&r1);
     let x2 = only(&r2);
     let x3 = only(&r3);
@@ -94,7 +99,7 @@ fn reconstruction_relationnelle_apres_reouverture() {
     // La relation extérieure n'appartient à AUCUNE connaissance reconstruite.
     for r in [&r1, &r2, &r3, &r4] {
         assert!(
-            !r.relations.iter().any(|x| x.rel_type == "externe"),
+            !r.relations.keys().any(|x| x.rel_type == "externe"),
             "relation extérieure exclue"
         );
     }

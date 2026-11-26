@@ -11,12 +11,17 @@ fn spec(members: &[u64], children: &[u64], relations: &[Relation]) -> KnowledgeS
         members: members.iter().map(|&n| NodeId(n)).collect(),
         children: children
             .iter()
-            .map(|&n| ChildRef {
-                target: NodeId(n),
-                role: None,
+            .map(|&n| {
+                (
+                    ChildRef {
+                        target: NodeId(n),
+                        role: None,
+                    },
+                    1,
+                )
             })
             .collect(),
-        relations: relations.iter().cloned().collect(),
+        relations: relations.iter().cloned().map(|r| (r, 1)).collect(),
     }
 }
 
@@ -148,5 +153,37 @@ fn divergence_de_cle_rejetee() {
     comp.read_spec(k).expect("valide avant corruption");
     db.set_node_property(k, "canonical_key", Value::from("v2|corrompu"));
     assert_eq!(comp.read_spec(k), Err(ResolveError::KeyDivergence));
+    db.close().unwrap();
+}
+
+#[test]
+fn role_child_non_textuel_rejete() {
+    let td = tempfile::tempdir().unwrap();
+    let db = ObrainDB::open_substrate(td.path().join("kb")).unwrap();
+    let comp = Composition::new(&db);
+    let a = db.create_node(&["fn"]);
+    let b = db.create_node(&["fn"]);
+    let ab = comp.construct(&spec(&[a.0, b.0], &[], &[])).unwrap();
+    // K : child AB avec role "gauche", construit manuellement pour pouvoir
+    // corrompre la propriete role de l'arete.
+    let k_spec = KnowledgeSpec {
+        members: std::collections::BTreeSet::new(),
+        children: [(
+            ChildRef {
+                target: ab,
+                role: Some("gauche".into()),
+            },
+            1,
+        )]
+        .into_iter()
+        .collect(),
+        relations: std::collections::BTreeMap::new(),
+    };
+    let k = db.create_node(&["structure"]);
+    db.set_node_property(k, "canonical_key", Value::from(k_spec.structural_key()));
+    let eid = db.create_edge(k, ab, "child");
+    db.set_edge_property(eid, "role", Value::Int64(5)); // role non textuel
+    // ABSENCE de role (propriete absente) vs CORRUPTION (presente mais non textuelle).
+    assert_eq!(comp.read_spec(k), Err(ResolveError::NonTextualRole));
     db.close().unwrap();
 }

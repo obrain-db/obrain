@@ -14,23 +14,31 @@
 //! 2. identité de DÉFINITION STRUCTURELLE = `structural_key()` — implémentée
 //!    (encodage canonique versionné, non ambigu, injectif) ; l'IMMUTABILITÉ
 //!    n'est pas encore imposée par le moteur (aucune barrière d'écriture) ;
-//! 3. identité d'OCCURRENCE — `children` est un `BTreeSet<ChildRef>` : deux
-//!    occurrences d'une même cible avec des rôles différents SONT distinguées
-//!    (rôle porté par l'arête `child`) ; la projection ensembliste
+//! 3. identité d'OCCURRENCE — `children` est une MULTIPLICITÉ
+//!    `BTreeMap<ChildRef, usize>` : deux occurrences d'une même cible (même
+//!    rôle ou rôles différents) SONT distinguées (rôle sur l'arête `child`,
+//!    multiplicité = nombre d'arêtes) ; la projection ensembliste
 //!    (`projection_children`) les réduit volontairement à une cible ;
 //! 4. ÉQUIVALENCE selon une projection = `projection_members_key()` — membres
 //!    DIRECTS seulement, pas la fermeture transitive (limite) ;
 //! 5. ÉQUIVALENCE sémantique — déclarée explicitement, hors module.
 //!
 //! # Encodage et migration
-//! `structural_key` est versionné (`v2|`). L'ancien format `m[...]c[...]r[...]`
-//! (v1, avant l'enrichissement relationnel) n'est PAS migré automatiquement :
-//! la clé est stockée telle quelle à la construction. Le préfixe de version
-//! permet une migration future. Ne pas confondre cette identité structurelle
-//! locale (fondée sur des `NodeId`) avec une identité durable entre répliques
-//! (hors de ce module).
+//! `structural_key` est versionné `v3` (membres, enfants cible+rôle+multiplicité,
+//! relations type+src+dst+rôle+multiplicité). Politique de compatibilité :
+//! - un nœud encore en encodage HISTORIQUE `v2` (children sans rôle, sans
+//!   multiplicité) est RECONNU par `KnowledgeSpec::legacy_v2_key` et MIGRÉ
+//!   (clé réécrite en v3) à la première lecture — une même définition n'est
+//!   donc pas dupliquée par une construction ultérieure ;
+//! - deux définitions historiques DISTINCTES ont des clés v3 distinctes et ne
+//!   fusionnent pas ;
+//! - une clé qui n'est ni v3 ni l'encodage v2 de la structure est REFUSÉE
+//!   (`KeyDivergence`) — jamais réécrite en silence.
+//!
+//! Ne pas confondre cette identité structurelle locale (fondée sur des `NodeId`)
+//! avec une identité durable entre répliques (hors de ce module).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use obrain_common::types::{EdgeId, NodeId, PropertyKey, Value};
 use obrain_core::graph::Direction;
@@ -86,15 +94,19 @@ pub struct ChildRef {
 }
 
 /// Spécification d'une connaissance : participants feuilles, sous-connaissances
-/// référencées et relations orientées. L'ordre n'importe pas (`BTreeSet`).
+/// référencées et relations orientées. L'ordre n'importe pas ; sous-connaissances
+/// et relations portent une MULTIPLICITÉ (occurrences).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnowledgeSpec {
     /// Participants feuilles.
     pub members: BTreeSet<NodeId>,
-    /// Sous-connaissances référencées (occurrences, rôle contextuel).
-    pub children: BTreeSet<ChildRef>,
-    /// Relations orientées.
-    pub relations: BTreeSet<Relation>,
+    /// Sous-connaissances référencées : MULTIPLICITÉ de (cible, rôle). Deux
+    /// occurrences de même cible ET même rôle ont une multiplicité de 2 — elles
+    /// ne fusionnent pas.
+    pub children: BTreeMap<ChildRef, usize>,
+    /// Relations orientées : MULTIPLICITÉ de (type, src, dst, rôle). Deux
+    /// occurrences identiques ont une multiplicité de 2.
+    pub relations: BTreeMap<Relation, usize>,
 }
 
 /// Encodage canonique : chaque champ de longueur variable est préfixé par sa
@@ -118,21 +130,48 @@ fn enc_opt(out: &mut String, o: Option<&str>) {
 }
 
 impl KnowledgeSpec {
-    /// Clé de DÉFINITION STRUCTURELLE (versionnée, injective) : membres,
-    /// enfants et relations orientées. A→B ≠ B→A ; None ≠ Some("").
+    /// Clé de DÉFINITION STRUCTURELLE (v3, injective) : membres, enfants
+    /// (cible+rôle+multiplicité) et relations (type+src+dst+rôle+multiplicité).
+    /// A→B ≠ B→A ; None ≠ Some("") ; multiplicité distincte ⇒ clé distincte.
     pub fn structural_key(&self) -> String {
+        let mut k = String::from("v3|");
+        enc_str(&mut k, &self.members.len().to_string());
+        for m in &self.members {
+            enc_str(&mut k, &m.0.to_string());
+        }
+        enc_str(&mut k, &self.children.len().to_string());
+        for (c, count) in &self.children {
+            enc_str(&mut k, &c.target.0.to_string());
+            enc_opt(&mut k, c.role.as_deref());
+            enc_str(&mut k, &count.to_string());
+        }
+        enc_str(&mut k, &self.relations.len().to_string());
+        for (r, count) in &self.relations {
+            enc_str(&mut k, &r.rel_type);
+            enc_str(&mut k, &r.src.0.to_string());
+            enc_str(&mut k, &r.dst.0.to_string());
+            enc_opt(&mut k, r.role.as_deref());
+            enc_str(&mut k, &count.to_string());
+        }
+        k
+    }
+
+    /// Clé au format HISTORIQUE v2 (avant rôle de child et multiplicité) :
+    /// membres, enfants (cible seule, sans rôle) et relations (sans multiplicité).
+    /// Sert à RECONNAÎTRE une définition legacy et la migrer explicitement vers
+    /// v3 — sans quoi une même définition serait dupliquée (clé v2 ≠ clé v3).
+    pub fn legacy_v2_key(&self) -> String {
         let mut k = String::from("v2|");
         enc_str(&mut k, &self.members.len().to_string());
         for m in &self.members {
             enc_str(&mut k, &m.0.to_string());
         }
         enc_str(&mut k, &self.children.len().to_string());
-        for c in &self.children {
+        for c in self.children.keys() {
             enc_str(&mut k, &c.target.0.to_string());
-            enc_opt(&mut k, c.role.as_deref());
         }
         enc_str(&mut k, &self.relations.len().to_string());
-        for r in &self.relations {
+        for r in self.relations.keys() {
             enc_str(&mut k, &r.rel_type);
             enc_str(&mut k, &r.src.0.to_string());
             enc_str(&mut k, &r.dst.0.to_string());
@@ -152,11 +191,21 @@ impl KnowledgeSpec {
     }
 
     /// PROJECTION ensembliste des sous-connaissances : les cibles seules, rôles
-    /// ignorés. Deux occurrences d'une même cible (rôles différents) se réduisent
+    /// et multiplicités ignorés. Deux occurrences d'une même cible se réduisent
     /// à UNE cible — perte documentée, par opposition à la représentation
     /// constitutive (`children`).
     pub fn projection_children(&self) -> BTreeSet<NodeId> {
-        self.children.iter().map(|c| c.target).collect()
+        self.children.keys().map(|c| c.target).collect()
+    }
+
+    /// Nombre TOTAL d'occurrences de sous-connaissances (somme des multiplicités).
+    pub fn children_total(&self) -> usize {
+        self.children.values().sum()
+    }
+
+    /// Nombre TOTAL d'occurrences relationnelles (somme des multiplicités).
+    pub fn relations_total(&self) -> usize {
+        self.relations.values().sum()
     }
 }
 
@@ -207,18 +256,33 @@ impl<'a> Composition<'a> {
     }
 
     /// Construction canonique : deux spécifications structurellement identiques
-    /// → même nœud. Le rôle est matérialisé sur l'arête (propriété `role`).
-    /// Retourne une erreur si un nœud déjà indexé par cette clé est INCOMPLET
-    /// (construction interrompue) : pas de réutilisation silencieuse.
+    /// → même nœud. Sous-connaissances et relations portent une MULTIPLICITÉ.
+    ///
+    /// Complétude ≠ atomicité : `read_spec` (`KeyDivergence`) est un MARQUEUR de
+    /// structure complète, PAS une publication atomique durable. `construct`
+    /// n'est pas transactionnel : `create_node`, puis `canonical_key`, puis les
+    /// arêtes une à une ; une interruption laisse un nœud à demi-né. Ce dernier
+    /// est alors ABANDONNÉ explicitement (tombstoné) et la clé est réoccupée par
+    /// une construction fraîche — détecter n'est pas récupérer, mais la clé ne
+    /// reste jamais bloquée. Une publication atomique exigerait une transaction
+    /// substrat (hors de ce module).
+    ///
+    /// Concurrence : deux `construct` simultanés de la même définition ne sont
+    /// PAS sérialisés (pas de verrou/transaction) — limite de #419, ce module
+    /// n'introduit PAS de seconde autorité de réservation.
     pub fn construct(&self, spec: &KnowledgeSpec) -> Result<NodeId, ResolveError> {
         let key = spec.structural_key();
-        if let Some(existing) = self.find_by_key(&key) {
-            // Vérifie la complétude du nœud indexé : une structure incomplète
-            // (canonical_key écrit, arêtes absentes) ne doit pas être réutilisée
-            // en silence — read_spec échoue (KeyDivergence ou autre) et l'erreur
-            // est propagée.
-            self.read_spec(existing)?;
-            return Ok(existing);
+        if let Some(existing) = self.find_or_migrate_by_key(&key) {
+            // Un nœud COMPLET est réutilisé. Un nœud INCOMPLET (construction
+            // interrompue) est ABANDONNÉ explicitement : la clé est libérée et une
+            // construction fraîche la réoccupe. Détecter n'est pas récupérer ;
+            // KeyDivergence seul n'est PAS une récupération.
+            match self.read_spec(existing) {
+                Ok(_) => return Ok(existing),
+                Err(_) => {
+                    self.db.delete_node(existing);
+                }
+            }
         }
         let id = self.db.create_node(&[LABEL_KNOWLEDGE]);
         self.db
@@ -226,24 +290,28 @@ impl<'a> Composition<'a> {
         for m in &spec.members {
             self.db.create_edge(id, *m, EDGE_MEMBER);
         }
-        for c in &spec.children {
-            let eid = self.db.create_edge(id, c.target, EDGE_CHILD);
-            if let Some(role) = &c.role {
-                self.db
-                    .set_edge_property(eid, KEY_ROLE, Value::from(role.clone()));
+        for (c, count) in &spec.children {
+            for _ in 0..*count {
+                let eid = self.db.create_edge(id, c.target, EDGE_CHILD);
+                if let Some(role) = &c.role {
+                    self.db
+                        .set_edge_property(eid, KEY_ROLE, Value::from(role.clone()));
+                }
             }
         }
-        for rel in &spec.relations {
-            let occ = self.db.create_node(&[LABEL_RELATION]);
-            self.db
-                .set_node_property(occ, KEY_REL_TYPE, Value::from(rel.rel_type.clone()));
-            if let Some(role) = &rel.role {
+        for (rel, count) in &spec.relations {
+            for _ in 0..*count {
+                let occ = self.db.create_node(&[LABEL_RELATION]);
                 self.db
-                    .set_node_property(occ, KEY_ROLE, Value::from(role.clone()));
+                    .set_node_property(occ, KEY_REL_TYPE, Value::from(rel.rel_type.clone()));
+                if let Some(role) = &rel.role {
+                    self.db
+                        .set_node_property(occ, KEY_ROLE, Value::from(role.clone()));
+                }
+                self.db.create_edge(occ, rel.src, EDGE_SRC);
+                self.db.create_edge(occ, rel.dst, EDGE_DST);
+                self.db.create_edge(id, occ, EDGE_RELATION);
             }
-            self.db.create_edge(occ, rel.src, EDGE_SRC);
-            self.db.create_edge(occ, rel.dst, EDGE_DST);
-            self.db.create_edge(id, occ, EDGE_RELATION);
         }
         Ok(id)
     }
@@ -275,17 +343,17 @@ impl<'a> Composition<'a> {
     }
 
     /// Reconstruction de la DÉFINITION STRUCTURELLE depuis le graphe persistant
-    /// (membres directs, enfants directs, occurrences relationnelles avec
-    /// direction/type/rôle). Ne réutilise pas les specs initiales. Vérifie que
-    /// la clé recalculée correspond à la clé persistée.
-    pub fn read_spec(&self, id: NodeId) -> Result<KnowledgeSpec, ResolveError> {
+    /// (membres directs, enfants directs avec multiplicité, occurrences
+    /// relationnelles avec direction/type/rôle et multiplicité). Ne vérifie PAS
+    /// la clé persistée (voir `read_spec`).
+    fn reconstruct_structure(&self, id: NodeId) -> Result<KnowledgeSpec, ResolveError> {
         let root = self.db.get_node(id).ok_or(ResolveError::RootMissing(id))?;
         if !root.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
             return Err(ResolveError::RootNotKnowledge(id));
         }
         let mut members = BTreeSet::new();
-        let mut children = BTreeSet::new();
-        let mut relations = BTreeSet::new();
+        let mut children: BTreeMap<ChildRef, usize> = BTreeMap::new();
+        let mut relations: BTreeMap<Relation, usize> = BTreeMap::new();
         for (dst, eid) in self.outgoing(id) {
             let edge = self
                 .db
@@ -305,14 +373,18 @@ impl<'a> Composition<'a> {
                     if !child.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
                         return Err(ResolveError::NotKnowledge(dst));
                     }
-                    let role = edge
-                        .properties
-                        .get(&PropertyKey::from(KEY_ROLE))
-                        .and_then(|v| v.as_str().map(|s| s.to_string()));
-                    children.insert(ChildRef { target: dst, role });
+                    let role = match edge.properties.get(&PropertyKey::from(KEY_ROLE)) {
+                        None => None,
+                        Some(v) => match v.as_str() {
+                            Some(s) => Some(s.to_string()),
+                            None => return Err(ResolveError::NonTextualRole),
+                        },
+                    };
+                    *children.entry(ChildRef { target: dst, role }).or_insert(0) += 1;
                 }
                 EDGE_RELATION => {
-                    relations.insert(self.read_relation_occurrence(dst)?);
+                    let rel = self.read_relation_occurrence(dst)?;
+                    *relations.entry(rel).or_insert(0) += 1;
                 }
                 _ => {}
             }
@@ -322,9 +394,24 @@ impl<'a> Composition<'a> {
             children,
             relations,
         };
+        Ok(spec)
+    }
+
+    /// Lecture d'une connaissance : reconstruit la définition puis vérifie la
+    /// cohérence de la clé persistée. Un nœud en encodage HISTORIQUE (v2) dont
+    /// la structure est valide est MIGRÉ vers v3 (clé réécrite) ; une clé
+    /// réellement divergente est REFUSÉE (`KeyDivergence`).
+    pub fn read_spec(&self, id: NodeId) -> Result<KnowledgeSpec, ResolveError> {
+        let spec = self.reconstruct_structure(id)?;
         let recomputed = spec.structural_key();
-        if self.structural_key_of(id).as_deref() != Some(recomputed.as_str()) {
-            return Err(ResolveError::KeyDivergence);
+        let persisted = self.structural_key_of(id);
+        if persisted.as_deref() != Some(recomputed.as_str()) {
+            if persisted.as_deref() == Some(spec.legacy_v2_key().as_str()) {
+                self.db
+                    .set_node_property(id, KEY_CANONICAL, Value::from(recomputed.clone()));
+            } else {
+                return Err(ResolveError::KeyDivergence);
+            }
         }
         Ok(spec)
     }
@@ -439,6 +526,37 @@ impl<'a> Composition<'a> {
 
     fn outgoing(&self, id: NodeId) -> Vec<(NodeId, EdgeId)> {
         self.db.data_store().edges_from(id, Direction::Outgoing)
+    }
+
+    /// Trouve un nœud par clé, y compris un nœud LEGACY (clé v2) dont la
+    /// structure reconstruite donne `key` en v3 — auquel cas `construct` le
+    /// réutilisera et `read_spec` le migrera. Évite qu'une même définition soit
+    /// dupliquée après changement d'encodage.
+    fn find_or_migrate_by_key(&self, key: &str) -> Option<NodeId> {
+        if let Some(id) = self.find_by_key(key) {
+            return Some(id);
+        }
+        let store = self.db.data_store();
+        for id in store.node_ids() {
+            let Some(node) = self.db.get_node(id) else {
+                continue;
+            };
+            if !node.labels.iter().any(|l| l.as_str() == LABEL_KNOWLEDGE) {
+                continue;
+            }
+            let Some(persisted) = self.structural_key_of(id) else {
+                continue;
+            };
+            if persisted == key {
+                continue;
+            }
+            if let Ok(spec) = self.reconstruct_structure(id)
+                && spec.structural_key() == key
+            {
+                return Some(id);
+            }
+        }
+        None
     }
 
     fn find_by_key(&self, key: &str) -> Option<NodeId> {
