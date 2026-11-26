@@ -2791,6 +2791,13 @@ pub struct SubstrateStore {
     writer_id: u64,
     /// Horloge hybride locale (HLC) pour estampiller les écritures (#334).
     horloge: Mutex<crate::horloge_hybride::HorlogeHybride>,
+    /// Seam de test/diagnostic : horloge HLC FORCÉE pour la prochaine
+    /// [`Self::preparer_transformation`] (`None` en production — le chemin
+    /// chaud ne paie qu'une lecture). `Some(h)` estampille `h` au lieu de
+    /// l'horloge murale : c'est ce qui permet une COLLISION CONTRÔLÉE entre
+    /// deux bases indépendantes partageant `writer.id`, sans temporisation
+    /// ni hasard. Voir [`Self::forcer_horloge_pour_test`].
+    horloge_forcee: Mutex<Option<u64>>,
     /// Identité d'instance du store (par ouverture) : lie les descripteurs de
     /// transformation préparée à LEUR store (refus d'un descripteur étranger
     /// ou périmé). N'est PAS persistée.
@@ -3820,6 +3827,22 @@ impl SubstrateStore {
         })
     }
 
+    /// ── SEAM DE TEST : FORCER L'HORLOGE HLC D'UNE PRÉPARATION ─────────────
+    ///
+    /// Force la PROCHAINE [`Self::preparer_transformation`] à estampiller
+    /// `horloge` au lieu de l'horloge murale (consommé à la première
+    /// préparation : one-shot). Permet une COLLISION CONTRÔLÉE entre deux
+    /// bases indépendantes partageant `writer.id` — la MÊME `(auteur,
+    /// horloge)` — sans temporisation ni hasard : c'est la démonstration
+    /// déterministe de l'ambiguïté d'une [`ReferenceTentative`] hors de son
+    /// domaine de stockage.
+    ///
+    /// `None` partout en production : le chemin chaud ne paie qu'une lecture.
+    #[doc(hidden)]
+    pub fn forcer_horloge_pour_test(&self, horloge: u64) {
+        *self.horloge_forcee.lock() = Some(horloge);
+    }
+
     /// Capture COHÉRENTE de plusieurs propriétés d'un nœud sous le verrou
     /// d'écriture du nœud (l'autorité commune des écrivains) : un écrivain
     /// concurrent ne peut pas intercaler une écriture entre deux lectures.
@@ -3907,7 +3930,10 @@ impl SubstrateStore {
         let tete_origine = node_rec.first_prop_off.to_u64();
         let auteur = self.writer_id;
         let millis = crate::horloge_hybride::horloge_murale_millis();
-        let horloge = self.horloge.lock().maintenant(millis).pack();
+        let horloge = match self.horloge_forcee.lock().take() {
+            Some(forcee) => forcee,
+            None => self.horloge.lock().maintenant(millis).pack(),
+        };
 
         // MODE STRICT — DOMINANCE : l'estampille de l'effet (horloge, auteur)
         // doit dominer STRICTEMENT l'estampille capturée de chaque propriété
@@ -9998,6 +10024,7 @@ impl SubstrateStore {
             props_zone,
             writer_id,
             horloge: Mutex::new(crate::horloge_hybride::HorlogeHybride::nouvelle()),
+            horloge_forcee: Mutex::new(None),
             splice_lock: Mutex::new(()),
             named_graphs: RwLock::new(std::collections::HashMap::new()),
             tx_undo: RwLock::new(std::collections::HashMap::new()),
