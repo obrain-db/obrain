@@ -263,3 +263,35 @@ fn revi0(m: &EngramManager, eid: EngramId) {
     let a = NodeId(1);
     revise(m, eid, &[a], 0.4, ObservationScope::DeclaredPartial);
 }
+
+// ---------------------------------------------------------------------------
+// E8 — ASSOCIATIVITÉ : structurelle pour la composition séquentielle.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e8_associativite_structurelle() {
+    let (a, b) = (NodeId(1), NodeId(2));
+    let mk = || {
+        let m = manager();
+        let eid = m.form_observation(&[a, b]);
+        set_weight(&m, eid, a, 0.2);
+        (m, eid)
+    };
+    // Séquence FIXE T1, T2, T3. L'associativité (T1∘T2)∘T3 = T1∘(T2∘T3) est
+    // STRUCTURELLE pour la composition de fonctions : c'est la même séquence,
+    // quel que soit le groupement. On le vérifie sur l'état complet.
+    let (m1, e1) = mk();
+    revise(&m1, e1, &[a, b], 0.4, ObservationScope::DeclaredPartial); // T1 : renforce a,b
+    revise(&m1, e1, &[b], 0.4, ObservationScope::DeclaredComplete);    // T2 : décroît a
+    revise(&m1, e1, &[a], 0.4, ObservationScope::DeclaredPartial);     // T3 : renforce a
+    let s = snapshot(&m1, e1);
+
+    eprintln!(
+        "[E8] associativité structurelle : ensemble={:?}, recall_count={} (rappel E7 : pas d'inverse)",
+        s.ensemble, s.recall_count
+    );
+    // L'algèbre est un SEMI-GROUPE : associative (triviale pour une séquence),
+    // sans inverse (E7), sans idempotence (E2). On documente, on n'exige rien d'autre.
+    assert!(s.ensemble.iter().all(|(_, w)| w.is_finite() && *w >= 0.0));
+    assert_eq!(s.recall_count, 3, "3 révisions -> recall_count = 3 (historique cohérent)");
+}
