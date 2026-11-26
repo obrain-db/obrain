@@ -3131,6 +3131,32 @@ pub struct Precondition {
     dependances: Vec<Dependance>,
 }
 
+impl Precondition {
+    /// Lecture seule PUBLIQUE : la VALEUR capturée d'une dépendance (si présente).
+    /// Permet à un consommateur externe de calculer une transformation depuis la
+    /// capture elle-même, SANS seconde lecture indépendante de la valeur.
+    pub fn valeur_capturee(&self, cle: &str) -> Option<&Value> {
+        self.dependances
+            .iter()
+            .find(|d| d.cle == cle)
+            .and_then(|d| match &d.etat {
+                EtatPropriete::Presente { valeur, .. } => Some(valeur),
+                _ => None,
+            })
+    }
+    /// Lecture seule PUBLIQUE : l'estampille complète capturée d'une dépendance.
+    pub fn estampille_capturee(&self, cle: &str) -> Option<EstampilleComplete> {
+        self.dependances
+            .iter()
+            .find(|d| d.cle == cle)
+            .and_then(|d| match &d.etat {
+                EtatPropriete::Presente { estampille, .. }
+                | EtatPropriete::Supprimee(estampille) => Some(*estampille),
+                _ => None,
+            })
+    }
+}
+
 #[cfg(test)]
 impl Precondition {
     pub(crate) fn nb_dependances(&self) -> usize {
@@ -4091,6 +4117,29 @@ impl SubstrateStore {
                 "publier_si_precondition_intacte_differee : descripteur d'un autre store"
                     .to_string(),
             ));
+        }
+        // VALIDATION PRÉALABLE SANS ALLOCATION (sous le verrou de nœud) : si la
+        // précondition est DÉJÀ obsolète, refuser sans matérialiser. La
+        // matérialisation (allocation de pages privées) n'a donc lieu que si la
+        // précondition tient à l'instant de la vérification. La re-validation
+        // dans publier_si_precondition_intacte ferme la fenêtre résiduelle entre
+        // cette vérification et la bascule (elle ne peut pas produire un effet
+        // obsolète — seulement, dans le cas rare d'une écriture concurrente
+        // intercalée, une allocation déjà amortie).
+        {
+            let _un_ecrivain = self.verrou_ecriture_noeud(prep.cible).lock();
+            if !self.is_live_on_disk(prep.cible) {
+                return Err(SubstrateError::Internal(
+                    "publier_si_precondition_intacte_differee : cible supprimée ou recréée"
+                        .to_string(),
+                ));
+            }
+            for dep in &prep.precondition.dependances {
+                let courante = self.lire_etat_propriete(prep.cible, &dep.cle)?;
+                if !etat_correspond(&courante, &dep.etat) {
+                    return Ok(IssuePublication::ConflitPrecondition);
+                }
+            }
         }
         let nouvelles: Vec<(&str, Value)> = prep
             .ecritures
@@ -48880,8 +48929,9 @@ mod publication_conditionnelle_native {
             "CONFLITS abandon={abandon_pages} pages ({abandon_ns:.0} ns/prép) ;              refus={conflit_pages} pages ({conflit_ns:.0} ns/pub)"
         );
         assert_eq!(abandon_pages, 0, "l'abandon logique n'alloue aucune page");
-        // DÉFAUT MESURÉ : chaque refus matérialise AVANT validation → au moins n pages
-        assert!(conflit_pages >= n as u32, "amplification : matérialisation avant validation");
+        // CORRIGÉ : la validation préalable (sans allocation) refuse le conflit
+        // AVANT matérialisation → zéro page.
+        assert_eq!(conflit_pages, 0, "conflit refusé avant matérialisation : zéro page");
     }
 
     /// P0 — écriture répétée d'une même clé : refusée à la préparation.
