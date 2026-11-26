@@ -194,9 +194,19 @@ pub struct ConsolidatorTomlCfg {
     /// Maximum duration of a single tick, in milliseconds.
     #[serde(default)]
     pub max_tick_ms: Option<u64>,
-    /// Multiplicative synapse decay factor applied each tick.
+    /// DÉPRÉCIÉ, MIGRÉ. Le facteur multiplicatif fixe appliqué à chaque
+    /// tique est le défaut qu'on corrige : `0.99` toutes les 60 s implique une
+    /// demi-vie de 69 min au lieu de 24 h (20,9× trop rapide). La décroissance
+    /// est désormais dérivée de `half_life_secs`. Le champ reste accepté pour
+    /// qu'une configuration existante continue de se charger : SI la période
+    /// `interval_secs` est connue, il est converti (`H = −Δt·ln2 / ln f`) ;
+    /// SANS période, l'incompatibilité est signalée et le défaut conservé.
     #[serde(default)]
     pub decay_factor: Option<f32>,
+    /// Demi-vie de l'énergie, en secondes. La cadence de tique en est dérivée
+    /// (`half_life / 64`) et le facteur par tique vaut `2^(-1/64)`.
+    #[serde(default)]
+    pub half_life_secs: Option<u64>,
     /// u16-scaled weight below which synapses are pruned.
     #[serde(default)]
     pub synapse_prune_threshold_u16: Option<u16>,
@@ -211,6 +221,7 @@ impl Default for ConsolidatorTomlCfg {
             cpu_fraction: None,
             max_tick_ms: None,
             decay_factor: None,
+            half_life_secs: None,
             synapse_prune_threshold_u16: None,
             engram_reinforce_delta_u16: None,
         }
@@ -396,17 +407,69 @@ impl ThinkerFleetConfig<ConsolidatorTomlCfg> {
     pub fn inner(&self) -> ConsolidatorConfig {
         let defaults = ConsolidatorConfig::default();
         let t = &self.inner_toml;
+        // MIGRATION `decay_factor` (point 6 de la revue). L'ancien contrat
+        // garantissait : « multiplier l'énergie par `f` toutes les
+        // `interval_secs` secondes ». Le nouveau garantit : « décroissance
+        // exponentielle de demi-vie `half_life_secs`, cadence dérivée ». Pour
+        // CONSERVER l'ancien comportement quand `f` et sa période `Δt`
+        // (`interval_secs`) sont connus, on convertit `H = −Δt·ln2 / ln f`
+        // (0 < f < 1). Sans période, l'incompatibilité est annoncée.
+        let mut half_life = t
+            .half_life_secs
+            .map_or(defaults.half_life, Duration::from_secs);
+        if t.half_life_secs.is_none()
+            && let Some(f) = t.decay_factor
+        {
+            let f = f as f64;
+            if (0.0..1.0).contains(&f) {
+                match t.interval_secs {
+                    Some(dt_secs) if dt_secs > 0 => {
+                        let h = crate::decay_law::DecayLaw::implied_half_life(
+                            f,
+                            Duration::from_secs(dt_secs),
+                        );
+                        if !h.is_zero() {
+                            tracing::warn!(
+                                decay_factor = f,
+                                interval_secs = dt_secs,
+                                half_life_secs = h.as_secs(),
+                                "thinkers.consolidator.decay_factor MIGRÉ : H = −Δt·ln2 / ln f"
+                            );
+                            half_life = h;
+                        } else {
+                            tracing::error!(
+                                decay_factor = f,
+                                "decay_factor non convertible : ignoré"
+                            );
+                        }
+                    }
+                    _ => {
+                        tracing::error!(
+                            decay_factor = f,
+                            "thinkers.consolidator.decay_factor est INCOMPATIBLE SANS période                              (interval_secs absent) : l'ancien comportement (f par intervalle)                              n'est PAS conservé — fixez half_life_secs explicitement"
+                        );
+                    }
+                }
+            } else {
+                tracing::error!(decay_factor = f, "decay_factor hors de (0,1) : ignoré");
+            }
+        }
+        // La cadence se dérive de la demi-vie ; `interval_secs` reste une
+        // avance explicite — et ne change RIEN à la loi, qui est ancrée par nœud.
+        let interval = t.interval_secs.map_or_else(
+            || crate::decay_law::DecayLaw::new(half_life).tick_interval(),
+            Duration::from_secs,
+        );
         ConsolidatorConfig {
-            decay_factor: t.decay_factor.unwrap_or(defaults.decay_factor),
+            half_life,
+            max_nodes_per_tick: defaults.max_nodes_per_tick,
             synapse_prune_threshold_u16: t
                 .synapse_prune_threshold_u16
                 .unwrap_or(defaults.synapse_prune_threshold_u16),
             engram_reinforce_delta_u16: t
                 .engram_reinforce_delta_u16
                 .unwrap_or(defaults.engram_reinforce_delta_u16),
-            interval: t
-                .interval_secs
-                .map_or(defaults.interval, Duration::from_secs),
+            interval,
             budget: resolve_budget(t.cpu_fraction, t.max_tick_ms, defaults.budget),
         }
     }
@@ -562,7 +625,25 @@ mod tests {
         assert!(!cfg.consolidator.enabled);
         let c = cfg.consolidator.inner();
         assert_eq!(c.interval, Duration::from_secs(120));
-        assert!((c.decay_factor - 0.95).abs() < 1e-6);
+        // CONTRAT CHANGÉ (2026-11-24), puis MIGRÉ (point 6 de la revue).
+        // L'ANCIEN contrat garantissait « multiplier par 0,95 toutes les 120 s »
+        // (demi-vie effective H = 120·ln2/−ln(0,95) ≈ 1621 s). Le NOUVEAU
+        // garantit une loi exponentielle de demi-vie `half_life_secs`. Ici
+        // `decay_factor` ET `interval_secs` sont connus : on CONVERTIT, donc
+        // l'ancien comportement est conservé (pas juste ignoré).
+        // `decay_factor` est un f32 : 0.95f32 → f64 porte ~4e-4 d'erreur relative,
+        // donc on compare à tolérance serrée, pas à l'égalité exacte.
+        let h = crate::decay_law::DecayLaw::implied_half_life(0.95, Duration::from_secs(120));
+        assert!(
+            (c.half_life.as_secs_f64() - h.as_secs_f64()).abs() < 0.01,
+            "H migré {c:?} vs attendu {h:?}",
+            c = c.half_life
+        );
+        assert!(
+            (c.half_life.as_secs_f64() - 1621.5).abs() < 20.0,
+            "H = 120·ln2/−ln(0,95) ≈ 1621 s, mesuré {:?}",
+            c.half_life
+        );
 
         let w = cfg.warden.inner();
         assert!((w.fragmentation_trigger - 1.5).abs() < 1e-6);
@@ -576,11 +657,130 @@ mod tests {
     }
 
     #[test]
+    fn half_life_secs_pilote_la_cadence_derivee() {
+        let text = r#"
+            [consolidator]
+            enabled = true
+            half_life_secs = 3600
+        "#;
+        let mut cfg: ThinkersConfig = toml::from_str(text).expect("parse");
+        cfg.recompute_runtime();
+        let c = cfg.consolidator.inner();
+        assert_eq!(c.half_life, Duration::from_secs(3600));
+        assert_eq!(
+            c.interval,
+            crate::decay_law::DecayLaw::new(Duration::from_secs(3600)).tick_interval()
+        );
+    }
+
+    /// Point 6 — `decay_factor` SEUL (sans `interval_secs`) ne peut pas être
+    /// converti : l'ancien comportement n'est PAS conservé, et le contrat le
+    /// dit (half_life retombe sur le défaut).
+    #[test]
+    fn decay_factor_sans_periode_reste_le_defaut_et_annonce_l_incompatibilite() {
+        let text = r#"
+            [consolidator]
+            enabled = true
+            decay_factor = 0.99
+        "#;
+        let mut cfg: ThinkersConfig = toml::from_str(text).expect("parse");
+        cfg.recompute_runtime();
+        let c = cfg.consolidator.inner();
+        // Aucune période connue : on ne peut pas convertir, le défaut prime.
+        assert_eq!(c.half_life, Duration::from_secs(24 * 3600));
+    }
+
+    #[test]
     fn empty_toml_uses_defaults() {
         let mut cfg: ThinkersConfig = toml::from_str("").expect("empty parse");
         cfg.recompute_runtime();
         let c = cfg.consolidator.inner();
         assert_eq!(c.interval, ConsolidatorConfig::default().interval);
         assert!(cfg.consolidator.enabled);
+    }
+}
+
+#[cfg(test)]
+mod tests_evenements_migration {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::Visit;
+    use tracing::subscriber::with_default;
+
+    /// Souscripteur minimal qui capture (niveau, message) : le même motif que
+    /// `JournalTest` de `slot_remap.rs` — il prouve que l'événement est ÉMIS,
+    /// donc que les champs (facteur, période, demi-vie) sont ÉVALUÉS.
+    struct Journal(Mutex<Vec<(tracing::Level, String)>>);
+
+    struct CapteurMessage<'a>(&'a mut Option<String>);
+    impl Visit for CapteurMessage<'_> {
+        fn record_debug(&mut self, champ: &tracing::field::Field, valeur: &dyn std::fmt::Debug) {
+            if champ.name() == "message" {
+                *self.0 = Some(format!("{valeur:?}"));
+            }
+        }
+    }
+
+    impl tracing::Subscriber for Journal {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, evenement: &tracing::Event<'_>) {
+            let mut message = None;
+            evenement.record(&mut CapteurMessage(&mut message));
+            if let Some(m) = message {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((*evenement.metadata().level(), m));
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+        fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+            Some(tracing::level_filters::LevelFilter::TRACE)
+        }
+    }
+
+    fn inner(text: &str) -> Duration {
+        let mut cfg: ThinkersConfig = toml::from_str(text).expect("parse");
+        cfg.recompute_runtime();
+        cfg.consolidator.inner().half_life
+    }
+
+    /// La migration `decay_factor` ÉMET les événements annoncés : WARN quand la
+    /// conversion est possible, ERROR sans période, ERROR hors de (0,1).
+    #[test]
+    fn la_migration_decay_factor_emet_les_evenements_annonces() {
+        let journal = Arc::new(Journal(Mutex::new(Vec::new())));
+        with_default(journal.clone(), || {
+            // warn : decay_factor + interval_secs → migré.
+            inner("[consolidator]\nenabled = true\ndecay_factor = 0.95\ninterval_secs = 120\n");
+            // error : decay_factor sans période.
+            inner("[consolidator]\nenabled = true\ndecay_factor = 0.99\n");
+            // error : decay_factor hors de (0,1).
+            inner("[consolidator]\nenabled = true\ndecay_factor = 1.5\n");
+        });
+        let tout = journal.0.lock().unwrap();
+        assert!(
+            tout.iter()
+                .any(|(n, m)| *n == tracing::Level::WARN && m.contains("MIGRÉ")),
+            "un WARN de migration doit être émis : {tout:?}"
+        );
+        assert!(
+            tout.iter()
+                .any(|(n, m)| *n == tracing::Level::ERROR && m.contains("INCOMPATIBLE")),
+            "un ERROR d'incompatibilité sans période doit être émis : {tout:?}"
+        );
+        assert!(
+            tout.iter()
+                .any(|(n, m)| *n == tracing::Level::ERROR && m.contains("hors de (0,1)")),
+            "un ERROR hors de (0,1) doit être émis : {tout:?}"
+        );
     }
 }

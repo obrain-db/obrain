@@ -687,10 +687,21 @@ fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[cfg(test)]
+impl RecallEngine {
+    fn with_direct_weight(mut self, w: f64) -> Self {
+        self.direct_weight = w;
+        self
+    }
+}
+
 mod tests {
+    // Module de test : import global idiomatique.
+    #[allow(clippy::wildcard_imports)]
     use super::*;
     use crate::engram::traits::InMemoryVectorIndex;
 
+    #[allow(dead_code)]
     fn make_store_and_index() -> (EngramStore, InMemoryVectorIndex, SpectralEncoder) {
         let store = EngramStore::new(None);
         let index = InMemoryVectorIndex::new();
@@ -706,7 +717,7 @@ mod tests {
 
             // Index the spectral signature.
             let sig = spectral.encode(&nodes);
-            engram.spectral_signature = sig.clone();
+            engram.spectral_signature.clone_from(&sig);
             index.upsert(&id.0.to_string(), &sig);
 
             store.insert(engram);
@@ -1006,5 +1017,57 @@ mod tests {
         // Should still work via fallback.
         // (May be empty if VectorIndex returns no results, but should not panic.)
         assert!(results.len() <= 3);
+    }
+
+    // --- E3 : ablation réelle des chemins ---
+    #[test]
+    fn e3_ablation_direct_vs_spectral() {
+        let (store, index, spectral) = make_store_and_index();
+        let cue = [NodeId(2)];
+        let direct = RecallEngine::new()
+            .with_direct_weight(1.0)
+            .recall(&store, &cue, &index, &spectral, 10);
+        let spectral_only = RecallEngine::new()
+            .with_direct_weight(0.0)
+            .recall(&store, &cue, &index, &spectral, 10);
+        let hybrid = RecallEngine::new().recall(&store, &cue, &index, &spectral, 10);
+        let f = |rs: &[RecallResult]| {
+            rs.iter()
+                .map(|r| (r.engram_id.0, r.confidence))
+                .collect::<Vec<_>>()
+        };
+        eprintln!("E3 direct-only = {:?}", f(&direct));
+        eprintln!("E3 spectral-only = {:?}", f(&spectral_only));
+        eprintln!("E3 hybrid = {:?}", f(&hybrid));
+    }
+
+    // --- E4 : stabilité d'un engramme fixe sous accumulation ---
+    #[test]
+    fn e4_stabilite_sous_accumulation() {
+        let (store, index, spectral) = make_store_and_index();
+        let cue = [NodeId(2)];
+        let engine = RecallEngine::new();
+        let base = engine.recall(&store, &cue, &index, &spectral, 10);
+        let top_id = base[0].engram_id.0;
+        let top_conf_base = base[0].confidence;
+        // Ajoute 30 engrammes disjoints.
+        for i in 100..130u64 {
+            let id = store.next_id();
+            let nodes: Vec<(NodeId, f64)> = (i..i + 3).map(|n| (NodeId(n), 1.0)).collect();
+            let mut e = Engram::new(id, nodes.clone());
+            let sig = spectral.encode(&nodes);
+            e.spectral_signature = sig.clone();
+            index.upsert(&id.0.to_string(), &sig);
+            store.insert(e);
+        }
+        let after = engine.recall(&store, &cue, &index, &spectral, 30);
+        let (pos, conf_after) = after
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.engram_id.0 == top_id)
+            .map_or((usize::MAX, 0.0), |(i, r)| (i, r.confidence));
+        eprintln!(
+            "E4 top_id={top_id} conf_base={top_conf_base:.6} conf_apres={conf_after:.6} rang={pos}"
+        );
     }
 }

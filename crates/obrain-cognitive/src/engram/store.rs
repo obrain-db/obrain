@@ -213,6 +213,22 @@ impl EngramStore {
     /// Updates an engram in-place by applying `f` to its mutable reference.
     ///
     /// This is a no-op if no engram with the given `id` exists.
+    /// Reconstruit une projection DÉRIVÉE (signature spectrale) SANS muter
+    /// l'état canonique : ni révision, ni write-through, ni miroir substrate.
+    /// Le chargement re-dérive ainsi les signatures sans amplification
+    /// d'écriture à chaque redémarrage.
+    pub fn rehydrate_signature(&self, id: EngramId, sig: Vec<f64>) {
+        if let Some(mut entry) = self.cache.get_mut(&id) {
+            entry.value_mut().spectral_signature = sig;
+            // Invalide le cache de la matrice Hopfield (indexé par révision)
+            // SANS déclencher de write-through durable : une signature changée
+            // sans révision laisserait une matrice obsolète réutilisée.
+            self.revision.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Applique `f` à l'engramme `id` (modification en place + write-through),
+    /// puis incrémente la révision.
     pub fn update(&self, id: EngramId, f: impl FnOnce(&mut Engram)) {
         self.revision.fetch_add(1, Ordering::Relaxed);
         if let Some(mut entry) = self.cache.get_mut(&id) {
@@ -330,17 +346,54 @@ impl EngramStore {
         let mut loaded = 0usize;
         let mut max_id: u64 = 0;
         for eid_u16 in 1u16..=u16::MAX {
-            let Ok(Some(members)) = writer.engram_members(eid_u16) else {
-                continue;
+            // Lecture COHÉRENTE membres+poids sous un même verrou (pas de
+            // fenêtre d'entrelacement entre deux lectures séparées).
+            let (members, weights) = match writer.read_engram_state(eid_u16) {
+                Ok(Some(v)) => v,
+                Ok(None) => continue, // slot vide
+                Err(e) => {
+                    // Zone corrompue : on RÉSERVE l'identifiant (pour ne jamais
+                    // le réallouer) et on met l'engramme en quarantaine.
+                    tracing::error!(
+                        engram_id = eid_u16,
+                        error = %e,
+                        "état d'engramme illisible : identifiant réservé, engramme en quarantaine"
+                    );
+                    max_id = max_id.max(eid_u16 as u64);
+                    continue;
+                }
             };
             if members.is_empty() {
                 continue;
             }
+            // Slot occupé : réserve l'identifiant quoi qu'il arrive (même si
+            // les poids sont incohérents ou absents).
+            max_id = max_id.max(eid_u16 as u64);
             let eid = EngramId(eid_u16 as u64);
-            let ensemble: Vec<(NodeId, f64)> = members
-                .into_iter()
-                .map(|n| (NodeId(n as u64), 1.0))
-                .collect();
+            // Restaure les poids (état dynamique) depuis la zone parallèle.
+            let ensemble: Vec<(NodeId, f64)> = match weights {
+                Some(ws) if ws.len() == members.len() => members
+                    .into_iter()
+                    .zip(ws)
+                    .map(|(n, w)| (NodeId(n as u64), w as f64))
+                    .collect(),
+                // Absence legacy (base sans zone de poids) : 1.0 voulu.
+                None => members
+                    .into_iter()
+                    .map(|n| (NodeId(n as u64), 1.0))
+                    .collect(),
+                // Incohérence de longueur : corruption — PAS de fabrication de
+                // poids. Quarantaine (l'id est déjà réservé ci-dessus).
+                Some(ws) => {
+                    tracing::error!(
+                        engram_id = eid_u16,
+                        membres = members.len(),
+                        poids = ws.len(),
+                        "incohérence membres/poids : engramme en quarantaine (aucun poids inventé)"
+                    );
+                    continue;
+                }
+            };
             let mut engram = Engram::new(eid, ensemble);
             // Signature spectrale : re-encodée paresseusement par le manager
             // (le rappel spectral l'utilise ; ici on la laisse vide, le
@@ -514,6 +567,7 @@ impl EngramStore {
     /// Persist the (id, members) pair + per-node bit for an engram whose id
     /// was allocated externally (used by `form` and by the insert mirror).
     #[cfg(feature = "substrate")]
+    #[allow(dead_code)]
     fn form_with_id(&self, eid: EngramId, nids: &[NodeId]) -> SubstrateResult<()> {
         let writer = self
             .substrate_writer()
@@ -552,12 +606,36 @@ impl EngramStore {
             return;
         }
         let nids: Vec<NodeId> = engram.ensemble.iter().map(|(n, _)| *n).collect();
-        if let Err(e) = self.form_with_id(engram.id, &nids) {
+        let Some(writer) = self.substrate_writer() else {
+            return;
+        };
+        let Some(eid_u16) = Self::engram_id_to_u16(engram.id) else {
+            return;
+        };
+        let members: Vec<u32> = nids
+            .iter()
+            .filter_map(|n| Self::node_id_to_u32(*n))
+            .collect();
+        let weights: Vec<f32> = engram.ensemble.iter().map(|(_, w)| *w as f32).collect();
+        // Écriture ATOMIQUE membres+poids (même verrou), puis bitset par nœud
+        // (aucune correspondance d'ordre) — pas de réécriture des membres.
+        if let Err(e) = writer.set_engram_state(eid_u16, members.clone(), weights) {
             tracing::warn!(
                 engram_id = engram.id.0,
                 error = %e,
-                "substrate engram mirror failed (insert/update)"
+                "substrate engram state mirror failed"
             );
+            return;
+        }
+        for nid in &members {
+            if let Err(e) = writer.add_engram_bit(*nid, eid_u16) {
+                tracing::warn!(
+                    engram_id = engram.id.0,
+                    node_id = *nid,
+                    error = %e,
+                    "substrate engram bitset mirror failed"
+                );
+            }
         }
     }
 
@@ -572,7 +650,9 @@ impl EngramStore {
         let Some(eid_u16) = Self::engram_id_to_u16(id) else {
             return;
         };
-        if let Err(e) = writer.set_engram_members(eid_u16, Vec::new()) {
+        // Suppression atomique : membres ET poids vides (set_engram_state
+        // valide 0 == 0 et écrit les deux zones sous un même verrou).
+        if let Err(e) = writer.set_engram_state(eid_u16, Vec::new(), Vec::new()) {
             tracing::warn!(
                 engram_id = id.0,
                 error = %e,
@@ -675,5 +755,36 @@ mod tests {
         let c = store.next_id();
         assert!(a.0 < b.0);
         assert!(b.0 < c.0);
+    }
+}
+
+#[cfg(test)]
+mod tests_rehydratation {
+    use super::*;
+
+    /// `rehydrate_signature` reconstruit la projection DÉRIVÉE (signature
+    /// spectrale) sans muter l'état canonique : elle invalide le cache
+    /// Hopfield (révision +1) mais ne déclenche aucun write-through. Un id
+    /// absent est un no-op silencieux.
+    #[test]
+    fn rehydrate_signature_reconstruit_la_projection_sans_reviser_l_engramme() {
+        let store = EngramStore::new(None);
+        let id = store.next_id();
+        store.insert(Engram::new(id, vec![(NodeId(1), 1.0), (NodeId(2), 0.5)]));
+        let rev_avant = store.revision();
+
+        let sig = vec![0.1, 0.2, 0.3];
+        store.rehydrate_signature(id, sig.clone());
+        assert_eq!(store.get(id).unwrap().spectral_signature, sig);
+        assert_eq!(
+            store.revision(),
+            rev_avant + 1,
+            "le cache Hopfield est invalidé"
+        );
+
+        // Id absent : no-op, sans panique ni révision supplémentaire.
+        let rev_apres = store.revision();
+        store.rehydrate_signature(EngramId(999_999), vec![9.9]);
+        assert_eq!(store.revision(), rev_apres);
     }
 }

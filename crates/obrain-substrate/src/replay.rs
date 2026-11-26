@@ -279,6 +279,7 @@ fn replay_from_avec(
     let mut edges: Option<ZoneFile> = None;
     let mut engram_members: Option<ZoneFile> = None;
     let mut engram_bitset: Option<ZoneFile> = None;
+    let mut engram_weights: Option<ZoneFile> = None;
     let mut hilbert: Option<ZoneFile> = None;
     let mut community: Option<ZoneFile> = None;
     let mut zorder: Option<ZoneFile> = None;
@@ -339,6 +340,7 @@ fn replay_from_avec(
                     &mut edges,
                     &mut engram_members,
                     &mut engram_bitset,
+                    &mut engram_weights,
                     &mut hilbert,
                     &mut community,
                     &mut zorder,
@@ -460,6 +462,7 @@ fn replay_from_avec(
                     &mut edges,
                     &mut engram_members,
                     &mut engram_bitset,
+                    &mut engram_weights,
                     &mut hilbert,
                     &mut community,
                     &mut zorder,
@@ -483,6 +486,7 @@ fn replay_from_avec(
                     &mut edges,
                     &mut engram_members,
                     &mut engram_bitset,
+                    &mut engram_weights,
                     &mut hilbert,
                     &mut community,
                     &mut zorder,
@@ -783,6 +787,7 @@ fn apply(
     edges: &mut Option<ZoneFile>,
     engram_members_zone: &mut Option<ZoneFile>,
     engram_bitset_zone: &mut Option<ZoneFile>,
+    engram_weights_zone: &mut Option<ZoneFile>,
     hilbert: &mut Option<ZoneFile>,
     community: &mut Option<ZoneFile>,
     zorder: &mut Option<ZoneFile>,
@@ -1749,6 +1754,7 @@ fn apply(
                 edges,
                 engram_members_zone,
                 engram_bitset_zone,
+                engram_weights_zone,
                 hilbert,
                 community,
                 zorder,
@@ -1928,6 +1934,42 @@ fn apply(
         | WalPayload::Tier0Update { .. }
         | WalPayload::Tier1Update { .. }
         | WalPayload::Tier2Update { .. } => Ok(Applied::Skipped),
+        // Poids d'engramme (f32 en bits u32) — même ordre que les membres.
+        WalPayload::EngramWeightsSet { engram_id, weights } => {
+            if engram_weights_zone.is_none() {
+                *engram_weights_zone = Some(substrate.open_zone(Zone::EngramWeights)?);
+            }
+            let zf = engram_weights_zone.as_mut().unwrap();
+            let ws: Vec<f32> = weights.iter().map(|b| f32::from_bits(*b)).collect();
+            crate::engram::EngramZone::set_weights_raw(zf, *engram_id, &ws)?;
+            Ok(Applied::Yes)
+        }
+        // État complet (membres + poids) en UN record : le couple est appliqué
+        // indivisiblement au rejeu.
+        WalPayload::EngramStateSet {
+            engram_id,
+            members,
+            weights,
+        } => {
+            if engram_members_zone.is_none() {
+                *engram_members_zone = Some(substrate.open_zone(Zone::EngramMembers)?);
+            }
+            if engram_weights_zone.is_none() {
+                *engram_weights_zone = Some(substrate.open_zone(Zone::EngramWeights)?);
+            }
+            let ws: Vec<f32> = weights.iter().map(|b| f32::from_bits(*b)).collect();
+            crate::engram::EngramZone::set_members_raw(
+                engram_members_zone.as_mut().unwrap(),
+                *engram_id,
+                members,
+            )?;
+            crate::engram::EngramZone::set_weights_raw(
+                engram_weights_zone.as_mut().unwrap(),
+                *engram_id,
+                &ws,
+            )?;
+            Ok(Applied::Yes)
+        }
     }
 }
 
@@ -2946,5 +2988,63 @@ mod tests {
             "seuls les {fenetre} nœuds de la fenêtre portent la signature de coquille"
         );
         assert_eq!(stats.dangling_prop_anchors, 0, "aucune ancre non nulle ici");
+    }
+}
+
+#[cfg(test)]
+mod tests_rejeu_engramme {
+    use super::*;
+    use crate::file::SubstrateFile;
+    use crate::wal_io::SyncMode;
+    use crate::writer::Writer;
+    use tempfile::tempdir;
+
+    /// Le rejeu reconstruit l'état COMPLET d'un engramme (membres+poids) depuis
+    /// le record WAL `EngramStateSet`, en ouvrant paresseusement les deux zones.
+    #[test]
+    fn replay_reconstruit_l_etat_complet_d_engramme() {
+        let dir = tempdir().unwrap();
+        let sub_path = dir.path().join("kb");
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            w.set_engram_state(1, vec![10, 20], vec![0.5, 0.75])
+                .unwrap();
+            w.commit().unwrap();
+        }
+        // Efface les zones pour forcer la reconstruction depuis le WAL seul.
+        std::fs::write(sub_path.join(crate::file::zone::ENGRAM_MEMBERS), []).unwrap();
+        std::fs::write(sub_path.join(crate::file::zone::ENGRAM_WEIGHTS), []).unwrap();
+
+        let sub2 = SubstrateFile::open(&sub_path).unwrap();
+        let stats = replay_from(&sub2, 0).unwrap();
+        assert_eq!(stats.decode_errors, 0);
+
+        let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
+        let (m, wts) = w2.read_engram_state(1).unwrap().unwrap();
+        assert_eq!(m, vec![10, 20]);
+        assert_eq!(wts, Some(vec![0.5, 0.75]));
+    }
+
+    /// Le rejeu reconstruit les POIDS SEULS depuis le record `EngramWeightsSet`,
+    /// en ouvrant paresseusement la zone poids à la première occurrence.
+    #[test]
+    fn replay_reconstruit_les_poids_seuls_d_engramme() {
+        let dir = tempdir().unwrap();
+        let sub_path = dir.path().join("kb");
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            w.set_engram_weights(2, vec![0.25, 0.5]).unwrap();
+            w.commit().unwrap();
+        }
+        std::fs::write(sub_path.join(crate::file::zone::ENGRAM_WEIGHTS), []).unwrap();
+
+        let sub2 = SubstrateFile::open(&sub_path).unwrap();
+        let stats = replay_from(&sub2, 0).unwrap();
+        assert_eq!(stats.decode_errors, 0);
+
+        let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
+        assert_eq!(w2.engram_weights(2).unwrap(), Some(vec![0.25, 0.5]));
     }
 }

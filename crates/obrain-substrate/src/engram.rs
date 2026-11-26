@@ -177,6 +177,22 @@ impl EngramZone {
         slice[slot + 4..slot + 8].copy_from_slice(&len.to_le_bytes());
     }
 
+    /// Écrire les poids (f32) d'un engramme — même géométrie que les membres,
+    /// chaque f32 stocké via `to_bits` dans une lane u32.
+    pub fn set_weights_raw(
+        zf: &mut ZoneFile,
+        engram_id: u16,
+        weights: &[f32],
+    ) -> SubstrateResult<()> {
+        let bits: Vec<u32> = weights.iter().map(|w| w.to_bits()).collect();
+        Self::set_members_raw(zf, engram_id, &bits)
+    }
+
+    /// Lire les poids (f32) d'un engramme, dans le même ordre que les membres.
+    pub fn weights(zf: &ZoneFile, engram_id: u16) -> SubstrateResult<Option<Vec<f32>>> {
+        Ok(Self::members(zf, engram_id)?.map(|ids| ids.into_iter().map(f32::from_bits).collect()))
+    }
+
     /// Return the membership list for `engram_id`, or `None` if the engram
     /// has no members (either never set or explicitly cleared).
     ///
@@ -184,6 +200,11 @@ impl EngramZone {
     /// can freely use the result across zone growth events.
     pub fn members(zf: &ZoneFile, engram_id: u16) -> SubstrateResult<Option<Vec<u32>>> {
         if engram_id == 0 {
+            return Ok(None);
+        }
+        if zf.is_empty() {
+            // Zone vide = jamais initialisée (base legacy sans cette zone).
+            // C'est une ABSENCE légitime, pas une corruption : on rend None.
             return Ok(None);
         }
         Self::validate_header(zf)?;

@@ -832,16 +832,18 @@ pub(crate) struct EdgeTypeRegistry {
 }
 
 impl EdgeTypeRegistry {
-    /// Le prochain id LIBRE : au-delà du plus grand id porté, jamais 0 (« pas
-    /// d'arête »). Voir `LabelRegistry::prochain_bit_libre` pour le défaut corrigé.
+    /// Le prochain id LIBRE : au-delà du plus grand id porté, jamais 0 ni 1
+    /// (« pas d'arête » et « SYNAPSE » sont réservés). Voir
+    /// `LabelRegistry::prochain_bit_libre` pour le défaut corrigé, et
+    /// [`crate::record::SYNAPSE_EDGE_TYPE_ID`] pour la réservation.
     fn prochain_id_libre(&self) -> usize {
         self.par_id
             .keys()
             .map(|&i| usize::from(i) + 1)
             .max()
-            .unwrap_or(1)
+            .unwrap_or(crate::record::SYNAPSE_EDGE_TYPE_ID as usize + 1)
             .max(self.id_to_name.len())
-            .max(1)
+            .max(crate::record::SYNAPSE_EDGE_TYPE_ID as usize + 1)
     }
 
     /// Inscrit un nom à un id IMPOSÉ — ou au premier id libre si `id` est `None`
@@ -850,6 +852,32 @@ impl EdgeTypeRegistry {
     pub(crate) fn interner_a(&mut self, name: &str, id: Option<u16>) -> SubstrateResult<u16> {
         if let Some(&connu) = self.name_to_id.get(name) {
             return Ok(connu);
+        }
+        // ── ID BIEN CONNU RÉSERVÉ À SYNAPSE (2026-11-24) ─────────────────
+        // « SYNAPSE » est TOUJOURS à l'id réservé 1, quel que soit l'ordre
+        // d'internement. C'est ce qui rend le nom lisible par `id_for`/`name_for`
+        // après une panne AVANT flush : le dictionnaire nom→id (persisté seulement
+        // à `flush()`) n'est pas nécessaire pour résoudre ce type, et l'id est
+        // stable d'un processus à l'autre — l'enregistrement `EdgeTypeIntern` du
+        // WAL, qui le journalisait, pouvait être emporté par une troncature.
+        if name == crate::record::SYNAPSE_EDGE_TYPE_NAME {
+            let id = crate::record::SYNAPSE_EDGE_TYPE_ID;
+            match self.par_id.get(&id) {
+                None => {
+                    // Id 1 libre : on réserve l'id bien connu.
+                    let name: ArcStr = name.into();
+                    self.name_to_id.insert(name.clone(), id);
+                    self.par_id.insert(id, name.clone());
+                    self.id_to_name.push(name);
+                    return Ok(id);
+                }
+                Some(autre) if autre.as_str() == name => return Ok(id),
+                // Id 1 déjà pris par un AUTRE type (base héritée antérieure à la
+                // couche cognitive) : on ne force pas, on retombe sur l'allocation
+                // générique d'un id libre. La lecture résout alors SYNAPSE via
+                // name_to_id tant que le dictionnaire est présent.
+                Some(_) => {}
+            }
         }
         let id = match id {
             Some(i) => i,
@@ -907,11 +935,36 @@ impl EdgeTypeRegistry {
     }
 
     pub(crate) fn name_for(&self, id: u16) -> Option<ArcStr> {
-        self.par_id.get(&id).cloned()
+        if let Some(n) = self.par_id.get(&id) {
+            return Some(n.clone());
+        }
+        // Id bien connu : résoluble même quand le dictionnaire n'a pas été
+        // flushé (panne avant flush).
+        if id == crate::record::SYNAPSE_EDGE_TYPE_ID {
+            return Some(ArcStr::from(crate::record::SYNAPSE_EDGE_TYPE_NAME));
+        }
+        None
     }
 
     pub(crate) fn id_for(&self, name: &str) -> Option<u16> {
-        self.name_to_id.get(name).copied()
+        if let Some(&id) = self.name_to_id.get(name) {
+            return Some(id);
+        }
+        // Id bien connu : résoluble même quand le dictionnaire n'a pas été
+        // flushé (panne avant flush).
+        if name == crate::record::SYNAPSE_EDGE_TYPE_NAME {
+            // L'id bien connu n'est rendu que s'il est libre ou déjà SYNAPSE.
+            // Sur une base héritée où l'id 1 porte un AUTRE type (ex. PART_OF),
+            // renvoyer 1 ferait compter ces arêtes comme des synapses.
+            return match self.par_id.get(&crate::record::SYNAPSE_EDGE_TYPE_ID) {
+                None => Some(crate::record::SYNAPSE_EDGE_TYPE_ID),
+                Some(n) if n.as_str() == crate::record::SYNAPSE_EDGE_TYPE_NAME => {
+                    Some(crate::record::SYNAPSE_EDGE_TYPE_ID)
+                }
+                Some(_) => None,
+            };
+        }
+        None
     }
 
     /// Dump the edge-type names in id order for persistence via
@@ -18773,7 +18826,17 @@ impl SubstrateStore {
         // obtiennent le même id.
         use crate::registres_partages::Espace;
         let neuf = self.edge_types.read().id_for(name).is_none();
-        let global = self.interne_global(Espace::Types, name)?;
+        // ── ID BIEN CONNU RÉSERVÉ À SYNAPSE (2026-11-24) ─────────────────
+        // « SYNAPSE » ne passe PAS par la table partagée : son id est réservé
+        // (`record::SYNAPSE_EDGE_TYPE_ID`, et `Espace::Types::premier_indice`
+        // démarre à 2 pour ne jamais le redistribuer). Le résoudre LOCALEMENT
+        // le rend lisible par `id_for`/`name_for` après une panne sans flush,
+        // quel que soit l'ordre d'internement des autres types d'arêtes.
+        let global = if name == crate::record::SYNAPSE_EDGE_TYPE_NAME {
+            None
+        } else {
+            self.interne_global(Espace::Types, name)?
+        };
         let id = {
             let mut reg = self.edge_types.write();
             self.inscrire_avec_global(
@@ -45163,6 +45226,180 @@ mod tests {
             "et toujours jugée cohérente après reconstruction éventuelle"
         );
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // (2026-11-24) COMPATIBILITÉ HÉRITÉE — id 1 occupé par un AUTRE type
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// REPRODUCTION DE L'ÉTAT HÉRITÉ : le compteur partagé des types d'arêtes
+    /// (`Espace::Types::premier_indice`) démarre à 2 et réserve l'id 1 à
+    /// SYNAPSE ; une base NEUVE ne produit donc jamais PART_OF=1. Pour obtenir
+    /// une base persistée où l'id 1 porte PART_OF (l'état d'une base antérieure
+    /// à la couche cognitive), on écrit le dictionnaire hérité À LA MAIN : base
+    /// vierge fermée, puis `substrate.dict` remplacé par un `DictSnapshot` dont
+    /// `edge_types = ["", "PART_OF"]` (indice 0 = sentinelle « pas d'arête »,
+    /// indice 1 = PART_OF). À l'ouverture, `amorcer_registres_partages` publie
+    /// PART_OF à l'id 1 dans la table partagée, exactement comme une telle base
+    /// la porterait.
+    fn base_heritee_part_of_id1(chemin: &std::path::Path) -> (NodeId, NodeId, EdgeId) {
+        use obrain_core::graph::traits::GraphStoreMut;
+        // (1) Base vierge fermée : dict vide + table partagée vide.
+        {
+            let s = SubstrateStore::create(chemin).unwrap();
+            s.close().unwrap();
+        }
+        // (2) Dict hérité : PART_OF à l'id 1.
+        {
+            let chemin_dict = chemin.join(DICT_FILENAME);
+            let mut snap = crate::dict::DictSnapshot::load(&chemin_dict).unwrap();
+            snap.edge_types = vec!["".to_string(), "PART_OF".to_string()];
+            snap.persist(&chemin_dict).unwrap();
+        }
+        // (3) Réouverture : PART_OF s'interne à l'id 1, une arête réelle le porte.
+        {
+            let s = SubstrateStore::open(chemin).unwrap();
+            let a = s.create_node(&["n"]);
+            let b = s.create_node(&["n"]);
+            let part_of = s.create_edge(a, b, "PART_OF");
+            s.flush().unwrap();
+            s.close().unwrap();
+            (a, b, part_of)
+        }
+    }
+
+    /// RÉGRESSION (2026-11-24, complément STORE RÉEL de
+    /// `synapse_id1_occupe_par_un_autre_type_ne_ment_pas`) : sur une base
+    /// PERSISTÉE où l'id 1 porte PART_OF, SYNAPSE s'interne à un id k ≠ 1, et
+    /// après réouverture les arêtes de chaque type restent associées au BON type
+    /// — aucune réinterprétation silencieuse des références stockées — et créer
+    /// une NOUVELLE synapse fonctionne.
+    #[test]
+    fn base_heritee_part_of_id1_reouverture_preserve_les_types() {
+        use obrain_core::graph::traits::{GraphStore, GraphStoreMut};
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (a, b, part_of) = base_heritee_part_of_id1(&chemin);
+
+        let synapse;
+        {
+            let s = SubstrateStore::open(&chemin).unwrap();
+            // SYNAPSE ne prend PAS l'id 1 (occupé par PART_OF) : il retombe sur
+            // un id libre k ≠ 1.
+            synapse = s.create_synapse_slot(a, b, 0.5).unwrap();
+
+            let reg = s.edge_types.read();
+            assert_eq!(
+                reg.name_for(1).as_deref(),
+                Some("PART_OF"),
+                "l'id 1 reste PART_OF"
+            );
+            let id_synapse = reg.id_for("SYNAPSE").expect("SYNAPSE interné");
+            assert_ne!(
+                id_synapse, 1,
+                "SYNAPSE reçoit un id libre, pas l'id 1 occupé"
+            );
+            assert_eq!(reg.name_for(id_synapse).as_deref(), Some("SYNAPSE"));
+
+            assert_eq!(
+                s.scan_typed_edge_weights("PART_OF").unwrap().len(),
+                1,
+                "une seule arête PART_OF"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("SYNAPSE").unwrap().len(),
+                1,
+                "une seule arête SYNAPSE"
+            );
+
+            s.flush().unwrap();
+            s.close().unwrap();
+        }
+
+        // Réouverture : les références stockées ne sont PAS réinterprétées.
+        {
+            let s = SubstrateStore::open(&chemin).unwrap();
+            assert_eq!(
+                s.edge_type(part_of).as_deref(),
+                Some("PART_OF"),
+                "l'arête PART_OF reste PART_OF"
+            );
+            assert_eq!(
+                s.edge_type(synapse).as_deref(),
+                Some("SYNAPSE"),
+                "l'arête SYNAPSE reste SYNAPSE"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("PART_OF").unwrap().len(),
+                1,
+                "scan PART_OF : 1 arête, pas la synapse"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("SYNAPSE").unwrap().len(),
+                1,
+                "scan SYNAPSE : 1 arête, pas l'arête PART_OF"
+            );
+
+            // Création d'une NOUVELLE synapse : fonctionne et va au bon type.
+            let c = s.create_node(&["n"]);
+            let nouvelle = s.create_synapse_slot(a, c, 0.7).unwrap();
+            assert_eq!(s.edge_type(nouvelle).as_deref(), Some("SYNAPSE"));
+            assert_eq!(
+                s.scan_typed_edge_weights("SYNAPSE").unwrap().len(),
+                2,
+                "la nouvelle synapse s'ajoute aux existantes"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("PART_OF").unwrap().len(),
+                1,
+                "l'arête PART_OF n'est pas touchée"
+            );
+        }
+    }
+
+    /// MÊME base héritée, mais la synapse n'est PAS flushée : le nom « SYNAPSE »
+    /// (à un id k ≠ 1) ne vit que dans le WAL (`EdgeTypeIntern`). Le rejeu WAL à
+    /// la réouverture doit résoudre SYNAPSE → k SANS réinterpréter l'id 1
+    /// (PART_OF) comme une synapse.
+    #[test]
+    fn base_heritee_synapse_k_survit_au_rejeu_wal() {
+        use obrain_core::graph::traits::GraphStore;
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (a, b, part_of) = base_heritee_part_of_id1(&chemin);
+
+        let synapse;
+        {
+            let s = SubstrateStore::open(&chemin).unwrap();
+            synapse = s.create_synapse_slot(a, b, 0.5).unwrap();
+            // Panne AVANT flush : drop SANS close(). Le dict ne porte PAS encore
+            // SYNAPSE (il n'a que PART_OF=1) ; le WAL, lui, porte l'EdgeTypeIntern
+            // {SYNAPSE → k} + l'écriture de la synapse.
+        }
+
+        {
+            let s = SubstrateStore::open(&chemin).unwrap();
+            assert_eq!(
+                s.edge_type(part_of).as_deref(),
+                Some("PART_OF"),
+                "PART_OF intact après rejeu WAL"
+            );
+            assert_eq!(
+                s.edge_type(synapse).as_deref(),
+                Some("SYNAPSE"),
+                "SYNAPSE résolu à k via le rejeu WAL"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("PART_OF").unwrap().len(),
+                1,
+                "l'id 1 n'est pas réinterprété : PART_OF ≠ SYNAPSE"
+            );
+            assert_eq!(
+                s.scan_typed_edge_weights("SYNAPSE").unwrap().len(),
+                1,
+                "le rejeu WAL a bien résolu SYNAPSE → k"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -45457,6 +45694,35 @@ mod indice_libre_tests {
             "AT_COMMIT n'est pas écrasé"
         );
         assert_eq!(r.name_for(id).as_deref(), Some("PARENT"));
+    }
+
+    /// RÉGRESSION (2026-11-24) : l'id bien connu « SYNAPSE » (1) ne doit ni
+    /// mentir ni bloquer sur une base héritée où l'id 1 porte un AUTRE type.
+    #[test]
+    fn synapse_id1_occupe_par_un_autre_type_ne_ment_pas() {
+        let mut r = EdgeTypeRegistry::default();
+        // Base antérieure à la couche cognitive : le premier type interné a
+        // reçu l'id 1, et ce n'était PAS SYNAPSE.
+        let dict: Vec<String> = ["", "PART_OF"].iter().map(|s| s.to_string()).collect();
+        r.load_from(&dict).unwrap();
+        // 1. La lecture ne ment pas : l'id 1 est PART_OF, pas SYNAPSE.
+        assert_eq!(
+            r.id_for("SYNAPSE"),
+            None,
+            "id_for ne doit pas rendre l'id 1 à tort quand il porte PART_OF"
+        );
+        // 2. L'internement n'échoue pas : il retombe sur un id libre.
+        let id = r
+            .interner_a("SYNAPSE", None)
+            .expect("SYNAPSE doit s'interner même si l'id 1 est occupé");
+        assert!(
+            id > 1,
+            "SYNAPSE reçoit un id libre, pas l'id 1 occupé : {id}"
+        );
+        // 3. Les deux noms sont correctement résolus.
+        assert_eq!(r.id_for("SYNAPSE"), Some(id));
+        assert_eq!(r.name_for(id).as_deref(), Some("SYNAPSE"));
+        assert_eq!(r.name_for(1).as_deref(), Some("PART_OF"), "PART_OF intact");
     }
 
     /// Même défaut pour les clés de propriétés : un trou ne doit pas être réattribué.
@@ -46102,6 +46368,47 @@ mod fenetre_remplacement_blob {
             s.blob_columns
                 .read_value(&cle, EntityKind::Node, a.0 as u32)
                 .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_type_synapse_bien_connu {
+    use super::*;
+
+    /// Le type « SYNAPSE » est résolu par son id bien connu (1) même quand le
+    /// dictionnaire nom↔id n'a pas encore été flushé (panne avant flush) :
+    /// `name_for` retombe sur le nom canonique, `id_for` sur l'id réservé s'il
+    /// est libre ou déjà porté par SYNAPSE.
+    #[test]
+    fn le_type_synapse_est_resolu_par_son_id_bien_connu() {
+        let reg = EdgeTypeRegistry::default();
+        // Dictionnaire vide : le nom reste lisible via l'id bien connu.
+        let nom = reg.name_for(crate::record::SYNAPSE_EDGE_TYPE_ID);
+        assert!(nom.is_some(), "id bien connu résoluble sans dictionnaire");
+        assert_eq!(
+            nom.as_ref().unwrap().as_str(),
+            crate::record::SYNAPSE_EDGE_TYPE_NAME
+        );
+        // Un id inconnu quelconque reste None.
+        assert!(reg.name_for(999).is_none());
+
+        // Id bien connu libre : `id_for` rend l'id réservé.
+        assert_eq!(
+            reg.id_for(crate::record::SYNAPSE_EDGE_TYPE_NAME),
+            Some(crate::record::SYNAPSE_EDGE_TYPE_ID)
+        );
+
+        // Id bien connu déjà porté par SYNAPSE (mais nom absent du
+        // dictionnaire) : toujours résolu — le cas « panne avant flush ».
+        let mut reg2 = EdgeTypeRegistry::default();
+        reg2.par_id.insert(
+            crate::record::SYNAPSE_EDGE_TYPE_ID,
+            ArcStr::from(crate::record::SYNAPSE_EDGE_TYPE_NAME),
+        );
+        assert_eq!(
+            reg2.id_for(crate::record::SYNAPSE_EDGE_TYPE_NAME),
+            Some(crate::record::SYNAPSE_EDGE_TYPE_ID)
         );
     }
 }

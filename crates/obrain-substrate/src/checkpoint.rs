@@ -187,6 +187,9 @@ fn checkpoint_sous_fence(
         Zone::Zorder,
         Zone::SimplexDir,
         Zone::SimplexIncidence,
+        Zone::EngramMembers,
+        Zone::EngramBitset,
+        Zone::EngramWeights,
     ] {
         let zf = substrate.open_zone(zone)?;
         // An empty zone has no mmap; skip silently.
@@ -196,9 +199,19 @@ fn checkpoint_sous_fence(
         }
     }
     // Side-cars simpliciaux nommés (T4) — même discipline que les zones.
+    // (2026-11-24) L'index d'incidence des synapses (répertoire + postings) est
+    // un side-car NOMMÉ comme les simpliciaux : il n'a AUCUN enregistrement WAL
+    // (l'append d'incidence est une écriture mmap directe, cf.
+    // `create_synapse_slot`), donc un checkpoint qui ne le fsync pas le perd à la
+    // première coupure de courant — alors que les arêtes SYNAPSE, elles, sont
+    // fsyncées par la boucle de zones ci-dessus. Sans ce fsync, après un
+    // checkpoint + coupure, `for_each_synapse` (qui lit l'incidence) rendrait 0
+    // tandis que `len()`/`snapshot()` (qui lisent la colonne d'arêtes) rendraient 2.
     for name in [
         crate::simplex_zone::SIMPLEX_HEAP_FILENAME,
         crate::simplex_incidence::SIMPLEX_POSTINGS_FILENAME,
+        crate::synapse_incidence::SYNAPSE_INCIDENCE_FILENAME,
+        crate::synapse_incidence::SYNAPSE_POSTINGS_FILENAME,
     ] {
         let zf = substrate.open_named_zone(name)?;
         if !zf.is_empty() {
@@ -466,6 +479,77 @@ mod tests {
         assert!(marker.exists());
         let body = std::fs::read_to_string(&marker).unwrap();
         assert!(body.lines().count() >= 2);
+    }
+
+    /// Un échec de SYNCHRONISATION du side-car d'incidence des synapses doit
+    /// faire échouer le checkpoint AVANT la troncature du WAL / la suppression
+    /// des infos de récupération. L'ordre est celui de `checkpoint_sous_fence` :
+    /// les side-cars nommés (dont `substrate.synapse_incidence` /
+    /// `substrate.synapse_postings`) sont msync+fsync en étape (1), la méta et
+    /// la troncature n'arrivent qu'aux étapes (2)-(3). Un failpoint de msync
+    /// déterministe (`armer_echec_msync`) prouve que l'échec de sync remonte et
+    /// que le WAL reste INTACT (aucun marqueur de checkpoint posé, les
+    /// enregistrements originaux survivent).
+    #[test]
+    fn echec_sync_incidence_empeche_la_troncature_du_wal() {
+        use crate::synapse_incidence::{
+            SYNAPSE_INCIDENCE_FILENAME, SYNAPSE_POSTINGS_FILENAME, SynapseIncidenceZone,
+        };
+
+        let dir = tempdir().unwrap();
+        let sub_path = dir.path().join("kb");
+        let sub = SubstrateFile::create(&sub_path).unwrap();
+        let wal_path = sub.wal_path();
+        let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+        // Contenu WAL observable : si le checkpoint tronquait, ces nœuds
+        // disparaîtraient du WAL au profit du seul marqueur de checkpoint.
+        for i in 0..3u32 {
+            w.write_node(i, n(i)).unwrap();
+        }
+        w.commit().unwrap();
+        let before = w.wal().offset();
+        assert!(before > 0);
+        let wal_writer = w.wal();
+        drop(w);
+
+        let mut sub2 = SubstrateFile::open(&sub_path).unwrap();
+        // Side-car d'incidence rendu NON VIDE (mmap direct, AUCUN enregistrement
+        // WAL) pour que le checkpoint le msync/fsync réellement.
+        {
+            let mut inc = sub2.open_named_zone(SYNAPSE_INCIDENCE_FILENAME).unwrap();
+            let mut posts = sub2.open_named_zone(SYNAPSE_POSTINGS_FILENAME).unwrap();
+            SynapseIncidenceZone::append(&mut inc, &mut posts, 1, 42).unwrap();
+        }
+
+        // Arme l'échec de msync sur le side-car d'incidence.
+        crate::writer::armer_echec_msync(SYNAPSE_INCIDENCE_FILENAME);
+
+        let result = checkpoint(&mut sub2, &wal_writer);
+        assert!(
+            result.is_err(),
+            "un échec de sync du side-car doit faire échouer le checkpoint"
+        );
+        // Anti-vacuité : le failpoint a bien tiré (le test a atteint le msync
+        // du side-car, et non un échec antérieur sans rapport).
+        assert!(
+            crate::writer::echec_msync_a_tire(),
+            "le failpoint msync devait tirer"
+        );
+
+        // La troncature n'a PAS eu lieu : le WAL contient toujours les nœuds
+        // originaux et AUCUN marqueur de checkpoint.
+        let r = WalReader::open(&wal_path).unwrap();
+        let items: Vec<_> = r.iter_from(0).collect::<Result<Vec<_>, _>>().unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|(rec, ..)| matches!(&rec.payload, WalPayload::NodeInsertV3 { .. })),
+            "le WAL ne doit pas être tronqué : les enregistrements d'origine (nœuds) survivent"
+        );
+        assert!(
+            !items.iter().any(|(rec, ..)| rec.is_checkpoint()),
+            "aucun marqueur de checkpoint ne doit être posé après un échec de sync"
+        );
     }
 
     #[test]

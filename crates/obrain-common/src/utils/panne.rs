@@ -60,3 +60,41 @@ pub fn point_creation_noeud(rang: u64) {
         std::process::abort();
     }
 }
+
+/// 0 = désarmé ; sinon le processus s'arrête entre l'écriture de l'ancre
+/// composite et celle du miroir de colonne, dans `decay_clock::reinforce`.
+static ARRET_ENTRE_ANCRE_ET_MIROIR: AtomicU8 = AtomicU8::new(0);
+
+/// Arme l'arrêt (`abort`, état d'un SIGKILL) juste après l'écriture de
+/// l'ancre composite et AVANT le miroir de colonne.
+#[doc(hidden)]
+pub fn armer_arret_entre_ancre_et_miroir() {
+    ARRET_ENTRE_ANCRE_ET_MIROIR.store(1, Ordering::SeqCst);
+}
+
+/// À appeler entre l'ancre composite et le miroir de colonne.
+#[doc(hidden)]
+#[inline]
+pub fn point_entre_ancre_et_miroir() {
+    if ARRET_ENTRE_ANCRE_ET_MIROIR.load(Ordering::Relaxed) == 1 {
+        std::process::abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// L'armement pose le drapeau, le désarmement le relève, et le point
+    /// DÉSARMÉ traverse sans `abort`. Le drapeau est remis à zéro dans le même
+    /// test : il est global au processus et les tests tournent en parallèle.
+    #[test]
+    fn armer_puis_desarmer_et_le_point_desarme_n_arrete_pas() {
+        armer_arret_entre_ancre_et_miroir();
+        assert_eq!(ARRET_ENTRE_ANCRE_ET_MIROIR.load(Ordering::SeqCst), 1);
+        // Désarmement : un point armé appellerait `abort()` (testé par
+        // `ancre_composite_kill9`, dans un processus enfant).
+        ARRET_ENTRE_ANCRE_ET_MIROIR.store(0, Ordering::SeqCst);
+        point_entre_ancre_et_miroir(); // ne doit pas s'arrêter
+    }
+}
