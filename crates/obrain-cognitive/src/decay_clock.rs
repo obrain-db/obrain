@@ -82,8 +82,13 @@ fn decode_anchor(v: &Value) -> Option<EnergyAnchor> {
     let e_ref = champs[0];
     let t_ref = epoch_secs_to_micros(champs[1]);
     let t_hi = epoch_secs_to_micros(champs[2]);
-    let h = Duration::from_secs_f64(champs[3]);
-    if !e_ref.is_finite() || e_ref <= 0.0 || t_ref <= 0 || !h.as_secs_f64().is_finite() {
+    // `try_from_secs_f64` rejette NaN, infinie, négative et hors capacité
+    // SANS paniquer ; la validation se fait donc APRÈS une conversion sûre.
+    let h = match Duration::try_from_secs_f64(champs[3]) {
+        Ok(h) => h,
+        Err(_) => return None,
+    };
+    if !e_ref.is_finite() || e_ref <= 0.0 || t_ref <= 0 {
         return None;
     }
     Some(EnergyAnchor {
@@ -375,5 +380,46 @@ pub fn energy_from_parts(
     match legacy_t_micros {
         Some(t) => law.energy_at(e_ref_col, elapsed_since(t, now_micros)),
         None => e_ref_col,
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn anchor_value(e: f64, t_ref: f64, t_hi: f64, h: f64) -> Value {
+        let mut bytes = [0u8; ANCHOR_BYTES];
+        for (i, x) in [e, t_ref, t_hi, h].iter().enumerate() {
+            bytes[i * 8..i * 8 + 8].copy_from_slice(&x.to_le_bytes());
+        }
+        Value::Bytes(Arc::from(bytes.as_slice()))
+    }
+
+    #[test]
+    fn decode_anchor_refuse_les_demi_vies_invalides_sans_paniquer() {
+        for h in [f64::NEG_INFINITY, f64::NAN, f64::INFINITY, -1.0, 1e300] {
+            let v = anchor_value(1.0, 1.0, 1.0, h);
+            assert!(decode_anchor(&v).is_none(), "demi-vie invalide {h} → None (sans panic)");
+        }
+    }
+
+    #[test]
+    fn decode_anchor_refuse_e_ref_invalide_et_octets_mal_formes() {
+        for e in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let v = anchor_value(e, 1.0, 1.0, 64.0);
+            assert!(decode_anchor(&v).is_none(), "e_ref invalide {e} → None");
+        }
+        let bad = Value::Bytes(Arc::from(vec![1u8, 2, 3].as_slice()));
+        assert!(decode_anchor(&bad).is_none(), "longueur ≠ ANCHOR_BYTES → None");
+    }
+
+    #[test]
+    fn decode_anchor_accepte_une_ancre_valide() {
+        let ok = anchor_value(1.0, 1.0, 1.0, 64.0);
+        let a = decode_anchor(&ok).expect("ancre valide");
+        assert!((a.e_ref - 1.0).abs() < 1e-9);
+        assert_eq!(a.half_life, Duration::from_secs(64));
     }
 }
