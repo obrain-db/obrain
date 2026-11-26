@@ -46122,6 +46122,93 @@ mod reservation_tests {
         );
         assert_eq!(s2.node_ids().len(), 1, "exactement un nœud");
     }
+
+    /// FENÊTRE « né mais non scellé » (réserves #419) : un lecteur indépendant,
+    /// entre la naissance mmap et le scellement WAL, observe un nœud COMPLET
+    /// (propriétés + ALLOCATED) mais pas encore confirmé durable. C'est la
+    /// fenêtre résiduelle, honnêtement exposée (pas de nœud partiel).
+    #[test]
+    fn lecteur_independant_voit_un_noeud_complet_avant_scellement() {
+        let td = tempfile::tempdir().unwrap();
+        let s = Arc::new(SubstrateStore::create(td.path()).unwrap());
+
+        let (tx_noeud, rx_noeud) = std::sync::mpsc::channel::<u32>();
+        let (tx_liberer, rx_liberer) = std::sync::mpsc::channel::<()>();
+        {
+            let cell = crate::writer::APRES_NAISSANCE_AVANT_SCELLEMENT
+                .get_or_init(|| std::sync::Mutex::new(None));
+            *cell.lock().unwrap() = Some(Box::new(move |id: u32| {
+                let _ = tx_noeud.send(id);
+                let _ = rx_liberer.recv();
+            }));
+        }
+
+        let s2 = Arc::clone(&s);
+        let fil =
+            std::thread::spawn(move || s2.reserver_identite(KIND, CLE, DEFINITION, construction));
+
+        let id = rx_noeud
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("naissance posée avant le scellement");
+        let nid = NodeId(u64::from(id));
+
+        // Lecteur INDÉPENDANT : le nœud est NÉ (visible) et COMPLET, mais pas
+        // encore scellé.
+        assert_eq!(
+            s.node_ids(),
+            vec![nid],
+            "nœud né (visible) dans la fenêtre avant le scellement"
+        );
+        assert_eq!(
+            s.get_node_property(nid, &PropertyKey::new("payload")),
+            Some(Value::Int64(1)),
+            "nœud complet (propriétés posées), pas partiel"
+        );
+
+        tx_liberer.send(()).unwrap();
+        *crate::writer::APRES_NAISSANCE_AVANT_SCELLEMENT
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap() = None;
+
+        let issue = fil.join().unwrap().unwrap();
+        assert!(matches!(
+            issue,
+            crate::reservation::IssueReservation::Cree(_)
+        ));
+    }
+
+    /// Échec CERTAIN du scellement (append WAL) APRÈS la naissance mmap : le
+    /// rollback rend le nœud invisible dans le store VIVANT, et la retentative
+    /// (avant réouverture) construit UNE seule identité.
+    #[test]
+    fn echec_append_scellement_rollback_et_reconstruit_une_identite() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+
+        crate::writer::armer_echec_append_scellement(true);
+        let r = s.reserver_identite(KIND, CLE, DEFINITION, construction);
+        assert!(r.is_err(), "échec CERTAIN du scellement : {r:?}");
+
+        // Store VIVANT (sans réouverture) : le rollback a rendu le nœud
+        // invisible — aucun nœud « né mais non scellé » exposé.
+        assert_eq!(
+            s.node_ids(),
+            Vec::<NodeId>::new(),
+            "naissance annulée (rollback), aucun nœud exposé"
+        );
+
+        // Retentative AVANT réouverture → UNE identité.
+        let r2 = s
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert!(
+            matches!(r2, crate::reservation::IssueReservation::Cree(_)),
+            "une identité, jamais zéro ni deux : {r2:?}"
+        );
+        assert_eq!(s.node_ids().len(), 1, "exactement un nœud vivant");
+    }
 }
 
 #[cfg(test)]

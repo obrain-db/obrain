@@ -464,6 +464,15 @@ impl Writer {
         })?;
         self.index_labels.noter(idx, bits);
 
+        // Sonde : suspendre APRÈS la naissance (nœud visible, complet) et AVANT
+        // le scellement WAL — un lecteur indépendant peut l'observer.
+        #[cfg(test)]
+        if let Some(cell) = APRES_NAISSANCE_AVANT_SCELLEMENT.get()
+            && let Some(f) = cell.lock().unwrap().as_ref()
+        {
+            f(idx);
+        }
+
         // 2. SCELLEMENT + naissance durable — UNE écriture atomique : TxCommit et
         //    NodeUpdateV3 (ALLOCATED) partent ensemble, jamais l'un sans l'autre.
         let txcommit = WalRecord {
@@ -487,8 +496,40 @@ impl Writer {
                 tenant_id: node.tenant_id,
             },
         };
-        self.wal.append_batch([txcommit, nodeupdate])?;
+        #[cfg(test)]
+        if ECHEC_APPEND_SCELLEMENT.with(|c| c.replace(false)) {
+            self.rollback_naissance(idx);
+            return Err(crate::error::SubstrateError::Internal(
+                "échec append scellement (test) : naissance annulée".into(),
+            ));
+        }
+        if let Err(e) = self.wal.append_batch([txcommit, nodeupdate]) {
+            // ROLLBACK (échec CERTAIN du scellement) : le nœud est né (mmap) mais
+            // le TxCommit n'est PAS journalisé — il sera écarté au rejeu. On le
+            // rend invisible pour ne pas exposer un nœud « né mais non scellé »
+            // aux lecteurs vivants.
+            self.rollback_naissance(idx);
+            return Err(e);
+        }
         Ok(())
+    }
+
+    /// Annule la naissance d'un nœud (pose `TOMBSTONED`, retire la visibilité),
+    /// best-effort : appelé quand le scellement a échoué. Le rejeu écartera de
+    /// toute façon ce nœud (déclaration jamais scellée) — ce rollback ne sert
+    /// qu'à la cohérence EN MÉMOIRE.
+    fn rollback_naissance(&self, idx: u32) {
+        let _ = self.with_node_zone(|zf| {
+            let offset = idx as usize * NodeRecord::SIZE;
+            let slice = zf.as_slice_mut();
+            if offset + NodeRecord::SIZE > slice.len() {
+                return Ok(());
+            }
+            let rec: &mut NodeRecord =
+                bytemuck::from_bytes_mut(&mut slice[offset..offset + NodeRecord::SIZE]);
+            rec.flags |= crate::record::node_flags::TOMBSTONED;
+            Ok(())
+        });
     }
 
     fn ecrire_node(
@@ -3943,10 +3984,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-// Failpoint : `sceller_noeud` rend `Err` APRÈS l'append WAL (TxCommit +
-// NodeUpdateV3 atomiques), AVANT la mutation mmap — simule une écriture
-// partielle du record (l'issue est INDÉTERMINÉE : scellé au WAL, invisible en
-// mémoire, publié au rejeu).
+// Failpoint : `sceller_noeud` rend `Err` AVANT la mutation mmap — simule
+// l'échec de la naissance (rien n'est scellé).
 #[cfg(test)]
 thread_local! {
     pub(crate) static ECHEC_MMAP_SCELLEMENT: std::cell::Cell<bool> =
@@ -3957,6 +3996,28 @@ thread_local! {
 pub(crate) fn armer_echec_mmap_scellement(v: bool) {
     ECHEC_MMAP_SCELLEMENT.with(|c| c.set(v));
 }
+
+// Failpoint : `sceller_noeud` rend `Err` à l'APPEND WAL (TxCommit + NodeUpdateV3)
+// — simule l'échec du scellement APRÈS la naissance mmap (le nœud est né mais
+// non scellé ; `sceller_noeud` doit ROLLBACK la naissance).
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ECHEC_APPEND_SCELLEMENT: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn armer_echec_append_scellement(v: bool) {
+    ECHEC_APPEND_SCELLEMENT.with(|c| c.set(v));
+}
+
+// Suspension : `sceller_noeud` marque un point APRÈS la naissance mmap et AVANT
+// l'append WAL — un lecteur indépendant observe le nœud « né mais non scellé ».
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+pub(crate) static APRES_NAISSANCE_AVANT_SCELLEMENT: std::sync::OnceLock<
+    std::sync::Mutex<Option<Box<dyn Fn(u32) + Send>>>,
+> = std::sync::OnceLock::new();
 
 // Failpoint jumeau du precedent, mais sur `msync` — donc APRES que la
 // page a ete ecrite et AVANT que sa durabilite ne soit acquise.
