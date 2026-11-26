@@ -43,6 +43,11 @@ pub use observation::{
     ResultingState, SourceRevision,
 };
 
+#[cfg(all(feature = "engram", feature = "substrate"))]
+mod observation_substrate;
+#[cfg(all(feature = "engram", feature = "substrate"))]
+pub use observation_substrate::SubstrateAtomicEventLedger;
+
 #[cfg(feature = "engram")]
 mod formation;
 #[cfg(all(feature = "engram", feature = "epigenetic"))]
