@@ -3442,7 +3442,7 @@ impl ReferenceTentative {
 }
 
 /// État d'UN effet d'une tentative, dans l'histoire canonique accessible.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EffetResolu {
     /// Clé écrite par la tentative.
     pub cle: String,
@@ -3454,6 +3454,16 @@ pub struct EffetResolu {
     /// ultérieure — c'est la distinction « engagé et masqué » / « engagé et
     /// canonique ». `None` : clé absente, ou nœud non vivant.
     pub estampille_courante: Option<(u64, u64)>,
+    /// VALEUR CANONIQUE COURANTE de la clé, lue sous le MÊME verrou de nœud et
+    /// dans la MÊME lecture que `estampille_courante` : UNE SEULE observation
+    /// cohérente (valeur + estampille ne peuvent pas provenir de deux écritures
+    /// différentes). `Some` seulement si la clé est présente ; `None` si
+    /// supprimée (tombstone), absente, ou nœud non vivant.
+    ///
+    /// Ce n'est NI la valeur écrite par la tentative, NI une attestation de
+    /// compatibilité de contenu, NI une promesse de validité au-delà de
+    /// l'instant de la résolution : c'est l'état courant observé.
+    pub valeur_courante: Option<Value>,
 }
 
 /// Intégrité d'une tentative multi-effets. N'est JAMAIS déduite d'un seul effet.
@@ -3469,7 +3479,7 @@ pub enum IntegriteTentative {
 }
 
 /// Résultat d'une résolution de [`ReferenceTentative`], avec le tuple RELU.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolutionTentative {
     /// Cible effectivement consultée.
     pub cible: NodeId,
@@ -3786,8 +3796,10 @@ impl SubstrateStore {
     ///
     /// Ce que cela ne prouve PAS : que l'effet correspond à l'intention.
     /// `Engage` + `estampille_courante` différente de la référence = « engagé
-    /// puis masqué » ; la valeur courante peut être incompatible avec celle que
-    /// la tentative écrivait, et c'est au consommateur de la relire.
+    /// puis masqué ». La `valeur_courante` rendue est l'état courant observé
+    /// sous le même verrou : ce n'est PAS une attestation de compatibilité de
+    /// contenu avec ce que la tentative écrivait, ni une promesse de validité
+    /// au-delà de l'instant de la résolution.
     pub fn resoudre_reference(
         &self,
         reference: &ReferenceTentative,
@@ -3806,17 +3818,26 @@ impl SubstrateStore {
             )?;
             // La relecture de l'état courant est INDICATIVE : son échec (nœud
             // disparu) ne doit pas transformer une résolution en erreur.
-            let estampille_courante = match self.lire_etat_propriete(reference.cible, cle).ok() {
-                Some(EtatPropriete::Presente { estampille, .. })
-                | Some(EtatPropriete::Supprimee(estampille)) => {
-                    Some((estampille.auteur, estampille.horloge))
-                }
-                _ => None,
-            };
+            // UNE SEULE lecture `lire_etat_propriete` fournit estampille ET
+            // valeur courantes : elles sont issues de la MÊME observation sous
+            // le verrou de nœud déjà tenu — jamais une seconde autorité de
+            // lecture ni une relecture indépendante après libération.
+            let (estampille_courante, valeur_courante) =
+                match self.lire_etat_propriete(reference.cible, cle).ok() {
+                    Some(EtatPropriete::Presente { estampille, valeur }) => (
+                        Some((estampille.auteur, estampille.horloge)),
+                        Some(valeur),
+                    ),
+                    Some(EtatPropriete::Supprimee(estampille)) => {
+                        (Some((estampille.auteur, estampille.horloge)), None)
+                    }
+                    _ => (None, None),
+                };
             par_cle.push(EffetResolu {
                 cle: cle.clone(),
                 etat,
                 estampille_courante,
+                valeur_courante,
             });
             // Point d'interleaving DÉTERMINISTE (test-only) : suspend après la
             // première clé, PENDANT que le verrou de nœud est tenu (implémentation
@@ -49225,6 +49246,97 @@ mod publication_conditionnelle_native {
         assert_eq!(s0, s1, "jamais un mélange de deux états qui n'ont pas coexisté");
         assert_eq!(s0, Some((reference.auteur(), reference.horloge())), "V0, pas V1");
         eprintln!("INTERLEAVING_OK : V1 bloquée, instantané cohérent V0 pour les deux clés");
+    }
+
+    /// P0 — OBSERVATION VALEUR+ESTAMPILLE sous UNE lecture : `resoudre_reference`
+    /// rend, pour chaque clé, la VALEUR courante ET l'estampille courante issues
+    /// de la MÊME lecture sous le verrou de nœud — jamais une relecture
+    /// indépendante après libération. Couvre Bytes(32 octets) et Float64, et
+    /// vérifie la COHÉRENCE valeur↔estampille (même écriture), pas la présence.
+    #[test]
+    fn observation_valeur_et_estampille_meme_lecture() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = store.create_node(&["ressource"]);
+
+        // V0 — la tentative que l'on va résoudre (référence = engagement V0).
+        let payload0: std::sync::Arc<[u8]> = (0..32u8).collect::<Vec<u8>>().into();
+        let score0 = Value::Float64(0.25);
+        let pre0 = store.capturer_precondition(id, &["payload", "score"]).unwrap();
+        let prep0 = store
+            .preparer_transformation(
+                id,
+                &[
+                    ("payload", Value::Bytes(payload0.clone())),
+                    ("score", score0.clone()),
+                ],
+                &pre0,
+                ModePublication::Strict,
+            )
+            .unwrap();
+        let reference = prep0.reference_tentative();
+        store.publier_si_precondition_intacte(prep0).unwrap();
+
+        // V1 — masque V0 : l'état courant devient V1, l'engagement reste V0.
+        let payload1: std::sync::Arc<[u8]> = (100..132u8).collect::<Vec<u8>>().into();
+        let score1 = Value::Float64(0.75);
+        let pre1 = store.capturer_precondition(id, &["payload", "score"]).unwrap();
+        let prep1 = store
+            .preparer_transformation(
+                id,
+                &[
+                    ("payload", Value::Bytes(payload1.clone())),
+                    ("score", score1.clone()),
+                ],
+                &pre1,
+                ModePublication::Strict,
+            )
+            .unwrap();
+        store.publier_si_precondition_intacte(prep1).unwrap();
+
+        // Paire cohérente de référence : UNE lecture atomique de l'état courant.
+        let attendu = |key: &str| -> (Option<Value>, Option<(u64, u64)>) {
+            match store.lire_etat_propriete(id, key).unwrap() {
+                EtatPropriete::Presente { estampille, valeur } => {
+                    (Some(valeur), Some((estampille.auteur, estampille.horloge)))
+                }
+                autre => panic!("{key} attendue présente, lu {autre:?}"),
+            }
+        };
+
+        let res = store.resoudre_reference(&reference).unwrap();
+
+        // ENGAGEMENT HISTORIQUE : V0 est engagé (même masqué par V1).
+        assert_eq!(res.integrite, IntegriteTentative::Integrale);
+
+        let par_cle = |cle: &str| res.par_cle.iter().find(|e| e.cle == cle).unwrap();
+
+        // OBSERVATION COURANTE — Bytes(32) : valeur ET estampille = la paire
+        // lue atomiquement (V1), pas une relecture indépendante.
+        let (v_payload, s_payload) = attendu("payload");
+        let e = par_cle("payload");
+        assert_eq!(e.estampille_courante, s_payload);
+        assert_eq!(e.valeur_courante, v_payload);
+        assert_eq!(e.valeur_courante, Some(Value::Bytes(payload1.clone())));
+
+        // OBSERVATION COURANTE — Float64.
+        let (v_score, s_score) = attendu("score");
+        let e = par_cle("score");
+        assert_eq!(e.estampille_courante, s_score);
+        assert_eq!(e.valeur_courante, v_score);
+        assert_eq!(e.valeur_courante, Some(Value::Float64(0.75)));
+
+        // COHÉRENCE discriminante : l'estampille courante est celle de V1
+        // (différente de la référence V0) et la valeur correspondante est V1 —
+        // jamais un mélange estampille V1 + valeur V0.
+        assert_ne!(
+            s_payload,
+            Some((reference.auteur(), reference.horloge())),
+            "V1 a masqué V0 : l'estampille courante n'est plus celle de la tentative"
+        );
+        eprintln!(
+            "OBSERVATION_OK : valeur + estampille courantes = même lecture V1 (Bytes32 + Float64)"
+        );
     }
 
     fn f64_de_capture(pre: &Precondition) -> f64 {
