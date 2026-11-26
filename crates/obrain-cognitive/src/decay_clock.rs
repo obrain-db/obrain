@@ -450,23 +450,28 @@ pub fn advance_all(
         } else {
             h_frozen
         };
-        let dt = elapsed_monotonic(t_ref, now_micros, t_hi);
+        // Le calcul et l'ancrage utilisent le MÊME temps logique (high-water).
+        let now_eff = now_micros.max(t_hi);
+        let dt = elapsed_monotonic(t_ref, now_eff, t_hi);
         let nouvelle = DecayLaw::new(h).energy_at(e_ref, dt);
-        // Deux décisions SÉPARÉES : (1) matérialisation canonique (l'ancre
-        // change-t-elle ?) ; (2) réconciliation du miroir (la projection Q1.15
-        // est-elle obsolète ?). Un miroir obsolète doit être réparé même à
-        // temps constant ou sans décroissance supplémentaire.
+        // Deux décisions SÉPARÉES : (1) matérialisation canonique ; (2)
+        // réconciliation du miroir.
         let changement_canonique = (nouvelle as f32) != (e_ref as f32);
         let miroir_attendu = obrain_substrate::record::q1_15_to_f32(
             obrain_substrate::record::f32_to_q1_15(nouvelle as f32),
         );
-        let miroir_stocke = sub.get_node_energy_f32(node_id).ok().flatten();
-        let miroir_obsolete = miroir_stocke != Some(miroir_attendu);
+        // Une erreur de LECTURE du miroir n'est pas une divergence : on ne
+        // réconcilie pas sans preuve.
+        let miroir_stocke = match sub.get_node_energy_f32(node_id) {
+            Ok(Some(v)) => Some(v),
+            Ok(None) | Err(_) => None,
+        };
+        let miroir_obsolete = miroir_stocke.is_some() && miroir_stocke != Some(miroir_attendu);
         if !changement_canonique && !miroir_obsolete {
             continue;
         }
         if changement_canonique {
-            write_anchor(sub, node_id, nouvelle, now_micros, t_hi, h);
+            write_anchor(sub, node_id, nouvelle, now_eff, t_hi, h);
             stats.advanced += 1;
         }
         if miroir_obsolete {
