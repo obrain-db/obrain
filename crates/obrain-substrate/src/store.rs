@@ -3744,7 +3744,7 @@ impl SubstrateStore {
         // pas une concaténation d'observations issues d'états différents.
         let _un_ecrivain = self.verrou_ecriture_noeud(reference.cible).lock();
         let mut par_cle = Vec::with_capacity(reference.effets.len());
-        for cle in &reference.effets {
+        for (i, cle) in reference.effets.iter().enumerate() {
             let etat = self.resoudre_effet_historique_verrouille(
                 reference.cible,
                 cle,
@@ -3765,6 +3765,14 @@ impl SubstrateStore {
                 etat,
                 estampille_courante,
             });
+            // Point d'interleaving DÉTERMINISTE (test-only) : suspend après la
+            // première clé, PENDANT que le verrou de nœud est tenu (implémentation
+            // cohérente). Une mutation concurrente tente alors de publier et se
+            // trouve BLOQUÉE — l'instantané ne peut pas mélanger deux états.
+            #[cfg(test)]
+            if i == 0 {
+                self.suspension.suspendre_apres_preuve();
+            }
         }
         let engages = par_cle
             .iter()
@@ -48894,6 +48902,63 @@ mod publication_conditionnelle_native {
         let res = store_copie.resoudre_reference(&reference).unwrap();
         assert_eq!(res.integrite, IntegriteTentative::Integrale, "la copie porte les mêmes données");
         eprintln!("COPIE_OK : la copie de base résout la référence (writer_id+horloge = tentative, pas base)");
+    }
+
+    /// P0 — CONTRE-ÉPREUVE DISCRIMINANTE : interleaving DÉTERMINISTE entre les
+    /// observations des deux clés. V0=(a=10,b=20) publié, référence cible (a,b).
+    /// La résolution suspend après la PREMIÈRE clé (hook) ; une mutation V1=(30,40)
+    /// tente de publier pendant la suspension. L'implémentation COHÉRENTE tient le
+    /// verrou pendant TOUTE la résolution → V1 est BLOQUÉE → les deux estampilles
+    /// restent V0 (jamais un mélange d'un état jamais publié). L'ancienne (verrou
+    /// par clé) aurait laissé V1 s'intercaler → mélange V0/V1.
+    #[test]
+    fn resolution_multi_cles_interleaving_deterministe() {
+        let td = tempfile::tempdir().unwrap();
+        let store = Arc::new(SubstrateStore::create(td.path().join("kb")).unwrap());
+        let id = base(&store);
+        // publier V0 = (a=10, b=20), référence = tentative V0
+        let pre0 = precond(&store, id);
+        let prep0 = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre0, ModePublication::Strict)
+            .unwrap();
+        let reference = prep0.reference_tentative();
+        store.publier_si_precondition_intacte(prep0).unwrap();
+
+        // armer la suspension (hook entre les clés de resoudre_reference)
+        store.suspension.armer();
+        let store2 = Arc::clone(&store);
+        let ref_resolvant = reference.clone();
+        let resolvant = std::thread::spawn(move || store2.resoudre_reference(&ref_resolvant).unwrap());
+        store.suspension.attendre_suspension();
+
+        // mutation V1 tente de publier PENDANT la suspension
+        let store3 = Arc::clone(&store);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mutant = std::thread::spawn(move || {
+            let pre1 = store3.capturer_precondition(id, &["a", "b"]).unwrap();
+            let prep1 = store3
+                .preparer_transformation(id, &[("a", Value::Int64(30)), ("b", Value::Int64(40))], &pre1, ModePublication::Strict)
+                .unwrap();
+            let r = store3.publier_si_precondition_intacte(prep1).unwrap();
+            tx.send(r).unwrap();
+        });
+        // pendant la suspension, V1 ne doit PAS avoir publié (bloquée sur le verrou)
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        assert!(
+            rx.try_recv().is_err(),
+            "la mutation V1 est BLOQUÉE pendant la résolution cohérente"
+        );
+        store.suspension.relacher();
+        let res = resolvant.join().unwrap();
+        let _ = rx.recv().unwrap();
+        mutant.join().unwrap();
+
+        // DISCRIMINANT : les deux clés portent la MÊME estampille courante (V0)
+        let s0 = res.par_cle[0].estampille_courante;
+        let s1 = res.par_cle[1].estampille_courante;
+        assert_eq!(s0, s1, "jamais un mélange de deux états qui n'ont pas coexisté");
+        assert_eq!(s0, Some((reference.auteur(), reference.horloge())), "V0, pas V1");
+        eprintln!("INTERLEAVING_OK : V1 bloquée, instantané cohérent V0 pour les deux clés");
     }
 
     fn f64_de_capture(pre: &Precondition) -> f64 {
