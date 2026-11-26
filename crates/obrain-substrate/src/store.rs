@@ -3147,11 +3147,13 @@ impl Precondition {
 /// Issue d'une publication conditionnelle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IssuePublication {
-    /// La tête a basculé ET les DÉPENDANCES déclarées sont canoniques. Les
-    /// écritures AVEUGLES (propriétés écrites mais non déclarées comme
-    /// dépendances) restent LWW : une écriture concurrente plus récente peut
-    /// les masquer — `Publie` n'en garantit pas la canonicité.
-    Publie,
+    /// Tête basculée ET TOUS les effets écrits sont canoniques (application
+    /// INTÉGRALE) — vérifié par lecture-retour de l'estampille de chaque
+    /// propriété écrite, sous le verrou de nœud.
+    PublieIntegrale,
+    /// Tête basculée, mais au moins un effet écrit est masqué par une écriture
+    /// concurrente plus récente (application PARTIELLE — écriture aveugle LWW).
+    PubliePartielle,
     /// Une dépendance de la précondition a changé depuis la capture : aucun effet.
     ConflitPrecondition,
 }
@@ -3185,6 +3187,12 @@ pub struct TransformationPrete {
     /// quelle, l'appelant ne peut pas en substituer une autre (lien explicite
     /// préparation ↔ capture).
     precondition: Precondition,
+    /// Clés écrites par la transformation (chaque clé au plus une fois), pour
+    /// vérifier l'intégralité de l'effet après publication.
+    ecritures: Vec<String>,
+    /// Estampille HLC (composante horloge) attribuée à TOUTES les écritures à
+    /// la préparation. L'auteur est le `writer_id` du store.
+    horloge_effet: u64,
     /// Tête canonique au moment de la préparation (H0).
     tete_origine: u64,
     /// Page privée dont `next_page` pointe `tete_origine` — le point de
@@ -3316,6 +3324,16 @@ impl SubstrateStore {
                 "preparer_transformation : précondition d'une autre cible".to_string(),
             ));
         }
+        // ÉCRITURE RÉPÉTÉE : une transformation écrit chaque clé au plus une
+        // fois — deux écritures de même estampille rendraient l'ordre LWW
+        // indécidable.
+        for (i, (cle, _)) in nouvelles.iter().enumerate() {
+            if nouvelles[..i].iter().any(|(c, _)| c == cle) {
+                return Err(SubstrateError::Internal(format!(
+                    "preparer_transformation : écriture répétée de {cle}"
+                )));
+            }
+        }
         // MODE STRICT : toute propriété ÉCRITE doit être DÉCLARÉE comme
         // dépendance — sinon la précondition ne la validerait pas, et son effet
         // ne serait pas garanti canonique (elle resterait une écriture aveugle).
@@ -3378,6 +3396,8 @@ impl SubstrateStore {
             incarnation: self.incarnation,
             cible,
             precondition: precondition.clone(),
+            ecritures: nouvelles.iter().map(|(c, _)| (*c).to_string()).collect(),
+            horloge_effet: horloge,
             tete_origine,
             point_attache,
             tete_privee,
@@ -3388,7 +3408,8 @@ impl SubstrateStore {
     /// sous le verrou d'écriture du nœud (autorité commune des écrivains).
     /// `prep` est CONSOMMÉ (par valeur) : une transformation ne peut être
     /// publiée qu'une fois. Rend :
-    /// - `Publie` : l'effet préparé est devenu canonique (tête basculée).
+    /// - `PublieIntegrale` : tête basculée, tous les effets écrits canoniques.
+    /// - `PubliePartielle` : tête basculée, au moins un effet écrit masqué (LWW).
     /// - `ConflitPrecondition` : une dépendance a changé depuis la capture.
     /// - `Err` : descripteur étranger/périmé, cible supprimée/recréée,
     ///   transformation vide, ou re-publication (chaîne déjà canonique).
@@ -3460,7 +3481,30 @@ impl SubstrateStore {
         // Publication : bascule de tête (WAL NodePropHeadUpdate puis mmap).
         self.writer
             .update_node_first_prop_off(slot, crate::record::U48::from_u64(prep.tete_privee))?;
-        Ok(IssuePublication::Publie)
+        // Vérification de l'INTÉGRALITÉ de l'effet : relire l'estampille de
+        // chaque propriété écrite ; si l'une ne porte plus NOTRE estampille
+        // (une écriture concurrente plus récente l'a masquée), l'application
+        // est PARTIELLE. Toujours sous le verrou de nœud, donc stable.
+        let mut integrale = true;
+        for cle in &prep.ecritures {
+            match self.lire_etat_propriete(prep.cible, cle)? {
+                EtatPropriete::Presente { estampille, .. } => {
+                    if estampille.auteur != self.writer_id || estampille.horloge != prep.horloge_effet {
+                        integrale = false;
+                        break;
+                    }
+                }
+                _ => {
+                    integrale = false;
+                    break;
+                }
+            }
+        }
+        Ok(if integrale {
+            IssuePublication::PublieIntegrale
+        } else {
+            IssuePublication::PubliePartielle
+        })
     }
 }
 
@@ -47477,7 +47521,7 @@ mod publication_conditionnelle_native {
             .unwrap();
         store.set_node_property(id, "c", Value::Int64(30));
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::Publie, "B : acceptée");
+        assert_eq!(r, IssuePublication::PublieIntegrale, "B : acceptée");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(30)));
@@ -47498,7 +47542,7 @@ mod publication_conditionnelle_native {
             .unwrap();
         store.set_node_property(id2, "z", Value::Int64(99));
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::Publie, "C : acceptée");
+        assert_eq!(r, IssuePublication::PublieIntegrale, "C : acceptée");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         assert_eq!(store.get_node_property(id2, &PropertyKey::new("z")), Some(Value::Int64(99)));
         eprintln!("C_OK : autre ressource → aucune invalidation");
@@ -47515,7 +47559,7 @@ mod publication_conditionnelle_native {
         let prep2 = store.preparer_transformation(id, &[("a", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
         let r1 = store.publier_si_precondition_intacte(prep1).unwrap();
         let r2 = store.publier_si_precondition_intacte(prep2).unwrap();
-        assert_eq!(r1, IssuePublication::Publie, "D : première publiée");
+        assert_eq!(r1, IssuePublication::PublieIntegrale, "D : première publiée");
         assert_eq!(r2, IssuePublication::ConflitPrecondition, "D : seconde refusée");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         eprintln!("D_OK : une seule des deux transformations publie");
@@ -47546,7 +47590,7 @@ mod publication_conditionnelle_native {
         assert_eq!(stamp(&store, id, "a"), pre.estampille_dependance(0), "a inchangé");
         assert_eq!(stamp(&store, id, "b"), pre.estampille_dependance(1), "b inchangé");
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::Publie, "validation logique réussit");
+        assert_eq!(r, IssuePublication::PublieIntegrale, "validation logique réussit");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(30)));
@@ -47606,7 +47650,7 @@ mod publication_conditionnelle_native {
             .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
             .unwrap();
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::Publie, "écriture aveugle publiée");
+        assert_eq!(r, IssuePublication::PublieIntegrale, "écriture aveugle publiée");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
         eprintln!("AVEUGLE_OK : précondition vide = écriture aveugle, publiée");
@@ -47730,7 +47774,7 @@ mod publication_conditionnelle_native {
             .unwrap();
         store.set_node_property(id, "d", Value::Int64(7));
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::Publie, "écriture non dépendante n'invalide pas");
+        assert_eq!(r, IssuePublication::PublieIntegrale, "écriture non dépendante n'invalide pas");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("d")), Some(Value::Int64(7)));
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
         eprintln!("NON_DEP_OK : écriture sur propriété non dépendante préservée");
@@ -47748,7 +47792,7 @@ mod publication_conditionnelle_native {
             .unwrap();
         store.set_node_property(id, "c", Value::Int64(99));
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::Publie, "tête basculée");
+        assert_eq!(r, IssuePublication::PubliePartielle, "tête basculée, effet aveugle masqué");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)), "dépendance a canonique");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)), "dépendance b canonique");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(99)), "aveugle c=30 OBSOLÈTE");
@@ -47808,6 +47852,60 @@ mod publication_conditionnelle_native {
         assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)), "rien publié");
         assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(99)));
         eprintln!("STRICT_CANONIQUE_OK : mode strict refuse un effet non intégralement canonique");
+    }
+
+    /// P0 — écriture répétée d'une même clé : refusée à la préparation.
+    #[test]
+    fn ecritures_repetees_sur_une_cle_refusees() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = precond(&store, id);
+        let r = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("a", Value::Int64(20))], &pre, ModePublication::Lww);
+        assert!(r.is_err(), "écriture répétée de a refusée");
+        eprintln!("REPETEE_OK : écriture répétée refusée");
+    }
+
+    /// P0 — estampille DISTANTE supérieure : une écriture aveugle masquée par
+    /// une estampille distante plus haute → application PARTIELLE.
+    #[test]
+    fn estampille_distante_superieure_masque_l_effet() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pc = store.prop_keys.read().lookup("c").unwrap();
+        let pre = precond(&store, id); // dépendances a,b — PAS c
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Lww)
+            .unwrap();
+        let slot = id.0 as u32;
+        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        {
+            let pz_lock = store.props_zone.as_ref().unwrap();
+            let mut pz = pz_lock.write();
+            let e = PropertyEntry::new_stamped(pc, PropertyValue::I64(999), 99, u64::MAX);
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e).unwrap();
+        }
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::PubliePartielle, "effet aveugle c masqué par une estampille distante");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(999)));
+        eprintln!("DISTANT_OK : estampille distante supérieure → application partielle");
+    }
+
+    /// P0 — dépendance ABSENTE devenue présente entre capture et publication.
+    #[test]
+    fn dependance_absente_change_conflit() {
+        let td = tempfile::tempdir().unwrap();
+        let store = SubstrateStore::create(td.path().join("kb")).unwrap();
+        let id = base(&store);
+        let pre = store.capturer_precondition(id, &["a", "inexistante"]).unwrap();
+        let prep = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        store.set_node_property(id, "inexistante", Value::Int64(42));
+        let r = store.publier_si_precondition_intacte(prep).unwrap();
+        assert_eq!(r, IssuePublication::ConflitPrecondition, "dépendance absente devenue présente");
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)), "rien publié");
+        eprintln!("ABSENT_OK : dépendance absente devenue présente → conflit");
     }
 }
 
