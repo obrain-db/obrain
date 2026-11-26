@@ -1676,7 +1676,8 @@ fn banc_echelle_et_fidelite() {
     println!("   clusterisée ni zipf : les valeurs par distribution disent la TENDANCE.");
     println!("   MESURÉ le 26/11 sur dgx : AUCUNE base de la machine ne porte d'engrammes (zone");
     println!(
-        "   `substrate.engram_members` vide ou absente dans `~/.obrain/hub.db`, `~/.obrain/db`"
+        "   `substrate.engram_members` vide ou absente dans les bases du répertoire personnel \
+         (hub.db, db)"
     );
     println!("   et `~/bissection/base-50k` ; la seule grosse base fait 967 Gio, donc non");
     println!("   copiable). La section 8 a bien ouvert une base réelle (copiée en 1,7 s) et n'y a");

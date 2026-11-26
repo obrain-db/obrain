@@ -1063,4 +1063,279 @@ mod tests {
             "le chemin spectral ne valide pas : None dit « non mesuré », 0.0 dirait « mesuré à zéro »"
         );
     }
+
+    // ---- Contrats de surface : libellés, index, messages, compteurs ----
+
+    // Les libellés sont ceux des RAPPORTS de mesure : un libellé faux
+    // attribuerait un chiffre à la mauvaise variante.
+    #[test]
+    fn chaque_variante_se_nomme_et_dit_si_elle_interroge_l_index() {
+        assert_eq!(RecallVariant::Exact.label(), "exact");
+        assert_eq!(RecallVariant::Spectral.label(), "spectral");
+        assert_eq!(RecallVariant::Hybrid.label(), "hybride");
+        assert_eq!(
+            RecallVariant::HybridStructural.label(),
+            "hybride+structurel"
+        );
+        // `Exact` balaie le store : promettre un appel d'index serait faux.
+        assert!(!RecallVariant::Exact.uses_index());
+        assert!(RecallVariant::Spectral.uses_index());
+        assert!(RecallVariant::Hybrid.uses_index());
+        assert!(RecallVariant::HybridStructural.uses_index());
+    }
+
+    // Un message d'erreur qui ne nomme pas la cause force l'appelant à deviner.
+    #[test]
+    fn chaque_erreur_nomme_ce_qui_manque() {
+        let requete = HybridRecallError::EmptyQuery.to_string();
+        assert!(requete.contains("requête vide"), "{requete}");
+
+        let budget = HybridRecallError::EmptyBudget { k: 0, n_probe: 4 }.to_string();
+        assert!(
+            budget.contains("k=0") && budget.contains("n_probe=4"),
+            "le budget fautif doit être nommé : {budget}"
+        );
+
+        let dimension = HybridRecallError::DimensionMismatch {
+            index: 8,
+            query: 64,
+        }
+        .to_string();
+        assert!(
+            dimension.contains('8') && dimension.contains("64"),
+            "les deux dimensions doivent être nommées : {dimension}"
+        );
+
+        let index = HybridRecallError::IndexEmpty { store_engrams: 3 }.to_string();
+        assert!(
+            index.contains('3'),
+            "le nombre d'engrammes du store doit être nommé : {index}"
+        );
+    }
+
+    // `shared_nodes` est la PREUVE de voisinage : la dériver ne doit jamais
+    // mentir (zéro nœud partagé = aucun voisinage, quelle que soit la signature).
+    #[test]
+    fn un_hit_sans_noeud_partage_le_dit() {
+        let mut hit = HybridHit {
+            engram_id: EngramId(1),
+            final_score: 1.0,
+            exact_score: Some(0.0),
+            index_score: 1.0,
+            direct_overlap: 0.0,
+            shared_nodes: 0,
+            closure_shared: None,
+        };
+        assert!(!hit.shares_node_with_query(), "aucun nœud partagé");
+        hit.shared_nodes = 2;
+        assert!(hit.shares_node_with_query(), "deux nœuds partagés");
+    }
+
+    // Un `Default` non nul ferait passer un « non mesuré » pour une mesure.
+    #[test]
+    fn les_compteurs_par_defaut_sont_nuls_et_nomment_la_variante_exacte() {
+        let stats = HybridStats::default();
+        assert_eq!(stats.variant, RecallVariant::Exact);
+        assert_eq!(stats.cues, 0);
+        assert_eq!(stats.index_calls, 0);
+        assert_eq!(stats.exact_validations, 0);
+        assert_eq!(stats.elapsed, Duration::ZERO);
+        assert!(!stats.closure_cap_hit);
+    }
+
+    // ---- Cas limites du calcul et des compteurs ----
+
+    // Une requête vide, un ensemble vide, ou des poids tous non finis n'ont
+    // aucune norme : le cosinus vaut 0, il ne devient pas NaN.
+    #[test]
+    fn exact_cosine_sans_norme_vaut_zero() {
+        let e = ensemble(&[(1, 1.0), (2, 0.5)]);
+        let q = map_of(&e);
+        assert_eq!(
+            exact_cosine(&HashMap::new(), &e),
+            0.0,
+            "requête vide : aucune norme"
+        );
+        assert_eq!(exact_cosine(&q, &[]), 0.0, "ensemble vide : aucune norme");
+        let non_fini = ensemble(&[(1, f64::NAN)]);
+        assert_eq!(
+            exact_cosine(&q, &non_fini),
+            0.0,
+            "poids tous non finis côté engramme"
+        );
+        assert_eq!(
+            exact_cosine(&map_of(&non_fini), &e),
+            0.0,
+            "poids tous non finis côté requête"
+        );
+    }
+
+    // La clôture s'ARRÊTE dès qu'un saut n'ajoute plus rien : sans ça, un
+    // graphe dense ferait tourner `hops` sauts pour rien.
+    #[test]
+    fn la_cloture_s_arrete_quand_plus_rien_ne_s_ajoute() {
+        let store = store_with(&[ensemble(&[(1, 1.0), (2, 1.0)])]);
+        let (closure, cap) = structural_closure(&store, &[NodeId(1)], 5, STRUCTURAL_CLOSURE_CAP);
+        assert!(!cap, "aucun plafond atteint");
+        assert_eq!(
+            closure.len(),
+            2,
+            "la clôture reste {{1,2}} : le second saut n'ajoute rien"
+        );
+        assert!(closure.contains(&NodeId(1)) && closure.contains(&NodeId(2)));
+    }
+
+    // Un engramme SANS recouvrement est compté comme score nul, pas comme
+    // « absent » : la différence entre « mesuré à zéro » et « non mesuré ».
+    #[test]
+    fn un_engramme_disjoint_est_compte_comme_score_nul() {
+        let store = store_with(&[ensemble(&[(90, 1.0), (91, 1.0)])]);
+        let encoder = SpectralEncoder::new();
+        let index = InMemoryVectorIndex::new();
+        let outcome = RecallEngine::new()
+            .hybrid_recall(
+                &store,
+                &[NodeId(1)],
+                &index,
+                &encoder,
+                RecallVariant::Exact,
+                &HybridRecallConfig::default(),
+            )
+            .expect("le balayage exact s'exécute sans index");
+        assert!(outcome.hits.is_empty(), "aucun recouvrement : aucun hit");
+        assert_eq!(
+            outcome.stats.zero_score, 1,
+            "le candidat disjoint est compté, pas ignoré"
+        );
+    }
+
+    // Un index sans dimension sur un store VIDE n'est pas une anomalie : il n'y
+    // a simplement rien à indexer.
+    #[test]
+    fn index_sans_dimension_et_store_vide_ne_rend_aucun_hit() {
+        let store = EngramStore::new(None);
+        let encoder = SpectralEncoder::new();
+        let index = InMemoryVectorIndex::new();
+        let outcome = RecallEngine::new()
+            .hybrid_recall(
+                &store,
+                &[NodeId(1)],
+                &index,
+                &encoder,
+                RecallVariant::Hybrid,
+                &HybridRecallConfig::default(),
+            )
+            .expect("store vide : pas une erreur");
+        assert!(outcome.hits.is_empty());
+        assert_eq!(outcome.stats.index_calls, 0, "aucun appel d'index inutile");
+    }
+
+    // Un identifiant ILLISIBLE et un identifiant PÉRIMÉ sont deux anomalies
+    // distinctes : les confondre cacherait une divergence index/store.
+    #[test]
+    fn identifiant_illisible_et_identifiant_perime_sont_comptes_separement() {
+        let store = store_with(&[ensemble(&[(1, 1.0), (2, 1.0)])]);
+        let encoder = SpectralEncoder::new();
+        let index = InMemoryVectorIndex::new();
+        let vecteur = encoder.encode(&ensemble(&[(1, 1.0)]));
+        index.upsert("engram:1", &vecteur);
+        index.upsert("pas-un-identifiant", &vecteur);
+        index.upsert("engram:99", &vecteur); // lisible, mais absent du store
+        let outcome = RecallEngine::new()
+            .hybrid_recall(
+                &store,
+                &[NodeId(1)],
+                &index,
+                &encoder,
+                RecallVariant::Hybrid,
+                &HybridRecallConfig::default(),
+            )
+            .expect("le chemin s'exécute");
+        assert_eq!(outcome.stats.unknown_ids, 1, "un identifiant illisible");
+        assert_eq!(outcome.stats.stale_ids, 1, "un identifiant périmé");
+        assert_eq!(outcome.hits.len(), 1, "seul l'engramme réel est rendu");
+    }
+
+    // À score de signature ÉGAL, l'ordre est déterministe (identifiant
+    // croissant) : sans ça, deux runs donneraient deux classements.
+    #[test]
+    fn le_classement_spectral_departage_les_ex_aequo_par_identifiant() {
+        let store = store_with(&[
+            ensemble(&[(1, 1.0), (2, 1.0)]),
+            ensemble(&[(1, 1.0), (2, 1.0)]),
+        ]);
+        let encoder = SpectralEncoder::new();
+        let index = InMemoryVectorIndex::new();
+        let vecteur = encoder.encode(&ensemble(&[(1, 1.0)]));
+        index.upsert("engram:2", &vecteur);
+        index.upsert("engram:1", &vecteur);
+        let cfg = HybridRecallConfig {
+            k: 5,
+            n_probe: 5,
+            ..HybridRecallConfig::default()
+        };
+        let outcome = RecallEngine::new()
+            .hybrid_recall(
+                &store,
+                &[NodeId(1)],
+                &index,
+                &encoder,
+                RecallVariant::Spectral,
+                &cfg,
+            )
+            .expect("le chemin s'exécute");
+        let ids: Vec<u64> = outcome.hits.iter().map(|h| h.engram_id.0).collect();
+        assert_eq!(ids, vec![1, 2], "ex æquo : ordre par identifiant croissant");
+    }
+
+    // Un budget nul n'est pas un résultat vide : c'est une erreur nommée.
+    #[test]
+    fn un_budget_nul_est_une_erreur_nommee() {
+        let store = store_with(&[ensemble(&[(1, 1.0)])]);
+        let encoder = SpectralEncoder::new();
+        let index = InMemoryVectorIndex::new();
+        let engine = RecallEngine::new();
+        for (k, n_probe) in [(0usize, DEFAULT_N_PROBE), (10usize, 0usize)] {
+            let cfg = HybridRecallConfig {
+                k,
+                n_probe,
+                ..HybridRecallConfig::default()
+            };
+            let err = engine
+                .hybrid_recall(
+                    &store,
+                    &[NodeId(1)],
+                    &index,
+                    &encoder,
+                    RecallVariant::Hybrid,
+                    &cfg,
+                )
+                .expect_err("budget nul : erreur");
+            assert_eq!(err, HybridRecallError::EmptyBudget { k, n_probe });
+        }
+    }
+
+    // La variante structurelle propage AUSSI l'erreur de dimension : elle
+    // interroge l'index avant de construire la clôture.
+    #[test]
+    fn la_variante_structurelle_propage_l_erreur_de_dimension() {
+        let store = store_with(&[ensemble(&[(1, 1.0), (2, 1.0)])]);
+        let encoder = SpectralEncoder::new();
+        let index = InMemoryVectorIndex::new();
+        index.upsert("engram:1", &[0.0; 8]); // 8 dims contre 64 attendues
+        let err = RecallEngine::new()
+            .hybrid_recall(
+                &store,
+                &[NodeId(1)],
+                &index,
+                &encoder,
+                RecallVariant::HybridStructural,
+                &HybridRecallConfig::default(),
+            )
+            .expect_err("dimension incompatible = erreur avant la clôture");
+        assert!(
+            matches!(err, HybridRecallError::DimensionMismatch { index: 8, .. }),
+            "erreur de dimension nommée, vue {err:?}"
+        );
+    }
 }
