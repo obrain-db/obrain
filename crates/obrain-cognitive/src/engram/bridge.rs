@@ -1033,6 +1033,93 @@ mod tests {
             other => panic!("attendu Failed (conflit d'identité), reçu {other:?}"),
         }
     }
+
+    /// Registre dont la primitive transactionnelle ÉCHOUE : la panne doit être
+    /// PROPAGÉE, jamais présentée comme un rejeu (« rien à faire »).
+    struct RegistreIndisponible;
+
+    impl crate::engram::observation::AtomicEventLedger for RegistreIndisponible {
+        fn resource_revision(&self, _: &[u8]) -> Result<u64, String> {
+            Ok(0)
+        }
+        fn resource_state(&self, _: &[u8]) -> Result<Option<(Vec<u8>, u64)>, String> {
+            Ok(None)
+        }
+        fn apply_event(
+            &self,
+            _: &[u8; 16],
+            _: &[u8],
+            _: &[u8],
+            _: u64,
+            _: &[u8],
+            _: u64,
+        ) -> Result<crate::engram::observation::LedgerOutcome, String> {
+            Err("registre indisponible".into())
+        }
+        fn resolve(
+            &self,
+            _: &[u8; 16],
+        ) -> Result<crate::engram::observation::ResolvedState, String> {
+            Ok(crate::engram::observation::ResolvedState::NotApplied)
+        }
+        fn abandon(
+            &self,
+            _: &[u8; 16],
+        ) -> Result<crate::engram::observation::AbandonOutcome, String> {
+            Ok(crate::engram::observation::AbandonOutcome::Abandoned)
+        }
+        fn complete_formation(&self, _: &[u8; 16]) -> Result<bool, String> {
+            Ok(false)
+        }
+    }
+
+    fn pont_sur_registre_indisponible() -> (Arc<EngramManager>, EngramObservationBridge) {
+        let mgr = Arc::new(
+            EngramManager::new(
+                EngramManagerConfig::default(),
+                Arc::new(InMemoryVectorIndex::new()),
+            )
+            .with_observation_ledger(Arc::new(RegistreIndisponible)),
+        );
+        let bridge =
+            EngramObservationBridge::new(Arc::clone(&mgr)).with_experimental_revision(true);
+        (mgr, bridge)
+    }
+
+    /// FORMATION identifiée : le registre échoue → `Failed`, jamais `Replayed`.
+    #[test]
+    fn formation_identifiee_refusee_par_le_registre_est_un_echec() {
+        let (_mgr, bridge) = pont_sur_registre_indisponible();
+        let issue = bridge.observe(&edge_event(1, 1, 2), Some(ObservationId::from_u128(90)));
+        match issue {
+            BridgeObservation::Failed(msg) => assert!(
+                msg.contains("registre indisponible"),
+                "la panne du registre est nommée : {msg}"
+            ),
+            autre => panic!("attendu Failed (registre indisponible), reçu {autre:?}"),
+        }
+    }
+
+    /// RÉVISION identifiée : même panne, sur le chemin qui a une cible unique.
+    /// Sans cible, l'échec serait attribué à la formation : ici on prouve que
+    /// c'est bien la révision qui propage.
+    #[test]
+    fn revision_identifiee_refusee_par_le_registre_est_un_echec() {
+        let (mgr, bridge) = pont_sur_registre_indisponible();
+        let id = mgr.store().next_id();
+        mgr.store().insert(crate::engram::Engram::new(
+            id,
+            vec![(NodeId(1), 1.0), (NodeId(2), 1.0)],
+        ));
+        let issue = bridge.observe(&edge_event(2, 1, 2), Some(ObservationId::from_u128(91)));
+        match issue {
+            BridgeObservation::Failed(msg) => assert!(
+                msg.contains("registre indisponible"),
+                "la panne du registre est nommée : {msg}"
+            ),
+            autre => panic!("attendu Failed (révision refusée), reçu {autre:?}"),
+        }
+    }
 }
 
 #[cfg(test)]

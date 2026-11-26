@@ -1413,4 +1413,123 @@ mod tests {
         bytes[3] = bytes[3].wrapping_add(1); // altère la version
         assert_ne!(bytes, d.canonical_bytes());
     }
+
+    // ---- Branches limites du registre de référence ----
+
+    // `Default` doit valoir `new()` : un registre par défaut ne porte AUCUN état
+    // fantôme (ni identité connue, ni révision de ressource).
+    #[test]
+    fn registre_par_defaut_est_vide() {
+        let registre = InMemoryAtomicEventLedger::default();
+        assert_eq!(
+            registre.resource_revision(b"ressource").unwrap(),
+            0,
+            "aucune ressource → révision 0"
+        );
+        assert_eq!(
+            registre.resource_state(b"ressource").unwrap(),
+            None,
+            "aucune ressource → aucun état enregistré"
+        );
+        assert_eq!(
+            registre.resolve(&oid(1).0).unwrap(),
+            ResolvedState::NotApplied,
+            "identité inconnue → jamais appliquée"
+        );
+    }
+
+    // Une identité ABANDONNÉE avant toute application le reste : le rejeu rend
+    // `Abandoned` et n'écrit rien (l'abandon est une décision de la tentative).
+    #[test]
+    fn identite_abandonnee_n_est_jamais_appliquee_au_rejeu() {
+        let registre = InMemoryAtomicEventLedger::new();
+        let observation = oid(7);
+        assert_eq!(
+            registre.abandon(&observation.0).unwrap(),
+            AbandonOutcome::Abandoned,
+            "abandon d'une identité non appliquée : accepté"
+        );
+        let issue = registre
+            .apply_event(
+                &observation.0,
+                b"F",
+                b"definition",
+                0,
+                &[EFFECT_REVISION],
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            issue,
+            LedgerOutcome::Abandoned,
+            "une identité abandonnée n'est jamais appliquée"
+        );
+        assert_eq!(
+            registre.resource_revision(b"F").unwrap(),
+            0,
+            "l'abandon n'a rien écrit sur la ressource"
+        );
+    }
+
+    // Un effet enregistré dont le préfixe n'est ni révision ni formation est une
+    // donnée INVALIDE pour `apply` : refusée, jamais réinterprétée.
+    #[test]
+    fn effet_enregistre_de_prefixe_inconnu_refuse_par_apply() {
+        let adaptateur = adapter();
+        let observation = oid(11);
+        let d = def(1, &[1, 2], 0.5);
+        let etat = state(&[(1, 1.0)], 0.5, 0);
+        let _ = adaptateur
+            .apply(
+                observation,
+                EngramId(1),
+                b"R",
+                &d,
+                SourceRevision(0),
+                &etat,
+                1,
+            )
+            .unwrap();
+        // L'effet enregistré est REMPLACÉ par un préfixe inconnu (0x09).
+        adaptateur
+            .ledger()
+            .set_recorded_effect(observation, vec![0x09], 1);
+        let erreur = adaptateur
+            .apply(
+                observation,
+                EngramId(1),
+                b"R",
+                &d,
+                SourceRevision(0),
+                &etat,
+                1,
+            )
+            .expect_err("un préfixe d'effet inconnu doit être refusé");
+        assert!(
+            erreur.contains("préfixe inconnu"),
+            "message attendu, vu : {erreur}"
+        );
+    }
+
+    // Le même effet invalide, vu par la voie FORMATION, ne fabrique pas un
+    // « rejeu » silencieux : l'identité a été traitée, rien n'est réactivé.
+    #[test]
+    fn effet_enregistre_de_prefixe_inconnu_reste_une_formation_deja_faite() {
+        let adaptateur = adapter();
+        let observation = oid(12);
+        let d = def(1, &[1, 2], 0.5);
+        assert_eq!(
+            adaptateur.apply_formation(observation, b"F", &d).unwrap(),
+            ObservationOutcome::Formed,
+            "première formation : appliquée"
+        );
+        adaptateur
+            .ledger()
+            .set_recorded_effect(observation, vec![0x09], 1);
+        assert_eq!(
+            adaptateur.apply_formation(observation, b"F", &d).unwrap(),
+            ObservationOutcome::AlreadyFormed,
+            "identité déjà traitée : aucune réactivation"
+        );
+    }
 }
