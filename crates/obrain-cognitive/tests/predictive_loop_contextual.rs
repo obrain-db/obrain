@@ -383,13 +383,26 @@ fn run_case(
     let mut cf = Vec::new();
     let mut tp = Vec::new();
     let mut mg = Vec::new();
+    let mut prev: Option<Ep> = None;
     for (ctx, obs) in stream {
-        let step = m.predictive_step(&[*ctx], obs, k).expect("pas");
+        // EGALITE D INFORMATION : Obrain recoit le contexte ET l issue
+        // PRECEDENTE (dans l indice), exactement comme le temoin temporel
+        // ordre-1. Sans cela Obrain n aurait que le contexte courant.
+        let mut cue: Ep = vec![*ctx];
+        if let Some(p) = &prev {
+            for n in p {
+                if !cue.contains(n) {
+                    cue.push(*n);
+                }
+            }
+        }
+        let step = m.predictive_step(&cue, obs, k).expect("pas");
         cl.push(set_error(m, &w.ctx_last(*ctx), obs));
         cf.push(set_error(m, &w.ctx_freq(*ctx), obs));
         tp.push(set_error(m, &w.temporal(*ctx), obs));
         mg.push(set_error(m, &w.marginal(), obs));
         ob.push(step.error);
+        prev = Some(obs.clone());
         w.observe(*ctx, obs);
     }
     let tail = |v: &Vec<f64>| mean(&v[warmup.min(v.len())..]);
@@ -696,7 +709,7 @@ fn f_plasticite_revision_non_monotone_et_differenciation() {
     };
 
     let cons = run(PredictivePolicy::Consolidating);
-    let ada = run(PredictivePolicy::Adaptive(ObservationScope::Complete));
+    let ada = run(PredictivePolicy::Adaptive(ObservationScope::DeclaredComplete));
     let tail_cons = mean(&cons[cons.len().saturating_sub(2)..]);
     let tail_ada = mean(&ada[ada.len().saturating_sub(2)..]);
     eprintln!("[F] rétrécissement — résiduel consolidating={:.4} adaptive={:.4}", tail_cons, tail_ada);
