@@ -230,6 +230,40 @@ impl EngramZone {
         Self::set_members_raw(zf, engram_id, &payload)
     }
 
+    /// Ré-attache les poids d'un engramme à une NOUVELLE liste de membres
+    /// après un remap de slots (`bulk_sort_by_hilbert` / `compact_community`).
+    ///
+    /// Le remap réécrit les membres via [`Self::set_members_raw`] ; sans
+    /// ré-attachement, l'empreinte en tête d'un snapshot de poids LIÉ
+    /// ([`Self::set_weights_bound`]) devient périmée et la lecture suivante
+    /// refuse (`EmpreinteDivergente`). Les poids sont POSITIONNELS : le remap
+    /// préserve l'ordre (`mapped[i] = old_to_new[members[i]]`), donc chaque
+    /// poids suit son membre logique — seule l'empreinte (dérivée des
+    /// valeurs de membres) est recalculée, jamais les poids eux-mêmes.
+    ///
+    /// Formes traitées :
+    /// * LIÉ (`len == membres + 2`) → recalcul de l'empreinte, poids conservés ;
+    /// * NON LIÉ legacy (`len == membres`) → laissé intact (on ne certifie pas
+    ///   rétroactivement une association positionnelle jamais vérifiée) ;
+    /// * absent (aucune entrée) → no-op.
+    pub fn rebind_weights_after_remap(
+        zf: &mut ZoneFile,
+        engram_id: u16,
+        new_members: &[u32],
+    ) -> SubstrateResult<()> {
+        let Some(bits) = Self::members(zf, engram_id)? else {
+            return Ok(());
+        };
+        if bits.len() == new_members.len() + Self::WEIGHTS_FP_U32S {
+            let weights: Vec<f32> = bits[Self::WEIGHTS_FP_U32S..]
+                .iter()
+                .map(|b| f32::from_bits(*b))
+                .collect();
+            Self::set_weights_bound(zf, engram_id, new_members, &weights)?;
+        }
+        Ok(())
+    }
+
     /// Return the membership list for `engram_id`, or `None` if the engram
     /// has no members (either never set or explicitly cleared).
     ///
