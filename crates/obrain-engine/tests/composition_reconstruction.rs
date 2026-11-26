@@ -41,14 +41,22 @@ fn reconstruction_relationnelle_apres_reouverture() {
     let b = db.create_node(&["fn"]);
 
     // K1..K4 : mêmes participants, définitions relationnelles distinctes.
-    let k1 = comp.construct(&spec(&[a.0, b.0], &[], &[rel("appelle", a.0, b.0, None)]));
-    let k2 = comp.construct(&spec(&[a.0, b.0], &[], &[rel("contredit", a.0, b.0, None)]));
-    let k3 = comp.construct(&spec(&[a.0, b.0], &[], &[rel("appelle", b.0, a.0, None)]));
-    let k4 = comp.construct(&spec(
-        &[a.0, b.0],
-        &[],
-        &[rel("appelle", a.0, b.0, Some("x"))],
-    ));
+    let k1 = comp
+        .construct(&spec(&[a.0, b.0], &[], &[rel("appelle", a.0, b.0, None)]))
+        .unwrap();
+    let k2 = comp
+        .construct(&spec(&[a.0, b.0], &[], &[rel("contredit", a.0, b.0, None)]))
+        .unwrap();
+    let k3 = comp
+        .construct(&spec(&[a.0, b.0], &[], &[rel("appelle", b.0, a.0, None)]))
+        .unwrap();
+    let k4 = comp
+        .construct(&spec(
+            &[a.0, b.0],
+            &[],
+            &[rel("appelle", a.0, b.0, Some("x"))],
+        ))
+        .unwrap();
 
     // Relation extérieure (arête flottante, non rattachée à une connaissance).
     db.create_edge(a, b, "externe");

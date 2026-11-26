@@ -31,11 +31,13 @@ fn deux_occurrences_meme_cible_roles_distincts() {
         b = db.create_node(&["fn"]);
 
         // Sous-connaissance AB (définition structurelle partageable).
-        ab = comp.construct(&KnowledgeSpec {
-            members: [a, b].iter().copied().collect(),
-            children: BTreeSet::new(),
-            relations: BTreeSet::new(),
-        });
+        ab = comp
+            .construct(&KnowledgeSpec {
+                members: [a, b].iter().copied().collect(),
+                children: BTreeSet::new(),
+                relations: BTreeSet::new(),
+            })
+            .unwrap();
 
         // K référence AB DEUX fois, rôles différents : deux occurrences.
         let spec = KnowledgeSpec {
@@ -45,7 +47,7 @@ fn deux_occurrences_meme_cible_roles_distincts() {
                 .collect(),
             relations: BTreeSet::new(),
         };
-        k = comp.construct(&spec);
+        k = comp.construct(&spec).unwrap();
 
         // Représentation constitutive : DEUX identités d'occurrence.
         let r = comp.read_spec(k).expect("spec de K");

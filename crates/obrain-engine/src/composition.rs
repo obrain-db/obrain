@@ -208,10 +208,17 @@ impl<'a> Composition<'a> {
 
     /// Construction canonique : deux spécifications structurellement identiques
     /// → même nœud. Le rôle est matérialisé sur l'arête (propriété `role`).
-    pub fn construct(&self, spec: &KnowledgeSpec) -> NodeId {
+    /// Retourne une erreur si un nœud déjà indexé par cette clé est INCOMPLET
+    /// (construction interrompue) : pas de réutilisation silencieuse.
+    pub fn construct(&self, spec: &KnowledgeSpec) -> Result<NodeId, ResolveError> {
         let key = spec.structural_key();
         if let Some(existing) = self.find_by_key(&key) {
-            return existing;
+            // Vérifie la complétude du nœud indexé : une structure incomplète
+            // (canonical_key écrit, arêtes absentes) ne doit pas être réutilisée
+            // en silence — read_spec échoue (KeyDivergence ou autre) et l'erreur
+            // est propagée.
+            self.read_spec(existing)?;
+            return Ok(existing);
         }
         let id = self.db.create_node(&[LABEL_KNOWLEDGE]);
         self.db
@@ -238,7 +245,7 @@ impl<'a> Composition<'a> {
             self.db.create_edge(occ, rel.dst, EDGE_DST);
             self.db.create_edge(id, occ, EDGE_RELATION);
         }
-        id
+        Ok(id)
     }
 
     /// Résolution : aplatit transitivement les `child` en participants feuilles.

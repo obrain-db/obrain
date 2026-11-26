@@ -49,12 +49,12 @@ fn construction_canonique_et_resolution() {
     let c = db.create_node(&["fn"]);
     let d = db.create_node(&["fn"]);
 
-    let ab = comp.construct(&spec(&[a.0, b.0], &[], &[]));
-    let ab_again = comp.construct(&spec(&[a.0, b.0], &[], &[]));
+    let ab = comp.construct(&spec(&[a.0, b.0], &[], &[])).unwrap();
+    let ab_again = comp.construct(&spec(&[a.0, b.0], &[], &[])).unwrap();
     assert_eq!(ab, ab_again, "déduplication canonique");
 
-    let abc = comp.construct(&spec(&[c.0], &[ab.0], &[]));
-    let abd = comp.construct(&spec(&[d.0], &[ab.0], &[]));
+    let abc = comp.construct(&spec(&[c.0], &[ab.0], &[])).unwrap();
+    let abd = comp.construct(&spec(&[d.0], &[ab.0], &[])).unwrap();
     assert_ne!(abc, abd, "spécifications distinctes → nœuds distincts");
 
     assert_eq!(
@@ -87,13 +87,17 @@ fn relations_orientes_distinguent_l_identite() {
 
     let spec_ab = spec(&[a.0, b.0], &[], &[rel("calls", a.0, b.0)]);
     let spec_ba = spec(&[a.0, b.0], &[], &[rel("calls", b.0, a.0)]);
-    let k_ab = comp.construct(&spec_ab);
-    let k_ba = comp.construct(&spec_ba);
+    let k_ab = comp.construct(&spec_ab).unwrap();
+    let k_ba = comp.construct(&spec_ba).unwrap();
     assert_ne!(
         k_ab, k_ba,
         "A→B ≠ B→A : l'orientation fait partie de l'identité"
     );
-    assert_eq!(comp.construct(&spec_ab), k_ab, "même relation → même nœud");
+    assert_eq!(
+        comp.construct(&spec_ab).unwrap(),
+        k_ab,
+        "même relation → même nœud"
+    );
     assert_eq!(
         spec_ab.projection_members_key(),
         spec_ba.projection_members_key(),
@@ -164,10 +168,10 @@ fn diamant_partage_non_cycle() {
     let c = db.create_node(&["fn"]);
     let d = db.create_node(&["fn"]);
 
-    let ab = comp.construct(&spec(&[a.0, b.0], &[], &[]));
-    let abc = comp.construct(&spec(&[c.0], &[ab.0], &[]));
-    let abd = comp.construct(&spec(&[d.0], &[ab.0], &[]));
-    let k = comp.construct(&spec(&[], &[abc.0, abd.0], &[]));
+    let ab = comp.construct(&spec(&[a.0, b.0], &[], &[])).unwrap();
+    let abc = comp.construct(&spec(&[c.0], &[ab.0], &[])).unwrap();
+    let abd = comp.construct(&spec(&[d.0], &[ab.0], &[])).unwrap();
+    let k = comp.construct(&spec(&[], &[abc.0, abd.0], &[])).unwrap();
 
     let resolved = comp.resolve(k).expect("diamant résolu sans cycle");
     assert_eq!(resolved, set(&[a, b, c, d]), "resolve(K)={{A,B,C,D}}");
