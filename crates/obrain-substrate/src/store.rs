@@ -50055,3 +50055,185 @@ mod preparation_differee {
         assert_eq!(props_apres_logique, props_avant_logique, "logique ne fait pas croître le fichier");
     }
 }
+
+/// MESURE DU COÛT RÉSIDUEL DE 10 000 CONFLITS (#334, lot G).
+///
+/// Question : « zéro page » ne signifie pas « zéro coût ». On chiffre le coût
+/// NON nul d'un refus de précondition (ConflitPrecondition), en séparant :
+///   - coût LOGIQUE   : validation seule (lecture des dépendances sous verrou),
+///                      sans allocation, sans estampille, sans WAL ;
+///   - coût PHYSIQUE  : allocation de pages privées (chemin natif) AVANT le
+///                      refus — pages orphelines jamais récupérées ;
+///   - amplification DURABLE : croissance du fichier `substrate.props.v2` après
+///                      fermeture (flush) + réouverture (la fuite devient
+///                      permanente sur disque).
+///
+/// Les chiffres sortent en `eprintln!` (cargo test --lib -- --nocapture).
+#[cfg(test)]
+mod cout_conflictuel_10000 {
+    use super::*;
+    use std::time::Instant;
+
+    const N: usize = 10_000;
+
+    fn pages_allouees(store: &SubstrateStore) -> u32 {
+        store
+            .props_zone
+            .as_ref()
+            .unwrap()
+            .read()
+            .allocated_page_count()
+    }
+
+    fn horloge_pack(store: &SubstrateStore) -> u64 {
+        store.horloge.lock().derniere().pack()
+    }
+
+    fn taille(chemin: &std::path::Path, nom: &str) -> u64 {
+        std::fs::metadata(chemin.join(nom))
+            .map(|m| m.len())
+            .unwrap_or(0)
+    }
+
+    /// Base commune : un nœud {a=1, b=2}, une précondition capturée (a=1, b=2),
+    /// puis une mutation a→5 qui la rend OBSOLÈTE (toute publication ultérieure
+    /// portant cette précondition est un ConflitPrecondition).
+    fn scenario(chemin: &std::path::Path) -> (SubstrateStore, NodeId, Precondition) {
+        let store = SubstrateStore::create(chemin).unwrap();
+        let id = store.create_node(&["ressource"]);
+        store.set_node_property(id, "a", Value::Int64(1));
+        store.set_node_property(id, "b", Value::Int64(2));
+        let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
+        store.set_node_property(id, "a", Value::Int64(5)); // obsolescence
+        (store, id, pre)
+    }
+
+    /// DIFFÉRÉ : la précondition est validée AVANT matérialisation. Un refus ne
+    /// touche donc ni pages, ni WAL, ni estampille — seul le temps de validation
+    /// (lecture des dépendances sous le verrou de nœud) est payé.
+    #[test]
+    fn conflits_differe_10000_cout_residuel() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (store, id, pre) = scenario(&chemin);
+
+        let pages_avant = pages_allouees(&store);
+        let wal_avant = taille(&chemin, "substrate.wal");
+        let props_avant = taille(&chemin, crate::props_zone::PROPS_V2_FILENAME);
+        let hlc_avant = horloge_pack(&store);
+
+        let t0 = Instant::now();
+        for _ in 0..N {
+            let prep = store
+                .preparer_transformation_differee(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
+            let r = store.publier_si_precondition_intacte_differee(prep).unwrap();
+            assert_eq!(r, IssuePublication::ConflitPrecondition);
+        }
+        let dt = t0.elapsed();
+
+        let pages_apres = pages_allouees(&store);
+        let wal_apres = taille(&chemin, "substrate.wal");
+        let props_apres = taille(&chemin, crate::props_zone::PROPS_V2_FILENAME);
+        let hlc_apres = horloge_pack(&store);
+
+        // Effets persistés : AUCUN — a reste 5, b reste 2.
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(5)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
+
+        // Récupération : fermeture (flush) + réouverture.
+        let t_close = Instant::now();
+        store.close().unwrap();
+        let dt_close = t_close.elapsed();
+        let t_open = Instant::now();
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        let dt_open = t_open.elapsed();
+        let pages_reopen = pages_allouees(&store2);
+        let wal_reopen = taille(&chemin, "substrate.wal");
+        let props_reopen = taille(&chemin, crate::props_zone::PROPS_V2_FILENAME);
+
+        eprintln!("=== DIFFÉRÉ CONFLIT N={N} ===");
+        eprintln!("temps       : {:?}  ({:.0} ns/refus)", dt, dt.as_nanos() as f64 / N as f64);
+        eprintln!("pages       : {pages_avant} -> {pages_apres}  (Δ {})", pages_apres as i64 - pages_avant as i64);
+        eprintln!("WAL         : {wal_avant} -> {wal_apres}  (Δ {})", wal_apres as i64 - wal_avant as i64);
+        eprintln!("props.v2    : {props_avant} -> {props_apres}  (Δ {})", props_apres as i64 - props_avant as i64);
+        eprintln!("HLC         : {hlc_avant:#x} -> {hlc_apres:#x}  (Δ {})", hlc_apres as i64 - hlc_avant as i64);
+        eprintln!("récupération: close {:?}  open {:?}", dt_close, dt_open);
+        eprintln!("après réouverture : pages {pages_reopen}  props.v2 {props_reopen}  WAL {wal_reopen}");
+
+        assert_eq!(pages_apres, pages_avant, "zéro page allouée au refus différé");
+        assert_eq!(wal_apres, wal_avant, "zéro octet WAL au refus différé");
+        assert_eq!(hlc_apres, hlc_avant, "zéro estampille consommée au refus différé");
+        assert_eq!(pages_reopen, pages_avant, "aucune amplification durable");
+        assert_eq!(props_reopen, props_avant, "le fichier props ne croît pas");
+    }
+
+    /// PHYSIQUE : `preparer_transformation` alloue la chaîne de pages privées et
+    /// consomme une estampille AVANT que la publication valide la précondition et
+    /// refuse. Le refus laisse donc des pages orphelines : coût physique payé,
+    /// puis rendu DURABLE au flush/close (le fichier `substrate.props.v2` croît).
+    #[test]
+    fn conflits_physique_10000_cout() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let (store, id, pre) = scenario(&chemin);
+
+        let pages_avant = pages_allouees(&store);
+        let wal_avant = taille(&chemin, "substrate.wal");
+        let props_avant = taille(&chemin, crate::props_zone::PROPS_V2_FILENAME);
+        let hlc_avant = horloge_pack(&store);
+
+        let t0 = Instant::now();
+        for _ in 0..N {
+            let prep = store
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
+            let r = store.publier_si_precondition_intacte(prep).unwrap();
+            assert_eq!(r, IssuePublication::ConflitPrecondition);
+        }
+        let dt = t0.elapsed();
+
+        let pages_apres = pages_allouees(&store);
+        let wal_apres = taille(&chemin, "substrate.wal");
+        let props_apres = taille(&chemin, crate::props_zone::PROPS_V2_FILENAME);
+        let hlc_apres = horloge_pack(&store);
+
+        // Effets persistés : AUCUN (les pages orphelines ne sont pas atteignables).
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(5)));
+        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
+
+        // Récupération : le flush rend la fuite DURABLE sur disque.
+        let t_close = Instant::now();
+        store.close().unwrap();
+        let dt_close = t_close.elapsed();
+        let t_open = Instant::now();
+        let store2 = SubstrateStore::open(&chemin).unwrap();
+        let dt_open = t_open.elapsed();
+        let pages_reopen = pages_allouees(&store2);
+        let props_reopen = taille(&chemin, crate::props_zone::PROPS_V2_FILENAME);
+
+        eprintln!("=== PHYSIQUE CONFLIT N={N} ===");
+        eprintln!("temps       : {:?}  ({:.0} ns/refus)", dt, dt.as_nanos() as f64 / N as f64);
+        eprintln!("pages       : {pages_avant} -> {pages_apres}  (Δ {})", pages_apres - pages_avant);
+        eprintln!("WAL         : {wal_avant} -> {wal_apres}  (Δ {})", wal_apres as i64 - wal_avant as i64);
+        eprintln!("props.v2    : {props_avant} -> {props_apres}  (Δ {})", props_apres as i64 - props_avant as i64);
+        eprintln!("HLC         : {hlc_avant:#x} -> {hlc_apres:#x}  (Δ {})", hlc_apres as i64 - hlc_avant as i64);
+        eprintln!("récupération: close {:?}  open {:?}", dt_close, dt_open);
+        eprintln!("après réouverture : pages {pages_reopen}  props.v2 {props_reopen}");
+
+        assert!(pages_apres >= pages_avant + N as u32, "chaque préparation physique alloue des pages");
+        assert!(hlc_apres > hlc_avant, "l'horloge HLC avance à chaque préparation physique");
+        assert_eq!(pages_reopen, pages_apres, "les pages orphelines persistent après réouverture");
+        assert!(props_reopen > props_avant, "la fuite devient durable (fichier props croît au flush)");
+    }
+}
