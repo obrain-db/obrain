@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use obrain_common::types::NodeId;
 use obrain_cognitive::engram::{
-    AdaptiveRevisionParams, EngramManager, EngramManagerConfig, ObservationScope, RevisionOp,
-    RevisionStep,
+    AdaptiveRevisionParams, EngramManager, EngramManagerConfig, NodeSelector, ObservationScope,
+    RevisionOp, RevisionStep, RevisionTarget,
 };
 use obrain_cognitive::InMemoryVectorIndex;
 
@@ -27,7 +27,16 @@ fn manager() -> EngramManager {
 
 fn step(nodes: &[NodeId], err: f64, scope: ObservationScope) -> RevisionStep {
     RevisionStep {
-        nodes: nodes.to_vec(),
+        target: RevisionTarget::Concrete(nodes.to_vec()),
+        prediction_error: err,
+        scope,
+        params: AdaptiveRevisionParams::default(),
+    }
+}
+
+fn step_structural(sel: NodeSelector, err: f64, scope: ObservationScope) -> RevisionStep {
+    RevisionStep {
+        target: RevisionTarget::Structural(sel),
         prediction_error: err,
         scope,
         params: AdaptiveRevisionParams::default(),
@@ -121,7 +130,7 @@ fn operateur_dependance_reelle() {
 fn operateur_erreur_intermediaire_partielle() {
     let (a, b) = (NodeId(1), NodeId(2));
     let bad = RevisionStep {
-        nodes: vec![a],
+        target: RevisionTarget::Concrete(vec![a]),
         prediction_error: 0.4,
         scope: ObservationScope::DeclaredPartial,
         params: AdaptiveRevisionParams {
@@ -201,4 +210,57 @@ fn operateur_resultat_vs_historique() {
     assert_eq!(rc2, 3);
     // Équivalence de RÉSULTAT et équivalence d'HISTORIQUE sont deux notions
     // DISTINCTES : ici ni l'une ni l'autre ne tient.
+}
+
+
+// E7 — RÉUTILISATION : le même opérateur STRUCTUREL s'applique à des engrams
+// aux identifiants concrets DIFFÉRENTS.
+#[test]
+fn operateur_reutilisation_situation_nouvelle() {
+    let op = RevisionOp::new().push(step_structural(
+        NodeSelector::All,
+        0.4,
+        ObservationScope::DeclaredPartial,
+    ));
+    let m1 = manager();
+    let e1 = m1.form_observation(&[NodeId(10), NodeId(20)]);
+    op.apply(&m1, e1).expect("apply engram 1");
+
+    let m2 = manager();
+    let e2 = m2.form_observation(&[NodeId(77), NodeId(88), NodeId(99)]);
+    op.apply(&m2, e2).expect("apply engram 2");
+
+    assert!(m1.store().get(e1).unwrap().recall_count >= 1);
+    assert!(m2.store().get(e2).unwrap().recall_count >= 1);
+    eprintln!("[op E7] même opérateur structurel (All) réutilisé sur deux engrams différents");
+}
+
+// E8 — le PRÉFIXE appliqué est RESTITUÉ en cas d'erreur intermédiaire.
+#[test]
+fn operateur_prefixe_restitué_sur_erreur() {
+    let (a, b) = (NodeId(1), NodeId(2));
+    let bad = RevisionStep {
+        target: RevisionTarget::Concrete(vec![a]),
+        prediction_error: 0.4,
+        scope: ObservationScope::DeclaredPartial,
+        params: AdaptiveRevisionParams {
+            lr_base: f64::NAN,
+            lr_error_gain: 0.5,
+            lr_max: 0.8,
+            floor: 0.05,
+        },
+    };
+    let op = RevisionOp::new()
+        .push(step(&[a, b], 0.4, ObservationScope::DeclaredPartial)) // OK
+        .push(bad); // échoue
+    let m = manager();
+    let e = m.form_observation(&[a]);
+    let err = op.apply(&m, e).unwrap_err();
+    assert_eq!(err.applied.len(), 1, "le préfixe appliqué (1 pas) est restitué");
+    assert_eq!(err.failed_step, 1, "l'indice du pas fautif est restitué");
+    eprintln!(
+        "[op E8] préfixe restitué : {} pas appliqués, pas fautif {}",
+        err.applied.len(),
+        err.failed_step
+    );
 }

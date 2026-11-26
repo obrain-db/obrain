@@ -153,22 +153,51 @@ pub enum ReconsolidationStrategy {
     Adaptive(ObservationScope, AdaptiveRevisionParams),
 }
 
-/// Un pas d un OPERATEUR DE REVISION natif, reutilisable.
+/// Un pas d un OPERATEUR DE REVISION natif, parametre STRUCTURELLEMENT : la
+/// CIBLE n est pas un identifiant concret mais un SELECTEUR resolu contre
+/// l etat COURANT de l engramme au moment de l application.
 #[derive(Debug, Clone)]
 pub struct RevisionStep {
-    pub nodes: Vec<NodeId>,
+    pub target: RevisionTarget,
     pub prediction_error: f64,
     pub scope: ObservationScope,
     pub params: AdaptiveRevisionParams,
 }
 
-/// Un OPERATEUR NATIF REUTILISABLE : une sequence ORDONNEE de pas de
-/// reconsolidation, avec preconditions (validation des parametres a chaque pas)
-/// et effets explicites (la liste des `EngramRevision` produits).
-///
-/// `compose(a, b)` MATERIALISE la sequence : appliquer `compose(a, b)` equivaut
-/// a appliquer `a` puis `b` — meme resultat mathematique ET meme historique
-/// d application (les pas s executent dans le meme ordre).
+/// Cible d un pas : concrete (identifiants) ou STRUCTURELLE (selecteur).
+#[derive(Debug, Clone)]
+pub enum RevisionTarget {
+    Concrete(Vec<NodeId>),
+    Structural(NodeSelector),
+}
+
+/// Selecteur STRUCTUREL, INDEPENDANT des identifiants concrets : le meme
+/// operateur s applique a des engrams differents.
+#[derive(Debug, Clone)]
+pub enum NodeSelector {
+    /// Tous les membres courants.
+    All,
+    /// Les k membres de plus fort poids.
+    TopK(usize),
+    /// Les membres dont le poids depasse `w`.
+    AboveWeight(f64),
+    /// Les membres dont le poids est inferieur a `w`.
+    BelowWeight(f64),
+}
+
+/// Erreur d application : RESTITUE le prefixe deja publie et l indice du pas fautif.
+#[derive(Debug)]
+pub struct RevisionApplyError {
+    pub applied: Vec<EngramRevision>,
+    pub failed_step: usize,
+    pub cause: RevisionError,
+}
+
+/// Un OPERATEUR NATIF REUTILISABLE : une sequence ORDONNEE de pas appliques
+/// contre l etat courant. `compose` est une simple CONCATENATION : l
+/// associativite est ACQUISE PAR CONSTRUCTION, pas « decouverte ». Ce n est PAS
+/// un operateur abstrait transferable : les selecteurs le rendent reutilisable
+/// sur des situations nouvelles, rien de plus.
 #[derive(Debug, Clone, Default)]
 pub struct RevisionOp {
     pub steps: Vec<RevisionStep>,
@@ -184,27 +213,61 @@ impl RevisionOp {
         self
     }
 
-    /// Applique la sequence. S ARRETE a la PREMIERE erreur (application
-    /// PARTIELLE, PAS atomique) : les pas precedents sont deja publies.
+    /// Resout la cible d un pas contre l etat COURANT de l engramme.
+    pub fn resolve_target(
+        &self,
+        m: &EngramManager,
+        eid: EngramId,
+        target: &RevisionTarget,
+    ) -> Vec<NodeId> {
+        match target {
+            RevisionTarget::Concrete(nodes) => nodes.clone(),
+            RevisionTarget::Structural(sel) => {
+                let e = m.store().get(eid).expect("engramme absent");
+                let mut ens = e.ensemble.clone();
+                ens.sort_by(|x, y| {
+                    y.1.partial_cmp(&x.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                match sel {
+                    NodeSelector::All => ens.iter().map(|(n, _)| *n).collect(),
+                    NodeSelector::TopK(k) => ens.iter().take(*k).map(|(n, _)| *n).collect(),
+                    NodeSelector::AboveWeight(w) => {
+                        ens.iter().filter(|(_, x)| *x > *w).map(|(n, _)| *n).collect()
+                    }
+                    NodeSelector::BelowWeight(w) => {
+                        ens.iter().filter(|(_, x)| *x < *w).map(|(n, _)| *n).collect()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Applique la sequence. S ARRETE a la premiere erreur ; le `Err` RESTITUE le
+    /// prefixe deja publie (`applied`) et l indice du pas fautif.
     pub fn apply(
         &self,
         m: &EngramManager,
         eid: EngramId,
-    ) -> Result<Vec<EngramRevision>, RevisionError> {
-        let mut out = Vec::with_capacity(self.steps.len());
-        for s in &self.steps {
-            out.push(m.revise_adaptive_with(
-                eid,
-                &s.nodes,
-                s.prediction_error,
-                s.scope,
-                s.params,
-            )?);
+    ) -> Result<Vec<EngramRevision>, RevisionApplyError> {
+        let mut applied = Vec::with_capacity(self.steps.len());
+        for (i, s) in self.steps.iter().enumerate() {
+            let nodes = self.resolve_target(m, eid, &s.target);
+            match m.revise_adaptive_with(eid, &nodes, s.prediction_error, s.scope, s.params) {
+                Ok(rev) => applied.push(rev),
+                Err(cause) => {
+                    return Err(RevisionApplyError {
+                        applied,
+                        failed_step: i,
+                        cause,
+                    })
+                }
+            }
         }
-        Ok(out)
+        Ok(applied)
     }
 
-    /// Composition MATERIELISEE (concatenation des pas).
+    /// Composition MATERIELISEE = concatenation des pas.
     pub fn compose(a: &RevisionOp, b: &RevisionOp) -> RevisionOp {
         RevisionOp {
             steps: a.steps.iter().chain(b.steps.iter()).cloned().collect(),
@@ -250,12 +313,20 @@ impl EngramManager {
     pub fn new(config: EngramManagerConfig, vector_index: Arc<dyn VectorIndex>) -> Self {
         let store = Arc::new(EngramStore::new(None));
         let metrics = Arc::new(EngramMetricsCollector::new());
+        let spectral = SpectralEncoder::new();
+        // CONTRAT DE PROJECTION : le store recalcule la signature depuis
+        // l'ensemble (poids compris) via un encodeur DÉDIÉ (même spec
+        // déterministe que `spectral`). Aucun encodeur n'est imposé au store.
+        {
+            let proj_encoder = Arc::new(SpectralEncoder::new());
+            store.set_projection(Arc::new(move |ens| proj_encoder.encode(ens)));
+        }
 
         Self {
             store,
             formation: Mutex::new(HebbianWithSurprise::new(config.formation)),
             fsrs: FsrsScheduler::new(config.fsrs),
-            spectral: SpectralEncoder::new(),
+            spectral,
             recall_engine: RecallEngine::new(),
             warmup_config: config.warmup,
             homeostasis: HomeostasisEngine::new(config.homeostasis),

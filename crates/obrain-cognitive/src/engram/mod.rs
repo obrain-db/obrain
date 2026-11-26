@@ -101,8 +101,8 @@ mod manager;
 #[cfg(feature = "engram")]
 pub use manager::{
     EngramManager, EngramManagerConfig, EngramRevision, PredictiveAction, PredictivePolicy,
-    PredictiveStep, PredictiveStepError, ReconsolidationStrategy, RevisionError, RevisionOp,
-    RevisionStep,
+    NodeSelector, PredictiveStep, PredictiveStepError, ReconsolidationStrategy, RevisionApplyError,
+    RevisionError, RevisionOp, RevisionStep, RevisionTarget,
 };
 
 #[cfg(feature = "engram")]
