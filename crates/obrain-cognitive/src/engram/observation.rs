@@ -352,6 +352,21 @@ pub enum ResolvedState {
         /// Révision enregistrée.
         revision: u64,
     },
+    /// Identité COMMISE (APPLIQUE) mais effet NON matérialisé sur la ressource :
+    /// la projection ressource (CLE_REVISION / CLE_EFFET) ne porte PAS l'effet
+    /// enregistré — arrêt entre le commit d'identité et la matérialisation, ou
+    /// effet devenu incompatible (masqué par une écriture ultérieure).
+    /// RÉCUPÉRABLE : l'effet enregistré est restitué ici, un rejeu (via le
+    /// manager) répare la matérialisation. JAMAIS confondu avec `Applied`
+    /// (qui exige effet engagé ET matérialisé).
+    CommittedNotMaterialized {
+        /// Définition enregistrée (octets canoniques).
+        definition: Vec<u8>,
+        /// Effet enregistré (préfixé : 0x01 révision, 0x02 formation).
+        state: Vec<u8>,
+        /// Révision ENREGISTRÉE (celle que l'identité revendique).
+        revision: u64,
+    },
     /// Explicitement abandonnée.
     Abandoned,
 }

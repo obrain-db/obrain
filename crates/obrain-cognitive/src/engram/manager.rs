@@ -1162,8 +1162,17 @@ impl EngramManager {
                         definition: rec_def,
                         state: rec_state,
                         revision: rec_rev,
+                    }
+                    | ResolvedState::CommittedNotMaterialized {
+                        definition: rec_def,
+                        state: rec_state,
+                        revision: rec_rev,
                     } => {
-                        // La résolution restitue l'état EFFECTIVEMENT enregistré.
+                        // La résolution restitue l'état EFFECTIVEMENT enregistré —
+                        // qu'il soit matérialisé (`Applied`) ou engagé non
+                        // matérialisé (`CommittedNotMaterialized`) : dans les deux
+                        // cas l'effet enregistré est l'effet canonique à
+                        // (ré)matérialiser sur le store.
                         if rec_def != definition.canonical_bytes() {
                             return Err(RevisionError::ValidationFailed(
                                 "définition enregistrée différente de la définition tentée".into(),

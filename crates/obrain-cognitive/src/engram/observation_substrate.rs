@@ -34,18 +34,27 @@
 //! 1. **Pré-vérification** (lecture seule) : la précondition de révision est
 //!    contrôlée AVANT tout engagement — une révision périmée est refusée sans
 //!    rien écrire.
-//! 2. **Commit d'identité** (nœud autorité, atomique) : `obs:<hex>` est écrit
-//!    `APPLIQUE` (identité + définition + ressource + effet + révision). C'est
-//!    le point de sérialisation GLOBAL de l'identité : deux tentatives
-//!    concurrentes du même K n'en laissent qu'UNE.
-//! 3. **Matérialisation de l'effet** (nœud ressource, atomique) : check-and-set
+//! 2. **Préparation de la matérialisation** (nœud ressource, invisible) : la
+//!    transformation est préparée AVANT le commit d'identité pour produire sa
+//!    `ReferenceTentative` — rien n'est publié (chaîne privée).
+//! 3. **Commit d'identité** (nœud autorité, atomique) : `obs:<hex>` est écrit
+//!    `APPLIQUE` (identité + définition + ressource + effet + révision + la
+//!    RÉFÉRENCE de matérialisation PERSÉVÉRÉE). C'est le point de sérialisation
+//!    GLOBAL de l'identité : deux tentatives concurrentes du même K n'en
+//!    laissent qu'UNE.
+//! 4. **Matérialisation de l'effet** (nœud ressource, atomique) : check-and-set
 //!    de la précondition, écriture de `obs:revision` + `obs:effect`.
 //!
-//! Un arrêt entre 2 et 3 laisse l'identité COMMISE mais l'effet NON matérialisé
-//! sur la ressource (« autorisé mais non matérialisé »). L'autorité canonique
-//! porte l'effet : `resolve` le restitue, et un rejeu (`AlreadyApplied`) répare
-//! la matérialisation via le manager. Une compensation n'est PAS une transaction
-//! atomique : cette frontière est RÉELLE et qualifiée, jamais devinée.
+//! Un arrêt entre 3 et 4 laisse l'identité COMMISE mais l'effet NON matérialisé
+//! sur la ressource — état `ResolvedState::CommittedNotMaterialized` (référence
+//! déjà durable dans l'enregistrement d'identité, donc récupérable). `resolve` /
+//! `resolve_on` comparent l'enregistrement d'identité à la projection ressource
+//! (`obs:revision` / `obs:effect`) : l'effet n'est déclaré `Applied` que s'il est
+//! MATÉRIALISÉ tel quel ; une intention dont l'effet est devenu incompatible
+//! n'est JAMAIS déclarée engagée. L'autorité canonique porte l'effet : un rejeu
+//! (`AlreadyApplied`) répare la matérialisation via le manager. Une compensation
+//! n'est PAS une transaction atomique : cette frontière est RÉELLE et qualifiée,
+//! jamais devinée.
 //!
 //! # Formations (démarrage à froid)
 //!
@@ -103,6 +112,16 @@ pub struct SubstrateAtomicEventLedger {
     /// Cache du nœud d'autorité (découvert/créé paresseusement). Réinitialisé
     /// à la construction : après réouverture, le label est re-balayé.
     autorite: Mutex<Option<NodeId>>,
+    /// Crochet de suspension d'engagement (test-only, PAR LEDGER) : suspend le
+    /// fil APRÈS le commit d'identité et AVANT la matérialisation — la fenêtre
+    /// exacte de la frontière d'engagement. Permet un entrelacement
+    /// DÉTERMINISTE de deux K concurrents sur la même révision.
+    /// État du crochet (arme / suspendu / reprendre).
+    #[cfg(test)]
+    suspension_etat: Mutex<EtatSuspension>,
+    /// Condvar du crochet (test-only), HORS du mutex d'état.
+    #[cfg(test)]
+    suspension_cv: std::sync::Condvar,
 }
 
 /// Contenu d'un enregistrement d'identité (hors préfixe).
@@ -112,6 +131,11 @@ struct PayloadEnregistrement {
     definition: Vec<u8>,
     effet: Vec<u8>,
     revision: u64,
+    /// Référence de matérialisation persévérée AVEC l'identité (produite à la
+    /// préparation de la matérialisation, écrite au commit d'identité) : un
+    /// arrêt entre les deux la laisse durable, `resolve` peut la retrouver.
+    /// `None` pour une formation (aucune matérialisation sur nœud ressource).
+    reference: Option<ReferenceTentative>,
 }
 
 /// Décode un `resource_id` opaque en `NodeId` : 8 octets big-endian. Toute
@@ -146,20 +170,28 @@ fn pousse_champ(out: &mut Vec<u8>, octets: &[u8]) {
 
 /// Encode un enregistrement d'identité.
 /// Format : préfixe | ressource(len+octets) | définition(len+octets) |
-/// effet(len+octets) | révision u64 LE.
+/// effet(len+octets) | révision u64 LE | référence(len+octets, vide = absente).
 fn encode_record(
     prefixe: u8,
     resource: &[u8],
     definition: &[u8],
     effet: &[u8],
     revision: u64,
+    reference: Option<&ReferenceTentative>,
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + 4 + resource.len() + 4 + definition.len() + 4 + effet.len() + 8);
+    let mut out = Vec::with_capacity(
+        1 + 4 + resource.len() + 4 + definition.len() + 4 + effet.len() + 8 + 4
+            + reference.map(|r| r.to_bytes().len()).unwrap_or(0),
+    );
     out.push(prefixe);
     pousse_champ(&mut out, resource);
     pousse_champ(&mut out, definition);
     pousse_champ(&mut out, effet);
     out.extend_from_slice(&revision.to_le_bytes());
+    match reference {
+        Some(r) => pousse_champ(&mut out, &r.to_bytes()),
+        None => pousse_champ(&mut out, b""),
+    }
     out
 }
 
@@ -198,6 +230,22 @@ fn decode_record(record: &[u8]) -> Result<(u8, Option<PayloadEnregistrement>), S
         return Err("enregistrement d'événement tronqué (révision)".to_string());
     }
     let revision = u64::from_le_bytes(reste[pos..pos + 8].try_into().unwrap());
+    pos += 8;
+    // Référence de matérialisation optionnelle : absente sur les anciens
+    // enregistrements et sur les formations (champ vide).
+    let reference = if pos < reste.len() {
+        let octets = prend_champ(reste, &mut pos)?;
+        if octets.is_empty() {
+            None
+        } else {
+            Some(
+                ReferenceTentative::from_bytes(&octets)
+                    .map_err(|e| format!("référence de tentative invalide : {e}"))?,
+            )
+        }
+    } else {
+        None
+    };
     Ok((
         prefixe,
         Some(PayloadEnregistrement {
@@ -205,6 +253,7 @@ fn decode_record(record: &[u8]) -> Result<(u8, Option<PayloadEnregistrement>), S
             definition,
             effet,
             revision,
+            reference,
         }),
     ))
 }
@@ -213,12 +262,37 @@ fn err_substrat(e: obrain_substrate::SubstrateError) -> String {
     e.to_string()
 }
 
+/// Crochet de suspension d'engagement (test-only, PAR LEDGER — jamais global) :
+/// une suspension sur un ledger n'affecte jamais un autre ledger ni un autre
+/// test du même processus.
+#[cfg(test)]
+struct EtatSuspension {
+    arme: bool,
+    suspendu: bool,
+    reprendre: bool,
+}
+
+#[cfg(test)]
+impl EtatSuspension {
+    fn nouvelle() -> Self {
+        Self {
+            arme: false,
+            suspendu: false,
+            reprendre: false,
+        }
+    }
+}
+
 impl SubstrateAtomicEventLedger {
     /// Construit le registre au-dessus d'un `SubstrateStore` partagé.
     pub fn new(store: Arc<SubstrateStore>) -> Self {
         Self {
             store,
             autorite: Mutex::new(None),
+            #[cfg(test)]
+            suspension_etat: Mutex::new(EtatSuspension::nouvelle()),
+            #[cfg(test)]
+            suspension_cv: std::sync::Condvar::new(),
         }
     }
 
@@ -352,6 +426,7 @@ impl SubstrateAtomicEventLedger {
                 definition,
                 &[EFFECT_FORMATION_PENDING],
                 resulting_revision,
+                None,
             );
             let nouvelles = [(cle_ev.as_str(), Value::from(record))];
             let prep = self
@@ -457,39 +532,10 @@ impl SubstrateAtomicEventLedger {
                 ));
             }
 
-            // ── Étape 1 : COMMIT d'identité (APPLIQUE) — point de sérialisation
-            //    GLOBAL. Identité + définition + ressource + effet + révision
-            //    durables d'un coup, sur le nœud autorité. ──
-            let record = encode_record(
-                RECORD_APPLIQUE,
-                resource_id,
-                definition,
-                resulting_state,
-                resulting_revision,
-            );
-            let prep = self
-                .store
-                .preparer_transformation(
-                    autorite,
-                    &[(cle_ev.as_str(), Value::from(record))],
-                    &pre_canon,
-                    ModePublication::Strict,
-                )
-                .map_err(err_substrat)?;
-            match self
-                .store
-                .publier_si_precondition_intacte(prep)
-                .map_err(err_substrat)?
-            {
-                IssuePublication::PublieIntegrale => {}
-                IssuePublication::PubliePartielle => {
-                    return Ok((LedgerOutcome::Indeterminate, None))
-                }
-                IssuePublication::ConflitPrecondition => continue,
-            }
-
-            // ── Étape 2 : matérialisation de l'effet (PROJECTION par ressource),
-            //    précondition re-vérifiée sous le verrou du nœud ressource. ──
+            // ── Étape 1 : PRÉPARATION de la matérialisation — la référence de
+            //    l'écriture sur le nœud ressource est produite AVANT le commit
+            //    d'identité pour pouvoir y être persévérée. Rien n'est publié
+            //    ici (chaîne privée invisible). ──
             let pre_res = self
                 .store
                 .capturer_precondition(cible, &[CLE_REVISION, CLE_EFFET])
@@ -500,9 +546,7 @@ impl SubstrateAtomicEventLedger {
                 .map(|v| v as u64)
                 .unwrap_or(0);
             if courant != precondition_revision {
-                // Course : la révision a avancé entre la pré-vérification et
-                // ici. L'identité est DÉJÀ commise (APPLIQUE) : frontière réelle
-                // « autorisé mais non matérialisé ». Un rejeu réparera.
+                // Course AVANT tout engagement : refus SANS commettre d'identité.
                 return Ok((
                     LedgerOutcome::PreconditionFailed {
                         current_revision: courant,
@@ -514,14 +558,53 @@ impl SubstrateAtomicEventLedger {
                 (CLE_REVISION, Value::from(resulting_revision as i64)),
                 (CLE_EFFET, Value::from(resulting_state.to_vec())),
             ];
-            let prep = self
+            let prep_res = self
                 .store
                 .preparer_transformation(cible, &nouvelles, &pre_res, ModePublication::Strict)
                 .map_err(err_substrat)?;
-            let reference = prep.reference_tentative();
+            let reference = prep_res.reference_tentative();
+
+            // ── Étape 2 : COMMIT d'identité (APPLIQUE) — point de sérialisation
+            //    GLOBAL, avec la référence de matérialisation PERSÉVÉRÉE dans
+            //    l'enregistrement d'identité (un arrêt entre 2 et 3 ne la perd
+            //    pas : `resolve` la retrouve via l'enregistrement). ──
+            let record = encode_record(
+                RECORD_APPLIQUE,
+                resource_id,
+                definition,
+                resulting_state,
+                resulting_revision,
+                Some(&reference),
+            );
+            let prep_ident = self
+                .store
+                .preparer_transformation(
+                    autorite,
+                    &[(cle_ev.as_str(), Value::from(record))],
+                    &pre_canon,
+                    ModePublication::Strict,
+                )
+                .map_err(err_substrat)?;
             match self
                 .store
-                .publier_si_precondition_intacte(prep)
+                .publier_si_precondition_intacte(prep_ident)
+                .map_err(err_substrat)?
+            {
+                IssuePublication::PublieIntegrale => {}
+                IssuePublication::PubliePartielle => {
+                    return Ok((LedgerOutcome::Indeterminate, None))
+                }
+                IssuePublication::ConflitPrecondition => continue,
+            }
+
+            // ── Étape 3 : matérialisation de l'effet (publication de la
+            //    transformation préparée à l'étape 1) — précondition re-vérifiée
+            //    sous le verrou du nœud ressource. ──
+            #[cfg(test)]
+            self.suspendre_apres_commit_identite();
+            match self
+                .store
+                .publier_si_precondition_intacte(prep_res)
                 .map_err(err_substrat)?
             {
                 IssuePublication::PublieIntegrale => {
@@ -530,7 +613,18 @@ impl SubstrateAtomicEventLedger {
                 IssuePublication::PubliePartielle => {
                     return Ok((LedgerOutcome::Indeterminate, Some(reference)));
                 }
-                IssuePublication::ConflitPrecondition => continue,
+                IssuePublication::ConflitPrecondition => {
+                    // Course : la révision a avancé entre la préparation et la
+                    // publication. L'identité est DÉJÀ commise AVEC la référence :
+                    // « engagé non matérialisé », récupérable. Un rejeu réparera.
+                    let courant = self.resource_revision(resource_id)?;
+                    return Ok((
+                        LedgerOutcome::PreconditionFailed {
+                            current_revision: courant,
+                        },
+                        None,
+                    ));
+                }
             }
         }
         Ok((LedgerOutcome::Indeterminate, None))
@@ -538,6 +632,12 @@ impl SubstrateAtomicEventLedger {
 
     /// Résolution SCOPÉE par ressource : l'identité appartient-elle à CETTE
     /// ressource ? (substitution incompatible → NotApplied, jamais devinée).
+    ///
+    /// Compare l'enregistrement d'identité à la projection ressource
+    /// (`CLE_REVISION` / `CLE_EFFET`) : `Applied` si l'effet est matérialisé
+    /// tel quel, `CommittedNotMaterialized` si l'identité est commise mais que
+    /// l'effet ne l'est pas (ou plus) — jamais « engagé » sur un effet devenu
+    /// incompatible.
     pub fn resolve_on(
         &self,
         resource_id: &[u8],
@@ -558,13 +658,40 @@ impl SubstrateAtomicEventLedger {
                     // ne migre pas vers celle-ci.
                     return Ok(ResolvedState::NotApplied);
                 }
-                Ok(ResolvedState::Applied {
-                    definition: p.definition,
-                    state: p.effet,
-                    revision: p.revision,
-                })
+                self.classifier_revision(&p, resource_id)
             }
             _ => Err("enregistrement d'événement invalide (préfixe inconnu)".to_string()),
+        }
+    }
+
+    /// Compare un enregistrement d'identité de RÉVISION (ressource déjà décodée
+    /// en NodeId) à la projection ressource (`CLE_REVISION` / `CLE_EFFET`) :
+    /// `Applied` si l'effet est matérialisé tel quel, `CommittedNotMaterialized`
+    /// sinon (identité engagée, effet non — ou plus — matérialisé, récupérable :
+    /// l'effet enregistré est restitué). Une intention dont l'effet est devenu
+    /// incompatible n'est JAMAIS déclarée engagée.
+    fn classifier_revision(
+        &self,
+        payload: &PayloadEnregistrement,
+        resource_id: &[u8],
+    ) -> Result<ResolvedState, String> {
+        let projection = self.resource_state(resource_id)?;
+        let materialise = matches!(
+            &projection,
+            Some((effet, revision)) if effet == &payload.effet && *revision == payload.revision
+        );
+        if materialise {
+            Ok(ResolvedState::Applied {
+                definition: payload.definition.clone(),
+                state: payload.effet.clone(),
+                revision: payload.revision,
+            })
+        } else {
+            Ok(ResolvedState::CommittedNotMaterialized {
+                definition: payload.definition.clone(),
+                state: payload.effet.clone(),
+                revision: payload.revision,
+            })
         }
     }
 
@@ -627,6 +754,50 @@ impl SubstrateAtomicEventLedger {
             }
         }
         Err("abandon : conflit persistant (résoudre au lieu de rejouer)".to_string())
+    }
+}
+
+#[cfg(test)]
+impl SubstrateAtomicEventLedger {
+    /// Arme la suspension : le PROCHAIN commit d'identité suspendra le fil
+    /// juste après, avant la matérialisation (no-op si jamais armé).
+    fn armer_suspension_engagement(&self) {
+        let mut s = self.suspension_etat.lock().unwrap();
+        s.arme = true;
+        s.suspendu = false;
+        s.reprendre = false;
+    }
+
+    /// Bloque jusqu'à ce qu'un fil soit suspendu sur la frontière d'engagement.
+    fn attendre_suspension_engagement(&self) {
+        let mut s = self.suspension_etat.lock().unwrap();
+        while !s.suspendu {
+            s = self.suspension_cv.wait(s).unwrap();
+        }
+    }
+
+    /// Relâche le fil suspendu sur la frontière d'engagement.
+    fn relacher_suspension_engagement(&self) {
+        let mut s = self.suspension_etat.lock().unwrap();
+        s.reprendre = true;
+        self.suspension_cv.notify_all();
+    }
+
+    /// Point d'interleaving DÉTERMINISTE (test-only) : appelé APRÈS le commit
+    /// d'identité et AVANT la publication de la matérialisation.
+    fn suspendre_apres_commit_identite(&self) {
+        let mut s = self.suspension_etat.lock().unwrap();
+        if !s.arme {
+            return; // non armé : no-op (application normale)
+        }
+        // One-shot : la suspension est CONSOMMÉE par la première application qui
+        // atteint la frontière — les applications suivantes passent sans attendre.
+        s.arme = false;
+        s.suspendu = true;
+        self.suspension_cv.notify_all();
+        while !s.reprendre {
+            s = self.suspension_cv.wait(s).unwrap();
+        }
     }
 }
 
@@ -693,6 +864,12 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
 
     /// Résolution depuis l'identité SEULE : l'enregistrement canonique porte le
     /// lien vers la ressource (projection reconstructible, pas un index séparé).
+    ///
+    /// Distingue la frontière d'engagement : une FORMATION (ressource
+    /// synthétique) est `Applied` dès le commit — son effet est ENTIÈREMENT
+    /// porté par l'identité (une seule écriture canonique) ; une RÉVISION est
+    /// `Applied` seulement si la projection ressource porte l'effet enregistré,
+    /// sinon `CommittedNotMaterialized`.
     fn resolve(&self, event_id: &[u8; 16]) -> Result<ResolvedState, String> {
         let Some((prefixe, payload)) = self.lire_record(event_id)? else {
             return Ok(ResolvedState::NotApplied);
@@ -703,11 +880,17 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
                 let Some(p) = payload else {
                     return Err("enregistrement d'événement sans charge".to_string());
                 };
-                Ok(ResolvedState::Applied {
-                    definition: p.definition,
-                    state: p.effet,
-                    revision: p.revision,
-                })
+                // Formation (ressource synthétique non-NodeId) : pas de
+                // projection ressource à comparer — l'effet est entièrement
+                // porté par l'identité (une seule écriture canonique).
+                if decoder_cible(&p.resource).is_err() {
+                    return Ok(ResolvedState::Applied {
+                        definition: p.definition,
+                        state: p.effet,
+                        revision: p.revision,
+                    });
+                }
+                self.classifier_revision(&p, &p.resource)
             }
             _ => Err("enregistrement d'événement invalide (préfixe inconnu)".to_string()),
         }
@@ -799,6 +982,7 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
                 &p.definition,
                 &[EFFECT_FORMATION_DONE],
                 p.revision,
+                p.reference.as_ref(),
             );
             let nouvelles = [(cle_ev.as_str(), Value::from(nouvel))];
             let prep = self
@@ -1368,5 +1552,157 @@ mod tests {
             0,
             "B jamais écrite"
         );
+    }
+
+    // 23) FRONTIÈRE D'ENGAGEMENT — entrelacement DÉTERMINISTE réel : deux K
+    //     distincts sur la MÊME révision. K2 commet son identité puis SUSPEND
+    //     (crochet test-only) ; K1 matérialise pendant la suspension ; K2 bute
+    //     sur la révision → resolve(K2) = CommittedNotMaterialized (jamais
+    //     Applied), la ressource ne porte QUE l'effet de K1.
+    #[test]
+    fn entrelacement_deterministe_deux_k_meme_revision() {
+        let (ledger, id) = ledger_memoire();
+        let ledger = Arc::new(ledger);
+        let rid = ressource_bytes(id);
+        let def1 = b"def-K1".to_vec();
+        let eff1 = effet_revision(id, 1);
+        let def2 = b"def-K2".to_vec();
+        let eff2 = effet_revision(id, 2);
+
+        // K2 s'engage en arrière-plan : elle commettra son identité puis
+        // SUSPENDRA juste avant la matérialisation.
+        ledger.armer_suspension_engagement();
+        let t2 = {
+            let ledger = Arc::clone(&ledger);
+            let rid = rid.clone();
+            let def2 = def2.clone();
+            let eff2 = eff2.clone();
+            std::thread::spawn(move || {
+                ledger
+                    .apply_event(&oid(2), &rid, &def2, 0, &eff2, 1)
+                    .unwrap()
+            })
+        };
+
+        // Attendre que K2 ait COMMIT son identité (suspendue à la frontière).
+        ledger.attendre_suspension_engagement();
+
+        // K1 matérialise DÉTERMINISTEMENT pendant la suspension de K2.
+        let out1 = ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap();
+        assert_eq!(out1, LedgerOutcome::Applied);
+
+        // Relâcher K2 : sa matérialisation échoue (révision avancée), mais son
+        // identité est déjà COMMISE.
+        ledger.relacher_suspension_engagement();
+        let out2 = t2.join().unwrap();
+        assert_eq!(out2, LedgerOutcome::PreconditionFailed { current_revision: 1 });
+
+        // NORME : K2 = engagée non matérialisée, JAMAIS Applied.
+        match ledger.resolve(&oid(2)).unwrap() {
+            ResolvedState::CommittedNotMaterialized {
+                definition,
+                state,
+                revision,
+            } => {
+                assert_eq!(definition, def2);
+                assert_eq!(state, eff2);
+                assert_eq!(revision, 1);
+            }
+            other => panic!("K2 attendue CommittedNotMaterialized, reçu {other:?}"),
+        }
+        // resolve_on a la MÊME classification.
+        assert!(matches!(
+            ledger.resolve_on(&rid, &oid(2)).unwrap(),
+            ResolvedState::CommittedNotMaterialized { .. }
+        ));
+
+        // La ressource ne porte QUE l'effet de K1.
+        assert_eq!(ledger.resource_revision(&rid).unwrap(), 1);
+        assert_eq!(ledger.resource_state(&rid).unwrap(), Some((eff1, 1)));
+
+        // K1 reste Matérialisée.
+        assert!(matches!(
+            ledger.resolve(&oid(1)).unwrap(),
+            ResolvedState::Applied { revision: 1, .. }
+        ));
+    }
+
+    // 24) RÉFÉRENCE DE MATÉRIALISATION PERSÉVÉRÉE avec l'identité : un arrêt
+    //     entre commit d'identité et matérialisation ne la perd pas — elle est
+    //     relue dans l'enregistrement canonique.
+    #[test]
+    fn reference_materialisation_perseveree_avec_identite() {
+        let (ledger, id) = ledger_memoire();
+        let rid = ressource_bytes(id);
+        // K1 matérialisée (révision 0 -> 1).
+        ledger
+            .apply_event(&oid(1), &rid, b"def-K1", 0, &effet_revision(id, 1), 1)
+            .unwrap();
+        // K2 : identité commise (révision résultante 2) — on simule l'arrêt
+        // entre le commit d'identité et la matérialisation en remettant la
+        // projection ressource à l'état post-K1.
+        ledger
+            .apply_event(&oid(2), &rid, b"def-K2", 1, &effet_revision(id, 2), 2)
+            .unwrap();
+        ledger
+            .store()
+            .set_node_property(id, "obs:revision", Value::from(1i64));
+        ledger
+            .store()
+            .set_node_property(id, "obs:effect", Value::from(effet_revision(id, 1)));
+
+        // L'enregistrement d'identité de K2 porte la référence de matérialisation.
+        let (prefixe, payload) = ledger.lire_record(&oid(2)).unwrap().unwrap();
+        assert_eq!(prefixe, RECORD_APPLIQUE);
+        let reference = payload
+            .expect("charge présente")
+            .reference
+            .expect("référence persévérée avec l'identité");
+        // La référence pointe le nœud ressource et les deux clés de projection.
+        assert_eq!(reference.cible(), id);
+        assert_eq!(
+            reference.effets(),
+            &[CLE_REVISION.to_string(), CLE_EFFET.to_string()]
+        );
+    }
+
+    // 25) RÉCUPÉRATION : `CommittedNotMaterialized` restitue l'effet enregistré ;
+    //     une re-matérialisation (via le manager, simulée ici) fait repasser
+    //     `resolve` à `Applied`, et le rejeu n'applique JAMAIS deux fois.
+    #[test]
+    fn engage_non_materialise_recuperation_sans_double_application() {
+        let (ledger, id) = ledger_memoire();
+        let rid = ressource_bytes(id);
+        let def1 = b"def-K1".to_vec();
+        let eff1 = effet_revision(id, 1);
+        let def2 = b"def-K2".to_vec();
+        let eff2 = effet_revision(id, 2);
+        ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap();
+        ledger.apply_event(&oid(2), &rid, &def2, 1, &eff2, 2).unwrap();
+        // Simule l'arrêt entre commit d'identité (K2) et matérialisation.
+        ledger.store().set_node_property(id, "obs:revision", Value::from(1i64));
+        ledger.store().set_node_property(id, "obs:effect", Value::from(eff1.clone()));
+
+        // K2 = engagée non matérialisée, avec l'effet restitué.
+        match ledger.resolve(&oid(2)).unwrap() {
+            ResolvedState::CommittedNotMaterialized { state, revision, .. } => {
+                assert_eq!(state, eff2);
+                assert_eq!(revision, 2);
+            }
+            other => panic!("attendu CommittedNotMaterialized, reçu {other:?}"),
+        }
+
+        // Récupération (simulée : le manager re-matérialise l'effet enregistré).
+        ledger.store().set_node_property(id, "obs:revision", Value::from(2i64));
+        ledger.store().set_node_property(id, "obs:effect", Value::from(eff2.clone()));
+        assert!(matches!(
+            ledger.resolve(&oid(2)).unwrap(),
+            ResolvedState::Applied { revision: 2, .. }
+        ));
+
+        // Le rejeu n'applique pas deux fois (l'effet est déjà là).
+        let rejeu = ledger.apply_event(&oid(2), &rid, &def2, 1, &eff2, 2).unwrap();
+        assert!(matches!(rejeu, LedgerOutcome::AlreadyApplied { revision: 2, .. }));
+        assert_eq!(ledger.resource_revision(&rid).unwrap(), 2, "pas de double application");
     }
 }
