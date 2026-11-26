@@ -633,25 +633,27 @@ pub fn reconsolidate(engram: &mut Engram, new_nodes: &[NodeId], prediction_error
     const MAX_NEW_WEIGHT: f64 = 0.8;
     const STRENGTH_BOOST: f64 = 0.05;
 
+    if !prediction_error.is_finite() || prediction_error < 0.0 {
+        // Observation invalide : ne PAS transformer en état cognitif persistant.
+        return;
+    }
     if prediction_error <= RECONSOLIDATION_THRESHOLD {
         // Sub-threshold: just boost strength for successful recall.
         engram.strength = (engram.strength + STRENGTH_BOOST).min(1.0);
         return;
     }
 
-    // Collect existing node IDs for fast lookup.
-    let existing: HashSet<NodeId> = engram.ensemble.iter().map(|(nid, _)| *nid).collect();
-
     // Decay existing weights to make room for new information.
     for (_nid, weight) in &mut engram.ensemble {
         *weight *= DECAY_FACTOR;
     }
 
-    // Add new nodes that are not already in the ensemble.
-    // Weight is proportional to prediction error, clamped to MAX_NEW_WEIGHT.
+    // Add new nodes that are not already in the ensemble. On vérifie l'ensemble
+    // COURANT (pas un HashSet précalculé) : une observation [C, C] n'ajoute C
+    // qu'une seule fois.
     let new_weight = (prediction_error * 0.5).min(MAX_NEW_WEIGHT);
     for &node_id in new_nodes {
-        if !existing.contains(&node_id) {
+        if !engram.ensemble.iter().any(|(n, _)| *n == node_id) {
             engram.ensemble.push((node_id, new_weight));
         }
     }
@@ -838,6 +840,38 @@ mod tests {
             .filter(|(nid, _)| *nid == NodeId(1))
             .count();
         assert_eq!(count_node1, 1); // Not duplicated.
+    }
+
+    #[test]
+    fn reconsolidate_observation_invalide_ne_modifie_pas_l_etat() {
+        let id = EngramId(1);
+        let original = Engram::new(id, vec![(NodeId(1), 1.0), (NodeId(2), 0.5)]);
+
+        // Erreur de prédiction NaN : observation invalide, AUCUNE transformation.
+        let mut nan = original.clone();
+        reconsolidate(&mut nan, &[NodeId(99)], f64::NAN);
+        assert_eq!(nan.ensemble, original.ensemble, "NaN : ensemble inchangé");
+        assert_eq!(nan.strength, original.strength, "NaN : force inchangée");
+        assert_eq!(
+            nan.recall_count, original.recall_count,
+            "NaN : compteur inchangé"
+        );
+
+        // Erreur de prédiction négative : même garde, aucune transformation.
+        let mut neg = original.clone();
+        reconsolidate(&mut neg, &[NodeId(99)], -0.5);
+        assert_eq!(
+            neg.ensemble, original.ensemble,
+            "négative : ensemble inchangé"
+        );
+        assert_eq!(
+            neg.strength, original.strength,
+            "négative : force inchangée"
+        );
+        assert_eq!(
+            neg.recall_count, original.recall_count,
+            "négative : compteur inchangé"
+        );
     }
 
     #[test]
