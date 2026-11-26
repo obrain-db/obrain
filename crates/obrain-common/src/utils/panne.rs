@@ -6,6 +6,8 @@
 //! relâché par propriété posée.
 
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Mutex;
 
 /// 0 = désarmé ; sinon `rang + 1` après lequel le processus s'arrête.
 static ARRET_APRES_PROPRIETE: AtomicU64 = AtomicU64::new(0);
@@ -72,12 +74,47 @@ pub fn armer_arret_entre_ancre_et_miroir() {
     ARRET_ENTRE_ANCRE_ET_MIROIR.store(1, Ordering::SeqCst);
 }
 
+/// Porte de blocage (test) : quand armée, `point_entre_ancre_et_miroir` signale
+/// son arrivée puis attend la libération, au lieu d'abort. Permet un test
+/// DÉTERMINISTE de l'entrelacement A/B (deux écrivains concurrents) sans tuer
+/// le processus. Une seule porte à la fois (consommée par `take`).
+static PORTE_BLOCAGE_ENTRE_ANCRE_ET_MIROIR: Mutex<Option<(Sender<()>, Receiver<()>)>> =
+    Mutex::new(None);
+
+/// 0 = désarmé ; sinon le blocage entre ancre et miroir est armé (test).
+static BLOCAGE_ENTRE_ANCRE_ET_MIROIR_ARME: AtomicU8 = AtomicU8::new(0);
+
+/// Arme le BLOCAGE (test) entre l'ancre et le miroir : rend `(liberation,
+/// arrivee)`. Le premier écrivain qui atteint `point_entre_ancre_et_miroir`
+/// signale sur `arrivee` puis attend sur `liberation`.
+#[doc(hidden)]
+pub fn armer_blocage_entre_ancre_et_miroir() -> (Sender<()>, Receiver<()>) {
+    let (arrivee_tx, arrivee_rx) = std::sync::mpsc::channel();
+    let (liberation_tx, liberation_rx) = std::sync::mpsc::channel();
+    *PORTE_BLOCAGE_ENTRE_ANCRE_ET_MIROIR
+        .lock()
+        .unwrap() = Some((arrivee_tx, liberation_rx));
+    BLOCAGE_ENTRE_ANCRE_ET_MIROIR_ARME.store(1, Ordering::SeqCst);
+    (liberation_tx, arrivee_rx)
+}
+
 /// À appeler entre l'ancre composite et le miroir de colonne.
 #[doc(hidden)]
 #[inline]
 pub fn point_entre_ancre_et_miroir() {
     if ARRET_ENTRE_ANCRE_ET_MIROIR.load(Ordering::Relaxed) == 1 {
         std::process::abort();
+    }
+    // Blocage (test), consommé UNE fois : signale l'arrivée puis attend la
+    // libération. Sans effet en production (une charge atomique relâchée).
+    if BLOCAGE_ENTRE_ANCRE_ET_MIROIR_ARME.load(Ordering::Relaxed) == 1 {
+        BLOCAGE_ENTRE_ANCRE_ET_MIROIR_ARME.store(0, Ordering::Relaxed);
+        if let Some((arrivee, liberation)) =
+            PORTE_BLOCAGE_ENTRE_ANCRE_ET_MIROIR.lock().unwrap().take()
+        {
+            let _ = arrivee.send(());
+            let _ = liberation.recv();
+        }
     }
 }
 

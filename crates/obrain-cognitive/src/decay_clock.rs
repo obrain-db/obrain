@@ -212,14 +212,19 @@ fn write_anchor(
     node_id: NodeId,
     a: &EnergyAnchor,
     pre: &Precondition,
-) -> SubstrateResult<IssuePublication> {
+) -> SubstrateResult<(IssuePublication, (u64, u64))> {
     let prep = sub.preparer_transformation(
         node_id,
         &[(PROP_ENERGY_ANCHOR, encode_anchor(a))],
         pre,
         ModePublication::Strict,
     )?;
-    sub.publier_si_precondition_intacte(prep)
+    // Estampille HLC attribuée aux écritures de la transformation : elle permet
+    // de conditionner l'écriture du miroir de colonne à la canonicité de CETTE
+    // ancre — jamais un miroir obsolète (fenêtre ancre→miroir fermée).
+    let estampille = prep.estampille_effet();
+    let issue = sub.publier_si_precondition_intacte(prep)?;
+    Ok((issue, estampille))
 }
 
 /// Ancre composite CAPTURÉE sous l'autorité conditionnelle : distingue validité,
@@ -266,8 +271,8 @@ fn construire_ancre(
 
 /// Helper de test/migration : écrit une ancre composite EXPLICITE
 /// `(e_ref, t_ref, H)`, high-water mark = t_ref. Publie sous l'autorité
-/// conditionnelle ; sur conflit, re-capture et re-publie la MÊME ancre (valeurs
-/// fixes, aucun recalcul).
+/// conditionnelle ; en UNE SEULE tentative : sur conflit (ancre concurrente
+/// plus recente), on abandonne SANS re-publier des valeurs fixes.
 #[doc(hidden)]
 pub fn persist_anchor_explicit(
     sub: &SubstrateStore,
@@ -277,16 +282,15 @@ pub fn persist_anchor_explicit(
     half_life: Duration,
 ) {
     let a = construire_ancre(e_ref, t_ref_micros, t_ref_micros, half_life);
-    loop {
-        let Ok((pre, _)) = capturer_ancre(sub, node_id) else {
-            return;
-        };
-        match write_anchor(sub, node_id, &a, &pre) {
-            Ok(IssuePublication::PublieIntegrale) => return,
-            Ok(IssuePublication::ConflitPrecondition) => continue,
-            Ok(IssuePublication::PubliePartielle) | Err(_) => return,
-        }
-    }
+    // VALEURS FIXES : une SEULE tentative. Un conflit signifie qu'une mutation
+    // CONCURRENTE a pose une ancre plus recente ; re-publier les memes valeurs
+    // fixes l'ECRASERAIT (dominance HLC strictement croissante). On abandonne,
+    // sans jamais ecraser une mutation concurrente. Un Err (effet indetermine)
+    // n'est pas converti en resolution : ce helper best-effort l'ignore.
+    let Ok((pre, _)) = capturer_ancre(sub, node_id) else {
+        return;
+    };
+    let _ = write_anchor(sub, node_id, &a, &pre);
 }
 
 /// Écrit l'ancre physique d'un nœud (micros Unix) en conservant la colonne
@@ -304,9 +308,9 @@ pub fn persist_anchor(sub: &SubstrateStore, node_id: NodeId, micros: i64) {
             .unwrap_or(0.0) as f64;
         let a = construire_ancre(e_ref, micros, micros, Duration::ZERO);
         match write_anchor(sub, node_id, &a, &pre) {
-            Ok(IssuePublication::PublieIntegrale) => return,
-            Ok(IssuePublication::ConflitPrecondition) => continue,
-            Ok(IssuePublication::PubliePartielle) | Err(_) => return,
+            Ok((IssuePublication::PublieIntegrale, _)) => return,
+            Ok((IssuePublication::ConflitPrecondition, _)) => continue,
+            Ok((IssuePublication::PubliePartielle, _)) | Err(_) => return,
         }
     }
 }
@@ -409,21 +413,32 @@ pub fn reinforce(
 
         let a = construire_ancre(nouvelle, tau, tau, h);
         match write_anchor(sub, node_id, &a, &pre) {
-            Ok(IssuePublication::PublieIntegrale) => {
+            Ok((IssuePublication::PublieIntegrale, (auteur, horloge))) => {
                 // Point d'injection (test de durabilité) : un SIGKILL ICI laisse
                 // l'ancre publiée mais pas le miroir — la lecture expose alors
                 // 0,5 ou 0,75, jamais une ancre déchirée (0,375 / 1,0).
                 obrain_common::utils::panne::point_entre_ancre_et_miroir();
                 // Miroir de colonne, best-effort : la lecture ne dépend pas de
                 // lui. Écrit APRÈS l'ancre (autorité), jamais avant.
-                let _ = sub.set_node_energy_f32(node_id, nouvelle as f32);
+                // Miroir de colonne CONDITIONNEL : ecrit APRES l'ancre (autorite),
+                // et seulement si notre ancre est ENCORE canonique. Un ecrivain
+                // concurrent (B) peut avoir publie une ancre plus recente entre
+                // notre publication et ce point : on n'ecrit alors PAS un miroir
+                // obsolete (la reconciliation a la prochaine tique le derive de
+                // l'ancre canonique).
+                let _ = sub.set_node_energy_f32_si_propriete_intacte(
+                    node_id,
+                    nouvelle as f32,
+                    PROP_ENERGY_ANCHOR,
+                    Some((auteur, horloge)),
+                );
                 return Some(nouvelle);
             }
             // Conflit : une ancre PLUS RÉCENTE existe. Re-capturer et RECALCULER
             // depuis elle — surtout ne PAS re-publier `delta` aveuglément (le
             // chemin boost est le plus exposé au double renforcement).
-            Ok(IssuePublication::ConflitPrecondition) => continue,
-            Ok(IssuePublication::PubliePartielle) | Err(_) => return None,
+            Ok((IssuePublication::ConflitPrecondition, _)) => continue,
+            Ok((IssuePublication::PubliePartielle, _)) | Err(_) => return None,
         }
     }
 }
@@ -570,6 +585,9 @@ fn avancer_un_noeud(
 ) -> SubstrateResult<()> {
     loop {
         let (pre, capture) = capturer_ancre(sub, node_id)?;
+        let estampille_ancre_capturee = pre
+            .estampille_capturee(PROP_ENERGY_ANCHOR)
+            .map(|e| (e.auteur, e.horloge));
         match capture {
             AncreCapturee::Corrompue => {
                 stats.corrupted += 1;
@@ -601,19 +619,29 @@ fn avancer_un_noeud(
                         if !changement_canonique && !miroir_obsolete {
                             return Ok(());
                         }
+                        // Estampille attendue pour la garde du miroir : ancre
+                        // ABSENTE ici (None), sauf si l'on vient d'en publier une.
+                        let mut estampille_attendu = estampille_ancre_capturee;
                         if changement_canonique {
                             let a = construire_ancre(nouvelle, now_eff, t_ref, law.half_life());
                             match write_anchor(sub, node_id, &a, &pre)? {
-                                IssuePublication::PublieIntegrale => {
+                                (IssuePublication::PublieIntegrale, stamp) => {
                                     stats.advanced += 1;
+                                    estampille_attendu = Some(stamp);
                                 }
-                                IssuePublication::ConflitPrecondition => continue,
-                                IssuePublication::PubliePartielle => {}
+                                (IssuePublication::ConflitPrecondition, _) => continue,
+                                (IssuePublication::PubliePartielle, _) => {}
                             }
                         }
                         if miroir_obsolete {
-                            if sub.set_node_energy_f32(node_id, nouvelle as f32).is_ok() {
-                                stats.reconciled += 1;
+                            match sub.set_node_energy_f32_si_propriete_intacte(
+                                node_id,
+                                nouvelle as f32,
+                                PROP_ENERGY_ANCHOR,
+                                estampille_attendu,
+                            ) {
+                                Ok(true) => stats.reconciled += 1,
+                                Ok(false) | Err(_) => {}
                             }
                         }
                         return Ok(());
@@ -622,12 +650,12 @@ fn avancer_un_noeud(
                         // Aucune ancre : ancrage de migration à now (point 4).
                         let a = construire_ancre(e_ref_col, now_micros, now_micros, law.half_life());
                         match write_anchor(sub, node_id, &a, &pre)? {
-                            IssuePublication::PublieIntegrale => {
+                            (IssuePublication::PublieIntegrale, _) => {
                                 stats.unanchored += 1;
                                 return Ok(());
                             }
-                            IssuePublication::ConflitPrecondition => continue,
-                            IssuePublication::PubliePartielle => return Ok(()),
+                            (IssuePublication::ConflitPrecondition, _) => continue,
+                            (IssuePublication::PubliePartielle, _) => return Ok(()),
                         }
                     }
                 }
@@ -658,19 +686,29 @@ fn avancer_un_noeud(
                 if !changement_canonique && !miroir_obsolete {
                     return Ok(());
                 }
+                // Estampille attendue pour la garde du miroir : celle de l'ancre
+                // CAPTUREE (Some), sauf si l'on vient d'en publier une nouvelle.
+                let mut estampille_attendu = estampille_ancre_capturee;
                 if changement_canonique {
                     let a_nouvelle = construire_ancre(nouvelle, now_eff, a.t_hi_micros, h);
                     match write_anchor(sub, node_id, &a_nouvelle, &pre)? {
-                        IssuePublication::PublieIntegrale => {
+                        (IssuePublication::PublieIntegrale, stamp) => {
                             stats.advanced += 1;
+                            estampille_attendu = Some(stamp);
                         }
-                        IssuePublication::ConflitPrecondition => continue,
-                        IssuePublication::PubliePartielle => {}
+                        (IssuePublication::ConflitPrecondition, _) => continue,
+                        (IssuePublication::PubliePartielle, _) => {}
                     }
                 }
                 if miroir_obsolete {
-                    if sub.set_node_energy_f32(node_id, nouvelle as f32).is_ok() {
-                        stats.reconciled += 1;
+                    match sub.set_node_energy_f32_si_propriete_intacte(
+                        node_id,
+                        nouvelle as f32,
+                        PROP_ENERGY_ANCHOR,
+                        estampille_attendu,
+                    ) {
+                        Ok(true) => stats.reconciled += 1,
+                        Ok(false) | Err(_) => {}
                     }
                 }
                 return Ok(());

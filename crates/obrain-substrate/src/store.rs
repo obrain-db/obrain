@@ -3583,6 +3583,14 @@ impl TransformationPrete {
         }
     }
 
+    /// Estampille HLC complète `(auteur, horloge)` attribuée aux écritures de la
+    /// transformation. Sert à conditionner un effet secondaire (colonne miroir)
+    /// à la canonicité de la publication : l'appelant compare cette estampille
+    /// à celle que la tête canonique porte encore.
+    pub fn estampille_effet(&self) -> (u64, u64) {
+        (self.auteur, self.horloge_effet)
+    }
+
     /// (tests) accès aux adresses physiques, pour les contre-épreuves naïves.
     #[cfg(test)]
     pub(crate) fn tete_privee_pour_test(&self) -> u64 {
@@ -17307,6 +17315,40 @@ impl SubstrateStore {
         let q = f32_to_q1_15(value);
         self.writer.reinforce_energy(id.0 as u32, q)?;
         Ok(())
+    }
+
+    /// Écrit la colonne miroir d'énergie d'un nœud UNIQUEMENT si la propriété
+    /// `cle_ancre` porte encore l'estampille attendue (celle que l'appelant a
+    /// publiée ou capturée). Sous le verrou d'écriture du nœud (l'autorité
+    /// commune des écrivains) : la vérification et l'écriture sont atomiques
+    /// vis-à-vis de toute publication de propriété concurrente. Rend `Ok(true)`
+    /// si la colonne a été écrite, `Ok(false)` si la propriété a changé depuis
+    /// (colonne NON écrite — on ne publie jamais un miroir obsolète).
+    ///
+    /// `estampille_attendue = None` exige la propriété ABSENTE (aucune ancre) ;
+    /// `Some((auteur, horloge))` exige `Presente` avec cette estampille.
+    pub fn set_node_energy_f32_si_propriete_intacte(
+        &self,
+        id: NodeId,
+        value: f32,
+        cle_ancre: &str,
+        estampille_attendue: Option<(u64, u64)>,
+    ) -> SubstrateResult<bool> {
+        let _un_ecrivain = self.verrou_ecriture_noeud(id).lock();
+        let courant = self.lire_etat_propriete(id, cle_ancre)?;
+        let intacte = match (&courant, estampille_attendue) {
+            (
+                EtatPropriete::Presente { estampille, .. },
+                Some((auteur, horloge)),
+            ) => estampille.auteur == auteur && estampille.horloge == horloge,
+            (EtatPropriete::Absente, None) => true,
+            _ => false,
+        };
+        if !intacte {
+            return Ok(false);
+        }
+        self.set_node_energy_f32(id, value)?;
+        Ok(true)
     }
 
     /// Additive-reinforce the node's energy column by `amount`, clamped at
