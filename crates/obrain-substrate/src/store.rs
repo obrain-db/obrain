@@ -3094,35 +3094,22 @@ pub fn noeuds_hydrates() -> u64 {
     NOEUDS_HYDRATES.with(std::cell::Cell::get)
 }
 
-/// Frontières de commit **par transaction**, sans verrou.
+/// Frontière de commit **par fil**, sans verrou — et **bornée**.
 ///
-/// Un `AtomicU64` unique serait faux : une transaction y lirait la frontière d'une autre.
-/// Un `Mutex<HashMap<..>>` serait pire : il sérialiserait les commits et masquerait le
-/// défaut qu'on cherche. Le fil qui scelle un commit est celui qui l'acquitte, d'où le
-/// thread-local.
+/// Un seul `u64` par fil (`Cell<Option<u64>>`), écrasé à chaque scellement : plus de
+/// `HashMap` par transaction qui ne se vidait jamais (rétention non bornée, obrain#417).
+/// Le fil qui scelle un commit est celui qui l'acquitte, d'où le thread-local ; aucun
+/// verrou, aucune sérialisation des commits — un verrou sur ce chemin masquerait le défaut.
+///
+/// Limite assumée : la cellule est **par fil**, pas par base — deux bases scellées sur le
+/// même fil partagent la même cellule. Acceptable pour une instrumentation de banc.
 mod frontiere_par_tx {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-
-    use obrain_common::types::TransactionId;
-
-    thread_local! {
-        static FRONTIERES: RefCell<HashMap<TransactionId, u64>> = RefCell::new(HashMap::new());
-    }
-
-    pub(super) fn enregistrer(tx: TransactionId, fin_frame: u64) {
-        FRONTIERES.with(|m| {
-            m.borrow_mut().insert(tx, fin_frame);
-        });
-        DERNIERE.with(|c| c.set(Some(fin_frame)));
-    }
-
-    pub(super) fn lire(tx: TransactionId) -> Option<u64> {
-        FRONTIERES.with(|m| m.borrow().get(&tx).copied())
-    }
-
     thread_local! {
         static DERNIERE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn enregistrer(fin_frame: u64) {
+        DERNIERE.with(|c| c.set(Some(fin_frame)));
     }
 
     pub(super) fn derniere() -> Option<u64> {
@@ -7413,6 +7400,23 @@ impl SubstrateStore {
         self.writer.fsync_wal()
     }
 
+    /// Fin (exclusive) de la frame du dernier `TxCommit` scellé **sur ce fil**, en octets
+    /// de WAL.
+    ///
+    /// Instrumentation (banc this-harness) : un unique `u64` par fil, écrasé à chaque
+    /// scellement — la rétention est bornée (plus de `HashMap` par transaction qui ne se
+    /// vidait jamais). Stockage **thread-local** : aucun verrou, aucune sérialisation des
+    /// commits — ce qui compte, puisqu'un verrou sur ce chemin masquerait précisément le
+    /// défaut recherché. Limite : le fil qui scelle un commit est celui qui l'acquitte ;
+    /// deux bases scellées sur le même fil partagent la même cellule (pas d'isolation
+    /// inter-bases — acceptable pour une instrumentation de banc).
+    ///
+    /// À comparer à [`Self::wal_octets_durables`], dans la même unité (octets de WAL).
+    #[doc(hidden)]
+    pub fn frontiere_du_commit_du_fil(&self) -> Option<u64> {
+        frontiere_par_tx::derniere()
+    }
+
     /// ── ORACLE DE DURABILITÉ (test/diagnostic) ─────────────────────────────
     /// Offset de fin du WAL couvert par un `fsync` TERMINÉ. Un `commit()`
     /// acquitté sous `EveryCommit` doit, au moment où il rend la main, avoir la
@@ -7421,27 +7425,6 @@ impl SubstrateStore {
     /// peut faire d'un `fsync` : un `kill -9` ne vide pas le cache de pages, et
     /// la réouverture après kill passe donc AVEC ou SANS fsync (voir
     /// `obrain-engine/tests/durabilite_commit_kill9.rs`).
-    #[doc(hidden)]
-    /// Fin (exclusive) de la frame du `TxCommit` de **cette** transaction, en octets de WAL.
-    ///
-    /// Instrumentation (banc this-harness) : associée à l'identité de la transaction, elle
-    /// évite qu'une transaction lise la frontière publiée par une autre. Stockage
-    /// **thread-local** : aucun verrou, aucune sérialisation des commits — ce qui compte,
-    /// puisqu'un verrou sur ce chemin masquerait précisément le défaut recherché.
-    ///
-    /// À comparer à [`Self::wal_octets_durables`], dans la même unité (octets de WAL).
-    pub fn frontiere_du_commit(&self, tx: TransactionId) -> Option<u64> {
-        frontiere_par_tx::lire(tx)
-    }
-
-    /// Fin de la frame du dernier commit scellé **sur ce fil** — même information que
-    /// [`Self::frontiere_du_commit`], quand l'appelant n'a pas l'identifiant de transaction
-    /// sous la main (les tests d'intégration, notamment).
-    #[doc(hidden)]
-    pub fn frontiere_du_commit_du_fil(&self) -> Option<u64> {
-        frontiere_par_tx::derniere()
-    }
-
     pub fn wal_octets_durables(&self) -> u64 {
         self.writer.wal().octets_durables()
     }
@@ -26184,10 +26167,10 @@ impl GraphStoreMut for SubstrateStore {
                     "scellement du commit dans le WAL : {e}"
                 ))
             })?;
-        // Instrumentation (banc this-harness) : associer la fin de la frame à SA
-        // transaction (thread-local, sans verrou), pour vérifier la couverture durable
-        // sans passer par `taille_wal()`, qui inclut les frames d'un écrivain concurrent.
-        frontiere_par_tx::enregistrer(transaction_id, position + longueur as u64);
+        // Instrumentation (banc this-harness) : publier la fin de la frame sur CE FIL
+        // (thread-local, sans verrou), pour vérifier la couverture durable sans passer
+        // par `taille_wal()`, qui inclut les frames d'un écrivain concurrent.
+        frontiere_par_tx::enregistrer(position + longueur as u64);
         // (obrain#164) `TxCommit` écrit : la transaction est close.
         self.tx_avec_valeur_avant.lock().remove(&transaction_id.0);
         Ok(())
