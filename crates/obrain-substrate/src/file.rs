@@ -2581,10 +2581,30 @@ impl SubstrateFile {
         // l'identité (contrat de continuité — une restauration écrase la base
         // par la copie, identité comprise). Les `.tmp` de la publication
         // atomique sont transitoires, comme les autres temporaires.
+        // ── UNE PAIRE D'IDENTITÉ EN COURS DE RÉÉCRITURE N'EST PAS UN INSTANTANÉ ──
+        // `domaine.fork` présent = fork en cours OU interrompu : `domaine.id` et
+        // `domaine.init` sont alors POTENTIELLEMENT discordants (réécrits l'un
+        // après l'autre, chacun atomiquement). Les transporter SANS le journal
+        // (exclu ci-dessus) mettrait l'instantané dans un état qu'aucune
+        // réouverture ne peut résoudre (empreinte discordante) et SANS contexte
+        // de récupération : c'est exactement la paire intermédiaire incohérente
+        // que le contrat de continuité interdit. On les exclut donc AUSSI — un
+        // instantané pris pendant un fork ne porte pas l'identité (la base
+        // restaurée sera éphémère, migrable explicitement), jamais une paire
+        // incohérente. Hors fork (journal absent), la paire reste transportée :
+        // la continuité d'une restauration DÉCLARÉE est préservée.
+        let fork_en_cours = self.ram.is_none()
+            && self
+                .path
+                .join(crate::domaine_id::FICHIER_DOMAINE_FORK)
+                .exists();
         noms.retain(|n| {
             n != crate::domaine_id::FICHIER_DOMAINE_VERROU
                 && n != crate::domaine_id::FICHIER_DOMAINE_FORK
                 && !(n.starts_with("domaine.") && n.ends_with(".tmp"))
+                && !(fork_en_cours
+                    && (n == crate::domaine_id::FICHIER_DOMAINE_ID
+                        || n == crate::domaine_id::FICHIER_DOMAINE_INIT))
         });
         noms.sort();
         noms.dedup();

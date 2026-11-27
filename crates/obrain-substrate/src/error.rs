@@ -422,6 +422,21 @@ pub enum SubstrateError {
         frontiere: u32,
     },
 
+    /// ── PUBLICATION REFUSÉE : LE DOMAINE A ÉTÉ FORKÉ DEPUIS LA PRÉPARATION ──
+    ///
+    /// Une transformation a CAPTURÉ l'identité de DOMAINE de la base à la
+    /// PRÉPARATION (`domaine.id`, #334). Si un AUTRE processus a fork le
+    /// domaine entre-temps, le domaine PERSISTANT a changé : publier sous
+    /// l'ancienne origine produirait un commit fantôme — une confirmation
+    /// qu'aucun résolveur au domaine courant n'accepterait (la garde de
+    /// `resoudre_reference` la rendrait indéterminée). Refus net, rien n'est
+    /// écrit.
+    #[error(
+        "publication refusée : le domaine a été fork depuis la préparation \
+         (préparé sous {prepare_sous:#x}, courant {courant:#x}) — pas de commit fantôme"
+    )]
+    DomaineForke { prepare_sous: u128, courant: u128 },
+
     /// Le parcours a ete INTERROMPU par une annulation cooperative.
     ///
     /// N'est PAS une erreur de stockage : rien n'est corrompu, rien n'a

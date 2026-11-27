@@ -1260,7 +1260,7 @@ thread_local! {
 /// `apres_tout`), pas par le geste : un correctif qui réordonne les gestes
 /// garde les mêmes noms, et le même test mesure avant et après.
 #[cfg(feature = "points-de-crash")]
-fn point_de_crash(nom: &str) {
+pub(crate) fn point_de_crash(nom: &str) {
     static CONSIGNE: std::sync::OnceLock<Option<(String, std::path::PathBuf)>> =
         std::sync::OnceLock::new();
     let consigne = CONSIGNE.get_or_init(|| {
@@ -1280,7 +1280,7 @@ fn point_de_crash(nom: &str) {
 }
 #[cfg(not(feature = "points-de-crash"))]
 #[inline(always)]
-fn point_de_crash(_nom: &str) {}
+pub(crate) fn point_de_crash(_nom: &str) {}
 
 /// Nombre d'emplacements dont une zone peut manquer sans que l'ouverture en
 /// lecture seule la dise tronquée (slots réservés, pas encore écrits au flush).
@@ -4400,6 +4400,33 @@ impl SubstrateStore {
             return Err(SubstrateError::Internal(
                 "publier_si_precondition_intacte : transformation déjà publiée".to_string(),
             ));
+        }
+        // GARDE DE DOMAINE (#418) : la transformation a CAPTURÉ l'identité de
+        // domaine à la PRÉPARATION. Si un AUTRE processus a fork le domaine
+        // entre-temps, le domaine PERSISTANT a changé : publier sous l'ancienne
+        // origine produirait un commit fantôme (aucun résolveur au domaine
+        // courant ne l'accepterait — voir `resoudre_reference`). Refus net,
+        // rien n'est écrit. On relit le FICHIER, pas le cache : le `domaine_id`
+        // d'un store ouvert ne voit pas le fork d'un pair.
+        if prep.domaine != 0 {
+            let (est_memoire, chemin) = {
+                let sub = self.substrate.lock();
+                (sub.is_memory(), sub.path().to_path_buf())
+            };
+            let courant = if est_memoire {
+                self.domaine_id()
+            } else {
+                match crate::domaine_id::lire(&chemin)? {
+                    Some(id) => id,
+                    None => self.domaine_id(),
+                }
+            };
+            if courant != prep.domaine {
+                return Err(SubstrateError::DomaineForke {
+                    prepare_sous: prep.domaine,
+                    courant,
+                });
+            }
         }
         // Validation : la précondition LIÉE (capturée à la préparation) est
         // relue telle quelle.

@@ -210,6 +210,20 @@ fn nanos() -> u64 {
 /// Compteur monotone : deux tirages dans le MÊME processus restent distincts.
 static COMPTEUR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Point d'interruption de fork pour les tests kill -9 : réutilise le seam de
+/// `store.rs` (`point_de_crash`, feature `points-de-crash`, jamais en
+/// production). Quand `OBRAIN_SUBSTRATE_POINT_DE_CRASH=<nom>:<marqueur>` est
+/// posé et que `<nom>` est atteint, le processus écrit le marqueur et dort
+/// jusqu'au `kill -9` — ce qui est sur le disque à cet instant est exactement
+/// ce qu'un `kill -9` laisse.
+#[cfg(feature = "points-de-crash")]
+fn point_interruption(nom: &str) {
+    crate::store::point_de_crash(nom);
+}
+#[cfg(not(feature = "points-de-crash"))]
+#[inline(always)]
+fn point_interruption(_nom: &str) {}
+
 /// Tire un `domaine_id` frais : 16 octets, version/variant UUID v4 (RFC 4122).
 ///
 /// L'entropie combine la source aléatoire de `RandomState` (graine tirée par
@@ -688,9 +702,16 @@ pub fn forker(dir: &Path) -> io::Result<u128> {
     // procéder au fork demandé.
     recuperer_fork_interrompu(dir)?;
     let id = tirer();
+    // Points d'interruption (feature `points-de-crash`, no-op sinon) : nommés
+    // par leur POSITION entre les gestes de la réécriture d'identité, pas par
+    // le geste — un correctif qui réordonne les gestes garde les mêmes noms.
+    point_interruption("domaine:fork:avant_journal");
     ecrire_journal_fork(dir, id)?;
+    point_interruption("domaine:fork:apres_journal");
     ecrire_atomique(dir, id)?;
+    point_interruption("domaine:fork:entre_id_et_init");
     ecrire_init_atomique(dir, empreinte(id))?;
+    point_interruption("domaine:fork:avant_retrait_journal");
     effacer_journal_fork(dir)?;
     Ok(id)
 }
