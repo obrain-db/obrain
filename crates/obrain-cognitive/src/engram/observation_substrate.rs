@@ -81,8 +81,8 @@ use std::sync::{Arc, Mutex};
 use obrain_common::types::{NodeId, Value};
 use obrain_core::graph::traits::GraphStoreMut;
 use obrain_substrate::{
-    EtatPropriete, IssuePublication, ModePublication, ReferenceTentative, SubstrateStore,
-    VerdictEffet,
+    EtatPropriete, IntegriteTentative, IssuePublication, ModePublication, ReferenceTentative,
+    SubstrateStore, VerdictEffet,
 };
 
 use super::observation::{
@@ -684,45 +684,106 @@ impl SubstrateAtomicEventLedger {
         &self,
         payload: &PayloadEnregistrement,
     ) -> Result<ResolvedState, String> {
+        // État indéterminé standard : preuve historique absente ou incohérente,
+        // JAMAIS un faux « non-engagé » déduit de la projection courante.
+        let indetermine = || ResolvedState::Indeterminate {
+            definition: payload.definition.clone(),
+            state: payload.effet.clone(),
+            revision: payload.revision,
+        };
+
         let Some(reference) = &payload.reference else {
             // Enregistrement de révision SANS référence persévérée (ancien
-            // format) : la preuve historique est indisponible. On ne DÉDUIT PAS
-            // l'engagement de la projection courante — état indéterminé, jamais
-            // un faux « non-engagé ».
-            return Ok(ResolvedState::Indeterminate {
-                definition: payload.definition.clone(),
-                state: payload.effet.clone(),
-                revision: payload.revision,
-            });
+            // format) : la preuve historique est indisponible.
+            return Ok(indetermine());
         };
-        // PREUVE TRANSACTIONNELLE HISTORIQUE : résolution de la référence
-        // persistée AVEC l'identité, SANS consulter la projection courante.
+
+        // ── Correspondance référence ↔ payload (jamais un Applied sur une
+        //    référence incohérente ou étrangère) ──
+
+        // CIBLE : la référence doit viser le nœud ressource du payload.
+        let cible_payload = match decoder_cible(&payload.resource) {
+            Ok(c) => c,
+            Err(_) => return Ok(indetermine()), // ressource non-NodeId : incohérente
+        };
+        if reference.cible() != cible_payload {
+            return Ok(indetermine()); // la référence vise une AUTRE ressource
+        }
+
+        // ORIGINE : une référence d'un AUTRE domaine est ÉTRANGÈRE — refus
+        // NOMÉ, jamais un Applied croisé (faux positif #334). domaine == 0
+        // = référence v1 (legacy), sans domaine : conservée, l'indétermination
+        // reste tranchée par la résolution.
+        if reference.domaine() != 0 && reference.domaine() != self.store.domaine_id() {
+            return Err(format!(
+                "référence étrangère : domaine {} ≠ domaine du registre {}",
+                reference.domaine(),
+                self.store.domaine_id()
+            ));
+        }
+
+        // UNE SEULE résolution : garde de domaine incluse, multi-effets
+        // cohérent sous un seul verrou de nœud (jamais deux résolutions).
         let resolution = self
             .store
             .resoudre_reference(reference)
             .map_err(err_substrat)?;
-        // L'effet (CLE_EFFET) est le second effet de la tentative (CLE_REVISION
-        // en premier). Repéré par clé, jamais par position implicite.
-        let Some(i_effet) = resolution.par_cle.iter().position(|e| e.cle == CLE_EFFET) else {
-            return Ok(ResolvedState::Indeterminate {
-                definition: payload.definition.clone(),
-                state: payload.effet.clone(),
-                revision: payload.revision,
-            });
+
+        // LIAISON : repérer CLE_EFFET et CLE_REVISION par leurs CLÉS dans la
+        // MÊME résolution (parcours nb_effets() + effet(i).cle()), jamais
+        // par position implicite. Un doublon (ambigu) ou une clé hors de la
+        // liaison d'une révision est une référence incohérente.
+        let mut i_revision: Option<usize> = None;
+        let mut i_effet: Option<usize> = None;
+        for i in 0..resolution.nb_effets() {
+            let cle = resolution.effet(i).cle();
+            if cle == CLE_REVISION {
+                if i_revision.is_some() {
+                    return Ok(indetermine()); // doublon : référence ambiguë
+                }
+                i_revision = Some(i);
+            } else if cle == CLE_EFFET {
+                if i_effet.is_some() {
+                    return Ok(indetermine()); // doublon : référence ambiguë
+                }
+                i_effet = Some(i);
+            } else {
+                return Ok(indetermine()); // clé hors liaison : référence incohérente
+            }
+        }
+        let (Some(i_revision), Some(i_effet)) = (i_revision, i_effet) else {
+            return Ok(indetermine()); // un effet requis est absent de la référence
         };
-        match resolution.verdict_effet(i_effet) {
-            VerdictEffet::EngageEtCourant
-            | VerdictEffet::EngagePuisSupplante
-            | VerdictEffet::EngagePuisSupprime => Ok(ResolvedState::Applied {
+
+        // INTÉGRITÉ : TOUS les effets (les deux clés de projection) doivent
+        // être engagés historiquement. Partielle ou indéterminée → jamais un
+        // Applied.
+        if resolution.integrite() != IntegriteTentative::Integrale {
+            return Ok(indetermine());
+        }
+
+        // VERDICTS : les DEUX effets nécessaires (CLE_REVISION et CLE_EFFET)
+        // doivent être historiquement engagés — EngageEtCourant,
+        // EngagePuisSupplante ou EngagePuisSupprime. Un effet engagé puis
+        // supplanté RESTE engagé historiquement. Tout autre verdict →
+        // Indeterminate.
+        match (
+            resolution.verdict_effet(i_revision),
+            resolution.verdict_effet(i_effet),
+        ) {
+            (
+                VerdictEffet::EngageEtCourant
+                | VerdictEffet::EngagePuisSupplante
+                | VerdictEffet::EngagePuisSupprime,
+                VerdictEffet::EngageEtCourant
+                | VerdictEffet::EngagePuisSupplante
+                | VerdictEffet::EngagePuisSupprime,
+            ) => Ok(ResolvedState::Applied {
                 definition: payload.definition.clone(),
                 state: payload.effet.clone(),
                 revision: payload.revision,
             }),
-            VerdictEffet::Indetermine => Ok(ResolvedState::Indeterminate {
-                definition: payload.definition.clone(),
-                state: payload.effet.clone(),
-                revision: payload.revision,
-            }),
+            _ => Ok(indetermine()),
         }
     }
 
@@ -1799,5 +1860,223 @@ mod tests {
         // Rejeu : AlreadyApplied, AUCUNE matérialisation supplémentaire.
         let rejeu = ledger.apply_event(&oid(2), &rid, &def2, 1, &eff2, 2).unwrap();
         assert!(matches!(rejeu, LedgerOutcome::AlreadyApplied { revision: 2, .. }));
+    }
+
+    /// Encode une référence v2 « à la main » (magic OBRT, version 2, domaine
+    /// big-endian) — le format documenté. Un attaquant ferait exactement cela.
+    fn encoder_v2(auteur: u64, horloge: u64, cible: NodeId, domaine: u128, cles: &[&str]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"OBRT");
+        out.push(2);
+        out.extend_from_slice(&auteur.to_le_bytes());
+        out.extend_from_slice(&horloge.to_le_bytes());
+        out.extend_from_slice(&cible.0.to_le_bytes());
+        out.extend_from_slice(&domaine.to_be_bytes());
+        out.extend_from_slice(&(cles.len() as u32).to_le_bytes());
+        for c in cles {
+            out.extend_from_slice(&(c.len() as u32).to_le_bytes());
+            out.extend_from_slice(c.as_bytes());
+        }
+        out
+    }
+
+    /// Payload de révision ad-hoc, pour éprouver classifier_revision sans passer
+    /// par le chemin complet d'application.
+    fn payload_revision(
+        id: NodeId,
+        definition: &[u8],
+        effet: Vec<u8>,
+        revision: u64,
+        reference: Option<ReferenceTentative>,
+    ) -> PayloadEnregistrement {
+        PayloadEnregistrement {
+            resource: ressource_bytes(id),
+            definition: definition.to_vec(),
+            effet,
+            revision,
+            reference,
+        }
+    }
+
+    // 26) CLE_EFFET engagé + CLE_REVISION indéterminé → Indeterminate (PAS
+    //     Applied) : la confirmation exige l'engagement des DEUX effets.
+    #[test]
+    fn classifier_revision_effet_engage_revision_indetermine() {
+        let (ledger, id) = ledger_memoire();
+        let store = ledger.store();
+        // Engage CLE_EFFET seulement (CLE_REVISION jamais écrit).
+        let pre = store.capturer_precondition(id, &[CLE_EFFET]).unwrap();
+        let prep = store
+            .preparer_transformation(
+                id,
+                &[(CLE_EFFET, Value::from(effet_revision(id, 7)))],
+                &pre,
+                ModePublication::Strict,
+            )
+            .unwrap();
+        let ref_effet = prep.reference_tentative();
+        store.publier_si_precondition_intacte(prep).unwrap();
+
+        // Forge une référence qui prétend lier CLE_REVISION + CLE_EFFET avec la
+        // MÊME estampille : CLE_EFFET engagé, CLE_REVISION indéterminé.
+        let forgee = ReferenceTentative::from_bytes(&encoder_v2(
+            ref_effet.auteur(),
+            ref_effet.horloge(),
+            id,
+            store.domaine_id(),
+            &[CLE_REVISION, CLE_EFFET],
+        ))
+        .unwrap();
+        let payload = payload_revision(id, b"def", effet_revision(id, 7), 1, Some(forgee));
+        assert!(matches!(
+            ledger.classifier_revision(&payload).unwrap(),
+            ResolvedState::Indeterminate { .. }
+        ));
+    }
+
+    // 27) CLE_REVISION engagé + CLE_EFFET indéterminé → Indeterminate.
+    #[test]
+    fn classifier_revision_revision_engagee_effet_indetermine() {
+        let (ledger, id) = ledger_memoire();
+        let store = ledger.store();
+        let pre = store.capturer_precondition(id, &[CLE_REVISION]).unwrap();
+        let prep = store
+            .preparer_transformation(
+                id,
+                &[(CLE_REVISION, Value::from(1i64))],
+                &pre,
+                ModePublication::Strict,
+            )
+            .unwrap();
+        let ref_rev = prep.reference_tentative();
+        store.publier_si_precondition_intacte(prep).unwrap();
+
+        let forgee = ReferenceTentative::from_bytes(&encoder_v2(
+            ref_rev.auteur(),
+            ref_rev.horloge(),
+            id,
+            store.domaine_id(),
+            &[CLE_REVISION, CLE_EFFET],
+        ))
+        .unwrap();
+        let payload = payload_revision(id, b"def", effet_revision(id, 7), 1, Some(forgee));
+        assert!(matches!(
+            ledger.classifier_revision(&payload).unwrap(),
+            ResolvedState::Indeterminate { .. }
+        ));
+    }
+
+    // 28) Référence ÉTRANGÈRE avec collision auteur/horloge/contenu → refus
+    //     NOMÉ (Err), jamais un Applied croisé entre deux bases (#334).
+    #[test]
+    fn classifier_revision_reference_etrangere_refus_nomme() {
+        let (ledger, id) = ledger_memoire();
+        let store = ledger.store();
+        // Engagement RÉEL des deux clés (la référence légitime).
+        let pre = store
+            .capturer_precondition(id, &[CLE_REVISION, CLE_EFFET])
+            .unwrap();
+        let prep = store
+            .preparer_transformation(
+                id,
+                &[
+                    (CLE_REVISION, Value::from(1i64)),
+                    (CLE_EFFET, Value::from(effet_revision(id, 7))),
+                ],
+                &pre,
+                ModePublication::Strict,
+            )
+            .unwrap();
+        let legitime = prep.reference_tentative();
+        store.publier_si_precondition_intacte(prep).unwrap();
+
+        // Même auteur, même horloge, même cible, mêmes effets — mais un AUTRE
+        // domaine : la collision est réelle, la garde de domaine doit refuser.
+        let domaine_etranger = store.domaine_id().wrapping_add(1).max(1);
+        let etrangere = ReferenceTentative::from_bytes(&encoder_v2(
+            legitime.auteur(),
+            legitime.horloge(),
+            id,
+            domaine_etranger,
+            &[CLE_REVISION, CLE_EFFET],
+        ))
+        .unwrap();
+        let payload = payload_revision(id, b"def", effet_revision(id, 7), 1, Some(etrangere));
+        match ledger.classifier_revision(&payload) {
+            Err(raison) => assert!(
+                raison.contains("étrangère"),
+                "refus nommé attendu, reçu : {raison}"
+            ),
+            Ok(autre) => panic!("référence étrangère attendue refus NOMÉ, reçu {autre:?}"),
+        }
+    }
+
+    // 29) Deux effets ENGAGÉS puis SUPPLANTÉS → Applied (l'engagement
+    //     historique survit à la supplantation).
+    #[test]
+    fn classifier_revision_deux_effets_supplantes_applied() {
+        let (ledger, id) = ledger_memoire();
+        let rid = ressource_bytes(id);
+        // K1 (révision 0 -> 1), puis K2 (révision 1 -> 2) supplante K1.
+        ledger
+            .apply_event(&oid(1), &rid, b"def-K1", 0, &effet_revision(id, 1), 1)
+            .unwrap();
+        ledger
+            .apply_event(&oid(2), &rid, b"def-K2", 1, &effet_revision(id, 2), 2)
+            .unwrap();
+        // L'enregistrement d'identité de K1 porte sa référence (auteur, h1) :
+        // ses deux effets ont été engagés puis supplantés par K2.
+        let (_, payload_opt) = ledger.lire_record(&oid(1)).unwrap().unwrap();
+        let payload = payload_opt.expect("charge présente");
+        match ledger.classifier_revision(&payload).unwrap() {
+            ResolvedState::Applied { revision, .. } => assert_eq!(revision, 1),
+            other => panic!("deux effets supplantés attendus Applied, reçu {other:?}"),
+        }
+    }
+
+    // 30) Référence ABSENTE ou INCOHÉRENTE (cible étrangère) → Indeterminate.
+    #[test]
+    fn classifier_revision_absente_ou_incoherente_indetermine() {
+        let (ledger, id) = ledger_memoire();
+        let store = ledger.store();
+
+        // Absente : aucune référence persévérée.
+        let sans_ref = payload_revision(id, b"def", effet_revision(id, 7), 1, None);
+        assert!(matches!(
+            ledger.classifier_revision(&sans_ref).unwrap(),
+            ResolvedState::Indeterminate { .. }
+        ));
+
+        // Incohérente (cible) : la référence vise un AUTRE nœud que la ressource.
+        let pre = store
+            .capturer_precondition(id, &[CLE_REVISION, CLE_EFFET])
+            .unwrap();
+        let prep = store
+            .preparer_transformation(
+                id,
+                &[
+                    (CLE_REVISION, Value::from(1i64)),
+                    (CLE_EFFET, Value::from(effet_revision(id, 7))),
+                ],
+                &pre,
+                ModePublication::Strict,
+            )
+            .unwrap();
+        let legitime = prep.reference_tentative();
+        store.publier_si_precondition_intacte(prep).unwrap();
+        let autre = store.create_node(&["autre"]);
+        let incoherente = ReferenceTentative::from_bytes(&encoder_v2(
+            legitime.auteur(),
+            legitime.horloge(),
+            autre,
+            store.domaine_id(),
+            &[CLE_REVISION, CLE_EFFET],
+        ))
+        .unwrap();
+        let payload = payload_revision(id, b"def", effet_revision(id, 7), 1, Some(incoherente));
+        assert!(matches!(
+            ledger.classifier_revision(&payload).unwrap(),
+            ResolvedState::Indeterminate { .. }
+        ));
     }
 }
