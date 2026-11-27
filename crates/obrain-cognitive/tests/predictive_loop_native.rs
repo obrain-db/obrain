@@ -20,9 +20,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use obrain_common::types::NodeId;
-use obrain_cognitive::engram::{Engram, EngramManager, EngramManagerConfig, SpectralEncoder};
 use obrain_cognitive::InMemoryVectorIndex;
+use obrain_cognitive::engram::{Engram, EngramManager, EngramManagerConfig, SpectralEncoder};
+use obrain_common::types::NodeId;
 
 type Ep = Vec<NodeId>;
 
@@ -80,7 +80,7 @@ fn baseline_freq_topk(history: &[Ep], k: usize) -> Ep {
         }
     }
     let mut v: Vec<(NodeId, usize)> = counts.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0 .0.cmp(&b.0 .0)));
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.0.cmp(&b.0.0)));
     v.into_iter().take(k).map(|(n, _)| n).collect()
 }
 
@@ -89,11 +89,7 @@ fn baseline_control(_history: &[Ep]) -> Ep {
 }
 
 /// Erreur d'une baseline : elle prédit un ensemble, qu'on encode puis compare.
-fn baseline_error(
-    spectral: &SpectralEncoder,
-    predicted_set: &Ep,
-    observed: &[NodeId],
-) -> f64 {
+fn baseline_error(spectral: &SpectralEncoder, predicted_set: &Ep, observed: &[NodeId]) -> f64 {
     let p = encode_set(spectral, predicted_set);
     let o = encode_set(spectral, observed);
     l2(&p, &o)
@@ -119,8 +115,7 @@ fn adaptive_step(
     let prediction = manager.predict(cue, 8);
     let predicted: Vec<f64> = prediction
         .as_ref()
-        .map(|p| p.predicted.clone())
-        .unwrap_or_else(|| vec![0.0; dim]);
+        .map_or_else(|| vec![0.0; dim], |p| p.predicted.clone());
     let dominant = prediction
         .as_ref()
         .and_then(|p| p.attention.first().map(|(id, _)| *id));
@@ -139,8 +134,7 @@ fn adaptive_step(
         manager
             .store()
             .get(*eid)
-            .map(|e| e.node_ids().iter().any(|n| observed.contains(n)))
-            .unwrap_or(false)
+            .is_some_and(|e| e.node_ids().iter().any(|n| observed.contains(n)))
     });
     match revise_target {
         Some(eid) => {
@@ -171,10 +165,7 @@ fn boucle_predictive_native_erreur_reelle_decroit() {
         errors.push(e);
     }
 
-    eprintln!(
-        "[stationnaire] erreurs L2 (6 pas) = {:.6?}",
-        errors
-    );
+    eprintln!("[stationnaire] erreurs L2 (6 pas) = {:.6?}", errors);
 
     // Démarrage à froid : aucune prédiction possible → erreur = norme de
     // l'observation (L2-normalisée) = 1.0.
@@ -295,10 +286,12 @@ fn discrimination_contextuelle_bat_baselines_aveugles() {
     for (ctx, ep) in &eval {
         let p = manager.predict(&[*ctx], 8).expect("prediction");
         let top = manager.store().get(p.attention[0].0).expect("engram");
-        let top_set: std::collections::HashSet<u64> =
-            top.node_ids().iter().map(|n| n.0).collect();
+        let top_set: std::collections::HashSet<u64> = top.node_ids().iter().map(|n| n.0).collect();
         let obs_set: std::collections::HashSet<u64> = ep.iter().map(|n| n.0).collect();
-        assert_eq!(top_set, obs_set, "top-1 de predict([ctx]) = engram du contexte");
+        assert_eq!(
+            top_set, obs_set,
+            "top-1 de predict([ctx]) = engram du contexte"
+        );
     }
 
     // 2+3. La prediction adaptative est plus proche du BON contexte que du
@@ -342,10 +335,7 @@ fn revision_pilotee_par_l_erreur_reelle() {
     assert_eq!(size(&manager), 2, "engramme {{a,b}} formé");
 
     // (a) Observation identique → erreur réelle ~0 → PAS de croissance.
-    let pred_emb = manager
-        .predict(&[a], 8)
-        .expect("prédiction")
-        .predicted;
+    let pred_emb = manager.predict(&[a], 8).expect("prédiction").predicted;
     let obs_same = encode_set(&spectral, &pair);
     let err_same = l2(&pred_emb, &obs_same);
     let _ = manager.revise(eid, &pair, err_same);
@@ -369,4 +359,3 @@ fn revision_pilotee_par_l_erreur_reelle() {
         err_same, err_ext
     );
 }
-

@@ -224,7 +224,11 @@ fn b_ne_publie_pas_sous_une_origine_invalidee_par_le_fork() {
     // d'origine est intacte, la propriété n'a PAS été écrite à 2.
     {
         let store = SubstrateStore::open(&base).unwrap();
-        assert_eq!(store.domaine_id(), d1, "le domaine courant est celui du fork");
+        assert_eq!(
+            store.domaine_id(),
+            d1,
+            "le domaine courant est celui du fork"
+        );
         assert_eq!(
             store.get_node_property(id, &PropertyKey::new("a")),
             Some(Value::Int64(1)),
@@ -234,7 +238,11 @@ fn b_ne_publie_pas_sous_une_origine_invalidee_par_le_fork() {
         // intégralement indéterminée, sans consulter le contenu.
         let octets = std::fs::read(dir.join("reference.bin")).unwrap();
         let reference = ReferenceTentative::from_bytes(&octets).unwrap();
-        assert_eq!(reference.domaine(), d0, "la référence porte l'ancien domaine");
+        assert_eq!(
+            reference.domaine(),
+            d0,
+            "la référence porte l'ancien domaine"
+        );
         let res = store.resoudre_reference(&reference).unwrap();
         assert_eq!(
             res.integrite(),

@@ -80,7 +80,11 @@ fn call_engrams_list_gql_reel() {
         "la requête GQL rend le même nombre d'engrams que le store natif"
     );
     for row in &r.rows {
-        assert!(matches!(row[0], Value::Int64(_)), "id est Int64 : {:?}", row[0]);
+        assert!(
+            matches!(row[0], Value::Int64(_)),
+            "id est Int64 : {:?}",
+            row[0]
+        );
         assert!(
             matches!(row[2], Value::Int64(_)),
             "recall_count est Int64 : {:?}",
@@ -102,7 +106,10 @@ fn call_engrams_list_gql_reel() {
     let ids_natifs: Vec<i64> = mgr.store().list().iter().map(|e| e.id.0 as i64).collect();
     for row in &r.rows {
         if let Value::Int64(id) = row[0] {
-            assert!(ids_natifs.contains(&id), "id GQL {id} présent dans le store");
+            assert!(
+                ids_natifs.contains(&id),
+                "id GQL {id} présent dans le store"
+            );
         }
     }
 }

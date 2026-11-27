@@ -5,7 +5,7 @@
 //! `half_lives_to` / `elapsed_to_reach`, `EnergyAnchor::energy_now`
 //! et `EnergyAnchor::materialized`.
 
-use obrain_cognitive::decay_law::{elapsed_since, unix_micros, DecayLaw, EnergyAnchor};
+use obrain_cognitive::decay_law::{DecayLaw, EnergyAnchor, elapsed_since, unix_micros};
 use std::time::Duration;
 
 const H: Duration = Duration::from_secs(3600);

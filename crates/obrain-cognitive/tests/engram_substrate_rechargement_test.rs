@@ -37,7 +37,10 @@ fn load_from_substrate_recharge_apres_redemarrage() {
     let store2 = EngramStore::new(None);
     store2.attach_substrate(writer.clone());
     let loaded = store2.load_from_substrate();
-    assert_eq!(loaded.coherent, 2, "deux engrammes rechargés depuis le substrate");
+    assert_eq!(
+        loaded.coherent, 2,
+        "deux engrammes rechargés depuis le substrate"
+    );
 
     let e1 = store2.get(EngramId(1)).expect("engram 1 rechargé");
     assert_eq!(e1.node_ids(), vec![NodeId(1), NodeId(2)]);
@@ -74,7 +77,10 @@ fn load_from_substrate_quarantaine_sur_poids_incoherents() {
     store.attach_substrate(writer);
     let loaded = store.load_from_substrate();
 
-    assert_eq!(loaded.coherent, 0, "l'engramme incohérent est mis en quarantaine");
+    assert_eq!(
+        loaded.coherent, 0,
+        "l'engramme incohérent est mis en quarantaine"
+    );
     assert_eq!(
         loaded.rejected.len(),
         1,

@@ -13,9 +13,7 @@ use std::path::Path;
 
 use obrain_common::types::{NodeId, Value};
 use obrain_core::graph::GraphStoreMut as _;
-use obrain_substrate::{
-    FICHIER_DOMAINE_ID, FICHIER_DOMAINE_INIT, ModePublication, SubstrateStore,
-};
+use obrain_substrate::{FICHIER_DOMAINE_ID, FICHIER_DOMAINE_INIT, ModePublication, SubstrateStore};
 
 fn creer_base_avec_donnee(base: &Path) -> (u128, NodeId) {
     let store = SubstrateStore::create(base).unwrap();
@@ -64,9 +62,16 @@ fn apres_perte_des_deux_fichiers_l_identite_est_ephemere() {
         store.domaine_est_ephemere(),
         "sans fichiers d'identité, le régime courant est éphémère"
     );
-    assert_ne!(store.domaine_id(), d0, "l'éphémère ne ressuscite pas l'identité perdue");
+    assert_ne!(
+        store.domaine_id(),
+        d0,
+        "l'éphémère ne ressuscite pas l'identité perdue"
+    );
     store.close().unwrap();
-    assert!(aucun_fichier_d_identite(&base), "toujours rien d'écrit après fermeture");
+    assert!(
+        aucun_fichier_d_identite(&base),
+        "toujours rien d'écrit après fermeture"
+    );
 }
 
 /// `migrer_legacy_domaine()` matérialise une identité persistée : le régime
@@ -105,7 +110,10 @@ fn le_consommateur_interroge_le_regime_avant_de_publier() {
     retirer_les_deux_fichiers(&base);
 
     let store = SubstrateStore::open(&base).unwrap();
-    assert!(store.domaine_est_ephemere(), "le régime est lisible avant publication");
+    assert!(
+        store.domaine_est_ephemere(),
+        "le régime est lisible avant publication"
+    );
 
     // Préparer/publier une transformation : le régime reste éphémère (rien n'est
     // matérialisé par la publication), le consommateur le constate.
@@ -123,7 +131,10 @@ fn le_consommateur_interroge_le_regime_avant_de_publier() {
         "publier sous un régime éphémère ne matérialise aucune identité"
     );
     store.close().unwrap();
-    assert!(aucun_fichier_d_identite(&base), "aucune identité n'a été persistée");
+    assert!(
+        aucun_fichier_d_identite(&base),
+        "aucune identité n'a été persistée"
+    );
 }
 
 /// Store MÉMOIRE : toujours éphémère — aucun répertoire, identité tirée en

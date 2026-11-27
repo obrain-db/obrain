@@ -49,6 +49,7 @@ const ENV_PHASE: &str = "PUB_DUR_PHASE";
 
 /// Point du cycle où l'enfant s'arrête et se fait tuer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(clippy::enum_variant_names)]
 enum Phase {
     ApresPreparation,
     ApresBascule,
@@ -228,8 +229,14 @@ fn verifier(
         "{key} : valeur canonique via get_node_property"
     );
     // Chemin estampillé : valeur + identité d'écriture.
-    match store.lire_etat_propriete(id, key).expect("lecture sans corruption") {
-        EtatPropriete::Presente { estampille, valeur: v } => {
+    match store
+        .lire_etat_propriete(id, key)
+        .expect("lecture sans corruption")
+    {
+        EtatPropriete::Presente {
+            estampille,
+            valeur: v,
+        } => {
             assert_eq!(v, valeur, "{key} : valeur via lire_etat_propriete");
             assert_eq!(
                 (estampille.auteur, estampille.horloge),
@@ -249,8 +256,7 @@ fn scenario(phase: Phase) {
     tuer_9(&mut child);
 
     // Réouverture après crash : toute corruption ferait échouer `open` ici.
-    let store =
-        SubstrateStore::open(td.path().join("kb")).expect("réouverture après kill -9");
+    let store = SubstrateStore::open(td.path().join("kb")).expect("réouverture après kill -9");
 
     let id = NodeId(
         std::fs::read_to_string(td.path().join("node_id"))
@@ -260,7 +266,10 @@ fn scenario(phase: Phase) {
             .expect("node_id"),
     );
     // Le nœud est vivant (le record n'a pas été corrompu).
-    assert!(store.get_node(id).is_some(), "nœud {id} absent après réouverture");
+    assert!(
+        store.get_node(id).is_some(),
+        "nœud {id} absent après réouverture"
+    );
 
     let (pre_a, pre_b) = (
         lire_stamp(td.path(), "stamp_a_pre"),
@@ -279,7 +288,9 @@ fn scenario(phase: Phase) {
                 "la bascule de tête ne devait pas avoir eu lieu"
             );
             assert!(
-                store.find_nodes_by_property("a", &Value::Int64(10)).is_empty(),
+                store
+                    .find_nodes_by_property("a", &Value::Int64(10))
+                    .is_empty(),
                 "une préparation abandonnée ne doit rendre AUCUN effet canonique"
             );
             assert!(

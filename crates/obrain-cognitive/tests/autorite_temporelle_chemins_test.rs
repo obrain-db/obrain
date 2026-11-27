@@ -9,15 +9,23 @@ use obrain_cognitive::energy::{EnergyConfig, EnergyStore};
 use obrain_common::types::NodeId;
 use obrain_core::graph::GraphStoreMut;
 use obrain_substrate::SubstrateStore;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 const BASE: i64 = 1_000_000_000_000_000;
 const H_US: i64 = 64 * 1_000_000;
 const H: Duration = Duration::from_secs(64);
 
-fn setup(chemin: &std::path::Path) -> (Arc<SubstrateStore>, NodeId, EnergyStore, Arc<AtomicI64>, Arc<dyn Fn() -> i64 + Send + Sync>) {
+fn setup(
+    chemin: &std::path::Path,
+) -> (
+    Arc<SubstrateStore>,
+    NodeId,
+    EnergyStore,
+    Arc<AtomicI64>,
+    Arc<dyn Fn() -> i64 + Send + Sync>,
+) {
     let clock = Arc::new(AtomicI64::new(BASE));
     let clock_fn: Arc<dyn Fn() -> i64 + Send + Sync> = {
         let t = Arc::clone(&clock);
@@ -27,9 +35,13 @@ fn setup(chemin: &std::path::Path) -> (Arc<SubstrateStore>, NodeId, EnergyStore,
     let node: NodeId = sub.create_node(&["n"]);
     sub.flush().unwrap();
     let store = EnergyStore::with_substrate(
-        EnergyConfig { default_half_life: H, ..Default::default() },
+        EnergyConfig {
+            default_half_life: H,
+            ..Default::default()
+        },
         sub.clone(),
-    ).with_clock(clock_fn.clone());
+    )
+    .with_clock(clock_fn.clone());
     (sub, node, store, clock, clock_fn)
 }
 
@@ -47,7 +59,10 @@ fn chemin_a_energystore_est_monotone() {
     store.boost(node, 0.1);
     let e = store.get_energy(node);
     eprintln!("A sans observation haute (EnergyStore): e={e:.6}");
-    assert!((e - 0.3).abs() < 1e-3, "τ = max(now, t_hi, t_ref) rend le temps logique : attendu 0.3, obtenu {e}");
+    assert!(
+        (e - 0.3).abs() < 1e-3,
+        "τ = max(now, t_hi, t_ref) rend le temps logique : attendu 0.3, obtenu {e}"
+    );
 }
 
 #[test]
@@ -63,7 +78,10 @@ fn chemin_a_observation_haute_protege() {
     store.boost(node, 0.1);
     let e = store.get_energy(node);
     eprintln!("A' (observation haute puis boost): e={e:.6}");
-    assert!((e - 0.3).abs() < 1e-3, "session_hi mis à jour par l'observation : attendu 0.3, obtenu {e}");
+    assert!(
+        (e - 0.3).abs() < 1e-3,
+        "session_hi mis à jour par l'observation : attendu 0.3, obtenu {e}"
+    );
 }
 
 #[test]

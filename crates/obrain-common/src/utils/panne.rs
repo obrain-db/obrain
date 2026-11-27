@@ -5,9 +5,9 @@
 //! Désarmé par défaut ; le coût en production est un chargement atomique
 //! relâché par propriété posée.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Mutex;
 
 /// 0 = désarmé ; sinon `rang + 1` après lequel le processus s'arrête.
 static ARRET_APRES_PROPRIETE: AtomicU64 = AtomicU64::new(0);
@@ -91,9 +91,7 @@ static BLOCAGE_ENTRE_ANCRE_ET_MIROIR_ARME: AtomicU8 = AtomicU8::new(0);
 pub fn armer_blocage_entre_ancre_et_miroir() -> (Sender<()>, Receiver<()>) {
     let (arrivee_tx, arrivee_rx) = std::sync::mpsc::channel();
     let (liberation_tx, liberation_rx) = std::sync::mpsc::channel();
-    *PORTE_BLOCAGE_ENTRE_ANCRE_ET_MIROIR
-        .lock()
-        .unwrap() = Some((arrivee_tx, liberation_rx));
+    *PORTE_BLOCAGE_ENTRE_ANCRE_ET_MIROIR.lock().unwrap() = Some((arrivee_tx, liberation_rx));
     BLOCAGE_ENTRE_ANCRE_ET_MIROIR_ARME.store(1, Ordering::SeqCst);
     (liberation_tx, arrivee_rx)
 }

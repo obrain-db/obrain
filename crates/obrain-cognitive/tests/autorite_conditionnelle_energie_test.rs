@@ -47,8 +47,14 @@ fn renforcements_successifs_sans_double_renforcement() {
 
     let r1 = decay_clock::reinforce(&sub, id, 0.1, &law(), 1.0, BASE);
     let r2 = decay_clock::reinforce(&sub, id, 0.1, &law(), 1.0, BASE);
-    assert!((r1.unwrap() - 0.3).abs() < 1e-6, "premier renforcement → 0.3");
-    assert!((r2.unwrap() - 0.4).abs() < 1e-6, "second renforcement → 0.4 (recalcul, pas 0.5)");
+    assert!(
+        (r1.unwrap() - 0.3).abs() < 1e-6,
+        "premier renforcement → 0.3"
+    );
+    assert!(
+        (r2.unwrap() - 0.4).abs() < 1e-6,
+        "second renforcement → 0.4 (recalcul, pas 0.5)"
+    );
 
     let e = decay_clock::energy_at(&sub, id, &law(), BASE).unwrap();
     assert!((e - 0.4).abs() < 1e-6, "énergie finale 0.4, lue {e}");
@@ -78,11 +84,18 @@ fn une_republication_obsolete_est_refusee_par_la_precondition() {
         .preparer_transformation(id, &[(ANCRE, ancre_04)], &pre0, ModePublication::Strict)
         .unwrap();
     let verdict = sub.publier_si_precondition_intacte(prep).unwrap();
-    assert_eq!(verdict, IssuePublication::ConflitPrecondition, "delta additif obsolète refusé");
+    assert_eq!(
+        verdict,
+        IssuePublication::ConflitPrecondition,
+        "delta additif obsolète refusé"
+    );
 
     // L'ancre n'a pas bougé : toujours 0.3, le +0.1 de B n'a PAS été ré-appliqué.
     let e = decay_clock::energy_at(&sub, id, &law(), BASE).unwrap();
-    assert!((e - 0.3).abs() < 1e-6, "pas de double renforcement : 0.3, lue {e}");
+    assert!(
+        (e - 0.3).abs() < 1e-6,
+        "pas de double renforcement : 0.3, lue {e}"
+    );
 }
 
 /// Huit renforcements concurrents de +0.05 depuis 0.2 : le total vaut exactement

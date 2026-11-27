@@ -9,7 +9,7 @@
 //! `reference_tentative_externe.rs` ne sont pas redoublés ici :
 //!   * référence étrangère  → `reference_etrangere_ne_produit_jamais_engage`
 //!   * référence altérée    → `reference_alteree_ne_produit_jamais_engage` +
-//!                            `alteration_partielle_est_signalee_comme_partielle`
+//!     `alteration_partielle_est_signalee_comme_partielle`
 //!   * perte de réponse     → `reference_survit_a_la_perte_de_reponse_et_au_masquage`
 //!
 //! Ce fichier ajoute les SEPT discriminants manquants :
@@ -76,7 +76,7 @@ fn encoder_v2(auteur: u64, horloge: u64, cible: NodeId, domaine: u128, cles: &[&
 #[test]
 fn resolution_independante_de_toute_origine_pre_cablee() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let id = store.create_node(&["n"]);
     store.set_node_property(id, "a", Value::Int64(1));
 
@@ -144,7 +144,7 @@ fn resolution_independante_de_toute_origine_pre_cablee() {
 #[test]
 fn reference_v1_legacy_est_decodee_acceptee_et_resolue() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let id = store.create_node(&["n"]);
     store.set_node_property(id, "a", Value::Int64(1));
 
@@ -156,16 +156,25 @@ fn reference_v1_legacy_est_decodee_acceptee_et_resolue() {
     store.publier_si_precondition_intacte(prep).unwrap();
 
     // la v2 courante porte un domaine non nul.
-    assert_ne!(v2.domaine(), 0, "une référence v2 porte toujours un domaine");
+    assert_ne!(
+        v2.domaine(),
+        0,
+        "une référence v2 porte toujours un domaine"
+    );
 
     // ré-encode la MÊME tentative au format v1 (sans domaine) — ce que ferait
     // un ancien client qui n'a pas le champ domaine.
     let cles: Vec<&str> = v2.effets().iter().map(|s| s.as_str()).collect();
-    let legacy = ReferenceTentative::from_bytes(&encoder_v1(v2.auteur(), v2.horloge(), v2.cible(), &cles))
-        .unwrap();
+    let legacy =
+        ReferenceTentative::from_bytes(&encoder_v1(v2.auteur(), v2.horloge(), v2.cible(), &cles))
+            .unwrap();
 
     // décodée et acceptée, domaine == 0 (legacy), champs préservés.
-    assert_eq!(legacy.domaine(), 0, "une référence v1 décodée a domaine == 0 (legacy)");
+    assert_eq!(
+        legacy.domaine(),
+        0,
+        "une référence v1 décodée a domaine == 0 (legacy)"
+    );
     assert_eq!(legacy.auteur(), v2.auteur());
     assert_eq!(legacy.horloge(), v2.horloge());
     assert_eq!(legacy.cible(), v2.cible());
@@ -188,7 +197,7 @@ fn reference_v1_legacy_est_decodee_acceptee_et_resolue() {
 #[test]
 fn plusieurs_preuves_d_un_meme_effet_se_compactent_sans_perte_de_verdict() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let id = store.create_node(&["n"]);
     store.set_node_property(id, "a", Value::Int64(1));
 
@@ -198,14 +207,25 @@ fn plusieurs_preuves_d_un_meme_effet_se_compactent_sans_perte_de_verdict() {
     for valeur in [10i64, 20, 30] {
         let pre = store.capturer_precondition(id, &["a"]).unwrap();
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(valeur))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(valeur))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         let reference = prep.reference_tentative();
         store.publier_si_precondition_intacte(prep).unwrap();
         references.push(reference);
     }
-    assert!(references[0].horloge() < references[1].horloge(), "horloges strictement croissantes");
-    assert!(references[1].horloge() < references[2].horloge(), "horloges strictement croissantes");
+    assert!(
+        references[0].horloge() < references[1].horloge(),
+        "horloges strictement croissantes"
+    );
+    assert!(
+        references[1].horloge() < references[2].horloge(),
+        "horloges strictement croissantes"
+    );
 
     // CHAQUE preuve résout Engage : aucune n'est perdue par la preuve suivante.
     for reference in &references {
@@ -217,15 +237,24 @@ fn plusieurs_preuves_d_un_meme_effet_se_compactent_sans_perte_de_verdict() {
     // le verdict compacte les trois preuves sans perte : les deux premières
     // sont SUMPLANTÉES, la dernière est COURANTE.
     assert_eq!(
-        store.resoudre_reference(&references[0]).unwrap().verdict_effet(0),
+        store
+            .resoudre_reference(&references[0])
+            .unwrap()
+            .verdict_effet(0),
         VerdictEffet::EngagePuisSupplante
     );
     assert_eq!(
-        store.resoudre_reference(&references[1]).unwrap().verdict_effet(0),
+        store
+            .resoudre_reference(&references[1])
+            .unwrap()
+            .verdict_effet(0),
         VerdictEffet::EngagePuisSupplante
     );
     assert_eq!(
-        store.resoudre_reference(&references[2]).unwrap().verdict_effet(0),
+        store
+            .resoudre_reference(&references[2])
+            .unwrap()
+            .verdict_effet(0),
         VerdictEffet::EngageEtCourant
     );
 
@@ -244,7 +273,7 @@ fn plusieurs_preuves_d_un_meme_effet_se_compactent_sans_perte_de_verdict() {
 #[test]
 fn integrite_multi_effets_preserve_l_ordre_sans_croisement() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let id = store.create_node(&["n"]);
     store.set_node_property(id, "a", Value::Int64(1));
     store.set_node_property(id, "b", Value::Int64(2));
@@ -254,7 +283,11 @@ fn integrite_multi_effets_preserve_l_ordre_sans_croisement() {
     let prep = store
         .preparer_transformation(
             id,
-            &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))],
+            &[
+                ("a", Value::Int64(10)),
+                ("b", Value::Int64(20)),
+                ("c", Value::Int64(30)),
+            ],
             &pre,
             ModePublication::Strict,
         )
@@ -270,10 +303,17 @@ fn integrite_multi_effets_preserve_l_ordre_sans_croisement() {
     // ordre préservé, aucun croisement : effet(i) correspond à la i-ème clé.
     for i in 0..3 {
         let e = res.effet(i);
-        assert_eq!(e.cle(), reference.effets()[i].as_str(), "effet({i}) = {i}-ème clé, aucun croisement");
+        assert_eq!(
+            e.cle(),
+            reference.effets()[i].as_str(),
+            "effet({i}) = {i}-ème clé, aucun croisement"
+        );
         assert_eq!(e.etat(), ResolutionEffet::Engage);
         assert_eq!(res.verdict_effet(i), VerdictEffet::EngageEtCourant);
-        assert_eq!(e.estampille_courante(), Some((reference.auteur(), reference.horloge())));
+        assert_eq!(
+            e.estampille_courante(),
+            Some((reference.auteur(), reference.horloge()))
+        );
     }
 }
 
@@ -312,7 +352,10 @@ fn recalcul_deux_fois_meme_verdict_deterministe() {
     assert_eq!(r1.nb_effets(), r2.nb_effets());
     assert_eq!(r1.effet(0).etat(), r2.effet(0).etat());
     assert_eq!(r1.verdict_effet(0), r2.verdict_effet(0));
-    assert_eq!(r1.effet(0).estampille_courante(), r2.effet(0).estampille_courante());
+    assert_eq!(
+        r1.effet(0).estampille_courante(),
+        r2.effet(0).estampille_courante()
+    );
     assert_eq!(r1.effet(0).valeur_courante(), r2.effet(0).valeur_courante());
 
     // et le verdict ATTENDU, stable après réouverture.
@@ -337,7 +380,7 @@ fn recalcul_deux_fois_meme_verdict_deterministe() {
 #[test]
 fn dix_mille_tentatives_en_conflit_resolues_sans_degradation() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let id = store.create_node(&["n"]);
     store.set_node_property(id, "a", Value::Int64(1));
     let pre = store.capturer_precondition(id, &["a"]).unwrap();
@@ -354,13 +397,20 @@ fn dix_mille_tentatives_en_conflit_resolues_sans_degradation() {
     }
     // horloges HLC distinctes et croissantes : 10 000 origines distinctes.
     for w in references.windows(2) {
-        assert!(w[0].horloge() < w[1].horloge(), "horloges strictement croissantes");
+        assert!(
+            w[0].horloge() < w[1].horloge(),
+            "horloges strictement croissantes"
+        );
     }
 
     let debut = std::time::Instant::now();
     for reference in &references {
         let res = store.resoudre_reference(reference).unwrap();
-        assert_eq!(res.integrite(), IntegriteTentative::Indeterminee, "jamais un Engage faux");
+        assert_eq!(
+            res.integrite(),
+            IntegriteTentative::Indeterminee,
+            "jamais un Engage faux"
+        );
         assert_eq!(res.effet(0).etat(), ResolutionEffet::Indetermine);
         assert_eq!(res.verdict_effet(0), VerdictEffet::Indetermine);
     }
@@ -372,8 +422,14 @@ fn dix_mille_tentatives_en_conflit_resolues_sans_degradation() {
         autre => panic!("état inattendu : {autre:?}"),
     }
 
-    eprintln!("10000_CONFLITS : {N} tentatives en conflit résolues en {dt:?} ({:.0} ns/résolution)", dt.as_nanos() as f64 / N as f64);
-    assert!(dt.as_secs() < 60, "10 000 résolutions bornées en temps raisonnable (mesuré {dt:?})");
+    eprintln!(
+        "10000_CONFLITS : {N} tentatives en conflit résolues en {dt:?} ({:.0} ns/résolution)",
+        dt.as_nanos() as f64 / N as f64
+    );
+    assert!(
+        dt.as_secs() < 60,
+        "10 000 résolutions bornées en temps raisonnable (mesuré {dt:?})"
+    );
 }
 
 /// ── 10. `effet(i)` / `verdict_effet(i)` HORS BORNES ────────────────────────
@@ -385,7 +441,7 @@ fn dix_mille_tentatives_en_conflit_resolues_sans_degradation() {
 #[test]
 fn effet_et_verdict_hors_bornes_paniquent() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let id = store.create_node(&["n"]);
     store.set_node_property(id, "a", Value::Int64(1));
 
@@ -403,7 +459,7 @@ fn effet_et_verdict_hors_bornes_paniquent() {
     assert_eq!(res.verdict_effet(0), VerdictEffet::EngageEtCourant);
 
     // indice hors bornes : PANIQUE (contrat exact, pas d'Option ni d'erreur).
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     let effet_panique = catch_unwind(AssertUnwindSafe(|| {
         let _ = res.effet(1);
     }))
@@ -416,7 +472,13 @@ fn effet_et_verdict_hors_bornes_paniquent() {
         let _ = res.effet(usize::MAX);
     }))
     .is_err();
-    assert!(effet_panique, "effet(1) hors bornes DOIT paniquer (indexation Vec directe)");
-    assert!(verdict_panique, "verdict_effet(1) hors bornes DOIT paniquer");
+    assert!(
+        effet_panique,
+        "effet(1) hors bornes DOIT paniquer (indexation Vec directe)"
+    );
+    assert!(
+        verdict_panique,
+        "verdict_effet(1) hors bornes DOIT paniquer"
+    );
     assert!(effet_lointain, "effet(usize::MAX) DOIT paniquer aussi");
 }

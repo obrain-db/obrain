@@ -2038,7 +2038,12 @@ fn apply_engram_states(
                 .map(|&m| new_to_old.get(m as usize).copied().unwrap_or(m))
                 .collect();
             crate::engram::EngramZone::set_members_raw(mz, *engram_id, list)?;
-            crate::engram::EngramZone::rebind_weights_after_remap(wz, *engram_id, &old_members, list)?;
+            crate::engram::EngramZone::rebind_weights_after_remap(
+                wz,
+                *engram_id,
+                &old_members,
+                list,
+            )?;
         }
     }
     if !bitsets.is_empty() {

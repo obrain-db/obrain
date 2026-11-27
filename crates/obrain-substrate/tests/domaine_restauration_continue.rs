@@ -20,8 +20,8 @@ use obrain_substrate::instantane::{
     exporter_avec_dict, porte_paire_identite, restaurer, restaurer_continue,
 };
 use obrain_substrate::{
-    IntegriteTentative, IssuePublication, ModePublication, SubstrateError, SubstrateFile,
-    SubstrateStore, FICHIER_DOMAINE_FORK, FICHIER_DOMAINE_ID, FICHIER_DOMAINE_INIT,
+    FICHIER_DOMAINE_FORK, FICHIER_DOMAINE_ID, FICHIER_DOMAINE_INIT, IntegriteTentative,
+    IssuePublication, ModePublication, SubstrateError, SubstrateFile, SubstrateStore,
 };
 
 /// Identité simulée du fork « déchiré » (même approche que
@@ -73,7 +73,10 @@ fn porte_paire_identite_avant_fork() {
         store.close().unwrap();
         img
     };
-    assert!(porte_paire_identite(&image).unwrap(), "la paire est transportée hors fork");
+    assert!(
+        porte_paire_identite(&image).unwrap(),
+        "la paire est transportée hors fork"
+    );
 }
 
 /// PENDANT un fork (journal présent) : la paire est exclue — continuité
@@ -110,7 +113,11 @@ fn restauration_continue_avant_fork_preserve_identite_et_resout_la_reference() {
             .preparer_transformation(n, &[("a", Value::Int64(2))], &pre, ModePublication::Strict)
             .unwrap();
         let reference = prep.reference_tentative();
-        assert_eq!(reference.domaine(), d0, "la référence porte le domaine d'origine");
+        assert_eq!(
+            reference.domaine(),
+            d0,
+            "la référence porte le domaine d'origine"
+        );
         let issue = store.publier_si_precondition_intacte(prep).unwrap();
         assert!(matches!(issue, IssuePublication::PublieIntegrale));
         let img = snapshot_zones(&store);
@@ -126,8 +133,15 @@ fn restauration_continue_avant_fork_preserve_identite_et_resout_la_reference() {
         restaurer_continue(&mut sub, &image).unwrap();
     }
     let store2 = SubstrateStore::open(&dir2).unwrap();
-    assert_eq!(store2.domaine_id(), d0, "continuité : même identité restaurée");
-    assert!(!store2.domaine_est_ephemere(), "l'identité restaurée est durable");
+    assert_eq!(
+        store2.domaine_id(),
+        d0,
+        "continuité : même identité restaurée"
+    );
+    assert!(
+        !store2.domaine_est_ephemere(),
+        "l'identité restaurée est durable"
+    );
     assert_eq!(
         store2.get_node_property(n, &PropertyKey::new("a")),
         Some(Value::Int64(2)),

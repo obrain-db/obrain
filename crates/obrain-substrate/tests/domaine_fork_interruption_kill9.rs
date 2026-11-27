@@ -23,7 +23,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use obrain_substrate::{SubstrateStore, FICHIER_DOMAINE_FORK, FICHIER_DOMAINE_ID, FICHIER_DOMAINE_INIT};
+use obrain_substrate::{
+    FICHIER_DOMAINE_FORK, FICHIER_DOMAINE_ID, FICHIER_DOMAINE_INIT, SubstrateStore,
+};
 
 const ENV_DIR: &str = "OBRAIN_FORK_INTERRUPT_DIR";
 /// Lu par `obrain-substrate` (feature `points-de-crash`) : `<nom>:<marqueur>`.
@@ -145,8 +147,15 @@ fn a_fork_interrompu_avant_journal_rend_l_identite_initiale() {
     let (_td, d0, avant, recupere, apres) = derouler("domaine:fork:avant_journal");
     assert_eq!(avant.journal, None, "aucun journal avant sa publication");
     assert_eq!(avant.id, Some(d0), "domaine.id intact");
-    assert_eq!(avant.init, Some(d0), "domaine.init intact (empreinte == identité)");
-    assert_eq!(recupere, d0, "fork jamais déclaré : identité initiale conservée");
+    assert_eq!(
+        avant.init,
+        Some(d0),
+        "domaine.init intact (empreinte == identité)"
+    );
+    assert_eq!(
+        recupere, d0,
+        "fork jamais déclaré : identité initiale conservée"
+    );
     assert_eq!(apres.journal, None);
     assert_eq!(apres.id, Some(d0));
 }
@@ -160,10 +169,17 @@ fn b_fork_interrompu_apres_journal_est_recupere() {
     assert_ne!(d1, d0, "le journal porte une identité NEUVE");
     assert_eq!(avant.id, Some(d0), "domaine.id pas encore réécrit");
     assert_eq!(avant.init, Some(d0));
-    assert_eq!(recupere, d1, "la réouverture doit converger vers le journal");
+    assert_eq!(
+        recupere, d1,
+        "la réouverture doit converger vers le journal"
+    );
     assert_eq!(apres.journal, None, "journal retiré après récupération");
     assert_eq!(apres.id, Some(d1));
-    assert_eq!(apres.init, Some(d1), "marqueur réécrit à l'empreinte du nouveau domaine");
+    assert_eq!(
+        apres.init,
+        Some(d1),
+        "marqueur réécrit à l'empreinte du nouveau domaine"
+    );
 }
 
 /// (c) Entre `domaine.id` et `domaine.init` : paire DISCORDANTE sur disque,
@@ -173,8 +189,15 @@ fn c_fork_interrompu_entre_id_et_init_est_recupere() {
     let (_td, d0, avant, recupere, apres) = derouler("domaine:fork:entre_id_et_init");
     let d1 = avant.journal.expect("le journal est posé");
     assert_eq!(avant.id, Some(d1), "domaine.id RÉÉCRIT");
-    assert_eq!(avant.init, Some(d0), "marqueur ENCORE ancien (paire discordante)");
-    assert_ne!(avant.id, avant.init, "la fenêtre (c) est bien une paire discordante");
+    assert_eq!(
+        avant.init,
+        Some(d0),
+        "marqueur ENCORE ancien (paire discordante)"
+    );
+    assert_ne!(
+        avant.id, avant.init,
+        "la fenêtre (c) est bien une paire discordante"
+    );
     assert_eq!(recupere, d1);
     assert_eq!(apres.journal, None);
     assert_eq!(apres.id, Some(d1));

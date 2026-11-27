@@ -26,8 +26,7 @@ use super::observation::{
 };
 use super::observe::EngramMetricsCollector;
 use super::recall::{
-    reconsolidate, reconsolidate_adaptive, RecallEngine, RecallResult, WarmupConfig,
-    WarmupSelector,
+    RecallEngine, RecallResult, WarmupConfig, WarmupSelector, reconsolidate, reconsolidate_adaptive,
 };
 use super::spectral::SpectralEncoder;
 use super::store::{EngramStore, LoadReport, MaterializeOutcome, StoreError};
@@ -106,22 +105,29 @@ pub struct EngramManager {
 /// membres pondérés, signature) pour vérification et comparaison.
 #[derive(Debug, Clone)]
 pub struct EngramRevision {
+    /// Identifiant de l'engramme révisé.
     pub engram_id: EngramId,
     /// Révision GLOBALE du store (borne inférieure) — n'identifie pas à elle
     /// seule le snapshot ; l'état réellement publié est `members`+`signature`.
     pub revision: u64,
+    /// Membres pondérés (nœud, poids) après révision.
     pub members: Vec<(NodeId, f64)>,
+    /// Signature spectrale de l'état publié.
     pub signature: Vec<f64>,
 }
 
 /// Erreurs de révision, distinguées (pas un simple Option).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RevisionError {
+    /// L'engramme visé n'existe pas.
     EngramAbsent(EngramId),
+    /// Observation invalide, rejetée avant révision.
     InvalidObservation(String),
     /// Parametres de revision invalides (non finis, bornes incoherentes).
     InvalidParams(String),
+    /// La validation de la révision a échoué.
     ValidationFailed(String),
+    /// La persistance de la révision a échoué.
     PersistenceFailed(String),
 }
 
@@ -130,7 +136,12 @@ pub enum RevisionError {
 pub enum PredictiveStepError {
     /// Dimension de l embedding predit differente de la dimension observee :
     /// aucune distance L2 n est calculee entre deux espaces heterogenes.
-    DimensionMismatch { predicted: usize, observed: usize },
+    DimensionMismatch {
+        /// Dimension prédite par l'embedding.
+        predicted: usize,
+        /// Dimension observée, différente de la prédite.
+        observed: usize,
+    },
     /// Observation vide : aucune erreur calculable.
     EmptyObservation,
 }
@@ -167,16 +178,22 @@ pub enum ReconsolidationStrategy {
 /// l etat COURANT de l engramme au moment de l application.
 #[derive(Debug, Clone)]
 pub struct RevisionStep {
+    /// Cible du pas (concrète ou structurelle).
     pub target: RevisionTarget,
+    /// Erreur de prédiction mesurée à ce pas.
     pub prediction_error: f64,
+    /// Portée d'observation du pas.
     pub scope: ObservationScope,
+    /// Paramètres de révision adaptative.
     pub params: AdaptiveRevisionParams,
 }
 
 /// Cible d un pas : concrete (identifiants) ou STRUCTURELLE (selecteur).
 #[derive(Debug, Clone)]
 pub enum RevisionTarget {
+    /// Cible par identifiants concrets.
     Concrete(Vec<NodeId>),
+    /// Cible structurelle (sélecteur résolu à l'application).
     Structural(NodeSelector),
 }
 
@@ -197,8 +214,11 @@ pub enum NodeSelector {
 /// Erreur d application : RESTITUE le prefixe deja publie et l indice du pas fautif.
 #[derive(Debug)]
 pub struct RevisionApplyError {
+    /// Préfixe des pas déjà publiés avant l'échec.
     pub applied: Vec<EngramRevision>,
+    /// Indice du pas fautif.
     pub failed_step: usize,
+    /// Cause de l'échec d'application.
     pub cause: RevisionError,
 }
 
@@ -209,14 +229,17 @@ pub struct RevisionApplyError {
 /// sur des situations nouvelles, rien de plus.
 #[derive(Debug, Clone, Default)]
 pub struct RevisionOp {
+    /// Séquence ordonnée de pas de révision.
     pub steps: Vec<RevisionStep>,
 }
 
 impl RevisionOp {
+    /// Opérateur vide, sans aucun pas.
     pub fn new() -> Self {
         Self { steps: Vec::new() }
     }
 
+    /// Ajoute un pas et retourne l'opérateur (style builder).
     pub fn push(mut self, step: RevisionStep) -> Self {
         self.steps.push(step);
         self
@@ -234,19 +257,20 @@ impl RevisionOp {
             RevisionTarget::Structural(sel) => {
                 let e = m.store().get(eid).expect("engramme absent");
                 let mut ens = e.ensemble.clone();
-                ens.sort_by(|x, y| {
-                    y.1.partial_cmp(&x.1)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+                ens.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
                 match sel {
                     NodeSelector::All => ens.iter().map(|(n, _)| *n).collect(),
                     NodeSelector::TopK(k) => ens.iter().take(*k).map(|(n, _)| *n).collect(),
-                    NodeSelector::AboveWeight(w) => {
-                        ens.iter().filter(|(_, x)| *x > *w).map(|(n, _)| *n).collect()
-                    }
-                    NodeSelector::BelowWeight(w) => {
-                        ens.iter().filter(|(_, x)| *x < *w).map(|(n, _)| *n).collect()
-                    }
+                    NodeSelector::AboveWeight(w) => ens
+                        .iter()
+                        .filter(|(_, x)| *x > *w)
+                        .map(|(n, _)| *n)
+                        .collect(),
+                    NodeSelector::BelowWeight(w) => ens
+                        .iter()
+                        .filter(|(_, x)| *x < *w)
+                        .map(|(n, _)| *n)
+                        .collect(),
                 }
             }
         }
@@ -269,7 +293,7 @@ impl RevisionOp {
                         applied,
                         failed_step: i,
                         cause,
-                    })
+                    });
                 }
             }
         }
@@ -623,10 +647,10 @@ impl EngramManager {
                 let mut before: Vec<NodeId> = e.node_ids();
                 match strategy {
                     ReconsolidationStrategy::Additive => {
-                        reconsolidate(e, new_nodes, prediction_error)
+                        reconsolidate(e, new_nodes, prediction_error);
                     }
                     ReconsolidationStrategy::Adaptive(scope, params) => {
-                        reconsolidate_adaptive(e, new_nodes, prediction_error, scope, params)
+                        reconsolidate_adaptive(e, new_nodes, prediction_error, scope, params);
                     }
                 }
                 let mut after: Vec<NodeId> = e.node_ids();
@@ -739,8 +763,7 @@ impl EngramManager {
         let revise_target = dominant.filter(|eid| {
             self.store
                 .get(*eid)
-                .map(|e| e.node_ids().iter().any(|n| observed.contains(n)))
-                .unwrap_or(false)
+                .is_some_and(|e| e.node_ids().iter().any(|n| observed.contains(n)))
         });
         let action = match policy {
             PredictivePolicy::Consolidating => match revise_target {
@@ -765,7 +788,8 @@ impl EngramManager {
             },
             PredictivePolicy::Episodic => {
                 let eid = self.form_observation(observed);
-                match self.revise_adaptive(eid, observed, error, ObservationScope::DeclaredComplete) {
+                match self.revise_adaptive(eid, observed, error, ObservationScope::DeclaredComplete)
+                {
                     Ok(rev) => PredictiveAction::Revised(rev),
                     Err(err) => PredictiveAction::RevisionFailed(err),
                 }
@@ -811,9 +835,7 @@ impl EngramManager {
             // Une cle PERIMEE ne decrit plus la definition : elle ne peut PAS
             // servir d'identite de deduplication (sinon on reutilise un engramme
             // dont la cle ne correspond plus aux participants).
-            if k == key
-                && e.structural_key.as_deref() == structural_key
-                && !e.structural_key_stale
+            if k == key && e.structural_key.as_deref() == structural_key && !e.structural_key_stale
             {
                 return e.id;
             }
@@ -823,7 +845,7 @@ impl EngramManager {
         let mut engram = Engram::new(id, ensemble);
         engram.structural_key = structural_key.map(|s| s.to_string());
         let signature = self.spectral.encode(&engram.ensemble);
-        engram.spectral_signature = signature.clone();
+        engram.spectral_signature.clone_from(&signature);
         self.store.insert(engram);
         self.vector_index.upsert(&id.to_string(), &signature);
         self.metrics.record_formation();

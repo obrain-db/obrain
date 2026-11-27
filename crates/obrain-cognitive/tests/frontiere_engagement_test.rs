@@ -28,10 +28,10 @@
 
 use std::sync::Arc;
 
-use obrain_common::types::{NodeId, Value};
 use obrain_cognitive::engram::{
     AbandonOutcome, AtomicEventLedger, LedgerOutcome, ResolvedState, SubstrateAtomicEventLedger,
 };
+use obrain_common::types::{NodeId, Value};
 use obrain_core::graph::GraphStoreMut;
 use obrain_substrate::SubstrateStore;
 
@@ -67,13 +67,22 @@ fn frontiere_correcte_k2_refusee_avant_engagement() {
     let eff2 = b"eff-K2".to_vec();
 
     // K1 : première application, identité + effet matérialisés (révision 0 -> 1).
-    let out1 = ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap();
+    let out1 = ledger
+        .apply_event(&oid(1), &rid, &def1, 0, &eff1, 1)
+        .unwrap();
     assert_eq!(out1, LedgerOutcome::Applied);
 
     // K2 : MÊME SourceRevision (0), désormais périmée : refus à la
     // PRÉ-VÉRIFICATION (lecture seule), AUCUN commit d'identité.
-    let out2 = ledger.apply_event(&oid(2), &rid, &def2, 0, &eff2, 2).unwrap();
-    assert_eq!(out2, LedgerOutcome::PreconditionFailed { current_revision: 1 });
+    let out2 = ledger
+        .apply_event(&oid(2), &rid, &def2, 0, &eff2, 2)
+        .unwrap();
+    assert_eq!(
+        out2,
+        LedgerOutcome::PreconditionFailed {
+            current_revision: 1
+        }
+    );
 
     // resolve : K1 = Matérialisé ; K2 = jamais engagé (Refusé, pas « Autorisé »).
     match ledger.resolve(&oid(1)).unwrap() {
@@ -96,10 +105,15 @@ fn frontiere_correcte_k2_refusee_avant_engagement() {
 
     // Projection ressource : seule K1 y figure.
     assert_eq!(ledger.resource_revision(&rid).unwrap(), 1);
-    assert_eq!(ledger.resource_state(&rid).unwrap(), Some((eff1.clone(), 1)));
+    assert_eq!(
+        ledger.resource_state(&rid).unwrap(),
+        Some((eff1.clone(), 1))
+    );
 
     // Rejeu de K1 : idempotent, AUCUNE re-matérialisation.
-    let rejeu = ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap();
+    let rejeu = ledger
+        .apply_event(&oid(1), &rid, &def1, 0, &eff1, 1)
+        .unwrap();
     assert!(matches!(
         rejeu,
         LedgerOutcome::AlreadyApplied { revision: 1, .. }
@@ -138,12 +152,16 @@ fn frontiere_effet_supplante_durable_resout_applied() {
 
         // K1 matérialisée : révision 0 -> 1.
         assert_eq!(
-            ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap(),
+            ledger
+                .apply_event(&oid(1), &rid, &def1, 0, &eff1, 1)
+                .unwrap(),
             LedgerOutcome::Applied
         );
         // K2 : identité COMMISE + matérialisée (révision 1 -> 2) ...
         assert_eq!(
-            ledger.apply_event(&oid(2), &rid, &def2, 1, &eff2, 2).unwrap(),
+            ledger
+                .apply_event(&oid(2), &rid, &def2, 1, &eff2, 2)
+                .unwrap(),
             LedgerOutcome::Applied
         );
 
@@ -195,8 +213,15 @@ fn frontiere_effet_supplante_durable_resout_applied() {
 
     // La projection COURANTE ne porte que K1 (la réécriture l'a remise à K1) —
     // mais cela ne détermine PAS l'engagement historique de K2.
-    assert_eq!(rev, 1, "révision ressource = celle de K1 (projection remise à K1)");
-    assert_eq!(etat, Some((eff1, 1)), "état ressource = effet de K1 seulement");
+    assert_eq!(
+        rev, 1,
+        "révision ressource = celle de K1 (projection remise à K1)"
+    );
+    assert_eq!(
+        etat,
+        Some((eff1, 1)),
+        "état ressource = effet de K1 seulement"
+    );
 
     // Rejeu de K2 : AlreadyApplied SANS matérialiser (le registre ne répare PAS
     // lui-même la projection — la réparation relève du manager).
@@ -234,8 +259,12 @@ fn classification_supplante_resout_applied() {
     let def2 = b"def-K2".to_vec();
     let eff2 = b"eff-K2".to_vec();
 
-    ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap();
-    ledger.apply_event(&oid(2), &rid, &def2, 1, &eff2, 2).unwrap();
+    ledger
+        .apply_event(&oid(1), &rid, &def1, 0, &eff1, 1)
+        .unwrap();
+    ledger
+        .apply_event(&oid(2), &rid, &def2, 1, &eff2, 2)
+        .unwrap();
     // Une écriture ultérieure SUPPLANTE l'effet de K2 (projection remise à K1).
     ledger
         .store()
@@ -256,7 +285,6 @@ fn classification_supplante_resout_applied() {
     let effet_courant = ledger
         .resource_state(&rid)
         .unwrap()
-        .map(|(e, rev)| rev == 2 && e == eff2)
-        .unwrap_or(false);
+        .is_some_and(|(e, rev)| rev == 2 && e == eff2);
     assert!(!effet_courant, "K2 : effet supplanté (plus courant)");
 }

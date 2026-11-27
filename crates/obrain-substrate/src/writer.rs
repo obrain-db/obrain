@@ -171,7 +171,6 @@ pub(crate) struct SimplexZones<'a> {
     pub postings: &'a mut ZoneFile,
 }
 
-
 /// État cohérent d'un engramme : membres (u32) + poids optionnels (f32).
 pub type EngramState = (Vec<u32>, Option<Vec<f32>>);
 
@@ -2886,10 +2885,7 @@ impl Writer {
     /// Lecture COHÉRENTE membres+poids sous un même verrou : un écrivain
     /// concurrent ne peut pas intercaler une mutation entre les deux lectures
     /// (contrairement à engram_members() puis engram_weights()).
-    pub fn read_engram_state(
-        &self,
-        engram_id: u16,
-    ) -> SubstrateResult<Option<EngramState>> {
+    pub fn read_engram_state(&self, engram_id: u16) -> SubstrateResult<Option<EngramState>> {
         self.with_engram_state_zones(|mz, wz| {
             let Some(members) = crate::engram::EngramZone::members(mz, engram_id)? else {
                 return Ok(None);

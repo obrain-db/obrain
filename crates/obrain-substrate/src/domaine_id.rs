@@ -441,7 +441,7 @@ fn ecrire_atomique(dir: &Path, id: u128) -> io::Result<()> {
 
 /// Écrit `domaine.init` par PUBLICATION ATOMIQUE : `domaine.init.tmp` (écriture
 /// + `sync_all`), `rename` vers `domaine.init`, fsync du répertoire. Même
-/// séquence de durabilité que `ecrire_atomique`.
+///   séquence de durabilité que `ecrire_atomique`.
 fn ecrire_init_atomique(dir: &Path, emp: [u8; 16]) -> io::Result<()> {
     let final_chemin = dir.join(FICHIER_DOMAINE_INIT);
     let tmp_chemin = dir.join(TMP_DOMAINE_INIT);
@@ -667,9 +667,9 @@ pub(crate) fn lire_ou_materieliser(dir: &Path) -> io::Result<u128> {
 /// Migration legacy EXPLICITE : même matrice que la création (matérialise une
 /// identité persistée sur « absent + absent », migre le marqueur sur « présent
 /// + absent »), mais posée comme l'opération EXPLICITE qui lève l'ambiguïté
-/// d'une base existante non vide à l'historique inconnu. C'est l'opération que
-/// le consommateur appelle pour établir une identité stable sur une base legacy
-/// ouverte en réouverture (qui, elle, n'a reçu qu'une identité éphémère).
+///   d'une base existante non vide à l'historique inconnu. C'est l'opération que
+///   le consommateur appelle pour établir une identité stable sur une base legacy
+///   ouverte en réouverture (qui, elle, n'a reçu qu'une identité éphémère).
 pub fn migrer_legacy(dir: &Path) -> io::Result<u128> {
     resoudre(dir, Regime::Creation)
 }
@@ -1036,7 +1036,10 @@ mod tests {
         ecrire_atomique(dir.path(), id).unwrap();
         assert_eq!(lire_init(dir.path()).unwrap(), None);
         let relu = lire_ou_materieliser(dir.path()).unwrap();
-        assert_eq!(relu, id, "crash avant le marqueur = migration, pas de perte");
+        assert_eq!(
+            relu, id,
+            "crash avant le marqueur = migration, pas de perte"
+        );
         assert_eq!(lire_init(dir.path()).unwrap(), Some(empreinte(id)));
     }
 

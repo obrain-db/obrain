@@ -6,8 +6,8 @@
 
 use obrain_cognitive::decay_clock;
 use obrain_cognitive::decay_law::DecayLaw;
-use obrain_common::types::{NodeId, PropertyKey, Value};
-use obrain_core::graph::{GraphStore, GraphStoreMut};
+use obrain_common::types::{NodeId, Value};
+use obrain_core::graph::GraphStoreMut;
 use obrain_substrate::SubstrateStore;
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,7 +37,10 @@ fn une_energie_f64_positive_arrondie_a_zero_en_f32() {
     // Lecture par l'ancre f64 : strictement positive.
     let par_ancre = decay_clock::energy_at(sub.as_ref(), node, &law, BASE);
     eprintln!("energy_at (ancre f64) = {par_ancre:?}");
-    assert!(par_ancre.is_some() && par_ancre.unwrap() > 0.0, "l'ancre f64 est positive");
+    assert!(
+        par_ancre.is_some() && par_ancre.unwrap() > 0.0,
+        "l'ancre f64 est positive"
+    );
 
     // Balayage : la colonne f32 = 0 → le nœud est-il déclaré dormant ?
     let stats = decay_clock::advance_all(sub.as_ref(), &law, 0, BASE + 1_000_000).unwrap();
@@ -45,7 +48,13 @@ fn une_energie_f64_positive_arrondie_a_zero_en_f32() {
     // Après la migration (décodage AVANT dormance) : l'ancre f64 positive
     // n'est PLUS dormante. La matérialisation est différée (dt=1s → énergie
     // 2^-160 inchangée en f32), mais la dormance ne gouverne plus l'ancre.
-    assert_eq!(stats.dormant, 0, "l'ancre positive n'est PAS dormante (autorité f64)");
+    assert_eq!(
+        stats.dormant, 0,
+        "l'ancre positive n'est PAS dormante (autorité f64)"
+    );
     assert_eq!(stats.corrupted, 0, "l'ancre n'est PAS corrompue");
-    assert_eq!(stats.advanced, 0, "matérialisation différée (pas de changement f32)");
+    assert_eq!(
+        stats.advanced, 0,
+        "matérialisation différée (pas de changement f32)"
+    );
 }

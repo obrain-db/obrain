@@ -22,7 +22,7 @@
 //! ## Ce que chaque test établit, et rien de plus
 
 use obrain_common::types::{NodeId, Value};
-use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
+use obrain_core::graph::GraphStoreMut as _;
 use obrain_substrate::store::{
     EtatPropriete, IntegriteTentative, ModePublication, ResolutionEffet,
 };
@@ -119,8 +119,14 @@ fn alteration_partielle_est_signalee_comme_partielle() {
     ))
     .unwrap();
     let res = store.resoudre_reference(&alteree).unwrap();
-    let a = (0..res.nb_effets()).map(|i| res.effet(i)).find(|e| e.cle() == "a").unwrap();
-    let z = (0..res.nb_effets()).map(|i| res.effet(i)).find(|e| e.cle() == "z").unwrap();
+    let a = (0..res.nb_effets())
+        .map(|i| res.effet(i))
+        .find(|e| e.cle() == "a")
+        .unwrap();
+    let z = (0..res.nb_effets())
+        .map(|i| res.effet(i))
+        .find(|e| e.cle() == "z")
+        .unwrap();
     assert_eq!(a.etat(), ResolutionEffet::Engage);
     assert_eq!(z.etat(), ResolutionEffet::Indetermine);
     assert_eq!(
@@ -220,7 +226,10 @@ fn engage_est_historique_et_ne_qualifie_pas_le_contenu() {
 
     // avant masquage : canonique, l'estampille courante est celle de la tentative
     let avant = store.resoudre_reference(&enr.reference).unwrap();
-    let a_avant = (0..avant.nb_effets()).map(|i| avant.effet(i)).find(|e| e.cle() == "a").unwrap();
+    let a_avant = (0..avant.nb_effets())
+        .map(|i| avant.effet(i))
+        .find(|e| e.cle() == "a")
+        .unwrap();
     assert_eq!(
         a_avant.estampille_courante(),
         Some((enr.reference.auteur(), enr.reference.horloge()))
@@ -229,7 +238,10 @@ fn engage_est_historique_et_ne_qualifie_pas_le_contenu() {
     // masquage par une écriture plus récente
     store.set_node_property(id, "a", Value::Int64(99));
     let apres = store.resoudre_reference(&enr.reference).unwrap();
-    let a_apres = (0..apres.nb_effets()).map(|i| apres.effet(i)).find(|e| e.cle() == "a").unwrap();
+    let a_apres = (0..apres.nb_effets())
+        .map(|i| apres.effet(i))
+        .find(|e| e.cle() == "a")
+        .unwrap();
     assert_eq!(a_apres.etat(), ResolutionEffet::Engage, "toujours engagé");
     assert_ne!(
         a_apres.estampille_courante(),
@@ -246,7 +258,7 @@ fn engage_est_historique_et_ne_qualifie_pas_le_contenu() {
 #[test]
 fn la_reference_ne_porte_pas_l_identite_logique_k() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let id = store.create_node(&["n"]);
     store.set_node_property(id, "a", Value::Int64(1));
     let pre = store.capturer_precondition(id, &["a"]).unwrap();
@@ -334,7 +346,7 @@ fn l_autorite_backend_est_l_auteur_persiste() {
 #[test]
 fn preparation_differee_refuse_une_reference() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let id = store.create_node(&["n"]);
     store.set_node_property(id, "a", Value::Int64(1));
     let pre = store.capturer_precondition(id, &["a"]).unwrap();

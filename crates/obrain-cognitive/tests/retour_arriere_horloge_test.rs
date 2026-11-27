@@ -9,8 +9,8 @@ use obrain_cognitive::energy::{EnergyConfig, EnergyStore};
 use obrain_common::types::NodeId;
 use obrain_core::graph::GraphStoreMut;
 use obrain_substrate::SubstrateStore;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 const BASE: i64 = 1_000_000_000_000_000;
@@ -29,7 +29,10 @@ fn renforcement_apres_retour_arriere_d_horloge() {
     let node: NodeId = sub.create_node(&["n"]);
     sub.flush().unwrap();
     let store = EnergyStore::with_substrate(
-        EnergyConfig { default_half_life: H, ..Default::default() },
+        EnergyConfig {
+            default_half_life: H,
+            ..Default::default()
+        },
         sub.clone(),
     )
     .with_clock(clock_fn);
@@ -49,8 +52,8 @@ fn renforcement_apres_retour_arriere_d_horloge() {
 
     // 3-4. Retour arrière de l'horloge physique, puis renforcement +0,1.
     clock.store(BASE, Ordering::Relaxed);
-    let r = store.boost(node, 0.1);
-    eprintln!("reinforce -> {:?}", r);
+    store.boost(node, 0.1);
+    eprintln!("reinforce -> {:?}", ());
 
     // 5. Lecture immédiate (temps effectif constant).
     let e2 = store.get_energy(node);
@@ -68,7 +71,10 @@ fn renforcement_apres_retour_arriere_d_horloge() {
     for _ in 0..3 {
         decay_clock::advance_all(sub.as_ref(), &law, 0, BASE).unwrap();
         let e = store.get_energy(node);
-        assert!((e - 0.3).abs() < 1e-3, "temps constant → pas de décroissance : {e}");
+        assert!(
+            (e - 0.3).abs() < 1e-3,
+            "temps constant → pas de décroissance : {e}"
+        );
     }
     // L'horloge reprend, dépasse le high-water mark → décroissance reprend.
     clock.store(BASE + 2 * H_US, Ordering::Relaxed);
@@ -76,5 +82,8 @@ fn renforcement_apres_retour_arriere_d_horloge() {
     eprintln!("après reprise +2 demi-vies: e={e3:.6}");
     // Le renforcement a eu lieu au temps LOGIQUE (une demi-vie) : la reprise
     // de +2 demi-vies ne compte qu'UNE demi-vie depuis ce temps logique → 0,15.
-    assert!((e3 - 0.15).abs() < 1e-3, "décroissance comptée depuis le temps logique : attendu ~0,15, obtenu {e3}");
+    assert!(
+        (e3 - 0.15).abs() < 1e-3,
+        "décroissance comptée depuis le temps logique : attendu ~0,15, obtenu {e3}"
+    );
 }

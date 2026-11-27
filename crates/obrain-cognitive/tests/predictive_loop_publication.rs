@@ -12,9 +12,9 @@
 
 use std::sync::Arc;
 
-use obrain_common::types::NodeId;
-use obrain_cognitive::engram::{reconsolidate, EngramManager, EngramManagerConfig};
 use obrain_cognitive::InMemoryVectorIndex;
+use obrain_cognitive::engram::{EngramManager, EngramManagerConfig, reconsolidate};
+use obrain_common::types::NodeId;
 
 fn manager() -> EngramManager {
     EngramManager::new(

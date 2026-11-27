@@ -15,7 +15,7 @@ use obrain_common::types::Value;
 use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
 use obrain_substrate::instantane::{exporter_avec_dict, restaurer};
 use obrain_substrate::{
-    SubstrateFile, SubstrateStore, FICHIER_DOMAINE_FORK, FICHIER_DOMAINE_ID, FICHIER_DOMAINE_INIT,
+    FICHIER_DOMAINE_FORK, FICHIER_DOMAINE_ID, FICHIER_DOMAINE_INIT, SubstrateFile, SubstrateStore,
 };
 
 /// Identité simulée du fork « déchiré » (le vrai fork est interrompu par kill -9
@@ -71,9 +71,18 @@ fn zone_names_avant_fork_transporte_la_paire() {
     creer_base_avec_donnee(&base);
     let store = SubstrateStore::open(&base).unwrap();
     let noms = noms_zones(&store);
-    assert!(noms.iter().any(|n| n == FICHIER_DOMAINE_ID), "domaine.id transporté");
-    assert!(noms.iter().any(|n| n == FICHIER_DOMAINE_INIT), "domaine.init transporté");
-    assert!(!noms.iter().any(|n| n == FICHIER_DOMAINE_FORK), "le journal n'est jamais transporté");
+    assert!(
+        noms.iter().any(|n| n == FICHIER_DOMAINE_ID),
+        "domaine.id transporté"
+    );
+    assert!(
+        noms.iter().any(|n| n == FICHIER_DOMAINE_INIT),
+        "domaine.init transporté"
+    );
+    assert!(
+        !noms.iter().any(|n| n == FICHIER_DOMAINE_FORK),
+        "le journal n'est jamais transporté"
+    );
     store.close().unwrap();
 }
 
@@ -114,7 +123,10 @@ fn zone_names_pendant_fork_ne_transporte_pas_la_paire_incoherente() {
         !noms.iter().any(|n| n == FICHIER_DOMAINE_INIT),
         "domaine.init exclu pendant le fork (discordant)"
     );
-    assert!(!noms.iter().any(|n| n == FICHIER_DOMAINE_FORK), "le journal reste exclu");
+    assert!(
+        !noms.iter().any(|n| n == FICHIER_DOMAINE_FORK),
+        "le journal reste exclu"
+    );
 }
 
 /// Restauration DÉCLARÉE avant fork : continuité logique — la base restaurée
@@ -133,7 +145,11 @@ fn snapshot_avant_fork_restaure_la_meme_identite() {
     let dir2 = td.path().join("restored");
     restaurer_disque(&image, &dir2);
     let store2 = SubstrateStore::open(&dir2).unwrap();
-    assert_eq!(store2.domaine_id(), d0, "continuité : même identité restaurée");
+    assert_eq!(
+        store2.domaine_id(),
+        d0,
+        "continuité : même identité restaurée"
+    );
     assert_eq!(store2.node_count(), 1, "la donnée survit à la restauration");
     store2.close().unwrap();
 }
@@ -154,7 +170,11 @@ fn snapshot_apres_fork_restaure_la_nouvelle_identite() {
     let dir2 = td.path().join("restored");
     restaurer_disque(&image, &dir2);
     let store2 = SubstrateStore::open(&dir2).unwrap();
-    assert_eq!(store2.domaine_id(), d1, "la nouvelle identité est restaurée");
+    assert_eq!(
+        store2.domaine_id(),
+        d1,
+        "la nouvelle identité est restaurée"
+    );
     store2.close().unwrap();
 }
 
@@ -180,7 +200,11 @@ fn snapshot_pendant_fork_restaure_sans_paire_incoherente() {
     // L'ouverture ne REFUSE PAS (pas d'empreinte discordante) : la paire n'a pas
     // été transportée, la base restaurée est éphémère.
     let store2 = SubstrateStore::open(&dir2).unwrap();
-    assert_ne!(store2.domaine_id(), 0, "identité éphémère servie, jamais refusée");
+    assert_ne!(
+        store2.domaine_id(),
+        0,
+        "identité éphémère servie, jamais refusée"
+    );
     assert!(
         !dir2.join(FICHIER_DOMAINE_ID).exists() && !dir2.join(FICHIER_DOMAINE_INIT).exists(),
         "rien n'est matérialisé silencieusement"

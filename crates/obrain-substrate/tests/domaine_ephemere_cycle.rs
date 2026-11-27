@@ -59,7 +59,10 @@ fn cycle_complet_ephemere_n_est_jamais_une_autorite_durable() {
         assert_ne!(e1, d0, "l'éphémère ne ressuscite pas l'identité perdue");
         // Lecture : la donnée de la base legacy est servie.
         assert_eq!(store.node_count(), 1);
-        assert_eq!(store.get_node_property(n, &PropertyKey::new("a")), Some(Value::Int64(7)));
+        assert_eq!(
+            store.get_node_property(n, &PropertyKey::new("a")),
+            Some(Value::Int64(7))
+        );
         // Écriture : une écriture ordinaire sous l'éphémère est possible.
         store.set_node_property(n, "a", Value::Int64(8));
         // Préparation transactionnelle → la référence porte l'éphémère e1.
@@ -68,10 +71,17 @@ fn cycle_complet_ephemere_n_est_jamais_une_autorite_durable() {
             .preparer_transformation(n, &[("a", Value::Int64(9))], &pre, ModePublication::Strict)
             .unwrap();
         let reference = prep.reference_tentative();
-        assert_eq!(reference.domaine(), e1, "la référence porte l'éphémère courant");
+        assert_eq!(
+            reference.domaine(),
+            e1,
+            "la référence porte l'éphémère courant"
+        );
         // Publication réelle.
         let issue = store.publier_si_precondition_intacte(prep).unwrap();
-        assert!(matches!(issue, obrain_substrate::IssuePublication::PublieIntegrale));
+        assert!(matches!(
+            issue,
+            obrain_substrate::IssuePublication::PublieIntegrale
+        ));
         // Export OBRT : la référence sérialisée.
         let obrt = reference.to_bytes();
         assert_eq!(&obrt[..4], b"OBRT", "le codec v2 porte le magic OBRT");
@@ -80,16 +90,25 @@ fn cycle_complet_ephemere_n_est_jamais_une_autorite_durable() {
     };
 
     // Jamais durable : aucun fichier d'identité n'a été matérialisé.
-    assert!(aucun_fichier_d_identite(&base), "l'éphémère n'est jamais persisté");
+    assert!(
+        aucun_fichier_d_identite(&base),
+        "l'éphémère n'est jamais persisté"
+    );
 
     // Réouverture : un AUTRE éphémère, et la référence du premier est étrangère.
     let reference = ReferenceTentative::from_bytes(&obrt).unwrap();
     {
         let store = SubstrateStore::open(&base).unwrap();
         let e2 = store.domaine_id();
-        assert_ne!(e2, e1, "deux réouvertures éphémères servent deux identités distinctes");
+        assert_ne!(
+            e2, e1,
+            "deux réouvertures éphémères servent deux identités distinctes"
+        );
         // La donnée a survécu (écrite sous l'éphémère précédent, dans le WAL).
-        assert_eq!(store.get_node_property(n, &PropertyKey::new("a")), Some(Value::Int64(9)));
+        assert_eq!(
+            store.get_node_property(n, &PropertyKey::new("a")),
+            Some(Value::Int64(9))
+        );
         // La référence émise sous e1 est ÉTRANGÈRE au domaine courant e2 :
         // résolution intégralement indéterminée, jamais une confirmation.
         let res = store.resoudre_reference(&reference).unwrap();
@@ -114,12 +133,21 @@ fn perte_des_deux_fichiers_est_ephemere_pas_une_reidentification() {
     retirer_les_deux_fichiers(&base);
 
     let store = SubstrateStore::open(&base).unwrap();
-    assert!(aucun_fichier_d_identite(&base), "réouverture sans matérialisation");
-    assert_eq!(store.domaine_id() != 0, true, "une identité éphémère est servie");
+    assert!(
+        aucun_fichier_d_identite(&base),
+        "réouverture sans matérialisation"
+    );
+    assert!(store.domaine_id() != 0, "une identité éphémère est servie");
     assert_eq!(store.node_count(), 1, "la donnée de la base perdue survit");
-    assert_eq!(store.get_node_property(n, &PropertyKey::new("a")), Some(Value::Int64(7)));
+    assert_eq!(
+        store.get_node_property(n, &PropertyKey::new("a")),
+        Some(Value::Int64(7))
+    );
     store.close().unwrap();
-    assert!(aucun_fichier_d_identite(&base), "toujours rien d'écrit après fermeture");
+    assert!(
+        aucun_fichier_d_identite(&base),
+        "toujours rien d'écrit après fermeture"
+    );
 }
 
 /// (3) Les constructeurs `Creation` (`create`, `create_with_mode`) REFUSENT une
@@ -141,7 +169,10 @@ fn constructeurs_creation_refusent_une_base_existante_non_vide() {
         matches!(&err, SubstrateError::Io(e) if e.kind() == std::io::ErrorKind::AlreadyExists),
         "create doit refuser (AlreadyExists), obtenu {err:?}"
     );
-    assert!(aucun_fichier_d_identite(&base), "aucune ré-identification silencieuse");
+    assert!(
+        aucun_fichier_d_identite(&base),
+        "aucune ré-identification silencieuse"
+    );
 
     // `create_with_mode` (même famille Creation) : même refus.
     let err = match SubstrateStore::create_with_mode(&base, SyncMode::EveryCommit) {
@@ -167,7 +198,10 @@ fn migration_legacy_reste_explicite() {
     // Réouverture ×2 : jamais d'auto-matérialisation.
     for _ in 0..2 {
         let store = SubstrateStore::open(&base).unwrap();
-        assert!(aucun_fichier_d_identite(&base), "la réouverture ne matérialise jamais");
+        assert!(
+            aucun_fichier_d_identite(&base),
+            "la réouverture ne matérialise jamais"
+        );
         store.close().unwrap();
     }
 
@@ -179,8 +213,14 @@ fn migration_legacy_reste_explicite() {
         store.close().unwrap();
         stable
     };
-    assert!(base.join(FICHIER_DOMAINE_ID).exists(), "l'identité est persistée");
-    assert!(base.join(FICHIER_DOMAINE_INIT).exists(), "le marqueur est posé");
+    assert!(
+        base.join(FICHIER_DOMAINE_ID).exists(),
+        "l'identité est persistée"
+    );
+    assert!(
+        base.join(FICHIER_DOMAINE_INIT).exists(),
+        "le marqueur est posé"
+    );
 
     // Les réouvertures suivantes relisent l'identité STABLE.
     let store = SubstrateStore::open(&base).unwrap();

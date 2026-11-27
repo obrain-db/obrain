@@ -17,8 +17,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use obrain_common::types::NodeId;
 use obrain_cognitive::engram::PredictivePolicy;
+use obrain_common::types::NodeId;
 use obrain_engine::{ChildRef, Composition, KnowledgeSpec, ObrainDB, Relation};
 
 type Rel = (u64, u64, String, Option<String>);
@@ -75,30 +75,59 @@ struct ScenarioDef {
 }
 
 fn build_parts(def: &ScenarioDef, ids: &[u64; 4]) -> (Struct, Struct) {
-    let mk = |members: &[usize; 2],
-              rels: &[(usize, usize, &str, Option<&str>)]|
-     -> Struct {
+    let mk = |members: &[usize; 2], rels: &[(usize, usize, &str, Option<&str>)]| -> Struct {
         Struct {
             members: members.iter().map(|i| ids[*i]).collect(),
             relations: rels
                 .iter()
-                .map(|(s2, d2, t, r)| {
-                    (ids[*s2], ids[*d2], t.to_string(), r.map(|x| x.to_string()))
-                })
+                .map(|(s2, d2, t, r)| (ids[*s2], ids[*d2], t.to_string(), r.map(|x| x.to_string())))
                 .collect(),
         }
     };
-    (mk(&def.k1_members, def.k1_rels), mk(&def.k2_members, def.k2_rels))
+    (
+        mk(&def.k1_members, def.k1_rels),
+        mk(&def.k2_members, def.k2_rels),
+    )
 }
 
 #[test]
 fn prediction_compositionnelle_protocole_corrige() {
     let defs = vec![
-        ScenarioDef { name: "disjoints", k1_members: [0, 1], k2_members: [2, 3], k1_rels: &[], k2_rels: &[] },
-        ScenarioDef { name: "participants_partages", k1_members: [0, 1], k2_members: [1, 2], k1_rels: &[], k2_rels: &[] },
-        ScenarioDef { name: "relations_differentes", k1_members: [0, 1], k2_members: [2, 3], k1_rels: &[(0, 1, "cause", None)], k2_rels: &[(2, 3, "support", None)] },
-        ScenarioDef { name: "directions_opposees", k1_members: [0, 1], k2_members: [2, 3], k1_rels: &[(0, 1, "r", None)], k2_rels: &[(3, 2, "r", None)] },
-        ScenarioDef { name: "roles_differents", k1_members: [0, 1], k2_members: [2, 3], k1_rels: &[(0, 1, "r", Some("source"))], k2_rels: &[(2, 3, "r", Some("effect"))] },
+        ScenarioDef {
+            name: "disjoints",
+            k1_members: [0, 1],
+            k2_members: [2, 3],
+            k1_rels: &[],
+            k2_rels: &[],
+        },
+        ScenarioDef {
+            name: "participants_partages",
+            k1_members: [0, 1],
+            k2_members: [1, 2],
+            k1_rels: &[],
+            k2_rels: &[],
+        },
+        ScenarioDef {
+            name: "relations_differentes",
+            k1_members: [0, 1],
+            k2_members: [2, 3],
+            k1_rels: &[(0, 1, "cause", None)],
+            k2_rels: &[(2, 3, "support", None)],
+        },
+        ScenarioDef {
+            name: "directions_opposees",
+            k1_members: [0, 1],
+            k2_members: [2, 3],
+            k1_rels: &[(0, 1, "r", None)],
+            k2_rels: &[(3, 2, "r", None)],
+        },
+        ScenarioDef {
+            name: "roles_differents",
+            k1_members: [0, 1],
+            k2_members: [2, 3],
+            k1_rels: &[(0, 1, "r", Some("source"))],
+            k2_rels: &[(2, 3, "r", Some("effect"))],
+        },
     ];
 
     for def in &defs {
@@ -115,7 +144,7 @@ fn prediction_compositionnelle_protocole_corrige() {
 
         // 0. Quatre participants réels (ids dynamiques).
         let mut ids = [0u64; 4];
-        for slot in ids.iter_mut() {
+        for slot in &mut ids {
             *slot = db.create_node(&["Participant"]).0;
         }
         let (k1_struct, k2_struct) = build_parts(def, &ids);
@@ -136,8 +165,16 @@ fn prediction_compositionnelle_protocole_corrige() {
 
         // Vérité terrain du composite, calculée ABSTRAITEMENT (pas dans le graphe).
         let truth = Struct {
-            members: k1_struct.members.union(&k2_struct.members).copied().collect(),
-            relations: k1_struct.relations.union(&k2_struct.relations).cloned().collect(),
+            members: k1_struct
+                .members
+                .union(&k2_struct.members)
+                .copied()
+                .collect(),
+            relations: k1_struct
+                .relations
+                .union(&k2_struct.relations)
+                .cloned()
+                .collect(),
         };
 
         // Garde-fou : aucun engram n'a observé le composite entier avant la prédiction.
@@ -204,7 +241,10 @@ fn prediction_compositionnelle_protocole_corrige() {
             "[{}] union_rappelée: fidélité participants={:.3} relations={:.3}",
             def.name, u_members, u_relations
         );
-        eprintln!("[{}] moyenne_projections: erreur_vect={:.4}", def.name, avg_err);
+        eprintln!(
+            "[{}] moyenne_projections: erreur_vect={:.4}",
+            def.name, avg_err
+        );
         eprintln!(
             "[{}] composition_explicite: fidélité participants={:.3} relations={:.3}",
             def.name, e_members, e_relations
@@ -212,7 +252,11 @@ fn prediction_compositionnelle_protocole_corrige() {
         eprintln!("[{}] rappel_natif: engrams={:?}", def.name, recalled_ids);
 
         // Assertions HONNÊTES.
-        assert_eq!(u_members, 1.0, "[{}] union rappelée = participants exacts", def.name);
+        assert_eq!(
+            u_members, 1.0,
+            "[{}] union rappelée = participants exacts",
+            def.name
+        );
         if !truth.relations.is_empty() {
             assert_eq!(
                 u_relations, 0.0,
@@ -220,9 +264,21 @@ fn prediction_compositionnelle_protocole_corrige() {
                 def.name
             );
         }
-        assert_eq!(e_members, 1.0, "[{}] composition explicite exacte (membres)", def.name);
-        assert_eq!(e_relations, 1.0, "[{}] composition explicite exacte (relations)", def.name);
-        assert!(centroid_err.is_finite(), "[{}] centroïde mesurable", def.name);
+        assert_eq!(
+            e_members, 1.0,
+            "[{}] composition explicite exacte (membres)",
+            def.name
+        );
+        assert_eq!(
+            e_relations, 1.0,
+            "[{}] composition explicite exacte (relations)",
+            def.name
+        );
+        assert!(
+            centroid_err.is_finite(),
+            "[{}] centroïde mesurable",
+            def.name
+        );
 
         // D. APRÈS la prédiction : construire K3 et vérifier la résolution.
         let k3 = comp
@@ -230,7 +286,15 @@ fn prediction_compositionnelle_protocole_corrige() {
                 members: Default::default(),
                 children: [k1_node, k2_node]
                     .into_iter()
-                    .map(|child| (ChildRef { target: child, role: None }, 1usize))
+                    .map(|child| {
+                        (
+                            ChildRef {
+                                target: child,
+                                role: None,
+                            },
+                            1usize,
+                        )
+                    })
                     .collect(),
                 relations: Default::default(),
             })

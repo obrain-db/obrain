@@ -8,8 +8,8 @@ use obrain_cognitive::decay_law::DecayLaw;
 use obrain_cognitive::energy::{EnergyConfig, EnergyStore};
 use obrain_core::graph::GraphStoreMut;
 use obrain_substrate::SubstrateStore;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 const BASE: i64 = 1_000_000_000_000_000;
@@ -35,7 +35,10 @@ fn un_avancement_a_dt_nul_ne_touche_pas_le_noeud() {
     let node = sub.create_node(&["n"]);
     sub.flush().unwrap();
     let store = EnergyStore::with_substrate(
-        EnergyConfig { default_half_life: H, ..Default::default() },
+        EnergyConfig {
+            default_half_life: H,
+            ..Default::default()
+        },
         sub.clone(),
     )
     .with_clock(clock_fn);
@@ -58,7 +61,10 @@ fn un_avancement_apres_une_demie_vie_ecrit_et_compte() {
     let node = sub.create_node(&["n"]);
     sub.flush().unwrap();
     let store = EnergyStore::with_substrate(
-        EnergyConfig { default_half_life: H, ..Default::default() },
+        EnergyConfig {
+            default_half_life: H,
+            ..Default::default()
+        },
         sub.clone(),
     )
     .with_clock(clock_fn);
