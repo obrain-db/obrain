@@ -117,18 +117,18 @@ fn copie_puis_divergence_resout_selon_les_donnees_reelles() {
     let r_divb_a = store_a.resoudre_reference(&ReferenceTentative::from_bytes(&ref_div_b).unwrap()).unwrap();
 
     // (1) l'entrée historique H0 a été copiée : l'engagement est VRAI dans les deux.
-    assert_eq!(r_orig_a.integrite, IntegriteTentative::Integrale);
-    assert_eq!(r_orig_b.integrite, IntegriteTentative::Integrale);
+    assert_eq!(r_orig_a.integrite(), IntegriteTentative::Integrale);
+    assert_eq!(r_orig_b.integrite(), IntegriteTentative::Integrale);
 
     // (2) mais l'estampille COURANTE a divergé : chaque base a masqué H0 avec SA écriture.
-    assert_ne!(r_orig_a.par_cle[0].estampille_courante(), Some((auteur, horloge_orig)));
-    assert_ne!(r_orig_b.par_cle[0].estampille_courante(), Some((auteur, horloge_orig)));
+    assert_ne!(r_orig_a.effet(0).estampille_courante(), Some((auteur, horloge_orig)));
+    assert_ne!(r_orig_b.effet(0).estampille_courante(), Some((auteur, horloge_orig)));
 
     // (3) pas de fausse confirmation croisée : chaque divergence ne résout QUE chez elle.
-    assert_eq!(r_diva_a.integrite, IntegriteTentative::Integrale);
-    assert_eq!(r_diva_b.integrite, IntegriteTentative::Indeterminee);
-    assert_eq!(r_divb_b.integrite, IntegriteTentative::Integrale);
-    assert_eq!(r_divb_a.integrite, IntegriteTentative::Indeterminee);
+    assert_eq!(r_diva_a.integrite(), IntegriteTentative::Integrale);
+    assert_eq!(r_diva_b.integrite(), IntegriteTentative::Indeterminee);
+    assert_eq!(r_divb_b.integrite(), IntegriteTentative::Integrale);
+    assert_eq!(r_divb_a.integrite(), IntegriteTentative::Indeterminee);
 
     // (4) la valeur courante relue diffère : données RÉELLES de chaque base.
     match store_a.lire_etat_propriete(cible, "a").unwrap() {
@@ -228,24 +228,24 @@ fn deux_bases_independantes_partageant_writer_id() {
     let res_ba = store_a.resoudre_reference(&ref_b).unwrap();
 
     // engagement dans SA base, jamais déduit dans l'autre
-    assert_eq!(res_aa.integrite, IntegriteTentative::Integrale);
-    assert_eq!(res_bb.integrite, IntegriteTentative::Integrale);
+    assert_eq!(res_aa.integrite(), IntegriteTentative::Integrale);
+    assert_eq!(res_bb.integrite(), IntegriteTentative::Integrale);
     assert_eq!(
-        res_ab.integrite,
+        res_ab.integrite(),
         IntegriteTentative::Indeterminee,
         "l'engagement en A n'est pas déduit en B"
     );
     assert_eq!(
-        res_ba.integrite,
+        res_ba.integrite(),
         IntegriteTentative::Indeterminee,
         "l'engagement en B n'est pas déduit en A"
     );
 
     // l'auteur_resolvant ne discrimine PAS les bases : il vaut W dans les deux.
-    assert_eq!(res_aa.auteur_resolvant, auteur_a);
-    assert_eq!(res_bb.auteur_resolvant, auteur_b);
+    assert_eq!(res_aa.auteur_resolvant(), auteur_a);
+    assert_eq!(res_bb.auteur_resolvant(), auteur_b);
     assert_eq!(
-        res_aa.auteur_resolvant, res_bb.auteur_resolvant,
+        res_aa.auteur_resolvant(), res_bb.auteur_resolvant(),
         "writer.id partagé → auteur_resolvant identique : l'auteur n'est pas une identité de base"
     );
 
@@ -276,20 +276,20 @@ fn reference_engagee_avant_suppression_est_indeterminee() {
 
     // avant suppression : engagé
     let avant = store.resoudre_reference(&reference).unwrap();
-    assert_eq!(avant.integrite, IntegriteTentative::Integrale);
-    assert_eq!(avant.par_cle[0].etat, ResolutionEffet::Engage);
+    assert_eq!(avant.integrite(), IntegriteTentative::Integrale);
+    assert_eq!(avant.effet(0).etat(), ResolutionEffet::Engage);
 
     // supprimer la cible, puis résoudre
     assert!(store.delete_node(id), "delete_node doit confirmer la vivacité");
     let apres = store.resoudre_reference(&reference).unwrap();
     assert_eq!(
-        apres.integrite,
+        apres.integrite(),
         IntegriteTentative::Indeterminee,
         "cible non vivante → Indetermine (pas Engage), même si l'entrée survit dans la chaîne"
     );
-    assert_eq!(apres.par_cle[0].etat, ResolutionEffet::Indetermine);
+    assert_eq!(apres.effet(0).etat(), ResolutionEffet::Indetermine);
     assert_eq!(
-        apres.par_cle[0].estampille_courante(), None,
+        apres.effet(0).estampille_courante(), None,
         "nœud non vivant → aucune estampille courante"
     );
     // Distingue « nœud non vivant » de « entrée compactée sur un nœud vivant » :
@@ -339,7 +339,7 @@ fn recreation_de_cible_renouvelle_le_node_id() {
 
     // la référence de l'incarnation morte est indéterminée
     let res = store.resoudre_reference(&reference).unwrap();
-    assert_eq!(res.integrite, IntegriteTentative::Indeterminee);
+    assert_eq!(res.integrite(), IntegriteTentative::Indeterminee);
 
     // un NodeId VIVANT ne prouve pas la même incarnation : id_apres est vivant,
     // mais la référence vise id_avant (mort). Une référence qui vise id_apres
@@ -352,7 +352,7 @@ fn recreation_de_cible_renouvelle_le_node_id() {
     let reference2 = prep2.reference_tentative();
     store.publier_si_precondition_intacte(prep2).unwrap();
     let res2 = store.resoudre_reference(&reference2).unwrap();
-    assert_eq!(res2.integrite, IntegriteTentative::Integrale);
+    assert_eq!(res2.integrite(), IntegriteTentative::Integrale);
 
     eprintln!(
         "RECREATION_OK : id_avant={} id_apres={} — NodeId monotone, jamais réutilisé ; \

@@ -78,32 +78,29 @@ fn reference_survit_a_la_perte_de_reponse_et_au_masquage() {
     // 7. désérialiser et résoudre, sans republier
     let reference = ReferenceTentative::from_bytes(&octets).unwrap();
     let res = store.resoudre_reference(&reference).unwrap();
-    assert_eq!(res.cible, cible);
+    assert_eq!(res.cible(), cible);
     assert_eq!(
-        res.auteur_resolvant, auteur,
+        res.auteur_resolvant(), auteur,
         "l'auteur persistant du répertoire est stable à travers la réouverture"
     );
     assert_eq!(
-        res.integrite,
+        res.integrite(),
         IntegriteTentative::Integrale,
         "les deux effets de la tentative sont engagés"
     );
-    assert!(res
-        .par_cle
-        .iter()
-        .all(|e| e.etat == ResolutionEffet::Engage));
+    assert!((0..res.nb_effets()).all(|i| res.effet(i).etat() == ResolutionEffet::Engage));
 
     // 8. masquer par une mutation ultérieure, sans republier
     store.set_node_property(cible, "a", Value::Int64(99));
     // 9. résoudre de nouveau
     let res2 = store.resoudre_reference(&reference).unwrap();
     assert_eq!(
-        res2.integrite,
+        res2.integrite(),
         IntegriteTentative::Integrale,
         "masqué n'est pas absence : les deux effets restent engagés"
     );
-    let a = res2.par_cle.iter().find(|e| e.cle == "a").unwrap();
-    assert_eq!(a.etat, ResolutionEffet::Engage);
+    let a = (0..res2.nb_effets()).map(|i| res2.effet(i)).find(|e| e.cle() == "a").unwrap();
+    assert_eq!(a.etat(), ResolutionEffet::Engage);
     assert_ne!(
         a.estampille_courante(),
         Some((auteur, horloge)),
@@ -151,16 +148,13 @@ fn reference_etrangere_ne_produit_jamais_engage() {
 
     let res = store_b.resoudre_reference(&etrangere).unwrap();
     assert_eq!(
-        res.integrite,
+        res.integrite(),
         IntegriteTentative::Indeterminee,
         "une référence d'une autre base ne peut pas engager quoi que ce soit ici"
     );
-    assert!(res
-        .par_cle
-        .iter()
-        .all(|e| e.etat == ResolutionEffet::Indetermine));
+    assert!((0..res.nb_effets()).all(|i| res.effet(i).etat() == ResolutionEffet::Indetermine));
     assert_ne!(
-        res.auteur_resolvant,
+        res.auteur_resolvant(),
         etrangere.auteur(),
         "les deux bases ont des identités persistées distinctes"
     );
@@ -191,20 +185,16 @@ fn reference_alteree_ne_produit_jamais_engage() {
     ))
     .unwrap();
     let res = store.resoudre_reference(&forgee).unwrap();
-    let a = res.par_cle.iter().find(|e| e.cle == "a").unwrap();
-    let j = res
-        .par_cle
-        .iter()
-        .find(|e| e.cle == "jamais_ecrite")
-        .unwrap();
-    assert_eq!(a.etat, ResolutionEffet::Engage);
+    let a = (0..res.nb_effets()).map(|i| res.effet(i)).find(|e| e.cle() == "a").unwrap();
+    let j = (0..res.nb_effets()).map(|i| res.effet(i)).find(|e| e.cle() == "jamais_ecrite").unwrap();
+    assert_eq!(a.etat(), ResolutionEffet::Engage);
     assert_eq!(
-        j.etat,
+        j.etat(),
         ResolutionEffet::Indetermine,
         "une clé jamais écrite ne devient pas engagée parce qu'elle est déclarée"
     );
     assert_eq!(
-        res.integrite,
+        res.integrite(),
         IntegriteTentative::Partielle,
         "un agrégat explicite : ni Integrale, ni Indeterminee"
     );

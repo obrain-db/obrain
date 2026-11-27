@@ -108,7 +108,7 @@ fn alteration_partielle_est_signalee_comme_partielle() {
 
     // la référence légitime est intégrale
     let legitime = store.resoudre_reference(&enr.reference).unwrap();
-    assert_eq!(legitime.integrite, IntegriteTentative::Integrale);
+    assert_eq!(legitime.integrite(), IntegriteTentative::Integrale);
 
     // altération d'UNE clé ("b" -> "z"), même longueur, encodage valide
     let alteree = ReferenceTentative::from_bytes(&encoder(
@@ -119,12 +119,12 @@ fn alteration_partielle_est_signalee_comme_partielle() {
     ))
     .unwrap();
     let res = store.resoudre_reference(&alteree).unwrap();
-    let a = res.par_cle.iter().find(|e| e.cle == "a").unwrap();
-    let z = res.par_cle.iter().find(|e| e.cle == "z").unwrap();
-    assert_eq!(a.etat, ResolutionEffet::Engage);
-    assert_eq!(z.etat, ResolutionEffet::Indetermine);
+    let a = (0..res.nb_effets()).map(|i| res.effet(i)).find(|e| e.cle() == "a").unwrap();
+    let z = (0..res.nb_effets()).map(|i| res.effet(i)).find(|e| e.cle() == "z").unwrap();
+    assert_eq!(a.etat(), ResolutionEffet::Engage);
+    assert_eq!(z.etat(), ResolutionEffet::Indetermine);
     assert_eq!(
-        res.integrite,
+        res.integrite(),
         IntegriteTentative::Partielle,
         "une altération partielle se voit comme incomplétude, jamais comme succès"
     );
@@ -173,8 +173,8 @@ fn substitution_par_une_reference_authentique_est_valide_pour_le_store() {
 
     // pour le STORE, la référence substituée est parfaitement valide
     let res = store.resoudre_reference(&ref2).unwrap();
-    assert_eq!(res.integrite, IntegriteTentative::Integrale);
-    assert_eq!(res.par_cle[0].etat, ResolutionEffet::Engage);
+    assert_eq!(res.integrite(), IntegriteTentative::Integrale);
+    assert_eq!(res.effet(0).etat(), ResolutionEffet::Engage);
     // pour le CONSOMMATEUR, elle ne correspond pas à son enregistrement
     assert!(
         !enr1.correspond(&ref2),
@@ -199,11 +199,11 @@ fn suppression_d_une_cle_rend_integrale_une_tentative_incomplete() {
     .unwrap();
     let res = store.resoudre_reference(&reduite).unwrap();
     assert_eq!(
-        res.integrite,
+        res.integrite(),
         IntegriteTentative::Integrale,
         "L'AGRÉGAT PORTE SUR LA LISTE DE LA RÉFÉRENCE : la réduire le rend « intégral »"
     );
-    assert_eq!(res.par_cle.len(), 1);
+    assert_eq!(res.nb_effets(), 1);
     // la seule protection : comparer à la liste attendue du consommateur
     assert!(
         !enr.correspond(&reduite),
@@ -220,7 +220,7 @@ fn engage_est_historique_et_ne_qualifie_pas_le_contenu() {
 
     // avant masquage : canonique, l'estampille courante est celle de la tentative
     let avant = store.resoudre_reference(&enr.reference).unwrap();
-    let a_avant = avant.par_cle.iter().find(|e| e.cle == "a").unwrap();
+    let a_avant = (0..avant.nb_effets()).map(|i| avant.effet(i)).find(|e| e.cle() == "a").unwrap();
     assert_eq!(
         a_avant.estampille_courante(),
         Some((enr.reference.auteur(), enr.reference.horloge()))
@@ -229,14 +229,14 @@ fn engage_est_historique_et_ne_qualifie_pas_le_contenu() {
     // masquage par une écriture plus récente
     store.set_node_property(id, "a", Value::Int64(99));
     let apres = store.resoudre_reference(&enr.reference).unwrap();
-    let a_apres = apres.par_cle.iter().find(|e| e.cle == "a").unwrap();
-    assert_eq!(a_apres.etat, ResolutionEffet::Engage, "toujours engagé");
+    let a_apres = (0..apres.nb_effets()).map(|i| apres.effet(i)).find(|e| e.cle() == "a").unwrap();
+    assert_eq!(a_apres.etat(), ResolutionEffet::Engage, "toujours engagé");
     assert_ne!(
         a_apres.estampille_courante(),
         Some((enr.reference.auteur(), enr.reference.horloge())),
         "l'estampille courante est celle du masqueur"
     );
-    assert_eq!(apres.integrite, IntegriteTentative::Integrale);
+    assert_eq!(apres.integrite(), IntegriteTentative::Integrale);
     // et le contenu n'est plus celui de la tentative
     assert_ne!(valeur_courante(&store, id, "a"), Some(Value::Int64(10)));
     assert_eq!(valeur_courante(&store, id, "a"), Some(Value::Int64(99)));
@@ -276,11 +276,11 @@ fn la_reference_ne_porte_pas_l_identite_logique_k() {
     // publier la première ne rend pas la seconde engagée
     let _ = store.publier_si_precondition_intacte(p1).unwrap();
     assert_eq!(
-        store.resoudre_reference(&r1).unwrap().integrite,
+        store.resoudre_reference(&r1).unwrap().integrite(),
         IntegriteTentative::Integrale
     );
     assert_eq!(
-        store.resoudre_reference(&r2).unwrap().integrite,
+        store.resoudre_reference(&r2).unwrap().integrite(),
         IntegriteTentative::Indeterminee,
         "K égale ne vaut pas engagement : la tentative non publiée reste indéterminée"
     );
@@ -325,7 +325,7 @@ fn l_autorite_backend_est_l_auteur_persiste() {
         store
             .resoudre_reference(&reference)
             .unwrap()
-            .auteur_resolvant,
+            .auteur_resolvant(),
         auteur_avant
     );
 }
