@@ -233,7 +233,7 @@ fn base_avec_donnees_sans_domaine_id_refuse_la_lecture_seule() {
 }
 
 /// Création initiale : `domaine.id` ET `domaine.init` sont posés, et l'empreinte
-/// du marqueur correspond au haut du domaine (8 premiers octets big-endian).
+/// du marqueur est l'identité COMPLÈTE du domaine (16 octets big-endian).
 #[test]
 fn creation_initiale_pose_le_marqueur() {
     let td = tempfile::tempdir().unwrap();
@@ -244,8 +244,8 @@ fn creation_initiale_pose_le_marqueur() {
     assert_eq!(&brut[..6], b"OBRI1\n", "le marqueur porte le magic OBRI + version 1");
     assert_eq!(
         &brut[6..],
-        &id.to_be_bytes()[..8],
-        "l'empreinte est le haut (8 premiers octets) du domaine_id"
+        &id.to_be_bytes()[..16],
+        "l'empreinte est l'identité COMPLÈTE sur 128 bits du domaine_id"
     );
 }
 
@@ -310,10 +310,13 @@ fn migration_base_legacy_domaine_non_vide_conserve_donnees() {
 }
 
 /// MIGRATION legacy jamais identifiée : une base avec données SANS AUCUN fichier
-/// d'identité (`domaine.id` ET `domaine.init` absents) est MATÉRIALISÉE (identité
-/// neuve + marqueur), et les données sont conservées.
+/// RÉOUVERTURE d'une base legacy jamais identifiée (les DEUX fichiers absents) :
+/// identité ÉPHÉMÈRE (jamais refusée, jamais écrite), données conservées — deux
+/// fichiers absents ne prouvent pas qu'elle n'a jamais été identifiée. Puis
+/// MIGRATION legacy EXPLICITE (`migrer_legacy_domaine`) : matérialise l'identité
+/// persistée, relue stable aux réouvertures suivantes.
 #[test]
-fn migration_base_legacy_non_vide_sans_aucun_fichier_conserve_donnees() {
+fn reouverture_ephemere_puis_migration_explicite_conserve_donnees() {
     let td = tempfile::tempdir().unwrap();
     let chemin = td.path().join("kb");
     {
@@ -326,11 +329,33 @@ fn migration_base_legacy_non_vide_sans_aucun_fichier_conserve_donnees() {
     std::fs::remove_file(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID)).unwrap();
     std::fs::remove_file(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT)).unwrap();
 
+    // Réouverture : identité ÉPHÉMÈRE, rien n'est écrit.
+    {
+        let store = SubstrateStore::open(&chemin).unwrap();
+        assert_ne!(store.domaine_id(), 0, "une identité éphémère est servie, jamais refusée");
+        assert!(
+            !chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists(),
+            "la réouverture ne doit PAS réattribuer d'identité persistée à une base legacy"
+        );
+        assert_eq!(store.node_count(), 1, "les données d'une base legacy survivent");
+        store.close().unwrap();
+    }
+
+    // Migration legacy EXPLICITE : matérialise l'identité persistée.
+    {
+        let store = SubstrateStore::open(&chemin).unwrap();
+        let stable = store.migrer_legacy_domaine().unwrap();
+        assert_ne!(stable, 0);
+        assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists());
+        assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT).exists());
+        assert_eq!(store.node_count(), 1);
+        store.close().unwrap();
+    }
+
+    // Les réouvertures suivantes relisent l'identité stable.
     let store = SubstrateStore::open(&chemin).unwrap();
-    assert_ne!(store.domaine_id(), 0, "une identité neuve est matérialisée");
     assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists());
-    assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT).exists());
-    assert_eq!(store.node_count(), 1, "les données d'une base legacy survivent");
+    assert_eq!(store.node_count(), 1);
     store.close().unwrap();
 }
 
@@ -341,7 +366,7 @@ fn empreinte_discordante_refuse_l_ouverture() {
     let td = tempfile::tempdir().unwrap();
     let chemin = td.path().join("kb");
     creer_et_fermer(&chemin);
-    // Retourne un octet de l'empreinte (octets 6..14) : magic intact, empreinte
+    // Retourne un octet de l'empreinte (octets 6..22) : magic intact, empreinte
     // discordante.
     let mut brut = std::fs::read(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT)).unwrap();
     brut[6] ^= 0xff;
@@ -365,7 +390,7 @@ fn domaine_init_tronque_refuse_l_ouverture() {
     creer_et_fermer(&chemin);
     std::fs::write(
         chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT),
-        b"OBRI1\n\x00\x01", // 8 octets au lieu de 14
+        b"OBRI1\n\x00\x01", // 8 octets au lieu de 22
     )
     .unwrap();
     let err = match SubstrateStore::open(&chemin) {
@@ -385,7 +410,7 @@ fn domaine_init_version_inconnue_refuse_l_ouverture() {
     let chemin = td.path().join("kb");
     creer_et_fermer(&chemin);
     let mut buf = b"OBRI9\n".to_vec();
-    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&[0u8; 16]);
     std::fs::write(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT), buf).unwrap();
     let err = match SubstrateStore::open(&chemin) {
         Ok(_) => panic!("un domaine.init de version inconnue aurait dû refuser l'ouverture"),

@@ -3929,6 +3929,18 @@ fn etat_correspond(courant: &EtatPropriete, attendu: &EtatPropriete) -> bool {
     }
 }
 
+/// Régime d'identité de domaine à l'ouverture : distingue la CRÉATION
+/// explicite (`create`, qui matérialise une identité neuve persistée) de la
+/// RÉOUVERTURE (`open`, qui ne ré-identifie pas une base existante à
+/// l'historique inconnu — identité éphémère jusqu'à un
+/// `migrer_legacy_domaine` explicite). Voir `domaine_id.rs`, matrice de
+/// décision.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DomaineOuverture {
+    Creation,
+    Reouverture,
+}
+
 impl SubstrateStore {
     /// Lit une propriété d'un nœud AVEC son estampille complète (auteur +
     /// horloge), en distinguant les états. Les erreurs de lecture/corruption
@@ -8905,7 +8917,12 @@ impl SubstrateStore {
         // `false` : un lecteur n'interne RIEN, donc il n'a pas besoin de la table
         // partagée — et s'il l'ouvrait, il la créerait VIDE, ce qu'un pair en
         // écriture prendrait pour la vérité (voir `from_substrate_partage`).
-        let s = Self::from_substrate_partage(sub, SyncMode::EveryCommit, false)?;
+        let s = Self::from_substrate_partage(
+            sub,
+            SyncMode::EveryCommit,
+            false,
+            DomaineOuverture::Reouverture,
+        )?;
         // Le drapeau `read_only` est posé DANS `from_substrate_partage`, dès la
         // construction du store (il est lu de `SubstrateFile::est_lecture_seule`) :
         // toute l'ouverture s'exécute donc déjà en lecture seule.
@@ -8943,6 +8960,30 @@ impl SubstrateStore {
         };
         *self.domaine_id.write() = nouveau;
         Ok(nouveau)
+    }
+
+    /// Migration legacy EXPLICITE du domaine : matérialise une identité
+    /// PERSISTÉE (`domaine.id` + `domaine.init`) sur une base ouverte en
+    /// réouverture qui n'en a pas (elle n'a alors reçu qu'une identité
+    /// éphémère, jamais écrite). C'est l'opération explicite qui lève
+    /// l'ambiguïté d'une base existante non vide à l'historique inconnu — deux
+    /// fichiers absents ne prouvent pas qu'elle n'a jamais été identifiée, donc
+    /// la réouverture ne la ré-identifie pas d'office. Rend l'identité stable
+    /// (relue aux ouvertures suivantes). Refusée en lecture seule.
+    pub fn migrer_legacy_domaine(&self) -> SubstrateResult<u128> {
+        self.exiger_ecriture("migrer_legacy_domaine")?;
+        let id = {
+            let sub = self.substrate.lock();
+            if sub.is_memory() {
+                // Mode mémoire : pas de répertoire, identité éphémère (rien à
+                // matérialiser) — l'identité courante est conservée.
+                *self.domaine_id.read()
+            } else {
+                crate::domaine_id::migrer_legacy(sub.path())?
+            }
+        };
+        *self.domaine_id.write() = id;
+        Ok(id)
     }
 
     /// Refuse `operation` par [`SubstrateError::LectureSeule`] si ce store est
@@ -8987,19 +9028,34 @@ impl SubstrateStore {
     /// [`SubstrateFile::open_shared_write`].
     pub fn open_shared_write(path: impl AsRef<Path>) -> SubstrateResult<Self> {
         let sub = SubstrateFile::open_shared_write(path.as_ref())?;
-        Self::from_substrate_partage(sub, SyncMode::EveryCommit, true)
+        Self::from_substrate_partage(
+            sub,
+            SyncMode::EveryCommit,
+            true,
+            DomaineOuverture::Reouverture,
+        )
     }
 
     /// Create a new substrate at `path` and open it in `EveryCommit` mode.
     pub fn create(path: impl AsRef<Path>) -> SubstrateResult<Self> {
         let sub = SubstrateFile::create(path.as_ref())?;
-        Self::from_substrate_partage(sub, SyncMode::EveryCommit, true)
+        Self::from_substrate_partage(
+            sub,
+            SyncMode::EveryCommit,
+            true,
+            DomaineOuverture::Creation,
+        )
     }
 
     /// Open with an explicit sync mode — useful in benches.
     pub fn open_with_mode(path: impl AsRef<Path>, sync_mode: SyncMode) -> SubstrateResult<Self> {
         let sub = SubstrateFile::open(path.as_ref())?;
-        Self::from_substrate_partage(sub, sync_mode, true)
+        Self::from_substrate_partage(
+            sub,
+            sync_mode,
+            true,
+            DomaineOuverture::Reouverture,
+        )
     }
 
     /// Create a new substrate at `path` with an explicit sync mode (T5 batch-WAL,
@@ -9010,7 +9066,12 @@ impl SubstrateStore {
     /// `EveryCommit` — this is opt-in only.
     pub fn create_with_mode(path: impl AsRef<Path>, sync_mode: SyncMode) -> SubstrateResult<Self> {
         let sub = SubstrateFile::create(path.as_ref())?;
-        Self::from_substrate_partage(sub, sync_mode, true)
+        Self::from_substrate_partage(
+            sub,
+            sync_mode,
+            true,
+            DomaineOuverture::Creation,
+        )
     }
 
     /// Explicit WAL fsync — see [`Writer::fsync_wal`]. Cheap durability
@@ -9163,7 +9224,12 @@ impl SubstrateStore {
     /// concerne que `open()` sur un chemin.
     pub fn open_tempfile() -> SubstrateResult<Self> {
         let sub = SubstrateFile::open_tempfile()?;
-        Self::from_substrate_partage(sub, SyncMode::Never, true)
+        Self::from_substrate_partage(
+            sub,
+            SyncMode::Never,
+            true,
+            DomaineOuverture::Creation,
+        )
     }
 
     /// Exécute `f` avec un accès VERROUILLÉ au substrat sous-jacent.
@@ -9184,7 +9250,12 @@ impl SubstrateStore {
     /// temps de la session de l'hôte JS.
     pub fn open_memory() -> SubstrateResult<Self> {
         let sub = SubstrateFile::open_memory()?;
-        Self::from_substrate_partage(sub, SyncMode::EveryCommit, true)
+        Self::from_substrate_partage(
+            sub,
+            SyncMode::EveryCommit,
+            true,
+            DomaineOuverture::Creation,
+        )
     }
 
     // ── GARANTIE MEMOIRE (2026-07-25) : proprietes scalaires dans le WAL ──
@@ -9823,6 +9894,7 @@ impl SubstrateStore {
         sub: SubstrateFile,
         sync_mode: SyncMode,
         partage: bool,
+        domaine: DomaineOuverture,
     ) -> SubstrateResult<Self> {
         // ── LECTURE SEULE : DÉCIDÉE ICI, AVANT TOUT LE RESTE ─────────────────
         // Le drapeau vient du `SubstrateFile` (ouvert sans droit d'écriture,
@@ -9834,13 +9906,17 @@ impl SubstrateStore {
         // (obrain#164) Écriture partagée : décidée ici, comme la lecture seule.
         let ecriture_partagee = sub.est_ecriture_partagee() && !lecture_seule;
         let writer_id = crate::writer_id::writer_id(sub.path()).unwrap_or(0);
-        // Identité de DOMAINE (#334, protocole DEUX FICHIERS) : `domaine.id`
+        // Identité de DOMAINE (#334, protocole TROIS FICHIERS) : `domaine.id`
         // (l'identité) + `domaine.init` (le marqueur d'initialisation), SÉPARÉS
-        // de tout format persisté. `create` comme `open` passent ici. La matrice
-        // de décision (voir `domaine_id.rs`) tranche SANS relire les données :
-        // marqueur concordant → identité relue ; `domaine.id` sans marqueur →
-        // migration (écrire le marqueur) ; `domaine.id` perdu avec marqueur
-        // restant → refus (même base VIDE) ; les deux absents → matérialisation.
+        // de tout format persisté, + `domaine.fork` (journal de fork transitoire).
+        // `create` comme `open` passent ici, avec un RÉGIME distinct (voir
+        // `DomaineOuverture`) : la CRÉATION matérialise une identité neuve sur
+        // « les deux absents » ; la RÉOUVERTURE ne la ré-identifie PAS (identité
+        // éphémère — l'historique est inconnu, la matérialisation exige
+        // `migrer_legacy_domaine`). La matrice (voir `domaine_id.rs`) tranche
+        // SANS relire les données : marqueur concordant → identité relue ;
+        // `domaine.id` sans marqueur → migration (écrire le marqueur) ;
+        // `domaine.id` perdu avec marqueur restant → refus (même base VIDE).
         // Corruption = refus explicite. Le mode mémoire n'a pas de répertoire :
         // identité éphémère. La lecture seule ne matérialise ni ne migre
         // (contrat RO) : identité relue, ou éphémère sur base jamais identifiée.
@@ -9850,7 +9926,14 @@ impl SubstrateStore {
             } else if lecture_seule {
                 crate::domaine_id::lire_ou_ephemere(sub.path())?
             } else {
-                crate::domaine_id::lire_ou_materieliser(sub.path())?
+                match domaine {
+                    DomaineOuverture::Creation => {
+                        crate::domaine_id::lire_ou_materieliser(sub.path())?
+                    }
+                    DomaineOuverture::Reouverture => {
+                        crate::domaine_id::lire_ou_reouvrir(sub.path())?
+                    }
+                }
             }
         };
         // ══════ GARDE D'INTEGRITE DE LA REPERMUTATION ══════
@@ -12241,7 +12324,12 @@ impl SubstrateStore {
         let (proprietes, zones) = dissocier_enveloppe(image)?;
         let mut sub = SubstrateFile::open_memory()?;
         crate::instantane::restaurer(&mut sub, zones)?;
-        let store = Self::from_substrate_partage(sub, SyncMode::EveryCommit, true)?;
+        let store = Self::from_substrate_partage(
+            sub,
+            SyncMode::EveryCommit,
+            true,
+            DomaineOuverture::Creation,
+        )?;
         store.appliquer_proprietes_logiques(PropertiesSnapshotV1::from_bytes(proprietes)?);
         Ok(store)
     }
@@ -30322,6 +30410,19 @@ mod tests {
         assert!(
             zones.iter().any(|z| z == crate::file::zone::NODES),
             "l'instantané doit quand même transporter les VRAIES zones : {zones:?}"
+        );
+        // Contrat de continuité : l'identité de domaine (domaine.id +
+        // domaine.init) EST une donnée persistée — elle part avec l'instantané
+        // (restaurer = écraser la base par la copie, identité comprise). Seul le
+        // VERROU (`substrate.domaine.lock`, un `flock`) et le journal de fork
+        // (`domaine.fork`) en sont exclus.
+        assert!(
+            zones.iter().any(|z| z == crate::FICHIER_DOMAINE_ID),
+            "l'instantané doit transporter domaine.id (identité persistée) : {zones:?}"
+        );
+        assert!(
+            zones.iter().any(|z| z == crate::FICHIER_DOMAINE_INIT),
+            "l'instantané doit transporter domaine.init (marqueur d'initialisation) : {zones:?}"
         );
     }
 

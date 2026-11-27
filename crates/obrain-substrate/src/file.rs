@@ -2571,6 +2571,21 @@ impl SubstrateFile {
             crate::store::SUFFIXE_FENCE_DICTIONNAIRE
         );
         noms.retain(|n| n != &fence_dict);
+        // ── LE VERROU ET LE JOURNAL DU DOMAINE NE SONT PAS DES ZONES ─────────
+        // `substrate.domaine.lock` (verrou `flock`) et `domaine.fork` (journal de
+        // fork transitoire) ne portent AUCUN octet de données persistées : l'un
+        // sérialise les écrivains du domaine, l'autre rend un fork interrompu
+        // récupérable. Les transporter dans l'instantané recréerait un verrou ou
+        // un fork fantôme sur le store restauré. `domaine.id` et `domaine.init`,
+        // EUX, restent transportés : ce sont les fichiers persistants de
+        // l'identité (contrat de continuité — une restauration écrase la base
+        // par la copie, identité comprise). Les `.tmp` de la publication
+        // atomique sont transitoires, comme les autres temporaires.
+        noms.retain(|n| {
+            n != crate::domaine_id::FICHIER_DOMAINE_VERROU
+                && n != crate::domaine_id::FICHIER_DOMAINE_FORK
+                && !(n.starts_with("domaine.") && n.ends_with(".tmp"))
+        });
         noms.sort();
         noms.dedup();
         Ok(noms)
