@@ -16,7 +16,7 @@
 //!     `domaine_id` : c'est la LIMITE ASSUMÉE, la distinction exige le fork.
 
 use obrain_common::types::Value;
-use obrain_core::graph::GraphStoreMut as _;
+use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
 use obrain_substrate::{SubstrateError, SubstrateStore};
 
 /// Copie byte-à-byte du CONTENU d'un répertoire de base (tous les fichiers de
@@ -230,4 +230,194 @@ fn base_avec_donnees_sans_domaine_id_refuse_la_lecture_seule() {
         "refus explicite attendu (InvalidData), obtenu {err:?}"
     );
     assert!(!chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists());
+}
+
+/// Création initiale : `domaine.id` ET `domaine.init` sont posés, et l'empreinte
+/// du marqueur est l'identité COMPLÈTE du domaine (16 octets big-endian).
+#[test]
+fn creation_initiale_pose_le_marqueur() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("kb");
+    let id = creer_et_fermer(&chemin);
+    assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists());
+    let brut = std::fs::read(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT)).unwrap();
+    assert_eq!(&brut[..6], b"OBRI1\n", "le marqueur porte le magic OBRI + version 1");
+    assert_eq!(
+        &brut[6..],
+        &id.to_be_bytes()[..16],
+        "l'empreinte est l'identité COMPLÈTE sur 128 bits du domaine_id"
+    );
+}
+
+/// LE CAS CRITIQUE (#334) : une base identifiée VIDE (aucune donnée écrite) qui
+/// perd `domaine.id` — mais garde son marqueur `domaine.init` — REFUSE la
+/// réouverture. L'ancienne heuristique d'occupation l'aurait ré-identifiée en
+/// silence (base vide) ; le marqueur durable l'interdit.
+#[test]
+fn base_identifiee_vide_qui_perd_domaine_id_refuse() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("kb");
+    let id_origine = creer_et_fermer(&chemin);
+    assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists());
+    assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT).exists());
+
+    // Perte : SEUL domaine.id est supprimé (le marqueur reste).
+    std::fs::remove_file(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID)).unwrap();
+
+    let err = match SubstrateStore::open(&chemin) {
+        Ok(_) => panic!("une base identifiée vide sans domaine.id aurait dû refuser l'ouverture"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, SubstrateError::Io(e) if e.kind() == std::io::ErrorKind::InvalidData),
+        "refus explicite attendu (InvalidData), obtenu {err:?}"
+    );
+    // Jamais de réattribution silencieuse : domaine.id reste ABSENT, et la
+    // tentative passée n'est jamais rattachée à une identité inventée.
+    assert!(!chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists());
+    assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT).exists());
+    let _ = id_origine;
+}
+
+/// MIGRATION legacy-domaine : une base identifiée AVANT le marqueur (`domaine.id`
+/// présent, `domaine.init` absent) qui porte des données est MIGRÉE à
+/// l'ouverture — le marqueur est écrit (empreinte du domaine EXISTANT), jamais
+/// une identité neuve, et les données sont conservées.
+#[test]
+fn migration_base_legacy_domaine_non_vide_conserve_donnees() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("kb");
+    let (id, _n) = {
+        let store = SubstrateStore::create(&chemin).unwrap();
+        let id = store.domaine_id();
+        let n = store.create_node(&["ressource"]);
+        store.set_node_property(n, "etat", Value::Int64(7));
+        store.close().unwrap();
+        (id, n)
+    };
+    // Simule « identifiée avant le marqueur » : SEUL domaine.init est supprimé.
+    std::fs::remove_file(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT)).unwrap();
+
+    let store = SubstrateStore::open(&chemin).unwrap();
+    assert_eq!(
+        store.domaine_id(),
+        id,
+        "la migration conserve l'identité existante (jamais de nouvelle identité)"
+    );
+    assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT).exists(), "le marqueur est écrit");
+    assert_eq!(store.node_count(), 1, "les données survivent à la migration");
+    store.close().unwrap();
+}
+
+/// MIGRATION legacy jamais identifiée : une base avec données SANS AUCUN fichier
+/// RÉOUVERTURE d'une base legacy jamais identifiée (les DEUX fichiers absents) :
+/// identité ÉPHÉMÈRE (jamais refusée, jamais écrite), données conservées — deux
+/// fichiers absents ne prouvent pas qu'elle n'a jamais été identifiée. Puis
+/// MIGRATION legacy EXPLICITE (`migrer_legacy_domaine`) : matérialise l'identité
+/// persistée, relue stable aux réouvertures suivantes.
+#[test]
+fn reouverture_ephemere_puis_migration_explicite_conserve_donnees() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("kb");
+    {
+        let store = SubstrateStore::create(&chemin).unwrap();
+        let n = store.create_node(&["ressource"]);
+        store.set_node_property(n, "etat", Value::Int64(7));
+        store.close().unwrap();
+    }
+    // Les DEUX fichiers d'identité sont absents (legacy jamais identifié).
+    std::fs::remove_file(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID)).unwrap();
+    std::fs::remove_file(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT)).unwrap();
+
+    // Réouverture : identité ÉPHÉMÈRE, rien n'est écrit.
+    {
+        let store = SubstrateStore::open(&chemin).unwrap();
+        assert_ne!(store.domaine_id(), 0, "une identité éphémère est servie, jamais refusée");
+        assert!(
+            !chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists(),
+            "la réouverture ne doit PAS réattribuer d'identité persistée à une base legacy"
+        );
+        assert_eq!(store.node_count(), 1, "les données d'une base legacy survivent");
+        store.close().unwrap();
+    }
+
+    // Migration legacy EXPLICITE : matérialise l'identité persistée.
+    {
+        let store = SubstrateStore::open(&chemin).unwrap();
+        let stable = store.migrer_legacy_domaine().unwrap();
+        assert_ne!(stable, 0);
+        assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists());
+        assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT).exists());
+        assert_eq!(store.node_count(), 1);
+        store.close().unwrap();
+    }
+
+    // Les réouvertures suivantes relisent l'identité stable.
+    let store = SubstrateStore::open(&chemin).unwrap();
+    assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists());
+    assert_eq!(store.node_count(), 1);
+    store.close().unwrap();
+}
+
+/// `domaine.init` dont l'empreinte ne correspond pas à `domaine.id` : refus
+/// explicite (corruption ou fork interrompu), jamais de réattribution.
+#[test]
+fn empreinte_discordante_refuse_l_ouverture() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("kb");
+    creer_et_fermer(&chemin);
+    // Retourne un octet de l'empreinte (octets 6..22) : magic intact, empreinte
+    // discordante.
+    let mut brut = std::fs::read(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT)).unwrap();
+    brut[6] ^= 0xff;
+    std::fs::write(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT), brut).unwrap();
+
+    let err = match SubstrateStore::open(&chemin) {
+        Ok(_) => panic!("une empreinte discordante aurait dû refuser l'ouverture"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, SubstrateError::Io(e) if e.kind() == std::io::ErrorKind::InvalidData),
+        "empreinte discordante : refus attendu (InvalidData), obtenu {err:?}"
+    );
+}
+
+/// `domaine.init` tronqué : refus explicite, sans réinitialisation.
+#[test]
+fn domaine_init_tronque_refuse_l_ouverture() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("kb");
+    creer_et_fermer(&chemin);
+    std::fs::write(
+        chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT),
+        b"OBRI1\n\x00\x01", // 8 octets au lieu de 22
+    )
+    .unwrap();
+    let err = match SubstrateStore::open(&chemin) {
+        Ok(_) => panic!("un domaine.init tronqué aurait dû refuser l'ouverture"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, SubstrateError::Io(e) if e.kind() == std::io::ErrorKind::InvalidData),
+        "domaine.init tronqué : refus attendu (InvalidData), obtenu {err:?}"
+    );
+}
+
+/// `domaine.init` avec une version inconnue : refus explicite.
+#[test]
+fn domaine_init_version_inconnue_refuse_l_ouverture() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("kb");
+    creer_et_fermer(&chemin);
+    let mut buf = b"OBRI9\n".to_vec();
+    buf.extend_from_slice(&[0u8; 16]);
+    std::fs::write(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT), buf).unwrap();
+    let err = match SubstrateStore::open(&chemin) {
+        Ok(_) => panic!("un domaine.init de version inconnue aurait dû refuser l'ouverture"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(&err, SubstrateError::Io(e) if e.kind() == std::io::ErrorKind::InvalidData),
+        "domaine.init version inconnue : refus attendu (InvalidData), obtenu {err:?}"
+    );
 }

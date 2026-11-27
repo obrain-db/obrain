@@ -101,7 +101,7 @@ pub use blob_column::{
 pub use blob_column_registry::BLOB_COLUMN_THRESHOLD_BYTES;
 pub use checkpoint::{CheckpointStats, checkpoint};
 pub use dict::DictSnapshot;
-pub use domaine_id::{FICHIER_DOMAINE_ID, forker};
+pub use domaine_id::{FICHIER_DOMAINE_FORK, FICHIER_DOMAINE_ID, FICHIER_DOMAINE_INIT, forker};
 pub use engram::{
     ENGRAM_HEADER_SIZE, ENGRAM_MAGIC, ENGRAM_ZONE_VERSION, EngramZone, MAX_ENGRAM_ID,
 };
