@@ -3138,8 +3138,11 @@ mod tests_rejeu_engramme {
         assert_eq!(wts, Some(vec![0.5, 0.75]));
     }
 
-    /// Le rejeu reconstruit les POIDS SEULS depuis le record `EngramWeightsSet`,
-    /// en ouvrant paresseusement la zone poids à la première occurrence.
+    /// Le rejeu reconstruit les POIDS SEULS depuis le record legacy
+    /// `EngramWeightsSet` (0x76), en ouvrant paresseusement la zone poids à la
+    /// première occurrence. Sous V4, un engramme « poids seuls » n'a pas de
+    /// membres : la lecture cohérente rend `None`, mais la zone des poids brute
+    /// est bien reconstruite.
     #[test]
     fn replay_reconstruit_les_poids_seuls_d_engramme() {
         let dir = tempdir().unwrap();
@@ -3147,7 +3150,7 @@ mod tests_rejeu_engramme {
         {
             let sub = SubstrateFile::create(&sub_path).unwrap();
             let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
-            w.set_engram_weights(2, vec![0.25, 0.5]).unwrap();
+            w.set_engram_weights_legacy(2, vec![0.25, 0.5]).unwrap();
             w.commit().unwrap();
         }
         std::fs::write(sub_path.join(crate::file::zone::ENGRAM_WEIGHTS), []).unwrap();
@@ -3157,6 +3160,17 @@ mod tests_rejeu_engramme {
         assert_eq!(stats.decode_errors, 0);
 
         let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
-        assert_eq!(w2.engram_weights(2).unwrap(), Some(vec![0.25, 0.5]));
+        // V4 : pas de membres, donc la lecture cohérente rend l'absence.
+        assert_eq!(w2.engram_weights(2).unwrap(), None);
+        // La zone des poids brute, elle, a bien été reconstruite depuis le WAL.
+        let zf = w2
+            .substrate()
+            .lock()
+            .open_zone(crate::file::Zone::EngramWeights)
+            .unwrap();
+        assert_eq!(
+            crate::engram::EngramZone::members(&zf, 2).unwrap(),
+            Some(vec![0.25f32.to_bits(), 0.5f32.to_bits()])
+        );
     }
 }

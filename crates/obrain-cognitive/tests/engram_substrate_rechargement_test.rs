@@ -62,7 +62,7 @@ fn load_from_substrate_quarantaine_sur_poids_incoherents() {
     // État incohérent injecté directement : 2 membres, 1 seul poids.
     // (contourne `set_engram_state` qui refuse membres.len() != poids.len()).
     writer.set_engram_members(1, vec![10, 20]).unwrap();
-    writer.set_engram_weights(1, vec![1.0]).unwrap();
+    writer.set_engram_weights_legacy(1, vec![1.0]).unwrap();
 
     let store = EngramStore::new(None);
     store.attach_substrate(writer);

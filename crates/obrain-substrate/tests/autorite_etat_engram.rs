@@ -700,7 +700,7 @@ fn poids_non_lies_legacy_sont_refuses_a_la_lecture() {
 
     // Membres + poids NON LIÉS (chemin legacy 0x76).
     w.set_engram_members(7, vec![1, 2, 3]).unwrap();
-    w.set_engram_weights(7, vec![0.2, 0.3, 0.5]).unwrap();
+    w.set_engram_weights_legacy(7, vec![0.2, 0.3, 0.5]).unwrap();
 
     // La lecture du couple REFUSE : poids non liés = non qualifiés.
     assert!(

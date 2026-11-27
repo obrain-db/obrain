@@ -64,7 +64,7 @@ fn migre_v3_ambigu_preserve_pas_certifie() {
     store_v3(&dir, |w| {
         // AMBIGU : membres + poids NON LIÉS (legacy positionnel 0x76).
         w.set_engram_members(7, vec![1, 2, 3]).unwrap();
-        w.set_engram_weights(7, vec![0.2, 0.3, 0.5]).unwrap();
+        w.set_engram_weights_legacy(7, vec![0.2, 0.3, 0.5]).unwrap();
     });
 
     migrer_repertoire(&dir).expect("migration 3→4 (ambigu préservé)");

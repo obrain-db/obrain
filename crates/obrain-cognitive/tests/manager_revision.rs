@@ -791,7 +791,7 @@ fn incoherence_membres_poids_rejetee() {
         // 1 membre, 2 poids : écrit via les setters séparés (set_engram_state
         // refuse la longueur incohérente).
         writer.set_engram_members(1, vec![7]).unwrap();
-        writer.set_engram_weights(1, vec![1.0, 2.0]).unwrap();
+        writer.set_engram_weights_legacy(1, vec![1.0, 2.0]).unwrap();
     }
     let manager = EngramManager::new(
         EngramManagerConfig::default(),

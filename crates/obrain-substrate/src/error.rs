@@ -365,6 +365,20 @@ pub enum SubstrateError {
         incoherence: EngramIncoherence,
     },
 
+    /// ── ÉCRIRE DES POIDS SEULS EST IMPOSSIBLE EN V4 ───────────────────────
+    ///
+    /// `Writer::set_engram_weights` est l'ancienne porte « poids seuls » (0x76,
+    /// forme NON LIÉE, sans empreinte). Sous V4, les poids sont liés à
+    /// l'IDENTITÉ des membres : écrire des poids sans membres recréerait un
+    /// état pondéré non qualifié que la lecture refuse ensuite. La porte
+    /// REFUSE donc, au lieu d'écrire en silence.
+    #[error(
+        "engram {engram_id} : `set_engram_weights` (poids seuls, non liés) est impossible en V4 \
+         — les poids sont liés à l'identité des membres ; utiliser `set_engram_state(membres, \
+         poids)`"
+    )]
+    PoidsNonLiesImpossiblesEnV4 { engram_id: u16 },
+
     /// Une référence de tentative ne peut pas être ATTRIBUÉE en l'état — cas
     /// nommé : le chemin de préparation différée, où l'estampille n'existe
     /// qu'à la matérialisation. Refus explicite et matchable : jamais une

@@ -303,7 +303,7 @@ fn compact_ne_recertifie_pas_une_empreinte_divergente() {
 fn bulk_ne_certifie_pas_les_poids_legacy_non_lies() {
     let c = bulk_cycle(|w| {
         w.set_engram_members(ENGRAM, MEMBERS.to_vec()).unwrap();
-        w.set_engram_weights(ENGRAM, WEIGHTS.to_vec()).unwrap();
+        w.set_engram_weights_legacy(ENGRAM, WEIGHTS.to_vec()).unwrap();
     });
     assert_eq!(c.avant, Etat::NonLie, "le témoin n'est pas legacy avant remap");
     assert_eq!(
@@ -322,7 +322,7 @@ fn bulk_ne_certifie_pas_les_poids_legacy_non_lies() {
 fn compact_ne_certifie_pas_les_poids_legacy_non_lies() {
     let c = compact_cycle(|w| {
         w.set_engram_members(ENGRAM, MEMBERS.to_vec()).unwrap();
-        w.set_engram_weights(ENGRAM, WEIGHTS.to_vec()).unwrap();
+        w.set_engram_weights_legacy(ENGRAM, WEIGHTS.to_vec()).unwrap();
     });
     assert_eq!(c.avant, Etat::NonLie, "le témoin n'est pas legacy avant remap");
     assert_eq!(

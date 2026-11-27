@@ -182,7 +182,7 @@ pub type EngramState = (Vec<u32>, Option<Vec<f32>>);
 ///    `len == membres.len() + 2`. L'empreinte est vérifiée contre les membres
 ///    courants : une mutation des membres SANS réécriture des poids (chemin
 ///    « membres seuls ») laisse une empreinte périmée, donc un refus.
-///  - NON LIÉE (legacy, `set_engram_weights` 0x76) : `[w1..wN]`,
+///  - NON LIÉE (legacy, `set_engram_weights_legacy` 0x76) : `[w1..wN]`,
 ///    `len == membres.len()`. C'est un état pondéré NON QUALIFIÉ (aucune
 ///    identité enregistrée) : réassocier par position ferait hériter
 ///    silencieusement à un membre nouveau le poids d'un membre disparu. Refus
@@ -200,7 +200,7 @@ fn interpret_engram_weights(
     use crate::error::EngramIncoherence;
     let m = members.len();
     if bits.len() == m {
-        // NON LIÉ (legacy, `set_engram_weights` 0x76) : état pondéré NON
+        // NON LIÉ (legacy, `set_engram_weights_legacy` 0x76) : état pondéré NON
         // QUALIFIÉ. La cardinalité coïncide avec celle des membres, mais
         // AUCUNE identité n'est enregistrée : réassocier par position ferait
         // hériter silencieusement à un membre nouveau le poids d'un membre
@@ -2820,9 +2820,38 @@ impl Writer {
         })
     }
 
-    /// Écrire les poids d'engramme (f32) — WAL-first, idempotent, même ordre
-    /// que les membres. Les f32 sont stockés en bits u32 dans le payload WAL.
-    pub fn set_engram_weights(&self, engram_id: u16, weights: Vec<f32>) -> SubstrateResult<()> {
+    /// Écrire les poids d'engramme (f32) SEULS — IMPOSSIBLE en V4.
+    ///
+    /// Les poids sont liés à l'IDENTITÉ des membres (empreinte 64 bits) ;
+    /// écrire des poids sans membres recréerait un état pondéré NON QUALIFIÉ
+    /// (legacy 0x76) que la lecture V4 refuse ensuite. Cette porte REFUSE donc
+    /// (erreur nommée [`crate::SubstrateError::PoidsNonLiesImpossiblesEnV4`]),
+    /// au lieu d'écrire en silence un état non lié. Utiliser
+    /// [`Self::set_engram_state`] (membres + poids liés) pour écrire un état
+    /// pondéré cohérent.
+    pub fn set_engram_weights(&self, engram_id: u16, _weights: Vec<f32>) -> SubstrateResult<()> {
+        // (#414) Garde d'identifiant AVANT le refus V4 : l'engramme 0 est
+        // réservé et reste un `WalBadFrame`, distinct du refus des poids seuls.
+        crate::engram::EngramZone::verifier_engram_id(engram_id)?;
+        Err(crate::SubstrateError::PoidsNonLiesImpossiblesEnV4 { engram_id })
+    }
+
+    /// Fabrication LEGACY UNIQUEMENT (tests de migration V3→V4, remap, rejeu) :
+    /// écrit des poids NON LIÉS (0x76) comme le faisait l'API V3, via
+    /// [`crate::engram::EngramZone::set_weights_raw`] (sans empreinte
+    /// d'identité).
+    ///
+    /// ⚠️ NE PAS utiliser en production : sous V4, cette forme n'est plus
+    /// lisible (`read_engram_state` la classe `PoidsNonLies` et la refuse, ou
+    /// rend `None` sans membres). Elle n'existe que pour FABRIQUER un état
+    /// legacy à des fins de test (migration, non-recertification au remap,
+    /// reconstruction au rejeu).
+    #[doc(hidden)]
+    pub fn set_engram_weights_legacy(
+        &self,
+        engram_id: u16,
+        weights: Vec<f32>,
+    ) -> SubstrateResult<()> {
         // (#414) Même garde que les deux autres portes : refus avant le journal.
         crate::engram::EngramZone::verifier_engram_id(engram_id)?;
         let bits: Vec<u32> = weights.iter().map(|w| w.to_bits()).collect();
@@ -5717,14 +5746,24 @@ mod tests_engram_etat_atomique {
         assert_eq!(weights, Some(vec![0.5, 0.75]));
     }
 
-    /// La zone POIDS ouverte seule (via `set_engram_weights`) reste relue, puis
-    /// l'état complet n'ouvre que la zone MEMBRES (poids déjà publiée).
+    /// La porte « poids seuls » (`set_engram_weights`) est IMPOSSIBLE en V4 :
+    /// elle REFUSE (erreur nommée) au lieu d'écrire un état pondéré non lié.
+    /// L'état complet (`set_engram_state`) reste le chemin d'écriture des poids.
     #[test]
-    fn set_engram_weights_ouvre_la_zone_poids_avant_l_etat() {
+    fn set_engram_weights_refuse_en_v4() {
         let sub = SubstrateFile::open_tempfile().unwrap();
         let w = Writer::new(sub, SyncMode::Never).unwrap();
-        w.set_engram_weights(2, vec![0.25, 0.5]).unwrap();
-        assert_eq!(w.engram_weights(2).unwrap(), Some(vec![0.25, 0.5]));
+        let err = w.set_engram_weights(2, vec![0.25, 0.5]).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::SubstrateError::PoidsNonLiesImpossiblesEnV4 { engram_id: 2 }
+            ),
+            "refus nommé attendu, obtenu {err:?}"
+        );
+        // Aucun état pondéré non lié n'a été créé : la lecture rend l'absence.
+        assert_eq!(w.engram_weights(2).unwrap(), None);
+        // Le chemin complet (membres + poids liés) reste opérant.
         w.set_engram_state(2, vec![30, 40], vec![0.25, 0.5])
             .unwrap();
         let (m, wts) = w.read_engram_state(2).unwrap().unwrap();
