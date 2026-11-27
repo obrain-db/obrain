@@ -2236,6 +2236,15 @@ pub struct SubstrateStore {
     /// aucun trou dans la zone d'aretes. Filigrane restaure a l'ouverture
     /// depuis le sidecar ET la fenetre WAL (fetch_max, jamais en arriere).
     next_external_edge_id: AtomicU64,
+    /// Index VÉRIFIÉ des identités réservées `(kind, hash_cle) → nœuds`
+    /// (#416). Miroir en mémoire, reconstruit paresseusement au premier
+    /// `reserver_identite` (même contrat que l'index simplicial — l'ouverture
+    /// ne paie rien). SECTION CRITIQUE COMMUNE : tenu pendant toute la
+    /// séquence recherche-vérifiée → construction, c'est lui qui empêche la
+    /// course TOCTOU de `find_by_key` → `create_node`. N'est PAS un verrou de
+    /// zone : les lectures/écritures de propriétés en dessous reprennent leurs
+    /// propres verrous, sans interblocage.
+    reservation_index: Mutex<Option<crate::reservation::ReservationIndex>>,
     /// T17b — index de propriété natif substrate, clés ENREGISTRÉES
     /// uniquement (la présence d'une clé dans la carte externe vaut
     /// enregistrement). `(propriété → (valeur scalaire → ids))`.
@@ -10635,6 +10644,7 @@ impl SubstrateStore {
             external_inbound: DashMap::new(),
             external_by_id: DashMap::new(),
             next_external_edge_id: AtomicU64::new(1),
+            reservation_index: Mutex::new(None),
         };
 
         // ── LE FILIGRANE EST RELEVÉ DES ZONES, PAS DU DICT (Phase B, pièce 2) ─
@@ -14552,6 +14562,16 @@ impl SubstrateStore {
         key: &str,
         value: &Value,
     ) -> SubstrateResult<()> {
+        // Sonde de test : force l'échec de l'ajout v2 pour UNE clé donnée, afin
+        // de qualifier le chemin STRICT de `creer_noeud_atomique` (une
+        // propriété non durable au MILIEU de la construction doit faire rendre
+        // `Err`, pas un `Cree` trompeur). Absente du binaire de production.
+        #[cfg(test)]
+        if ECHEC_APPEND_V2_CLE.with(|c| c.get()) == Some(key) {
+            return Err(SubstrateError::Internal(format!(
+                "échec injecté (test) pour la propriété {key:?}"
+            )));
+        }
         let pz_lock = self
             .props_zone
             .as_ref()
@@ -18512,6 +18532,142 @@ impl SubstrateStore {
         let raw: Vec<u32> = members.iter().map(|n| n.0 as u32).collect();
         self.writer
             .upsert_simplex(kind, type_id, flags, &raw, props)
+    }
+
+    // ==================================================================
+    // Réservation d'identité générique (#416)
+    // ==================================================================
+
+    /// Construit l'index VÉRIFIÉ des identités réservées en balayant les
+    /// nœuds vivants. Lecture paresseuse : uniquement sous le verrou de
+    /// réservation, au premier `reserver_identite` (jamais à l'ouverture).
+    fn construire_index_reservations(
+        &self,
+    ) -> SubstrateResult<crate::reservation::ReservationIndex> {
+        let mut index = crate::reservation::ReservationIndex::default();
+        let prop_cle = PropertyKey::new(crate::reservation::PROP_CLE);
+        for id in self.node_ids() {
+            let Some(Value::Bytes(stocke)) = self.lire_propriete_noeud_vivant(id, &prop_cle) else {
+                continue;
+            };
+            // Clé persistée = [kind] ++ cle. Un octet unique de kind ne porte
+            // aucune clé : entrée inutilisable, ignorée sans bruit.
+            if stocke.is_empty() {
+                continue;
+            }
+            let kind = stocke[0];
+            let hash = crate::reservation::hash_cle(&stocke[1..]);
+            index.insert(kind, hash, id.0 as u32);
+        }
+        Ok(index)
+    }
+
+    /// Construction transactionnelle sous identité réservée (#416) —
+    /// indépendante de `KnowledgeSpec` et des engrammes.
+    ///
+    /// Réutilise le modèle de [`Writer::upsert_simplex`] : une clé canonique,
+    /// un hash de départage, un index VÉRIFIÉ (comparaison du contenu
+    /// complet, jamais le hash seul) tenu sous une section critique commune,
+    /// puis la matérialisation atomique. Réservation et construction forment
+    /// la même unité transactionnelle : la recherche ne peut pas s'entrelacer
+    /// avec la construction, et le nœud n'existe jamais « clé écrite, arêtes
+    /// ou propriétés pas encore posées ».
+    ///
+    /// # Paramètres
+    ///
+    /// * `kind` — espace de noms (deux familles d'identité ne se croisent
+    ///   jamais, même à clé identique) ;
+    /// * `cle` — clé canonique d'identité (octets) ;
+    /// * `definition` — définition canonique (octets) : départage « identique
+    ///   » / « incompatible » quand la clé est déjà réservée ;
+    /// * `construction` — produit `(labels, propriétés)` ; invoquée UNIQUEMENT
+    ///   quand l'identité n'existe pas encore, sous la section critique. Elle
+    ///   ne doit pas ré-entrer dans `reserver_identite` (interblocage) et doit
+    ///   être PURE : déterministe, sans effet de bord externe — elle peut être
+    ///   invoquée une fois, zéro fois, ou rejetée sans prévenir.
+    ///
+    /// # Contrat de durabilité
+    ///
+    /// La primitive matérialise un NŒUD + ses propriétés (une seule unité de
+    /// rejeu), PAS une structure multi-nœuds ni des relations. Le scellement
+    /// est journalisé SANS `fsync` systématique : la durabilité de la
+    /// réservation est celle des écritures auto-commit — acquise au prochain
+    /// `flush`/`close`, pas à chaque appel. Un `Err` de scellement est PROPAGÉ
+    /// (état indéterminé : l'identité n'est ni indexée ni acquittée `Cree`).
+    ///
+    /// # Résultat
+    ///
+    /// * [`crate::reservation::IssueReservation::Existante`] — clé déjà
+    ///   réservée, définition identique (aucun nœud créé) ;
+    /// * [`crate::reservation::IssueReservation::Cree`] — nouvelle identité
+    ///   publiée ;
+    /// * [`crate::reservation::IssueReservation::Conflit`] — clé déjà réservée,
+    ///   définition incompatible (rien n'est écrit) ;
+    /// * `Err(_)` — la construction a échoué ou a été abandonnée : aucun
+    ///   nœud, aucune entrée d'index ; un appel suivant peut reconstruire.
+    pub fn reserver_identite(
+        &self,
+        kind: u8,
+        cle: &[u8],
+        definition: &[u8],
+        construction: impl FnOnce() -> SubstrateResult<(Vec<String>, Vec<(PropertyKey, Value)>)>,
+    ) -> SubstrateResult<crate::reservation::IssueReservation> {
+        use crate::reservation as res;
+        self.refuser_mutation_en_lecture_seule("reserver_identite");
+
+        let hash = res::hash_cle(cle);
+        // Clé persistée = [kind] ++ cle : le kind survit au redémarrage et la
+        // reconstruction de l'index retrouve l'espace de noms exact.
+        let cle_persistee: Vec<u8> = std::iter::once(kind).chain(cle.iter().copied()).collect();
+
+        // SECTION CRITIQUE COMMUNE — recherche vérifiée PUIS construction sous
+        // le même verrou. C'est lui, et non SnapshotIsolation, qui empêche deux
+        // lecteurs « absent » de créer deux identités (course TOCTOU mesurée
+        // dans `reservation_concurrente.rs`).
+        let mut garde = self.reservation_index.lock();
+        if garde.is_none() {
+            *garde = Some(self.construire_index_reservations()?);
+        }
+        let index = garde.as_mut().unwrap();
+
+        let prop_cle = PropertyKey::new(res::PROP_CLE);
+        let prop_def = PropertyKey::new(res::PROP_DEFINITION);
+
+        // find_verified : le hash départage, la clé complète conclut.
+        if let Some(candidats) = index.candidats(kind, hash) {
+            for &nid in candidats {
+                let noeud = NodeId(u64::from(nid));
+                if !self.is_live_on_disk(noeud) {
+                    continue;
+                }
+                let Some(Value::Bytes(stocke)) = self.lire_propriete_noeud_vivant(noeud, &prop_cle)
+                else {
+                    continue;
+                };
+                if stocke.as_ref() != cle_persistee.as_slice() {
+                    continue; // collision de hash, pas la même clé
+                }
+                // Même clé : la définition départage identique / incompatible.
+                let definition_stockee = self.lire_propriete_noeud_vivant(noeud, &prop_def);
+                return Ok(match definition_stockee {
+                    Some(Value::Bytes(d)) if d.as_ref() == definition => {
+                        res::IssueReservation::Existante(nid)
+                    }
+                    _ => res::IssueReservation::Conflit(nid),
+                });
+            }
+        }
+
+        // Clé inconnue : construction dans la même unité transactionnelle.
+        let (labels, mut proprietes) = construction()?;
+        let labels_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        proprietes.push((prop_cle, Value::Bytes(Arc::from(cle_persistee))));
+        proprietes.push((prop_def, Value::Bytes(Arc::from(definition.to_vec()))));
+        // L'échec de scellement est propagé : ni entrée d'index ni `Cree`
+        // (la réservation ne doit pas être acquittée non durable).
+        let id = self.creer_noeud_atomique(&labels_refs, &proprietes)?;
+        index.insert(kind, hash, id.0 as u32);
+        Ok(res::IssueReservation::Cree(id.0 as u32))
     }
 
     /// Tombstone d'un simplexe. `false` si le slot est vide ou déjà mort.
@@ -28009,6 +28165,491 @@ impl SubstrateStore {
             edge_type_source_label_counts,
         }
     }
+
+
+
+    /// Chemin de mutation interne de propriété de nœud, DURABLE ou best-effort
+    /// selon `strict`. `vivant_exige = false` autorise l'écriture sur un nœud
+    /// « en vol » (naissance différée, pas encore ALLOCATED).
+    fn poser_propriete_noeud(
+        &self,
+        id: NodeId,
+        key: &str,
+        value: Value,
+        strict: bool,
+        vivant_exige: bool,
+    ) -> SubstrateResult<()> {
+        self.refuser_mutation_en_lecture_seule("set_node_property");
+        let _marqueur = self.marquer_ecriture_hors_transaction(EntityKind::Node, id.0, key);
+        if vivant_exige && !self.is_live_on_disk(id) {
+            // LpgStore silently no-ops on missing nodes; match that contract.
+            return Ok(());
+        }
+        // Intern the key in the property-key registry up-front so
+        // `all_property_keys()` reports it regardless of which downstream
+        // path takes the write (dense vec column, blob column, PropsZone
+        // v2, or the DashMap fallback — the last of which would otherwise
+        // bypass the registry entirely). Idempotent; overflow at >u16 keys
+        // is swallowed here to match the best-effort semantics of the
+        // DashMap-fallback path below.
+        // Point unique : interne ET journalise. L internement MUET qui vivait
+        // ici rendait `neuf` faux pour les sites v2 en aval, donc aucun
+        // `KeyIntern` n arrivait au WAL — voir `interner_cle_journalisee`.
+        let _ = self.interner_cle_journalisee(key);
+        // T16.7: `Value::Vector` writes bypass the DashMap + props
+        // sidecar and go straight to a dense mmap'd column. This keeps
+        // embeddings off the anon heap. Scalar values still take the
+        // in-memory path.
+        if let Value::Vector(ref v) = value {
+            // (MP-3b, revue du 24/11) Le chemin VECTEUR de NŒUD sortait AVANT le
+            // verrou d'entité, alors que son pendant ARÊTE le prend : deux
+            // processus qui écrivaient un vecteur sur le même nœud pouvaient
+            // s'entrelacer dans la colonne dense, protégée seulement par un
+            // verrou intra-processus. Même asymétrie que celle corrigée sur les
+            // scalaires d'arête — on ferme.
+            let _verrou_entite = self.verrou_entite(id.0);
+            self.route_vector_write(EntityKind::Node, id.0 as u32, key, v);
+            if vivant_exige {
+                self.notify_vector_written(id, key, v);
+                self.notify_node_property_set(id, key);
+            }
+            return Ok(());
+        }
+        // T16.7 Step 4d: oversized `Value::String` / `Value::Bytes`
+        // payloads route to the blob-column registry. `encode_blob_payload`
+        // returns `Some(tagged_bytes)` iff the payload qualifies — `None`
+        // for short scalars, non-blob variants, etc. The 1-byte type tag
+        // at the head of the returned buffer lets the reader reconstruct
+        // the original `Value` variant byte-exactly on the get side.
+        // ── UN SEUL ÉCRIVAIN PAR NŒUD, DE L'ENTRÉE NEUVE AU RETRAIT DE L'ANCIENNE ──
+        //
+        // Pris AVANT le routage blob (revue 5, point 1) : le chemin blob
+        // retournait avant ce verrou, et un blob croisé avec un scalaire sur le
+        // même nœud laissait la valeur lisible (le blob, lu en premier) sans
+        // l'entrée que le scalaire venait de retirer.
+        //
+        // Sans verrou, deux écrivains sur le MÊME (nœud, clé) pouvaient se
+        // croiser (revue 3, C2) : W1 écrit A dans la zone, W2 écrit X (la
+        // zone dit X), W2 passe par la carte avant W1 — W1 lit X comme
+        // « ancienne valeur » et RETIRE l'entrée X : la valeur lisible est X,
+        // sans entrée d'index. Un verrou PAR NŒUD (tranche de 256) tient
+        // ensemble l'entrée neuve, l'écriture de la valeur et le retrait de
+        // l'ancienne ; deux nœuds différents ne s'attendent pas, et il n'est
+        // jamais pris sous un garde de zone (il est le plus EXTÉRIEUR). Sous
+        // lui, `remove_node_property` appelle `notify_node_property_removed`,
+        // dont l'observateur d'index vectoriel fait une suppression (E/S) :
+        // pas de cycle (l'observateur ne revient pas vers ce verrou), mais
+        // cette E/S allonge la détention pour CE nœud.
+        let _verrou_entite = self.verrou_entite(id.0);
+        let _un_ecrivain = self.verrou_ecriture_noeud(id).lock();
+        let pkey = PropertyKey::new(key);
+        if let Some(tagged) = encode_blob_payload(&value) {
+            // Une chaîne datetime longue est un INSTANT que l'index doit
+            // connaître (revue 4, A2) : l'entrée entre AVANT que la valeur
+            // soit lisible, comme sur le chemin scalaire.
+            let cle_neuve = cle_instant(&value);
+            let index_tenu = self.property_indexes.contains_key(&pkey);
+            // La valeur qu'on écrase — blob OU scalaire court (revue 6, N6),
+            // par l'ordre de lecture complet : son entrée doit sortir si elle
+            // se range ailleurs (sinon elle s'accumule, et `taille_candidats`
+            // surcompte).
+            let ancienne = if index_tenu {
+                self.lire_propriete_noeud_vivant(id, &pkey)
+            } else {
+                None
+            };
+            let colonne_existait = self.cle_a_colonne_blob(&pkey);
+            if index_tenu && cle_neuve.is_some() {
+                self.prop_index_insert(&pkey, &value, id);
+            }
+            #[cfg(test)]
+            AVANT_ROUTAGE_BLOB.with(|h| {
+                if let Some(f) = h.borrow().as_ref() {
+                    f(self);
+                }
+            });
+            point_de_crash("noeud:blob:avant_route");
+            self.route_blob_write(EntityKind::Node, id.0 as u32, key, &tagged);
+            point_de_crash("noeud:blob:apres_route");
+            // Clé enregistrée PENDANT l'écriture (construction qui n'a pas vu le
+            // blob) : l'entrée entre en queue, comme sur le chemin scalaire
+            // (revue 5, point 2). Idempotent si elle y est déjà.
+            if cle_neuve.is_some() && !index_tenu && self.property_indexes.contains_key(&pkey) {
+                self.prop_index_insert(&pkey, &value, id);
+            }
+            if let Some(ancienne) = ancienne
+                && Some(cle_de_rangement(&ancienne)) != cle_neuve
+            {
+                self.prop_index_remove(&pkey, &ancienne, id);
+            }
+            // ── UNE COLONNE BLOB QUI APPARAÎT POUR UNE CLÉ INDEXÉE (revue 6, N4) ──
+            //
+            // La colonne vient d'être créée dans ce processus. Si un processus
+            // antérieur est mort entre `blob_columns.sync_all` et la persistance
+            // du dictionnaire (obrain#120), l'en-tête de colonne était durable
+            // sans que le dictionnaire porte sa spec : la colonne vient d'être
+            // ROUVERTE avec ses anciens slots, et d'anciens blobs redeviennent
+            // lisibles alors que l'index, bâti sans colonne, les ignore. On
+            // retire donc la complétude de la clé : la recherche suivante la
+            // reconstruit, colonne comprise — une fois par processus et par clé
+            // qui reçoit sa première colonne.
+            // MÉMOIRE SEULEMENT (revue 7, e) : le retrait de complétude ne
+            // survit pas à la fermeture. Entre cette écriture et la
+            // reconstruction que la recherche suivante déclenche, lecture et
+            // index restent cohérents (la recherche passe par le balayage tant
+            // que la marque manque) ; après un nouveau kill, la clé, à colonne
+            // blob connue du dictionnaire ou non, repasse par la règle R ou par
+            // ce même retrait à la première écriture longue.
+            //
+            // Sous v2 seulement : c'est le rebâti à la demande depuis les
+            // chaînes (`assurer_index_bati_depuis_v2`) qui rend la complétude.
+            // En régime hérité, un index ne voit pas les colonnes blob —
+            // trou antérieur, inchangé ici (obrain#120).
+            if !colonne_existait
+                && self.props_zone.is_some()
+                && self.property_indexes.contains_key(&pkey)
+            {
+                self.index_batis_depuis_v2.remove(&pkey);
+                self.index_ram_complets.remove(&pkey);
+                self.egalite_couverte.remove(&pkey);
+            }
+            if vivant_exige {
+                self.notify_node_property_set(id, key);
+            }
+            return Ok(());
+        }
+        // (2026-08-20) LA VALEUR NE VA PAS EN COLONNE BLOB — IL FAUT DONC
+        // EFFACER CELLE QUI S'Y TROUVE PEUT-ÊTRE ENCORE.
+        //
+        // L'ordre de lecture est vec → blob → v2 → DashMap : une valeur blob
+        // ANCIENNE gagne sur la valeur v2 qu'on s'apprête à écrire, et la
+        // masque indéfiniment. Mesuré avant correctif : `SET n.body = <300 o>`
+        // puis `SET n.body = "court"` rend les 300 octets.
+        //
+        // (obrain#172) MAIS L'EFFACEMENT VIENT APRÈS L'ÉCRITURE DE LA NOUVELLE
+        // VALEUR, PAS AVANT. `clear_slot` met l'entrée d'index de la colonne à
+        // zéro EN PLACE : l'ancienne valeur est illisible aussitôt, et la page
+        // mmap survit au processus. Effacer d'abord, écrire ensuite, c'est
+        // laisser une fenêtre où un `kill -9` ne laisse NI l'ancienne NI la
+        // nouvelle — mesuré : un `hash` long acquitté, remplacé par un court,
+        // rouvrait absent (`remplacement_blob_kill9.rs`, point
+        // `entre_les_deux` : 20/20 sans ce réordonnancement). Une écriture hors
+        // transaction ne déclare aucune valeur d'avant : rien ne la restaure.
+        // Écrire d'abord, effacer ensuite : entre les deux, la lecture rend
+        // l'ANCIENNE (le blob gagne), après, la NOUVELLE — jamais rien. Ce que
+        // l'ordre perd : une écriture NON acquittée tuée entre les deux reste
+        // masquée par l'ancienne jusqu'au prochain `SET` de la clé ; c'est
+        // l'issue permise (une transaction dont le commit n'est pas franchi).
+        //
+        // Le défaut est ANTÉRIEUR — il porte déjà sur `String`, `Bytes` et les
+        // listes routées le 19/08. Il est traité ICI parce que router les
+        // cartes vers les blobs, ce que fait ce commit, y exposerait une
+        // famille de plus : on échangerait une perte contre une PÉRIMÉE, et
+        // « zéro ressemble à une réponse » (0b6c4763) vaut aussi pour une
+        // vieille valeur rendue avec aplomb.
+        //
+        // COÛT : un `get` de DashMap par écriture scalaire, qui sort avant
+        // tout verrou de colonne dès qu'aucune colonne blob n'existe pour
+        // cette clé — le cas de l'écrasante majorité des propriétés.
+        // La valeur BLOB que `effacer_ombre_blob` va masquer : son entrée
+        // d'index doit sortir avec elle (revue 5, mineur).
+        let ombre_blob = if self.property_indexes.contains_key(&pkey) {
+            self.blob_columns
+                .read_value(&pkey, EntityKind::Node, id.0 as u32)
+        } else {
+            None
+        };
+        point_de_crash("noeud:remplacement_inline:avant_tout");
+        // ── L'ENTRÉE D'INDEX ENTRE AVANT QUE LA VALEUR SOIT LISIBLE ──
+        //
+        // L'ordre d'origine écrivait la valeur PUIS mettait l'index à jour.
+        // Entre les deux, un lecteur concurrent LISAIT la valeur neuve
+        // (`get_node_property`) mais ne trouvait pas le nœud par l'index :
+        // deux réponses contradictoires sur le même état, et pour une
+        // vérification d'unicité, un doublon accepté.
+        //
+        // L'index est un SUR-ENSEMBLE revérifié : y inscrire le nœud trop tôt
+        // est sans danger (tant que la valeur n'est pas écrite, la
+        // revérification l'écarte), l'y inscrire trop tard ne l'est pas.
+        // L'ordre est donc : (1) l'entrée NEUVE entre, (2) la valeur est
+        // écrite — c'est le SEUL instant qui tranche, pour tous les lecteurs —
+        // (3) l'entrée ANCIENNE sort, en queue de fonction. Aucun verrou :
+        // à tout instant l'index contient le porteur de la valeur lisible.
+        // La clé est-elle DÉJÀ enregistrée ? C'est ce qu'il faut retenir, pas
+        // « existe-t-il un index » : un index de CETTE clé déclaré pendant
+        // l'écriture (par `create_property_index` ou la préparation
+        // d'arrière-plan) bâtit depuis les chaînes, où la valeur n'est pas
+        // encore — et l'entrée doit alors entrer en queue (revue 3, B2).
+        let index_tenu_pour_cle = self.property_indexes.contains_key(&pkey);
+        if index_tenu_pour_cle {
+            self.prop_index_insert(&pkey, &value, id);
+        }
+        #[cfg(test)]
+        AVANT_ECRITURE_VALEUR.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
+        // T17c Step 3b.2b: dual-write into PropsZone v2 when enabled.
+        // Best-effort — if PropsZone fails (e.g. page-size overflow for an
+        // exotic value), we log and still fall back to the DashMap sidecar
+        // so the call is never lost. 3c will remove the DashMap path once
+        // PropsZone is the single source of truth.
+        // (2026-08-19) On retient si la zone v2 a bien PRIS l ecriture : c est
+        // ce qui autorise, plus bas, a ne PAS la redoubler dans la DashMap.
+        let mut v2_a_pris = false;
+        if self.props_zone.is_some() {
+            match self.append_scalar_to_props_zone_v2(id, key, &value) {
+                Ok(()) => v2_a_pris = true,
+                Err(err) => {
+                    // STRICT : la durabilité est exigée par l'appelant — on
+                    // PROPAGE le refus au lieu de replier sur la DashMap non
+                    // persistée (la valeur disparaîtrait à la réouverture).
+                    if strict {
+                        return Err(SubstrateError::Internal(format!(
+                            "propriété de nœud {id} {key:?} non durable (zone v2 refusée) : {err}"
+                        )));
+                    }
+                    // (2026-08-19) On COMPTE en plus d avertir — voir le pavé
+                    // du champ `v2_appends_refuses`. Un warn dans un journal
+                    // de 400 Mo n a arrêté personne ; un compteur, si.
+                    self.v2_appends_refuses
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    // (2026-08-20) `warn!` → `error!`. Le repli DashMap n'est
+                    // PAS une dégradation bénigne sur une base finalisée : la
+                    // carte n'y est plus persistée, donc la valeur est perdue
+                    // au prochain redémarrage. Mesuré par
+                    // `une_carte_qui_deborde_la_page_de_tas_survit_a_la_reouverture`.
+                    // Le routage blob de ce commit doit rendre ce chemin
+                    // INATTEIGNABLE pour toute variante à repli bincode ; s'il
+                    // s'allume encore, c'est une famille non cartographiée, et
+                    // le niveau doit le dire.
+                    tracing::error!(
+                        node_id = id.0,
+                        key = %key,
+                        error = %err,
+                        "PERTE PROBABLE : ajout PropsZone v2 REFUSE, repli sur la \
+                         DashMap — qui n'est plus persistee sur une base finalisee. \
+                         La valeur disparaitra a la reouverture."
+                    );
+                }
+            }
+        }
+        #[cfg(test)]
+        ENTRE_ZONE_ET_CARTE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
+        // GARANTIE MEMOIRE (2026-07-25) : WAL-first — le contenu de la
+        // propriete part au journal AVANT l insertion memoire. Best-effort
+        // assume : un echec du WAL (disque plein...) ne perd pas l ecriture
+        // memoire, il retire seulement la garantie de survie au crash pour
+        // CETTE entree — et le dit fort.
+        //
+        // ── (2026-09-06, RFC double-journalisation-wal-props — option C) ──
+        // Quand la zone v2 a PRIS l'ecriture (`v2_a_pris`), la valeur vit dans
+        // la page mmap : elle survit au kill de processus via la page cache
+        // (perimetre documente, cf. `a_property_written_then_killed_without_
+        // flush_survives_reopen_regime_v2`), et le rejeu des VALEURS
+        // `PropSetInline` est de toute facon SAUTE sous `v2_has_pages`
+        // (`merge_wal_inline_props`, plus haut dans ce fichier). Le record ne
+        // sert alors plus qu'au regime HERITE / aux bases non finalisees / au
+        // repli anti-refus — c'est-a-dire exactement quand `v2_a_pris` est
+        // faux. On ne redouble donc plus dans le WAL quand v2 a pris :
+        // -1 encode -1 write syscall par prop scalaire (volume WAL allège).
+        // Sur un refus v2 (ou une base heritee), l'append reste — c'est le
+        // filet qui empeche la perte au rejeu.
+        if !v2_a_pris {
+            match Self::wal_inline_encode_value(&value) {
+                Ok(bytes) => {
+                    // (pièce 2, 2026-10-06) `append_prop_set_inline` encode le
+                    // payload EMPRUNTÉ : plus de `key.to_string()` ni de
+                    // `value_bincode` cloné par record (deux allocations,
+                    // 46,4 ns/record mesurés). Les octets écrits sont IDENTIQUES à
+                    // ceux de `WalPayload::PropSetInline` (test
+                    // `payload_emprunte_encode_les_memes_octets`).
+                    if let Err(e) = self.writer.append_prop_set_inline(id.0 as u32, key, &bytes) {
+                        tracing::warn!(node_id = id.0, key = %key, error = %e,
+                            "PropSetInline WAL append failed — write is memory-only until next flush");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(node_id = id.0, key = %key, error = %e,
+                        "PropSetInline encode failed — write is memory-only until next flush");
+                }
+            }
+        }
+        point_de_crash("noeud:remplacement_inline:entre_les_deux");
+        // (obrain#172) La nouvelle valeur est écrite (zone v2 ou trame) : l'ancienne
+        // peut partir. Voir le commentaire de tête de cette branche.
+        #[cfg(test)]
+        AVANT_EFFACEMENT_OMBRE.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
+        self.effacer_ombre_blob(EntityKind::Node, id.0 as u32, key);
+        point_de_crash("noeud:remplacement_inline:apres_tout");
+        // ── (2026-08-19) RECENSEMENT DES LECTEURS DE LA DASHMAP ─────────
+        //
+        // Retirer l ecriture double REVEILLE tout chemin qui ne lit QUE ces
+        // cartes : tant qu elles etaient remplies a chaque ecriture, un tel
+        // chemin voyait les donnees meme sur une base v2. Le recensement a
+        // donc ete refait a la main — les deux champs sont PRIVES et aucun
+        // autre fichier du crate n y touche (verifie par grep), donc la liste
+        // des `self.node_properties` / `self.edge_properties` de ce fichier
+        // est EXHAUSTIVE. Chaque site a ete classe en LISANT la fonction et
+        // ce qu elle appelle, le grep se trompant dans les deux sens.
+        //
+        // DEJA v2-CONSCIENTS (rien a faire) :
+        //   `get_node_property`, `get_edge_property` et leurs corps extraits
+        //   `lire_propriete_{noeud,arete}_vivant*` ; `read_all_properties_
+        //   for_{node,edge}` (fusion en 4 passes, donc `get_node`/`get_edge`,
+        //   donc `get_*_at_epoch`, `get_*_history`, `all_nodes`/`all_edges`
+        //   et `copy_named_graph` qui en derivent) ; `get_node_property_batch`,
+        //   `get_nodes_properties_batch`, `get_nodes_properties_selective_
+        //   batch`, `get_edges_properties_selective_batch` ;
+        //   `find_nodes_by_property`, `find_nodes_by_properties`,
+        //   `node_matches_all_props` ; `valeur_effacable_{de_noeud,d_arete}`
+        //   et donc `remove_*_property{,_versioned}` ; `set_*_property_
+        //   versioned` (lisent par `get_*_property`).
+        //
+        // CORRIGE ICI : `find_nodes_in_range`. Les quinze correctifs du 19/08
+        // ont tous porte sur l EGALITE ; la COMPARAISON n avait jamais ete
+        // auditee, et cette fonction ne parcourait que la DashMap. Elle
+        // rendait deja ZERO sur une base migree — trou pre-existant que la
+        // decommission a rendu visible, `find_nodes_in_range_uses_inclusive_
+        // bounds` passant au rouge sur une base NEUVE.
+        //
+        // CORRECTS SANS ECRITURE, et pourquoi :
+        //   · `delete_node` / `delete_edge` purgent l index enregistre depuis
+        //     ce qu ils retirent de la carte. Or `set_node_property` ECRIT
+        //     dans la carte exactement quand un index existe (garde
+        //     `property_indexes.is_empty()` ci-dessous) : les deux conditions
+        //     coincident. Le seul residu — index declare APRES des ecritures,
+        //     donc bati depuis v2 sur des nœuds absents de la carte — laisse
+        //     une entree perimee que `indexed_candidates` ecarte par
+        //     `is_live_on_disk` PUIS par reverification de la valeur.
+        //   · `delete_{node,edge}_versioned` capturent les proprietes pour le
+        //     journal d annulation. La capture rend `None` sous v2, mais la
+        //     chaine v2 SURVIT au tombstone : la resurrection retrouve les
+        //     valeurs sans capture prealable. Eprouve par
+        //     `suppression_versionnee{,_d_arete}_annulee_restaure_les_
+        //     proprietes_v2`.
+        //   · `persist_properties`, `persist_edge_properties_sidecar`,
+        //     `delete_legacy_props_sidecar`, `finalize_{props,edge_props}_v2` :
+        //     ce sont les organes du regime HERITE et de la migration. Ils
+        //     doivent voir la carte telle qu elle est. Le seul effet du
+        //     retrait est que le sidecar herite cesse d etre alimente — c est
+        //     la regression `OBRAIN_PROPS_V2=0`, traitee a l ouverture.
+        //   · `empreinte_memoire`, `edge_properties_count`, `memory_breakdown`
+        //     et les compteurs : instrumentation. Elle compte moins parce
+        //     qu il y a REELLEMENT moins.
+        //   · `load_properties`, `merge_wal_inline_props`, `ressuscite_*` :
+        //     peupleurs, pas lecteurs.
+        //
+        // `node_property_might_match` / `edge_property_might_match` rendent
+        // `true` inconditionnellement — presélection pessimiste, insensible.
+        //
+        // ── (2026-08-19) NE PLUS REDOUBLER L ECRITURE QUAND v2 L A PRISE ──
+        //
+        // `set_node_property` ecrivait la valeur DEUX fois : sur la chaine v2
+        // ET dans cette DashMap. C est cette seconde ecriture qu on retire —
+        // et elle seule. Les chemins de LECTURE gardent leur repli sur la
+        // DashMap : les ~1 528 bases non migrees n ont aucune zone v2 et
+        // leurs proprietes n existent QUE la.
+        //
+        // TROIS conditions, et il en fallait bien trois :
+        //
+        //  · `v2_a_pris` — si l ajout v2 a ete REFUSE (valeur exotique, page
+        //    saturee : compte par `v2_appends_refuses`), la DashMap reste le
+        //    filet qui empeche la perte. C est le point de durabilite le plus
+        //    sensible du chemin : sauter l ecriture sur un refus v2 perdrait
+        //    la propriete en silence. La preuve par mutation le rattrape
+        //    (`un_refus_v2_retombe_sur_la_dashmap_sans_perdre_la_valeur`).
+        //
+        //  · `property_indexes.is_empty()` — l index retire l ANCIENNE valeur
+        //    en la lisant ici (`prev`). Sans la DashMap on ne la connait plus,
+        //    et la relire depuis v2 couterait un parcours de chaine par
+        //    ecriture. Tant qu un index est enregistre on garde donc le
+        //    comportement d avant, a l identique. Les index sont declares par
+        //    cle et rares ; l import en masse, lui, n en declare aucun.
+        //
+        //  · `!dashmap_noeuds_hydratee` — LA condition que la premiere
+        //    version de ce changement avait manquee. Sur une base v2 dont la
+        //    migration n est pas achevee, `load_properties` hydrate la
+        //    DashMap depuis le sidecar herite : cesser de l ecrire n y laisse
+        //    pas un trou mais une valeur PERIMEE, et le balayage de fin de
+        //    `find_nodes_by_property` ne reverifie PAS ce qu il tire de la
+        //    carte. Faux positif sur l ancienne valeur, mesure par
+        //    `une_valeur_reecrite_sous_v2_ne_laisse_pas_la_dashmap_perimee`.
+        //    Voir le pave du champ.
+        //
+        // Sur une base HERITEE (`props_zone == None`, ~1 528 bases)
+        // `v2_a_pris` est faux par construction : ce chemin reste inchange,
+        // bit pour bit.
+        //
+        // ORDRE DES TROIS CONDITIONS, et il n est pas cosmetique :
+        // `DashMap::is_empty` appelle `len()`, qui prend un verrou de lecture
+        // sur CHACUN de ses ~128 shards. Les deux premieres conditions sont
+        // un booleen de pile et un `AtomicBool` — gratuites — donc elles
+        // court-circuitent avant. Le compte total reste celui d avant ce
+        // commit : le code sortant appelait deja `property_indexes.is_empty()`
+        // une fois par ecriture, pour maintenir l index en queue de fonction ;
+        // sur le chemin d import (aucun index, carte non hydratee) on en
+        // appelle toujours UNE, et on retourne avant la queue.
+        if v2_a_pris
+            && !self.dashmap_noeuds_hydratee.load(Ordering::Acquire)
+            && self.property_indexes.is_empty()
+        {
+            if vivant_exige {
+                self.notify_node_property_set(id, key);
+            }
+            return Ok(());
+        }
+        let prev = self
+            .node_properties
+            .entry(id)
+            .or_default()
+            .insert(pkey.clone(), value.clone());
+        self.noter_props_modifiees();
+        #[cfg(test)]
+        APRES_ECRITURE_VALEUR.with(|h| {
+            if let Some(f) = h.borrow().as_ref() {
+                f(self);
+            }
+        });
+        // T17b : maintenir l'index enregistré — l'ancienne valeur sort,
+        // la nouvelle entre. Garde `is_empty` pour que le chemin sans index
+        // ne paie rien. Les vecteurs/blobs sont sortis plus haut : mêmes
+        // limites que le scan que l'index remplace.
+        if !self.property_indexes.is_empty() {
+            // Clé enregistrée PENDANT cette écriture : l'entrée neuve n'a pas
+            // pu entrer en tête de fonction, et la construction a pu passer
+            // sur ce nœud avant la valeur. Idempotent si elle y est déjà.
+            if !index_tenu_pour_cle {
+                self.prop_index_insert(&pkey, &value, id);
+            }
+            // L'ancienne valeur sort — SAUF si elle se range sous la même clé
+            // que la neuve : on retirerait l'entrée qu'on vient de poser.
+            if let Some(ref old) = prev
+                && cle_de_rangement(old) != cle_de_rangement(&value)
+            {
+                self.prop_index_remove(&pkey, old, id);
+            }
+            if let Some(ref blob) = ombre_blob
+                && cle_instant(blob).is_some()
+                && cle_instant(blob) != Some(cle_de_rangement(&value))
+            {
+                self.prop_index_remove(&pkey, blob, id);
+            }
+        }
+        if vivant_exige {
+            self.notify_node_property_set(id, key);
+        }
+        Ok(())
+    }
 }
 
 impl GraphStoreMut for SubstrateStore {
@@ -28684,6 +29325,7 @@ impl GraphStoreMut for SubstrateStore {
         properties: &[(PropertyKey, Value)],
     ) -> NodeId {
         self.creer_noeud_atomique(labels, properties)
+            .expect("création atomique nœud+propriétés : scellement WAL impossible")
     }
 
     fn create_node_with_props_versioned(
@@ -28705,7 +29347,9 @@ impl GraphStoreMut for SubstrateStore {
             }
             return id;
         }
-        let id = self.creer_noeud_atomique(labels, properties);
+        let id = self
+            .creer_noeud_atomique(labels, properties)
+            .expect("création atomique nœud+propriétés : scellement WAL impossible");
         if epoch.0 > 0 {
             self.naissances_noeuds.insert(id, epoch.0);
             self.note_mvcc_actif();
@@ -29002,459 +29646,8 @@ impl GraphStoreMut for SubstrateStore {
 
     // -- Property mutation --
     fn set_node_property(&self, id: NodeId, key: &str, value: Value) {
-        self.refuser_mutation_en_lecture_seule("set_node_property");
-        let _marqueur = self.marquer_ecriture_hors_transaction(EntityKind::Node, id.0, key);
-        if !self.is_live_on_disk(id) {
-            // LpgStore silently no-ops on missing nodes; match that contract.
-            return;
-        }
-        // Intern the key in the property-key registry up-front so
-        // `all_property_keys()` reports it regardless of which downstream
-        // path takes the write (dense vec column, blob column, PropsZone
-        // v2, or the DashMap fallback — the last of which would otherwise
-        // bypass the registry entirely). Idempotent; overflow at >u16 keys
-        // is swallowed here to match the best-effort semantics of the
-        // DashMap-fallback path below.
-        // Point unique : interne ET journalise. L internement MUET qui vivait
-        // ici rendait `neuf` faux pour les sites v2 en aval, donc aucun
-        // `KeyIntern` n arrivait au WAL — voir `interner_cle_journalisee`.
-        let _ = self.interner_cle_journalisee(key);
-        // T16.7: `Value::Vector` writes bypass the DashMap + props
-        // sidecar and go straight to a dense mmap'd column. This keeps
-        // embeddings off the anon heap. Scalar values still take the
-        // in-memory path.
-        if let Value::Vector(ref v) = value {
-            // (MP-3b, revue du 24/11) Le chemin VECTEUR de NŒUD sortait AVANT le
-            // verrou d'entité, alors que son pendant ARÊTE le prend : deux
-            // processus qui écrivaient un vecteur sur le même nœud pouvaient
-            // s'entrelacer dans la colonne dense, protégée seulement par un
-            // verrou intra-processus. Même asymétrie que celle corrigée sur les
-            // scalaires d'arête — on ferme.
-            let _verrou_entite = self.verrou_entite(id.0);
-            self.route_vector_write(EntityKind::Node, id.0 as u32, key, v);
-            self.notify_vector_written(id, key, v);
-            self.notify_node_property_set(id, key);
-            return;
-        }
-        // T16.7 Step 4d: oversized `Value::String` / `Value::Bytes`
-        // payloads route to the blob-column registry. `encode_blob_payload`
-        // returns `Some(tagged_bytes)` iff the payload qualifies — `None`
-        // for short scalars, non-blob variants, etc. The 1-byte type tag
-        // at the head of the returned buffer lets the reader reconstruct
-        // the original `Value` variant byte-exactly on the get side.
-        // ── UN SEUL ÉCRIVAIN PAR NŒUD, DE L'ENTRÉE NEUVE AU RETRAIT DE L'ANCIENNE ──
-        //
-        // Pris AVANT le routage blob (revue 5, point 1) : le chemin blob
-        // retournait avant ce verrou, et un blob croisé avec un scalaire sur le
-        // même nœud laissait la valeur lisible (le blob, lu en premier) sans
-        // l'entrée que le scalaire venait de retirer.
-        //
-        // Sans verrou, deux écrivains sur le MÊME (nœud, clé) pouvaient se
-        // croiser (revue 3, C2) : W1 écrit A dans la zone, W2 écrit X (la
-        // zone dit X), W2 passe par la carte avant W1 — W1 lit X comme
-        // « ancienne valeur » et RETIRE l'entrée X : la valeur lisible est X,
-        // sans entrée d'index. Un verrou PAR NŒUD (tranche de 256) tient
-        // ensemble l'entrée neuve, l'écriture de la valeur et le retrait de
-        // l'ancienne ; deux nœuds différents ne s'attendent pas, et il n'est
-        // jamais pris sous un garde de zone (il est le plus EXTÉRIEUR). Sous
-        // lui, `remove_node_property` appelle `notify_node_property_removed`,
-        // dont l'observateur d'index vectoriel fait une suppression (E/S) :
-        // pas de cycle (l'observateur ne revient pas vers ce verrou), mais
-        // cette E/S allonge la détention pour CE nœud.
-        let _verrou_entite = self.verrou_entite(id.0);
-        let _un_ecrivain = self.verrou_ecriture_noeud(id).lock();
-        let pkey = PropertyKey::new(key);
-        if let Some(tagged) = encode_blob_payload(&value) {
-            // Une chaîne datetime longue est un INSTANT que l'index doit
-            // connaître (revue 4, A2) : l'entrée entre AVANT que la valeur
-            // soit lisible, comme sur le chemin scalaire.
-            let cle_neuve = cle_instant(&value);
-            let index_tenu = self.property_indexes.contains_key(&pkey);
-            // La valeur qu'on écrase — blob OU scalaire court (revue 6, N6),
-            // par l'ordre de lecture complet : son entrée doit sortir si elle
-            // se range ailleurs (sinon elle s'accumule, et `taille_candidats`
-            // surcompte).
-            let ancienne = if index_tenu {
-                self.lire_propriete_noeud_vivant(id, &pkey)
-            } else {
-                None
-            };
-            let colonne_existait = self.cle_a_colonne_blob(&pkey);
-            if index_tenu && cle_neuve.is_some() {
-                self.prop_index_insert(&pkey, &value, id);
-            }
-            #[cfg(test)]
-            AVANT_ROUTAGE_BLOB.with(|h| {
-                if let Some(f) = h.borrow().as_ref() {
-                    f(self);
-                }
-            });
-            point_de_crash("noeud:blob:avant_route");
-            self.route_blob_write(EntityKind::Node, id.0 as u32, key, &tagged);
-            point_de_crash("noeud:blob:apres_route");
-            // Clé enregistrée PENDANT l'écriture (construction qui n'a pas vu le
-            // blob) : l'entrée entre en queue, comme sur le chemin scalaire
-            // (revue 5, point 2). Idempotent si elle y est déjà.
-            if cle_neuve.is_some() && !index_tenu && self.property_indexes.contains_key(&pkey) {
-                self.prop_index_insert(&pkey, &value, id);
-            }
-            if let Some(ancienne) = ancienne
-                && Some(cle_de_rangement(&ancienne)) != cle_neuve
-            {
-                self.prop_index_remove(&pkey, &ancienne, id);
-            }
-            // ── UNE COLONNE BLOB QUI APPARAÎT POUR UNE CLÉ INDEXÉE (revue 6, N4) ──
-            //
-            // La colonne vient d'être créée dans ce processus. Si un processus
-            // antérieur est mort entre `blob_columns.sync_all` et la persistance
-            // du dictionnaire (obrain#120), l'en-tête de colonne était durable
-            // sans que le dictionnaire porte sa spec : la colonne vient d'être
-            // ROUVERTE avec ses anciens slots, et d'anciens blobs redeviennent
-            // lisibles alors que l'index, bâti sans colonne, les ignore. On
-            // retire donc la complétude de la clé : la recherche suivante la
-            // reconstruit, colonne comprise — une fois par processus et par clé
-            // qui reçoit sa première colonne.
-            // MÉMOIRE SEULEMENT (revue 7, e) : le retrait de complétude ne
-            // survit pas à la fermeture. Entre cette écriture et la
-            // reconstruction que la recherche suivante déclenche, lecture et
-            // index restent cohérents (la recherche passe par le balayage tant
-            // que la marque manque) ; après un nouveau kill, la clé, à colonne
-            // blob connue du dictionnaire ou non, repasse par la règle R ou par
-            // ce même retrait à la première écriture longue.
-            //
-            // Sous v2 seulement : c'est le rebâti à la demande depuis les
-            // chaînes (`assurer_index_bati_depuis_v2`) qui rend la complétude.
-            // En régime hérité, un index ne voit pas les colonnes blob —
-            // trou antérieur, inchangé ici (obrain#120).
-            if !colonne_existait
-                && self.props_zone.is_some()
-                && self.property_indexes.contains_key(&pkey)
-            {
-                self.index_batis_depuis_v2.remove(&pkey);
-                self.index_ram_complets.remove(&pkey);
-                self.egalite_couverte.remove(&pkey);
-            }
-            self.notify_node_property_set(id, key);
-            return;
-        }
-        // (2026-08-20) LA VALEUR NE VA PAS EN COLONNE BLOB — IL FAUT DONC
-        // EFFACER CELLE QUI S'Y TROUVE PEUT-ÊTRE ENCORE.
-        //
-        // L'ordre de lecture est vec → blob → v2 → DashMap : une valeur blob
-        // ANCIENNE gagne sur la valeur v2 qu'on s'apprête à écrire, et la
-        // masque indéfiniment. Mesuré avant correctif : `SET n.body = <300 o>`
-        // puis `SET n.body = "court"` rend les 300 octets.
-        //
-        // (obrain#172) MAIS L'EFFACEMENT VIENT APRÈS L'ÉCRITURE DE LA NOUVELLE
-        // VALEUR, PAS AVANT. `clear_slot` met l'entrée d'index de la colonne à
-        // zéro EN PLACE : l'ancienne valeur est illisible aussitôt, et la page
-        // mmap survit au processus. Effacer d'abord, écrire ensuite, c'est
-        // laisser une fenêtre où un `kill -9` ne laisse NI l'ancienne NI la
-        // nouvelle — mesuré : un `hash` long acquitté, remplacé par un court,
-        // rouvrait absent (`remplacement_blob_kill9.rs`, point
-        // `entre_les_deux` : 20/20 sans ce réordonnancement). Une écriture hors
-        // transaction ne déclare aucune valeur d'avant : rien ne la restaure.
-        // Écrire d'abord, effacer ensuite : entre les deux, la lecture rend
-        // l'ANCIENNE (le blob gagne), après, la NOUVELLE — jamais rien. Ce que
-        // l'ordre perd : une écriture NON acquittée tuée entre les deux reste
-        // masquée par l'ancienne jusqu'au prochain `SET` de la clé ; c'est
-        // l'issue permise (une transaction dont le commit n'est pas franchi).
-        //
-        // Le défaut est ANTÉRIEUR — il porte déjà sur `String`, `Bytes` et les
-        // listes routées le 19/08. Il est traité ICI parce que router les
-        // cartes vers les blobs, ce que fait ce commit, y exposerait une
-        // famille de plus : on échangerait une perte contre une PÉRIMÉE, et
-        // « zéro ressemble à une réponse » (0b6c4763) vaut aussi pour une
-        // vieille valeur rendue avec aplomb.
-        //
-        // COÛT : un `get` de DashMap par écriture scalaire, qui sort avant
-        // tout verrou de colonne dès qu'aucune colonne blob n'existe pour
-        // cette clé — le cas de l'écrasante majorité des propriétés.
-        // La valeur BLOB que `effacer_ombre_blob` va masquer : son entrée
-        // d'index doit sortir avec elle (revue 5, mineur).
-        let ombre_blob = if self.property_indexes.contains_key(&pkey) {
-            self.blob_columns
-                .read_value(&pkey, EntityKind::Node, id.0 as u32)
-        } else {
-            None
-        };
-        point_de_crash("noeud:remplacement_inline:avant_tout");
-        // ── L'ENTRÉE D'INDEX ENTRE AVANT QUE LA VALEUR SOIT LISIBLE ──
-        //
-        // L'ordre d'origine écrivait la valeur PUIS mettait l'index à jour.
-        // Entre les deux, un lecteur concurrent LISAIT la valeur neuve
-        // (`get_node_property`) mais ne trouvait pas le nœud par l'index :
-        // deux réponses contradictoires sur le même état, et pour une
-        // vérification d'unicité, un doublon accepté.
-        //
-        // L'index est un SUR-ENSEMBLE revérifié : y inscrire le nœud trop tôt
-        // est sans danger (tant que la valeur n'est pas écrite, la
-        // revérification l'écarte), l'y inscrire trop tard ne l'est pas.
-        // L'ordre est donc : (1) l'entrée NEUVE entre, (2) la valeur est
-        // écrite — c'est le SEUL instant qui tranche, pour tous les lecteurs —
-        // (3) l'entrée ANCIENNE sort, en queue de fonction. Aucun verrou :
-        // à tout instant l'index contient le porteur de la valeur lisible.
-        // La clé est-elle DÉJÀ enregistrée ? C'est ce qu'il faut retenir, pas
-        // « existe-t-il un index » : un index de CETTE clé déclaré pendant
-        // l'écriture (par `create_property_index` ou la préparation
-        // d'arrière-plan) bâtit depuis les chaînes, où la valeur n'est pas
-        // encore — et l'entrée doit alors entrer en queue (revue 3, B2).
-        let index_tenu_pour_cle = self.property_indexes.contains_key(&pkey);
-        if index_tenu_pour_cle {
-            self.prop_index_insert(&pkey, &value, id);
-        }
-        #[cfg(test)]
-        AVANT_ECRITURE_VALEUR.with(|h| {
-            if let Some(f) = h.borrow().as_ref() {
-                f(self);
-            }
-        });
-        // T17c Step 3b.2b: dual-write into PropsZone v2 when enabled.
-        // Best-effort — if PropsZone fails (e.g. page-size overflow for an
-        // exotic value), we log and still fall back to the DashMap sidecar
-        // so the call is never lost. 3c will remove the DashMap path once
-        // PropsZone is the single source of truth.
-        // (2026-08-19) On retient si la zone v2 a bien PRIS l ecriture : c est
-        // ce qui autorise, plus bas, a ne PAS la redoubler dans la DashMap.
-        let mut v2_a_pris = false;
-        if self.props_zone.is_some() {
-            match self.append_scalar_to_props_zone_v2(id, key, &value) {
-                Ok(()) => v2_a_pris = true,
-                Err(err) => {
-                    // (2026-08-19) On COMPTE en plus d avertir — voir le pavé
-                    // du champ `v2_appends_refuses`. Un warn dans un journal
-                    // de 400 Mo n a arrêté personne ; un compteur, si.
-                    self.v2_appends_refuses
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    // (2026-08-20) `warn!` → `error!`. Le repli DashMap n'est
-                    // PAS une dégradation bénigne sur une base finalisée : la
-                    // carte n'y est plus persistée, donc la valeur est perdue
-                    // au prochain redémarrage. Mesuré par
-                    // `une_carte_qui_deborde_la_page_de_tas_survit_a_la_reouverture`.
-                    // Le routage blob de ce commit doit rendre ce chemin
-                    // INATTEIGNABLE pour toute variante à repli bincode ; s'il
-                    // s'allume encore, c'est une famille non cartographiée, et
-                    // le niveau doit le dire.
-                    tracing::error!(
-                        node_id = id.0,
-                        key = %key,
-                        error = %err,
-                        "PERTE PROBABLE : ajout PropsZone v2 REFUSE, repli sur la \
-                         DashMap — qui n'est plus persistee sur une base finalisee. \
-                         La valeur disparaitra a la reouverture."
-                    );
-                }
-            }
-        }
-        #[cfg(test)]
-        ENTRE_ZONE_ET_CARTE.with(|h| {
-            if let Some(f) = h.borrow().as_ref() {
-                f(self);
-            }
-        });
-        // GARANTIE MEMOIRE (2026-07-25) : WAL-first — le contenu de la
-        // propriete part au journal AVANT l insertion memoire. Best-effort
-        // assume : un echec du WAL (disque plein...) ne perd pas l ecriture
-        // memoire, il retire seulement la garantie de survie au crash pour
-        // CETTE entree — et le dit fort.
-        //
-        // ── (2026-09-06, RFC double-journalisation-wal-props — option C) ──
-        // Quand la zone v2 a PRIS l'ecriture (`v2_a_pris`), la valeur vit dans
-        // la page mmap : elle survit au kill de processus via la page cache
-        // (perimetre documente, cf. `a_property_written_then_killed_without_
-        // flush_survives_reopen_regime_v2`), et le rejeu des VALEURS
-        // `PropSetInline` est de toute facon SAUTE sous `v2_has_pages`
-        // (`merge_wal_inline_props`, plus haut dans ce fichier). Le record ne
-        // sert alors plus qu'au regime HERITE / aux bases non finalisees / au
-        // repli anti-refus — c'est-a-dire exactement quand `v2_a_pris` est
-        // faux. On ne redouble donc plus dans le WAL quand v2 a pris :
-        // -1 encode -1 write syscall par prop scalaire (volume WAL allège).
-        // Sur un refus v2 (ou une base heritee), l'append reste — c'est le
-        // filet qui empeche la perte au rejeu.
-        if !v2_a_pris {
-            match Self::wal_inline_encode_value(&value) {
-                Ok(bytes) => {
-                    // (pièce 2, 2026-10-06) `append_prop_set_inline` encode le
-                    // payload EMPRUNTÉ : plus de `key.to_string()` ni de
-                    // `value_bincode` cloné par record (deux allocations,
-                    // 46,4 ns/record mesurés). Les octets écrits sont IDENTIQUES à
-                    // ceux de `WalPayload::PropSetInline` (test
-                    // `payload_emprunte_encode_les_memes_octets`).
-                    if let Err(e) = self.writer.append_prop_set_inline(id.0 as u32, key, &bytes) {
-                        tracing::warn!(node_id = id.0, key = %key, error = %e,
-                            "PropSetInline WAL append failed — write is memory-only until next flush");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(node_id = id.0, key = %key, error = %e,
-                        "PropSetInline encode failed — write is memory-only until next flush");
-                }
-            }
-        }
-        point_de_crash("noeud:remplacement_inline:entre_les_deux");
-        // (obrain#172) La nouvelle valeur est écrite (zone v2 ou trame) : l'ancienne
-        // peut partir. Voir le commentaire de tête de cette branche.
-        #[cfg(test)]
-        AVANT_EFFACEMENT_OMBRE.with(|h| {
-            if let Some(f) = h.borrow().as_ref() {
-                f(self);
-            }
-        });
-        self.effacer_ombre_blob(EntityKind::Node, id.0 as u32, key);
-        point_de_crash("noeud:remplacement_inline:apres_tout");
-        // ── (2026-08-19) RECENSEMENT DES LECTEURS DE LA DASHMAP ─────────
-        //
-        // Retirer l ecriture double REVEILLE tout chemin qui ne lit QUE ces
-        // cartes : tant qu elles etaient remplies a chaque ecriture, un tel
-        // chemin voyait les donnees meme sur une base v2. Le recensement a
-        // donc ete refait a la main — les deux champs sont PRIVES et aucun
-        // autre fichier du crate n y touche (verifie par grep), donc la liste
-        // des `self.node_properties` / `self.edge_properties` de ce fichier
-        // est EXHAUSTIVE. Chaque site a ete classe en LISANT la fonction et
-        // ce qu elle appelle, le grep se trompant dans les deux sens.
-        //
-        // DEJA v2-CONSCIENTS (rien a faire) :
-        //   `get_node_property`, `get_edge_property` et leurs corps extraits
-        //   `lire_propriete_{noeud,arete}_vivant*` ; `read_all_properties_
-        //   for_{node,edge}` (fusion en 4 passes, donc `get_node`/`get_edge`,
-        //   donc `get_*_at_epoch`, `get_*_history`, `all_nodes`/`all_edges`
-        //   et `copy_named_graph` qui en derivent) ; `get_node_property_batch`,
-        //   `get_nodes_properties_batch`, `get_nodes_properties_selective_
-        //   batch`, `get_edges_properties_selective_batch` ;
-        //   `find_nodes_by_property`, `find_nodes_by_properties`,
-        //   `node_matches_all_props` ; `valeur_effacable_{de_noeud,d_arete}`
-        //   et donc `remove_*_property{,_versioned}` ; `set_*_property_
-        //   versioned` (lisent par `get_*_property`).
-        //
-        // CORRIGE ICI : `find_nodes_in_range`. Les quinze correctifs du 19/08
-        // ont tous porte sur l EGALITE ; la COMPARAISON n avait jamais ete
-        // auditee, et cette fonction ne parcourait que la DashMap. Elle
-        // rendait deja ZERO sur une base migree — trou pre-existant que la
-        // decommission a rendu visible, `find_nodes_in_range_uses_inclusive_
-        // bounds` passant au rouge sur une base NEUVE.
-        //
-        // CORRECTS SANS ECRITURE, et pourquoi :
-        //   · `delete_node` / `delete_edge` purgent l index enregistre depuis
-        //     ce qu ils retirent de la carte. Or `set_node_property` ECRIT
-        //     dans la carte exactement quand un index existe (garde
-        //     `property_indexes.is_empty()` ci-dessous) : les deux conditions
-        //     coincident. Le seul residu — index declare APRES des ecritures,
-        //     donc bati depuis v2 sur des nœuds absents de la carte — laisse
-        //     une entree perimee que `indexed_candidates` ecarte par
-        //     `is_live_on_disk` PUIS par reverification de la valeur.
-        //   · `delete_{node,edge}_versioned` capturent les proprietes pour le
-        //     journal d annulation. La capture rend `None` sous v2, mais la
-        //     chaine v2 SURVIT au tombstone : la resurrection retrouve les
-        //     valeurs sans capture prealable. Eprouve par
-        //     `suppression_versionnee{,_d_arete}_annulee_restaure_les_
-        //     proprietes_v2`.
-        //   · `persist_properties`, `persist_edge_properties_sidecar`,
-        //     `delete_legacy_props_sidecar`, `finalize_{props,edge_props}_v2` :
-        //     ce sont les organes du regime HERITE et de la migration. Ils
-        //     doivent voir la carte telle qu elle est. Le seul effet du
-        //     retrait est que le sidecar herite cesse d etre alimente — c est
-        //     la regression `OBRAIN_PROPS_V2=0`, traitee a l ouverture.
-        //   · `empreinte_memoire`, `edge_properties_count`, `memory_breakdown`
-        //     et les compteurs : instrumentation. Elle compte moins parce
-        //     qu il y a REELLEMENT moins.
-        //   · `load_properties`, `merge_wal_inline_props`, `ressuscite_*` :
-        //     peupleurs, pas lecteurs.
-        //
-        // `node_property_might_match` / `edge_property_might_match` rendent
-        // `true` inconditionnellement — presélection pessimiste, insensible.
-        //
-        // ── (2026-08-19) NE PLUS REDOUBLER L ECRITURE QUAND v2 L A PRISE ──
-        //
-        // `set_node_property` ecrivait la valeur DEUX fois : sur la chaine v2
-        // ET dans cette DashMap. C est cette seconde ecriture qu on retire —
-        // et elle seule. Les chemins de LECTURE gardent leur repli sur la
-        // DashMap : les ~1 528 bases non migrees n ont aucune zone v2 et
-        // leurs proprietes n existent QUE la.
-        //
-        // TROIS conditions, et il en fallait bien trois :
-        //
-        //  · `v2_a_pris` — si l ajout v2 a ete REFUSE (valeur exotique, page
-        //    saturee : compte par `v2_appends_refuses`), la DashMap reste le
-        //    filet qui empeche la perte. C est le point de durabilite le plus
-        //    sensible du chemin : sauter l ecriture sur un refus v2 perdrait
-        //    la propriete en silence. La preuve par mutation le rattrape
-        //    (`un_refus_v2_retombe_sur_la_dashmap_sans_perdre_la_valeur`).
-        //
-        //  · `property_indexes.is_empty()` — l index retire l ANCIENNE valeur
-        //    en la lisant ici (`prev`). Sans la DashMap on ne la connait plus,
-        //    et la relire depuis v2 couterait un parcours de chaine par
-        //    ecriture. Tant qu un index est enregistre on garde donc le
-        //    comportement d avant, a l identique. Les index sont declares par
-        //    cle et rares ; l import en masse, lui, n en declare aucun.
-        //
-        //  · `!dashmap_noeuds_hydratee` — LA condition que la premiere
-        //    version de ce changement avait manquee. Sur une base v2 dont la
-        //    migration n est pas achevee, `load_properties` hydrate la
-        //    DashMap depuis le sidecar herite : cesser de l ecrire n y laisse
-        //    pas un trou mais une valeur PERIMEE, et le balayage de fin de
-        //    `find_nodes_by_property` ne reverifie PAS ce qu il tire de la
-        //    carte. Faux positif sur l ancienne valeur, mesure par
-        //    `une_valeur_reecrite_sous_v2_ne_laisse_pas_la_dashmap_perimee`.
-        //    Voir le pave du champ.
-        //
-        // Sur une base HERITEE (`props_zone == None`, ~1 528 bases)
-        // `v2_a_pris` est faux par construction : ce chemin reste inchange,
-        // bit pour bit.
-        //
-        // ORDRE DES TROIS CONDITIONS, et il n est pas cosmetique :
-        // `DashMap::is_empty` appelle `len()`, qui prend un verrou de lecture
-        // sur CHACUN de ses ~128 shards. Les deux premieres conditions sont
-        // un booleen de pile et un `AtomicBool` — gratuites — donc elles
-        // court-circuitent avant. Le compte total reste celui d avant ce
-        // commit : le code sortant appelait deja `property_indexes.is_empty()`
-        // une fois par ecriture, pour maintenir l index en queue de fonction ;
-        // sur le chemin d import (aucun index, carte non hydratee) on en
-        // appelle toujours UNE, et on retourne avant la queue.
-        if v2_a_pris
-            && !self.dashmap_noeuds_hydratee.load(Ordering::Acquire)
-            && self.property_indexes.is_empty()
-        {
-            self.notify_node_property_set(id, key);
-            return;
-        }
-        let prev = self
-            .node_properties
-            .entry(id)
-            .or_default()
-            .insert(pkey.clone(), value.clone());
-        self.noter_props_modifiees();
-        #[cfg(test)]
-        APRES_ECRITURE_VALEUR.with(|h| {
-            if let Some(f) = h.borrow().as_ref() {
-                f(self);
-            }
-        });
-        // T17b : maintenir l'index enregistré — l'ancienne valeur sort,
-        // la nouvelle entre. Garde `is_empty` pour que le chemin sans index
-        // ne paie rien. Les vecteurs/blobs sont sortis plus haut : mêmes
-        // limites que le scan que l'index remplace.
-        if !self.property_indexes.is_empty() {
-            // Clé enregistrée PENDANT cette écriture : l'entrée neuve n'a pas
-            // pu entrer en tête de fonction, et la construction a pu passer
-            // sur ce nœud avant la valeur. Idempotent si elle y est déjà.
-            if !index_tenu_pour_cle {
-                self.prop_index_insert(&pkey, &value, id);
-            }
-            // L'ancienne valeur sort — SAUF si elle se range sous la même clé
-            // que la neuve : on retirerait l'entrée qu'on vient de poser.
-            if let Some(ref old) = prev
-                && cle_de_rangement(old) != cle_de_rangement(&value)
-            {
-                self.prop_index_remove(&pkey, old, id);
-            }
-            if let Some(ref blob) = ombre_blob
-                && cle_instant(blob).is_some()
-                && cle_instant(blob) != Some(cle_de_rangement(&value))
-            {
-                self.prop_index_remove(&pkey, blob, id);
-            }
-        }
-        self.notify_node_property_set(id, key);
+        // Contrat best-effort du trait : un refus v2 retombe sur la DashMap.
+        let _ = self.poser_propriete_noeud(id, key, value, false, true);
     }
 
     fn set_edge_property(&self, id: EdgeId, key: &str, value: Value) {
@@ -47514,7 +47707,6 @@ impl SubstrateStore {
         // de moins qu'une déclaration séparée.
         let tx = match en_vol {
             DeclarationEnVol::Aucune => None,
-            DeclarationEnVol::CreationAuto => Some(Self::tx_creation_auto(id)),
             DeclarationEnVol::Transaction(tx) => Some(tx),
         };
         match tx {
@@ -47623,39 +47815,97 @@ impl SubstrateStore {
         (1u64 << 63) | id.0
     }
 
+    /// Écrit un nœud « en vol » (naissance différée) pour la construction
+    /// atomique : `TxNoeudEnAttente` + `NodeInsert` SANS `ALLOCATED` — invisible
+    /// aux chemins de lecture jusqu'au scellement (`Writer::sceller_noeud`).
+    fn creer_noeud_en_vol(&self, labels: &[&str]) -> SubstrateResult<(NodeId, u64)> {
+        self.refuser_mutation_en_lecture_seule("create_node");
+        let id = self.allocate_node_id();
+        let bitset = self
+            .intern_labels_to_bitset(labels)
+            .expect("label registry overflow (>64 labels); step 3 lifts this");
+        let rec = NodeRecord {
+            label_bitset: bitset,
+            ..Default::default()
+        };
+        let tx = Self::tx_creation_auto(id);
+        self.writer.write_node_precede_pending(
+            id.0 as u32,
+            rec,
+            WalPayload::TxNoeudEnAttente {
+                tx,
+                node_id: id.0 as u32,
+            },
+        )?;
+        Ok((id, bitset))
+    }
+
+    /// Compteurs + observateurs EN MÉMOIRE, appelés APRÈS `sceller_noeud` (qui a
+    /// déjà rendu la naissance durable — `NodeUpdateV3` — et l'a posée en mmap).
+    /// Aucun de ces pas ne peut échouer.
+    fn finaliser_noeud_compteurs(&self, id: NodeId, bitset: u64) {
+        self.total_live_nodes.fetch_add(1, Ordering::Relaxed);
+        self.incr_label_counts(bitset, 1);
+        self.incr_first_label_count(bitset, 1);
+        self.note_naissance_noeud(id);
+        self.notify_node_created(id);
+    }
+
     /// Crée un nœud et pose ses propriétés comme UNE unité de rejeu, sans
     /// nouveau format disque (obrain#120 pt 4).
     ///
-    /// Avant : `NodeInsert` puis un record WAL par propriété, liés par rien. Un
-    /// `kill -9` entre deux rejouait un nœud vivant portant une partie de ses
-    /// propriétés. Maintenant : `TxNoeudEnAttente` (déclaré avant le
-    /// `NodeInsert`), le nœud, les propriétés, puis `TxCommit` SANS
-    /// `FLAG_COMMIT` (pas de fsync de plus : la durabilité de l'auto-commit
-    /// reste celle des autres écritures). Le rejeu existant écarte (`NodeDelete`)
-    /// toute déclaration jamais scellée : le nœud existe entier ou pas du tout.
-    /// Sans propriétés il n'y a rien à lier : chemin inchangé.
-    fn creer_noeud_atomique(&self, labels: &[&str], properties: &[(PropertyKey, Value)]) -> NodeId {
+    /// Naissance DIFFÉRÉE : le nœud est écrit « en vol » (sans `ALLOCATED`) et
+    /// ne devient visible qu'après le scellement (`Writer::sceller_noeud` :
+    /// `TxCommit` + `NodeUpdateV3` dans le même `append_batch`). Un échec
+    /// intermédiaire ou de scellement laisse un nœud invisible, écarté au rejeu
+    /// (pas de `TxCommit`) — jamais un nœud partiel présenté comme valide.
+    fn creer_noeud_atomique(
+        &self,
+        labels: &[&str],
+        properties: &[(PropertyKey, Value)],
+    ) -> SubstrateResult<NodeId> {
         if properties.is_empty() {
-            return self.creer_noeud(labels, DeclarationEnVol::Aucune);
+            return Ok(self.creer_noeud(labels, DeclarationEnVol::Aucune));
         }
-        let id = self.creer_noeud(labels, DeclarationEnVol::CreationAuto);
+        let (id, bitset) = self.creer_noeud_en_vol(labels)?;
         obrain_common::utils::panne::point_creation_noeud(0);
+        // Sonde de test : suspendre la construction après la création du nœud,
+        // AVANT toute propriété — le nœud est encore « en vol » (invisible) et
+        // le marqueur de réservation n'est pas posé.
+        #[cfg(test)]
+        if let Some(cell) = APRES_CREATION_NOEUD_ATOMIQUE.get()
+            && let Some(f) = cell.lock().unwrap().as_ref()
+        {
+            f(id.0 as u32);
+        }
         for (rang, (k, v)) in properties.iter().enumerate() {
-            self.set_node_property(id, k.as_str(), v.clone());
+            // STRICT + « en vol accepté » : un échec de durabilité d'une
+            // propriété empêche le scellement — la réservation ne serait pas
+            // durable. `?` propage : le nœud reste « en vol » (invisible) et est
+            // écarté au rejeu (aucun `TxCommit`).
+            self.poser_propriete_noeud(id, k.as_str(), v.clone(), true, false)?;
             obrain_common::utils::panne::point_creation_noeud(rang as u64 + 1);
         }
-        let rec = WalRecord {
-            lsn: 0,
-            timestamp: horodatage_micros(),
-            flags: 0,
-            payload: WalPayload::TxCommit {
-                tx: Self::tx_creation_auto(id),
-            },
-        };
-        if let Err(e) = self.writer.wal().append_encoded(&rec) {
-            tracing::error!(error = %e, "WAL : impossible de sceller la création du nœud");
+        // SCELLEMENT + NAISSANCE ATOMIQUES : `sceller_noeud` écrit `TxCommit` ET
+        // `NodeUpdateV3` (bit ALLOCATED) dans le MÊME `append_batch` (une seule
+        // écriture WAL). Aucun instant où le `TxCommit` est scellé sans la
+        // naissance : avant le batch rien n'est scellé (nœud écarté au rejeu),
+        // après le batch scellé ET né.
+        #[cfg(test)]
+        if ECHEC_SCELLEMENT_ATOMIQUE.with(|c| c.replace(false)) {
+            return Err(SubstrateError::Internal(
+                "scellement saboté (test) : TxCommit non journalisé".into(),
+            ));
         }
-        id
+        let rec_noeud = self.writer.read_node(id.0 as u32)?.ok_or_else(|| {
+            SubstrateError::Internal(format!("nœud en vol {id} absent avant scellement"))
+        })?;
+        self.writer
+            .sceller_noeud(id.0 as u32, Self::tx_creation_auto(id), rec_noeud)?;
+        // Compteurs + observateurs en mémoire (aucun ne peut échouer) ; la
+        // naissance est déjà durable (NodeUpdateV3) et posée en mmap.
+        self.finaliser_noeud_compteurs(id, bitset);
+        Ok(id)
     }
 }
 
@@ -47665,9 +47915,6 @@ impl SubstrateStore {
 enum DeclarationEnVol {
     /// Auto-commit sans propriétés : rien à lier.
     Aucune,
-    /// Auto-commit avec propriétés : transaction privée (`tx_creation_auto`),
-    /// scellée par `creer_noeud_atomique` (obrain#120 pt 4).
-    CreationAuto,
     /// Transaction explicite : le nœud reste en vol jusqu'à son `TxCommit`.
     Transaction(u64),
 }
@@ -53116,5 +53363,522 @@ mod tests_type_synapse_bien_connu {
             reg2.id_for(crate::record::SYNAPSE_EDGE_TYPE_NAME),
             Some(crate::record::SYNAPSE_EDGE_TYPE_ID)
         );
+    }
+}
+
+// SONDES DE TEST de la réservation d'identité (#416). Absentes du binaire de
+// production.
+#[cfg(test)]
+thread_local! {
+    /// VRAI : `creer_noeud_atomique` échoue à SCELLER (simule un échec d'append
+    /// du `TxCommit`) — le nœud reste déclaré en vol, non scellé, et la
+    /// primitive rend `Err`. Consommé une fois (remis à `false` à l'usage).
+    static ECHEC_SCELLEMENT_ATOMIQUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// Clé dont `append_scalar_to_props_zone_v2` échoue (test) : injecte un
+    /// échec de DURABILITÉ au milieu d'une construction, pour qualifier le
+    /// chemin STRICT (pas de `Cree` trompeur, pas d'entrée d'index).
+    static ECHEC_APPEND_V2_CLE: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Suspension de `creer_noeud_atomique` juste après la création du nœud (avant
+/// toute propriété, donc avant que le marqueur de réservation soit posé), pour
+/// qu'un lecteur INDÉPENDANT sur un autre fil observe l'état en vol. GLOBALE
+/// (et non `thread_local!`) : le fil qui construit n'est pas celui qui pose la
+/// sonde. Le `Mutex` sert à pouvoir la poser/retirer d'un test à l'autre.
+#[cfg(test)]
+#[allow(clippy::type_complexity)]
+static APRES_CREATION_NOEUD_ATOMIQUE: std::sync::OnceLock<
+    std::sync::Mutex<Option<Box<dyn Fn(u32) + Send>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+mod reservation_tests {
+    use super::*;
+
+    const KIND: u8 = 1;
+    const CLE: &[u8] = b"cle-canonique";
+    const DEFINITION: &[u8] = b"definition-v1";
+
+    /// Le résultat d'une construction : `(labels, propriétés)` ou une erreur.
+    type Construction = SubstrateResult<(Vec<String>, Vec<(PropertyKey, Value)>)>;
+
+    fn construction() -> Construction {
+        Ok((
+            vec!["structure".to_string()],
+            vec![(PropertyKey::new("payload"), Value::Int64(1))],
+        ))
+    }
+
+    fn cle_persistee() -> Vec<u8> {
+        std::iter::once(KIND).chain(CLE.iter().copied()).collect()
+    }
+
+    /// L'échec du scellement (`TxCommit` non journalisé) est propagé : ni
+    /// entrée d'index, ni `Cree`. La réservation non durable n'est pas
+    /// réutilisée comme identité valide, et le nœud non scellé est écarté au
+    /// rejeu.
+    #[test]
+    fn echec_scellement_ne_indexe_pas_et_ne_rend_pas_cree() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+
+        ECHEC_SCELLEMENT_ATOMIQUE.with(|c| c.set(true));
+        let r = s.reserver_identite(KIND, CLE, DEFINITION, construction);
+        assert!(
+            r.is_err(),
+            "l'échec de scellement doit être propagé : {r:?}"
+        );
+
+        // L'index n'a PAS été pollué : même clé → une NOUVELLE identité, pas un
+        // `Existante` sur le nœud non scellé.
+        let r2 = s
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert!(
+            matches!(r2, crate::reservation::IssueReservation::Cree(_)),
+            "nouvelle identité après l'échec : {r2:?}"
+        );
+
+        // Au rejeu, le nœud non scellé est écarté : après réouverture, une seule
+        // identité durable, la scellée (si le nœud saboté survivait, il serait
+        // trouvé en premier par l'ordre de slots).
+        s.close().unwrap();
+        let s2 = SubstrateStore::open(td.path()).unwrap();
+        let r3 = s2
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert!(
+            matches!(r3, crate::reservation::IssueReservation::Existante(_)),
+            "identité scellée retrouvée après réouverture : {r3:?}"
+        );
+        assert_eq!(r3.identite(), r2.identite(), "la durable est la scellée");
+    }
+
+    /// Isolation réelle : pendant la construction (nœud créé, propriétés pas
+    /// encore posées), un lecteur indépendant n'observe AUCUNE réservation.
+    #[test]
+    fn aucune_visibilite_partielle_pendant_construction() {
+        let td = tempfile::tempdir().unwrap();
+        let s = Arc::new(SubstrateStore::create(td.path()).unwrap());
+
+        let (tx_noeud, rx_noeud) = std::sync::mpsc::channel::<u32>();
+        let (tx_liberer, rx_liberer) = std::sync::mpsc::channel::<()>();
+
+        {
+            let cell = APRES_CREATION_NOEUD_ATOMIQUE.get_or_init(|| std::sync::Mutex::new(None));
+            *cell.lock().unwrap() = Some(Box::new(move |id: u32| {
+                let _ = tx_noeud.send(id);
+                let _ = rx_liberer.recv();
+            }));
+        }
+
+        let s2 = Arc::clone(&s);
+        let fil =
+            std::thread::spawn(move || s2.reserver_identite(KIND, CLE, DEFINITION, construction));
+
+        let id = rx_noeud
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("le nœud est créé avant les propriétés");
+        let nid = NodeId(u64::from(id));
+
+        // Lecteur INDÉPENDANT (pas `reserver_identite`, donc pas le même
+        // mutex) : pendant la construction, la réservation n'est PAS observable
+        // — ni sa clé, ni sa définition (le marqueur n'est posé qu'à la fin,
+        // avec la définition complète).
+        assert_eq!(
+            s.get_node_property(nid, &PropertyKey::new(crate::reservation::PROP_CLE)),
+            None,
+            "la clé de réservation n'est pas encore observable"
+        );
+        assert_eq!(
+            s.get_node_property(nid, &PropertyKey::new(crate::reservation::PROP_DEFINITION)),
+            None,
+            "la définition de réservation n'est pas encore observable"
+        );
+
+        // Libère la construction, puis retire la sonde.
+        tx_liberer.send(()).unwrap();
+        *APRES_CREATION_NOEUD_ATOMIQUE.get().unwrap().lock().unwrap() = None;
+
+        let issue = fil.join().unwrap().unwrap();
+        assert!(matches!(
+            issue,
+            crate::reservation::IssueReservation::Cree(_)
+        ));
+
+        // Après la construction : clé et définition complètes.
+        assert_eq!(
+            s.get_node_property(nid, &PropertyKey::new(crate::reservation::PROP_CLE)),
+            Some(Value::Bytes(Arc::from(cle_persistee())))
+        );
+        assert_eq!(
+            s.get_node_property(nid, &PropertyKey::new(crate::reservation::PROP_DEFINITION)),
+            Some(Value::Bytes(Arc::from(DEFINITION.to_vec())))
+        );
+    }
+
+    /// Collision de hash forcée : deux clés différentes qui hachent à la même
+    /// valeur donnent DEUX identités, et chaque clé retrouve la sienne —
+    /// l'index VÉRIFIÉ lève la collision par comparaison du contenu complet.
+    #[test]
+    fn collision_de_hash_levee_par_comparaison_complete() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+
+        // Le hash forcé doit rester actif pendant TOUS les appels (construction
+        // comme recherche) : l'index est bâti sous la clé `(kind, 42)`, la
+        // recherche doit interroger la même clé.
+        crate::reservation::forcer_hash_cle(Some(42));
+        let a = s
+            .reserver_identite(KIND, b"cle-a", DEFINITION, construction)
+            .unwrap();
+        let b = s
+            .reserver_identite(KIND, b"cle-b", DEFINITION, construction)
+            .unwrap();
+        let retrouve_a = s
+            .reserver_identite(KIND, b"cle-a", DEFINITION, construction)
+            .unwrap();
+        let retrouve_b = s
+            .reserver_identite(KIND, b"cle-b", DEFINITION, construction)
+            .unwrap();
+        crate::reservation::forcer_hash_cle(None);
+
+        assert!(matches!(a, crate::reservation::IssueReservation::Cree(_)));
+        assert!(matches!(b, crate::reservation::IssueReservation::Cree(_)));
+        assert_ne!(
+            a.identite(),
+            b.identite(),
+            "deux identités malgré la collision"
+        );
+
+        // Chaque clé retrouve SA propre identité (pas celle de l'autre).
+        assert_eq!(
+            retrouve_a,
+            crate::reservation::IssueReservation::Existante(a.identite())
+        );
+        assert_eq!(
+            retrouve_b,
+            crate::reservation::IssueReservation::Existante(b.identite())
+        );
+    }
+
+    /// Injection d'un échec de durabilité sur la propriété DE LA CONSTRUCTION
+    /// ("payload", la première posée) : `reserver_identite` rend `Err` (pas de
+    /// `Cree` trompeur), n'indexe pas, et le nœud en vol ne porte rien.
+    #[test]
+    fn echec_durabilite_sur_propriete_de_construction() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+
+        ECHEC_APPEND_V2_CLE.with(|c| c.set(Some("payload")));
+        let r = s.reserver_identite(KIND, CLE, DEFINITION, construction);
+        assert!(r.is_err(), "pas de Cree trompeur : {r:?}");
+        ECHEC_APPEND_V2_CLE.with(|c| c.set(None));
+
+        // Pas d'entrée d'index.
+        let garde = s.reservation_index.lock();
+        assert!(
+            garde
+                .as_ref()
+                .unwrap()
+                .candidats(KIND, crate::reservation::hash_cle(CLE))
+                .is_none(),
+            "pas d'entrée d'index après l'échec"
+        );
+        drop(garde);
+
+        // Le nœud en vol (naissance différée) est INVISIBLE aux chemins de
+        // lecture : aucun nœud partiel n'est présenté comme valide.
+        assert_eq!(
+            s.node_ids(),
+            Vec::<NodeId>::new(),
+            "aucun nœud en vol visible après l'échec"
+        );
+    }
+
+    /// Injection d'un échec de durabilité sur la propriété D'IDENTITÉ (la clé
+    /// réservée, posée APRÈS "payload") : observation AVANT toute retentative,
+    /// puis close+open immédiat sans retentative, puis retentative.
+    #[test]
+    fn echec_durabilite_sur_propriete_d_identite_et_reconstruction() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+
+        ECHEC_APPEND_V2_CLE.with(|c| c.set(Some(crate::reservation::PROP_CLE)));
+        let r = s.reserver_identite(KIND, CLE, DEFINITION, construction);
+        assert!(r.is_err(), "pas de Cree trompeur : {r:?}");
+        ECHEC_APPEND_V2_CLE.with(|c| c.set(None));
+
+        // Pas d'entrée d'index.
+        let garde = s.reservation_index.lock();
+        assert!(
+            garde
+                .as_ref()
+                .unwrap()
+                .candidats(KIND, crate::reservation::hash_cle(CLE))
+                .is_none(),
+            "pas d'entrée d'index après l'échec"
+        );
+        drop(garde);
+
+        // AVANT toute retentative : le nœud en vol (naissance différée) est
+        // INVISIBLE — aucun nœud partiel (même une propriété déjà posée) n'est
+        // exposé par les chemins de lecture.
+        let slot_reserve = u64::from(s.next_node_id.load(Ordering::Acquire) - 1);
+        assert_eq!(
+            s.node_ids(),
+            Vec::<NodeId>::new(),
+            "aucun nœud en vol visible (échec au milieu)"
+        );
+        assert_eq!(
+            s.get_node_property(NodeId(slot_reserve), &PropertyKey::new("payload")),
+            None,
+            "aucune propriété d'un nœud partiel n'est lisible"
+        );
+
+        // close + open IMMÉDIAT, sans retentative : le nœud non scellé est
+        // écarté au rejeu (aucun vestige).
+        s.close().unwrap();
+        let s2 = SubstrateStore::open(td.path()).unwrap();
+        assert_eq!(s2.node_ids().len(), 0, "aucun vestige après rejeu");
+
+        // ENSUITE seulement : retentative → Cree, définition complète, un seul
+        // nœud vivant, pas de doublon.
+        let r2 = s2
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert!(
+            matches!(r2, crate::reservation::IssueReservation::Cree(_)),
+            "{r2:?}"
+        );
+        let nid2 = NodeId(u64::from(r2.identite()));
+        assert_eq!(
+            s2.get_node_property(nid2, &PropertyKey::new("payload")),
+            Some(Value::Int64(1)),
+            "définition complète après reconstruction"
+        );
+        assert_eq!(
+            s2.get_node_property(nid2, &PropertyKey::new(crate::reservation::PROP_CLE)),
+            Some(Value::Bytes(Arc::from(cle_persistee())))
+        );
+        assert_eq!(
+            s2.get_node_property(nid2, &PropertyKey::new(crate::reservation::PROP_DEFINITION)),
+            Some(Value::Bytes(Arc::from(DEFINITION.to_vec())))
+        );
+        assert_eq!(
+            s2.node_ids().len(),
+            1,
+            "un seul nœud vivant, pas de doublon"
+        );
+    }
+
+    /// Isolation RÉELLE après un échec (résultat indéterminé) : un LECTEUR
+    /// INDÉPENDANT (le fil courant, B) ne doit pas voir le nœud partiellement
+    /// matérialisé comme un nœud valide. Le fil A rend son `Err` puis B
+    /// interroge les chemins de lecture PUBLICS.
+    #[test]
+    fn lecteur_independant_ne_voit_pas_le_noeud_partiel_apres_echec() {
+        let td = tempfile::tempdir().unwrap();
+        let s = Arc::new(SubstrateStore::create(td.path()).unwrap());
+
+        let (tx_result, rx_result) =
+            std::sync::mpsc::channel::<SubstrateResult<crate::reservation::IssueReservation>>();
+        let s2 = Arc::clone(&s);
+        let fil = std::thread::spawn(move || {
+            // Arme l'injection SUR CE fil (thread-local), puis construit.
+            ECHEC_APPEND_V2_CLE.with(|c| c.set(Some(crate::reservation::PROP_CLE)));
+            let r = s2.reserver_identite(KIND, CLE, DEFINITION, construction);
+            ECHEC_APPEND_V2_CLE.with(|c| c.set(None));
+            let _ = tx_result.send(r);
+        });
+
+        // A signale son résultat ; la construction est terminée (mutex relâché).
+        let r = rx_result
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("le fil A rend son résultat");
+        assert!(r.is_err(), "le fil A doit rendre Err (indéterminé) : {r:?}");
+        fil.join().unwrap();
+
+        // Lecteur INDÉPENDANT (B) : le nœud en vol (résultat indéterminé) ne
+        // doit pas être présenté comme un nœud valide par les chemins publics.
+        // Le slot effectivement alloué par la construction en échec est
+        // `next_node_id - 1` (aucun nœud valide ne doit y être lisible).
+        let slot_reserve = u64::from(s.next_node_id.load(Ordering::Acquire) - 1);
+        let ids = s.node_ids();
+        assert_eq!(
+            ids,
+            Vec::<NodeId>::new(),
+            "node_ids ne doit exposer aucun nœud partiel (vu : {ids:?})"
+        );
+        assert_eq!(
+            s.nodes_by_label("structure"),
+            Vec::<NodeId>::new(),
+            "recherche par label : aucun nœud partiel"
+        );
+        assert_eq!(
+            s.find_nodes_by_property("payload", &Value::Int64(1)),
+            Vec::<NodeId>::new(),
+            "recherche par propriété : aucun nœud partiel"
+        );
+        assert!(
+            s.get_node(NodeId(slot_reserve)).is_none(),
+            "get_node ne doit pas rendre le nœud partiel (slot {slot_reserve})"
+        );
+        assert_eq!(
+            s.get_node_property(NodeId(slot_reserve), &PropertyKey::new("payload")),
+            None,
+            "get_node_property ne doit pas rendre une propriété du nœud partiel"
+        );
+    }
+
+    /// Contre-épreuve DÉTERMINISTE (réserves #419) : interruption AVANT le
+    /// scellement → rien n'est scellé, le nœud en vol est écarté au rejeu, la
+    /// retentative construit UNE seule identité (jamais zéro ni deux).
+    #[test]
+    fn interruption_avant_scellement_reconstruit_une_seule_identite() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let s = SubstrateStore::create(&chemin).unwrap();
+
+        ECHEC_SCELLEMENT_ATOMIQUE.with(|c| c.set(true));
+        let r = s.reserver_identite(KIND, CLE, DEFINITION, construction);
+        assert!(r.is_err(), "échec CONNU avant scellement : {r:?}");
+
+        s.close().unwrap();
+        let s2 = SubstrateStore::open(&chemin).unwrap();
+        assert_eq!(
+            s2.node_ids(),
+            Vec::<NodeId>::new(),
+            "rien de scellé → rien après rejeu"
+        );
+
+        let r2 = s2
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert!(
+            matches!(r2, crate::reservation::IssueReservation::Cree(_)),
+            "une identité, jamais zéro ni deux : {r2:?}"
+        );
+        assert_eq!(s2.node_ids().len(), 1, "exactement un nœud");
+    }
+
+    /// Contre-épreuve DÉTERMINISTE : échec de la naissance mmap (écriture
+    /// partielle du record) AVANT le scellement → rien n'est scellé, l'issue
+    /// est CONNUE (Err), la retentative construit UNE seule identité.
+    #[test]
+    fn echec_mmap_naissance_ne_scelle_rien() {
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+        let s = SubstrateStore::create(&chemin).unwrap();
+
+        crate::writer::armer_echec_mmap_scellement(true);
+        let r = s.reserver_identite(KIND, CLE, DEFINITION, construction);
+        assert!(r.is_err(), "échec CONNU de la naissance mmap : {r:?}");
+
+        s.close().unwrap();
+        let s2 = SubstrateStore::open(&chemin).unwrap();
+        assert_eq!(
+            s2.node_ids(),
+            Vec::<NodeId>::new(),
+            "rien de scellé → rien après rejeu"
+        );
+
+        let r2 = s2
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert!(
+            matches!(r2, crate::reservation::IssueReservation::Cree(_)),
+            "une identité, jamais zéro ni deux : {r2:?}"
+        );
+        assert_eq!(s2.node_ids().len(), 1, "exactement un nœud");
+    }
+
+    /// FENÊTRE « né mais non scellé » (réserves #419) : un lecteur indépendant,
+    /// entre la naissance mmap et le scellement WAL, observe un nœud COMPLET
+    /// (propriétés + ALLOCATED) mais pas encore confirmé durable. C'est la
+    /// fenêtre résiduelle, honnêtement exposée (pas de nœud partiel).
+    #[test]
+    fn lecteur_independant_voit_un_noeud_complet_avant_scellement() {
+        let td = tempfile::tempdir().unwrap();
+        let s = Arc::new(SubstrateStore::create(td.path()).unwrap());
+
+        let (tx_noeud, rx_noeud) = std::sync::mpsc::channel::<u32>();
+        let (tx_liberer, rx_liberer) = std::sync::mpsc::channel::<()>();
+        {
+            let cell = crate::writer::APRES_NAISSANCE_AVANT_SCELLEMENT
+                .get_or_init(|| std::sync::Mutex::new(None));
+            *cell.lock().unwrap() = Some(Box::new(move |id: u32| {
+                let _ = tx_noeud.send(id);
+                let _ = rx_liberer.recv();
+            }));
+        }
+
+        let s2 = Arc::clone(&s);
+        let fil =
+            std::thread::spawn(move || s2.reserver_identite(KIND, CLE, DEFINITION, construction));
+
+        let id = rx_noeud
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("naissance posée avant le scellement");
+        let nid = NodeId(u64::from(id));
+
+        // Lecteur INDÉPENDANT : le nœud est NÉ (visible) et COMPLET, mais pas
+        // encore scellé.
+        assert_eq!(
+            s.node_ids(),
+            vec![nid],
+            "nœud né (visible) dans la fenêtre avant le scellement"
+        );
+        assert_eq!(
+            s.get_node_property(nid, &PropertyKey::new("payload")),
+            Some(Value::Int64(1)),
+            "nœud complet (propriétés posées), pas partiel"
+        );
+
+        tx_liberer.send(()).unwrap();
+        *crate::writer::APRES_NAISSANCE_AVANT_SCELLEMENT
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap() = None;
+
+        let issue = fil.join().unwrap().unwrap();
+        assert!(matches!(
+            issue,
+            crate::reservation::IssueReservation::Cree(_)
+        ));
+    }
+
+    /// Échec CERTAIN du scellement (append WAL) APRÈS la naissance mmap : le
+    /// rollback rend le nœud invisible dans le store VIVANT, et la retentative
+    /// (avant réouverture) construit UNE seule identité.
+    #[test]
+    fn echec_append_scellement_rollback_et_reconstruit_une_identite() {
+        let td = tempfile::tempdir().unwrap();
+        let s = SubstrateStore::create(td.path()).unwrap();
+
+        crate::writer::armer_echec_append_scellement(true);
+        let r = s.reserver_identite(KIND, CLE, DEFINITION, construction);
+        assert!(r.is_err(), "échec CERTAIN du scellement : {r:?}");
+
+        // Store VIVANT (sans réouverture) : le rollback a rendu le nœud
+        // invisible — aucun nœud « né mais non scellé » exposé.
+        assert_eq!(
+            s.node_ids(),
+            Vec::<NodeId>::new(),
+            "naissance annulée (rollback), aucun nœud exposé"
+        );
+
+        // Retentative AVANT réouverture → UNE identité.
+        let r2 = s
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert!(
+            matches!(r2, crate::reservation::IssueReservation::Cree(_)),
+            "une identité, jamais zéro ni deux : {r2:?}"
+        );
+        assert_eq!(s.node_ids().len(), 1, "exactement un nœud vivant");
     }
 }
