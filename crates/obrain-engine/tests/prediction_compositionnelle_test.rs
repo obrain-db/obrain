@@ -15,11 +15,11 @@
 
 #![cfg(feature = "cognitive-engram")]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use obrain_common::types::NodeId;
 use obrain_cognitive::engram::PredictivePolicy;
-use obrain_engine::{Composition, KnowledgeSpec, ObrainDB, Relation};
+use obrain_engine::{ChildRef, Composition, KnowledgeSpec, ObrainDB, Relation};
 
 type Rel = (u64, u64, String, Option<String>);
 
@@ -37,14 +37,19 @@ fn jaccard<T: Ord>(a: &BTreeSet<T>, b: &BTreeSet<T>) -> f64 {
 }
 
 fn spec(s: &Struct) -> KnowledgeSpec {
-    let relations: BTreeSet<Relation> = s
+    let relations: BTreeMap<Relation, usize> = s
         .relations
         .iter()
-        .map(|(src, dst, ty, role)| Relation {
-            rel_type: ty.clone(),
-            src: NodeId(*src),
-            dst: NodeId(*dst),
-            role: role.clone(),
+        .map(|(src, dst, ty, role)| {
+            (
+                Relation {
+                    rel_type: ty.clone(),
+                    src: NodeId(*src),
+                    dst: NodeId(*dst),
+                    role: role.clone(),
+                },
+                1usize,
+            )
         })
         .collect();
     KnowledgeSpec {
@@ -116,8 +121,8 @@ fn prediction_compositionnelle_protocole_corrige() {
         let (k1_struct, k2_struct) = build_parts(def, &ids);
 
         // A. Apprendre K1, K2 indépendamment par politique ÉPISODIQUE (pas de fusion).
-        let k1_node = comp.construct(&spec(&k1_struct));
-        let k2_node = comp.construct(&spec(&k2_struct));
+        let k1_node = comp.construct(&spec(&k1_struct)).expect("construire K1");
+        let k2_node = comp.construct(&spec(&k2_struct)).expect("construire K2");
         let m1: Vec<NodeId> = k1_struct.members.iter().map(|n| NodeId(*n)).collect();
         let m2: Vec<NodeId> = k2_struct.members.iter().map(|n| NodeId(*n)).collect();
         for _ in 0..3 {
@@ -220,11 +225,16 @@ fn prediction_compositionnelle_protocole_corrige() {
         assert!(centroid_err.is_finite(), "[{}] centroïde mesurable", def.name);
 
         // D. APRÈS la prédiction : construire K3 et vérifier la résolution.
-        let k3 = comp.construct(&KnowledgeSpec {
-            members: Default::default(),
-            children: [k1_node, k2_node].into_iter().collect(),
-            relations: Default::default(),
-        });
+        let k3 = comp
+            .construct(&KnowledgeSpec {
+                members: Default::default(),
+                children: [k1_node, k2_node]
+                    .into_iter()
+                    .map(|child| (ChildRef { target: child, role: None }, 1usize))
+                    .collect(),
+                relations: Default::default(),
+            })
+            .expect("construire K3");
         let resolved = comp.resolve(k3).expect("resolve K3");
         let resolved_set: BTreeSet<u64> = resolved.iter().map(|n| n.0).collect();
         assert_eq!(
