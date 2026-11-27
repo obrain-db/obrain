@@ -3580,11 +3580,11 @@ impl ReferenceTentative {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffetResolu {
     /// Clé écrite par la tentative.
-    pub cle: String,
+    cle: String,
     /// `Engage` si l'entrée de CETTE tentative est dans la chaîne canonique
     /// accessible (canonique **ou masquée**), `Indetermine` sinon. C'est
     /// l'engagement HISTORIQUE de la tentative, séparé de l'état courant.
-    pub etat: ResolutionEffet,
+    etat: ResolutionEffet,
     /// État CANONIQUE COURANT de la clé/nœud, lu dans la MÊME boucle, sous le
     /// MÊME verrou de nœud, que la résolution historique. Réutilise
     /// [`EtatPropriete`] — l'autorité de lecture UNIQUE, jamais une seconde —
@@ -3596,10 +3596,30 @@ pub struct EffetResolu {
     /// Distinction de contrat : `etat` = engagement HISTORIQUE (cette tentative
     /// est-elle dans la chaîne canonique) ; `etat_courant` = OBSERVATION
     /// courante de la clé/nœud, sans aucune réservation de validité future.
-    pub etat_courant: EtatPropriete,
+    etat_courant: EtatPropriete,
 }
 
 impl EffetResolu {
+    /// Clé écrite par la tentative, en lecture seule.
+    pub fn cle(&self) -> &str {
+        &self.cle
+    }
+
+    /// Engagement HISTORIQUE (`Engage` si l'entrée de CETTE tentative est dans
+    /// la chaîne canonique accessible — canonique **ou masquée** —,
+    /// `Indetermine` sinon), en lecture seule. Séparé de l'état courant :
+    /// `Engage` ne qualifie ni le contenu ni la validité future.
+    pub fn etat(&self) -> ResolutionEffet {
+        self.etat
+    }
+
+    /// État canonique COURANT de la clé/nœud (l'autorité de lecture UNIQUE),
+    /// en lecture seule. Distingue explicitement `Presente`, `Absente`,
+    /// `Supprimee` (tombstone) et `RessourceInexistante` (nœud mort).
+    pub fn etat_courant(&self) -> &EtatPropriete {
+        &self.etat_courant
+    }
+
     /// Estampille CANONIQUE COURANTE de la clé, DÉRIVÉE de [`Self::etat_courant`].
     /// Elle diffère de celle de la tentative quand l'effet a été masqué par une
     /// écriture ultérieure — c'est la distinction « engagé et masqué » /
@@ -3658,22 +3678,49 @@ pub enum IntegriteTentative {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolutionTentative {
     /// Cible effectivement consultée.
-    pub cible: NodeId,
+    cible: NodeId,
     /// Auteur de la base qui a résolu. Le comparer à `reference.auteur()` écarte
     /// une référence étrangère : elle rend `Indeterminee` ici.
-    pub auteur_resolvant: u64,
+    auteur_resolvant: u64,
     /// Horloge HLC de la tentative résolue (`reference.horloge()`). Associée à
     /// `auteur_resolvant`, elle forme l'estampille de la tentative — c'est LA
     /// référence native que `verdict_effet` compare à l'état courant, sans
     /// paramètre libre fabriquable par l'appelant.
-    pub horloge_tentative: u64,
+    horloge_tentative: u64,
     /// Un état par clé, dans l'ordre de la référence. Jamais un agrégat seul.
-    pub par_cle: Vec<EffetResolu>,
+    par_cle: Vec<EffetResolu>,
     /// Agrégat explicite, jamais une implication depuis un seul effet.
-    pub integrite: IntegriteTentative,
+    integrite: IntegriteTentative,
 }
 
 impl ResolutionTentative {
+    /// Cible effectivement consultée, en lecture seule.
+    pub fn cible(&self) -> NodeId {
+        self.cible
+    }
+
+    /// Auteur de la base qui a résolu, en lecture seule. Le comparer à
+    /// `reference.auteur()` écarte une référence étrangère.
+    pub fn auteur_resolvant(&self) -> u64 {
+        self.auteur_resolvant
+    }
+
+    /// Agrégat explicite d'intégrité, en lecture seule. Jamais une implication
+    /// depuis un seul effet.
+    pub fn integrite(&self) -> IntegriteTentative {
+        self.integrite
+    }
+
+    /// Nombre d'effets (une entrée par clé, dans l'ordre de la référence).
+    pub fn nb_effets(&self) -> usize {
+        self.par_cle.len()
+    }
+
+    /// Effet d'indice `i`, en lecture seule. Panique si `i` est hors bornes.
+    pub fn effet(&self, i: usize) -> &EffetResolu {
+        &self.par_cle[i]
+    }
+
     /// Verdict NATIF dérivé de l'engagement historique + de l'état courant, SANS
     /// paramètre libre : l'estampille de la tentative est CELLE de la référence
     /// résolue (`auteur_resolvant`, `horloge_tentative`), jamais un argument
@@ -49508,14 +49555,15 @@ mod publication_conditionnelle_native {
         let debut = std::time::Instant::now();
         let res = store.resoudre_reference(&reference).unwrap();
         let el = debut.elapsed();
-        eprintln!("RESOLUTION_COHERENTE attente={el:?} integrite={:?}", res.integrite);
+        eprintln!("RESOLUTION_COHERENTE attente={el:?} integrite={:?}", res.integrite());
         ecrivain.join().unwrap();
         assert!(
             el >= std::time::Duration::from_millis(50),
             "resoudre_reference BLOQUE sur le verrou de nœud → instantané cohérent"
         );
-        assert_eq!(res.integrite, IntegriteTentative::Integrale);
-        for e in &res.par_cle {
+        assert_eq!(res.integrite(), IntegriteTentative::Integrale);
+        for i in 0..res.nb_effets() {
+            let e = res.effet(i);
             assert_eq!(e.estampille_courante(), Some((reference.auteur(), reference.horloge())));
         }
     }
@@ -49605,7 +49653,7 @@ mod publication_conditionnelle_native {
         store.delete_node(id);
         let _id2 = store.create_node(&["ressource"]);
         let res = store.resoudre_reference(&reference).unwrap();
-        assert_eq!(res.integrite, IntegriteTentative::Indeterminee, "cible recréée → indéterminé");
+        assert_eq!(res.integrite(), IntegriteTentative::Indeterminee, "cible recréée → indéterminé");
         eprintln!("RECREATION_OK : la référence d'une incarnation morte est indéterminée");
     }
 
@@ -49639,7 +49687,7 @@ mod publication_conditionnelle_native {
         let store_copie = SubstrateStore::open(&chemin_copie).unwrap();
         let reference = ReferenceTentative::from_bytes(&reference_bytes).unwrap();
         let res = store_copie.resoudre_reference(&reference).unwrap();
-        assert_eq!(res.integrite, IntegriteTentative::Integrale, "la copie porte les mêmes données");
+        assert_eq!(res.integrite(), IntegriteTentative::Integrale, "la copie porte les mêmes données");
         eprintln!("COPIE_OK : la copie de base résout la référence (writer_id+horloge = tentative, pas base)");
     }
 
@@ -49710,8 +49758,8 @@ mod publication_conditionnelle_native {
         assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(40)));
 
         // DISCRIMINANT : les deux clés portent la MÊME estampille courante (V0)
-        let s0 = res.par_cle[0].estampille_courante();
-        let s1 = res.par_cle[1].estampille_courante();
+        let s0 = res.effet(0).estampille_courante();
+        let s1 = res.effet(1).estampille_courante();
         assert_eq!(s0, s1, "jamais un mélange de deux états qui n'ont pas coexisté");
         assert_eq!(s0, Some((reference.auteur(), reference.horloge())), "V0, pas V1");
 
@@ -49785,9 +49833,9 @@ mod publication_conditionnelle_native {
         let res = store.resoudre_reference(&reference).unwrap();
 
         // ENGAGEMENT HISTORIQUE : V0 est engagé (même masqué par V1).
-        assert_eq!(res.integrite, IntegriteTentative::Integrale);
+        assert_eq!(res.integrite(), IntegriteTentative::Integrale);
 
-        let par_cle = |cle: &str| res.par_cle.iter().find(|e| e.cle == cle).unwrap();
+        let par_cle = |cle: &str| (0..res.nb_effets()).map(|i| res.effet(i)).find(|e| e.cle() == cle).unwrap();
 
         // OBSERVATION COURANTE — Bytes(32) : valeur ET estampille = la paire
         // lue atomiquement (V1), pas une relecture indépendante.
@@ -49800,8 +49848,8 @@ mod publication_conditionnelle_native {
         // lecture : l'engagement historique (etat=Engage, V0) ne masque pas
         // l'état courant observé.
         assert_eq!(
-            e.etat_courant,
-            EtatPropriete::Presente {
+            e.etat_courant(),
+            &EtatPropriete::Presente {
                 estampille: EstampilleComplete {
                     auteur: s_payload.expect("estampille présente").0,
                     horloge: s_payload.expect("estampille présente").1,
@@ -49859,8 +49907,8 @@ mod publication_conditionnelle_native {
             let reference = prep.reference_tentative();
             store.publier_si_precondition_intacte(prep).unwrap();
             let res = store.resoudre_reference(&reference).unwrap();
-            let e = &res.par_cle[0];
-            assert_eq!(e.etat, ResolutionEffet::Engage, "{cle} présente → Engage");
+            let e = res.effet(0);
+            assert_eq!(e.etat(), ResolutionEffet::Engage, "{cle} présente → Engage");
             assert_eq!(
                 e.estampille_courante(),
                 Some((reference.auteur(), reference.horloge()))
@@ -49869,8 +49917,8 @@ mod publication_conditionnelle_native {
             // etat_courant DISTINGUE l'état : Presente avec la MÊME estampille
             // et la MÊME valeur (autorité unique, pas une seconde lecture).
             assert_eq!(
-                e.etat_courant,
-                EtatPropriete::Presente {
+                e.etat_courant(),
+                &EtatPropriete::Presente {
                     estampille: EstampilleComplete {
                         auteur: reference.auteur(),
                         horloge: reference.horloge(),
@@ -49888,16 +49936,16 @@ mod publication_conditionnelle_native {
                 autre => panic!("{cle} attendue supprimée, lu {autre:?}"),
             };
             let res = store.resoudre_reference(&reference).unwrap();
-            let e = &res.par_cle[0];
+            let e = res.effet(0);
             assert_eq!(
-                e.etat, ResolutionEffet::Engage,
+                e.etat(), ResolutionEffet::Engage,
                 "{cle} : l'engagement survit au tombstone (historique)"
             );
             assert_eq!(e.estampille_courante(), Some(s));
             assert_eq!(e.valeur_courante(), None, "tombstone → pas de valeur courante");
             assert_eq!(
-                e.etat_courant,
-                EtatPropriete::Supprimee(EstampilleComplete {
+                e.etat_courant(),
+                &EtatPropriete::Supprimee(EstampilleComplete {
                     auteur: s.0,
                     horloge: s.1,
                 }),
@@ -49918,14 +49966,14 @@ mod publication_conditionnelle_native {
             let ref_absente = prep_abs.reference_tentative();
             // NON publiée : la clé n'a jamais été écrite.
             let res = store.resoudre_reference(&ref_absente).unwrap();
-            let e = &res.par_cle[0];
-            assert_eq!(e.etat, ResolutionEffet::Indetermine);
+            let e = res.effet(0);
+            assert_eq!(e.etat(), ResolutionEffet::Indetermine);
             assert_eq!(e.estampille_courante(), None);
             assert_eq!(e.valeur_courante(), None);
             // DISTINCTION EXPLICITE : clé jamais écrite = Absente (pas
             // RessourceInexistante, pas une erreur).
             assert_eq!(
-                e.etat_courant, EtatPropriete::Absente,
+                e.etat_courant(), &EtatPropriete::Absente,
                 "{cle} jamais écrite → etat_courant = Absente"
             );
         }
@@ -49956,15 +50004,15 @@ mod publication_conditionnelle_native {
         let ref_fantome = ReferenceTentative::from_bytes(&octets).unwrap();
 
         let res = store.resoudre_reference(&ref_fantome).unwrap();
-        assert_eq!(res.integrite, IntegriteTentative::Indeterminee);
-        let e = &res.par_cle[0];
-        assert_eq!(e.etat, ResolutionEffet::Indetermine);
+        assert_eq!(res.integrite(), IntegriteTentative::Indeterminee);
+        let e = res.effet(0);
+        assert_eq!(e.etat(), ResolutionEffet::Indetermine);
         assert_eq!(e.estampille_courante(), None, "nœud inexistant → pas d'estampille");
         assert_eq!(e.valeur_courante(), None, "nœud inexistant → pas de valeur");
         // DISTINCTION EXPLICITE : nœud mort = RessourceInexistante (pas Absente,
         // pas une erreur) — la vivacité se lit sur le record du nœud.
         assert_eq!(
-            e.etat_courant, EtatPropriete::RessourceInexistante,
+            e.etat_courant(), &EtatPropriete::RessourceInexistante,
             "cible fantôme → etat_courant = RessourceInexistante"
         );
         eprintln!("INEXISTANT_OK : cible fantôme → RessourceInexistante, jamais une erreur");
@@ -51432,10 +51480,10 @@ fn collision_hlc_controlee_detectable_par_domaine() {
 
     // (1) la référence de A résout Engage DANS SON domaine, et Indetermine
     //     dans le domaine ÉTRANGER (B) — le faux positif croisé est écarté.
-    assert_eq!(r_aa.integrite, IntegriteTentative::Integrale);
-    assert_eq!(r_ab.integrite, IntegriteTentative::Indeterminee);
-    assert_eq!(r_aa.par_cle[0].etat, ResolutionEffet::Engage);
-    assert_eq!(r_ab.par_cle[0].etat, ResolutionEffet::Indetermine);
+    assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
+    assert_eq!(r_ab.integrite(), IntegriteTentative::Indeterminee);
+    assert_eq!(r_aa.effet(0).etat(), ResolutionEffet::Engage);
+    assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Indetermine);
 
     // (2) les valeurs restent DIFFÉRENTES (a=10 dans A, a=20 dans B) : la
     //     détection par domaine n'a pas besoin de comparer les contenus.
@@ -51449,13 +51497,13 @@ fn collision_hlc_controlee_detectable_par_domaine() {
     }
 
     // (3) auteur_resolvant identique : writer.id ne discrimine PAS les bases.
-    assert_eq!(r_aa.auteur_resolvant, r_ab.auteur_resolvant);
+    assert_eq!(r_aa.auteur_resolvant(), r_ab.auteur_resolvant());
 
     // (4) la résolution dans SON domaine observe la valeur courante (a=10) ;
     //     celle du domaine ÉTRANGER ne CONSULTE rien : aucune valeur courante
     //     n'est rapportée (`None`), jamais une observation du contenu de B.
-    assert_eq!(r_aa.par_cle[0].valeur_courante(), Some(Value::Int64(10)));
-    assert_eq!(r_ab.par_cle[0].valeur_courante(), None);
+    assert_eq!(r_aa.effet(0).valeur_courante(), Some(Value::Int64(10)));
+    assert_eq!(r_ab.effet(0).valeur_courante(), None);
 
     eprintln!(
         "COLLISION_DETECTEE : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A, \
@@ -51511,13 +51559,13 @@ fn collision_hlc_sans_ecriture_de_la_cle_reste_indeterminee() {
 
     let r_aa = store_a.resoudre_reference(&ref_a).unwrap();
     let r_ab = store_b.resoudre_reference(&ref_a).unwrap();
-    assert_eq!(r_aa.integrite, IntegriteTentative::Integrale);
+    assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
     assert_eq!(
-        r_ab.integrite,
+        r_ab.integrite(),
         IntegriteTentative::Indeterminee,
         "même (auteur, horloge, cible) mais clé non écrite en B → Indetermine"
     );
-    assert_eq!(r_ab.par_cle[0].etat, ResolutionEffet::Indetermine);
+    assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Indetermine);
 
     eprintln!("CONTRASTE_V1_OK : référence v1 legacy (domaine=0), même (auteur, horloge, cible) mais clé différente → Indetermine en B");
 }
@@ -51555,8 +51603,8 @@ fn deplacement_du_repertoire_preserve_l_identite_et_la_resolution() {
     let store = SubstrateStore::open(&deplacee).unwrap();
     let reference = ReferenceTentative::from_bytes(&octets).unwrap();
     let res = store.resoudre_reference(&reference).unwrap();
-    assert_eq!(res.integrite, IntegriteTentative::Integrale);
-    assert_eq!(res.auteur_resolvant, auteur, "writer.id a suivi le répertoire");
+    assert_eq!(res.integrite(), IntegriteTentative::Integrale);
+    assert_eq!(res.auteur_resolvant(), auteur, "writer.id a suivi le répertoire");
 
     eprintln!("DEPLACEMENT_OK : auteur stable après rename du répertoire ; référence Engage");
 }
@@ -51618,16 +51666,16 @@ fn restauration_depuis_sauvegarde_perd_les_ecritures_posterieures() {
         .unwrap();
 
     assert_eq!(
-        r_pre.integrite,
+        r_pre.integrite(),
         IntegriteTentative::Integrale,
         "l'écriture antérieure à la sauvegarde a été restaurée"
     );
     assert_eq!(
-        r_post.integrite,
+        r_post.integrite(),
         IntegriteTentative::Indeterminee,
         "l'écriture postérieure à la sauvegarde a été perdue"
     );
-    assert_eq!(r_pre.auteur_resolvant, auteur, "writer.id restauré est identique");
+    assert_eq!(r_pre.auteur_resolvant(), auteur, "writer.id restauré est identique");
 
     eprintln!("RESTAURATION_OK : écriture pré-sauvegarde Engage, post-sauvegarde Indetermine ; auteur inchangé");
 }
@@ -51695,19 +51743,19 @@ fn collision_hlc_contenu_identique_detecte_par_domaine() {
     // (1) la référence de A résout Engage DANS SON domaine, Indetermine dans
     //     le domaine ÉTRANGER (B) — MÊME CONTENU, la détection tient par le
     //     domaine seul.
-    assert_eq!(r_aa.integrite, IntegriteTentative::Integrale);
-    assert_eq!(r_ab.integrite, IntegriteTentative::Indeterminee);
-    assert_eq!(r_aa.par_cle[0].etat, ResolutionEffet::Engage);
-    assert_eq!(r_ab.par_cle[0].etat, ResolutionEffet::Indetermine);
+    assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
+    assert_eq!(r_ab.integrite(), IntegriteTentative::Indeterminee);
+    assert_eq!(r_aa.effet(0).etat(), ResolutionEffet::Engage);
+    assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Indetermine);
 
     // (2) le contenu est IDENTIQUE (42 partout) : la valeur courante n'est
     //     observée que dans SON domaine ; le domaine étranger n'est PAS lu.
-    assert_eq!(r_aa.par_cle[0].valeur_courante(), Some(Value::Int64(42)));
-    assert_eq!(r_ab.par_cle[0].valeur_courante(), None);
+    assert_eq!(r_aa.effet(0).valeur_courante(), Some(Value::Int64(42)));
+    assert_eq!(r_ab.effet(0).valeur_courante(), None);
 
     // (3) auteur_resolvant identique : writer.id ne discrimine PAS les bases —
     //     la détection repose sur le domaine, pas sur l'auteur.
-    assert_eq!(r_aa.auteur_resolvant, r_ab.auteur_resolvant);
+    assert_eq!(r_aa.auteur_resolvant(), r_ab.auteur_resolvant());
 
     eprintln!(
         "CONTENU_IDENTIQUE_DETECTE : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A, \
@@ -51778,10 +51826,10 @@ fn collision_hlc_v1_legacy_reste_ambigue_entre_domaines() {
     // LIMITE v1 : la même référence v1 résout Engage dans les DEUX bases —
     //     le faux positif persiste pour les références anciennes sans domaine.
     assert_eq!(legacy.domaine(), 0, "une référence v1 a un domaine == 0 (legacy)");
-    assert_eq!(r_aa.integrite, IntegriteTentative::Integrale);
-    assert_eq!(r_ab.integrite, IntegriteTentative::Integrale);
-    assert_eq!(r_aa.par_cle[0].etat, ResolutionEffet::Engage);
-    assert_eq!(r_ab.par_cle[0].etat, ResolutionEffet::Engage);
+    assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
+    assert_eq!(r_ab.integrite(), IntegriteTentative::Integrale);
+    assert_eq!(r_aa.effet(0).etat(), ResolutionEffet::Engage);
+    assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Engage);
 
     eprintln!(
         "LIMITE_V1_OK : ref v1 (domaine=0, auteur={auteur:#x}, horloge={horloge:#x}) Engage dans A ET B — \

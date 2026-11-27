@@ -1077,8 +1077,8 @@ mod tests {
         };
         let store = Arc::new(SubstrateStore::open(&chemin).unwrap());
         let resolution = store.resoudre_reference(&reference).unwrap();
-        assert_eq!(resolution.integrite, IntegriteTentative::Integrale);
-        assert_eq!(resolution.cible, id);
+        assert_eq!(resolution.integrite(), IntegriteTentative::Integrale);
+        assert_eq!(resolution.cible(), id);
     }
 
     // 11) abandon d'une appliquée : refusé (une appliquée reste appliquée).

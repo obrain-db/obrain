@@ -230,10 +230,10 @@ fn h3_kill9_avant_publication() {
     let store = SubstrateStore::open(td.path().join("kb")).unwrap();
     let id = node_id(td.path());
     let (reference, res) = reference_et_resolution(&store, td.path());
-    assert_eq!(res.cible, id);
-    assert_eq!(res.auteur_resolvant, reference.auteur(), "autorité résolvante = auteur de la référence");
+    assert_eq!(res.cible(), id);
+    assert_eq!(res.auteur_resolvant(), reference.auteur(), "autorité résolvante = auteur de la référence");
     assert_eq!(
-        res.integrite,
+        res.integrite(),
         IntegriteTentative::Indeterminee,
         "jamais engagée → indéterminé (jamais « absence définitive »)"
     );
@@ -243,20 +243,21 @@ fn h3_kill9_avant_publication() {
     // À L'IDENTIQUE après kill -9 avant bascule — pas seulement « différente de
     // la tentative ».
     let (estamp_a, estamp_b) = estampilles_initiales(td.path());
-    for e in &res.par_cle {
-        assert_eq!(e.etat, ResolutionEffet::Indetermine, "chaque clé est indéterminée");
-        let attendu = if e.cle == "a" {
+    for i in 0..res.nb_effets() {
+        let e = res.effet(i);
+        assert_eq!(e.etat(), ResolutionEffet::Indetermine, "chaque clé est indéterminée");
+        let attendu = if e.cle() == "a" {
             estamp_a
-        } else if e.cle == "b" {
+        } else if e.cle() == "b" {
             estamp_b
         } else {
-            panic!("clé inattendue {}", e.cle);
+            panic!("clé inattendue {}", e.cle());
         };
         assert_eq!(
             e.estampille_courante(),
             Some(attendu),
             "l'estampille initiale de {} est CONSERVÉE à l'identique (auteur + horloge)",
-            e.cle
+            e.cle()
         );
         // la tentative n'a jamais remplacé l'état initial
         assert_ne!(
@@ -282,17 +283,18 @@ fn h3_kill9_apres_publication() {
     let store = SubstrateStore::open(td.path().join("kb")).unwrap();
     let id = node_id(td.path());
     let (reference, res) = reference_et_resolution(&store, td.path());
-    assert_eq!(res.cible, id);
-    assert_eq!(res.auteur_resolvant, reference.auteur(), "autorité résolvante = auteur de la référence");
+    assert_eq!(res.cible(), id);
+    assert_eq!(res.auteur_resolvant(), reference.auteur(), "autorité résolvante = auteur de la référence");
     assert_eq!(
-        res.integrite,
+        res.integrite(),
         IntegriteTentative::Integrale,
         "publication réelle attestée après kill -9"
     );
     assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
     assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
-    for e in &res.par_cle {
-        assert_eq!(e.etat, ResolutionEffet::Engage, "chaque clé est engagée");
+    for i in 0..res.nb_effets() {
+        let e = res.effet(i);
+        assert_eq!(e.etat(), ResolutionEffet::Engage, "chaque clé est engagée");
         assert_eq!(
             e.estampille_courante(),
             Some((reference.auteur(), reference.horloge())),
@@ -302,7 +304,7 @@ fn h3_kill9_apres_publication() {
     // masquage ultérieur : l'événement historique reste attesté
     store.set_node_property(id, "a", Value::Int64(99));
     let (_reference, res2) = reference_et_resolution(&store, td.path());
-    assert_eq!(res2.integrite, IntegriteTentative::Integrale, "masqué mais engagé");
+    assert_eq!(res2.integrite(), IntegriteTentative::Integrale, "masqué mais engagé");
     assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(99)));
     eprintln!("H3_KILL9_APRES_OK : résolution Engage + masquage, sans republication");
 }
