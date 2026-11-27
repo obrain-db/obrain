@@ -90,6 +90,18 @@ pub struct Engram {
     #[serde(default)]
     pub db_sources: Vec<String>,
 
+    /// Cle d IDENTITE STRUCTURELLE optionnelle (relations/directions/roles/
+    /// contexte). Deux engrams aux MEMES participants mais de cles structurelles
+    /// differentes NE FUSIONNENT PAS (voir `form_observation_with`).
+    #[serde(default)]
+    pub structural_key: Option<String>,
+
+    /// Vrai quand la cle structurelle ne correspond PLUS aux participants
+    /// (une revision a change l ensemble). La definition et la cle doivent
+    /// rester coherentes ; l appelant doit redefinir la cle.
+    #[serde(default)]
+    pub structural_key_stale: bool,
+
     /// Predictive model — P(outcome | context) for this engram.
     /// Stores mean + variance of observed outcomes. Used by the predictive
     /// coding layer (Layer 3+4) to compute prediction errors.
@@ -118,6 +130,8 @@ impl Engram {
             recall_count: 0,
             revision: 0,
             db_sources: Vec::new(),
+            structural_key: None,
+            structural_key_stale: false,
             #[cfg(feature = "engram")]
             predictive_model: None,
         }
@@ -245,4 +259,86 @@ pub struct PredictionError {
     pub magnitude: f64,
     /// Surprise factor — how unexpected was this? (normalized 0-1)
     pub surprise: f64,
+}
+
+// ---------------------------------------------------------------------------
+// ObservationScope — portee epistemique d une observation
+// ---------------------------------------------------------------------------
+
+/// Portee EPISTEMIQUE d une observation : decide si l ABSENCE d un noeud est
+/// une preuve de disparition ou une simple NON-OBSERVATION.
+///
+/// C est le seul signal qui permet de differencier absence / ignorance /
+/// contradiction sans categorie fixe : c est le locuteur (l appelant) qui sait
+/// s il a observe la connaissance ENTIEREMENT ou seulement en partie.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ObservationScope {
+    /// L appelant DECLARE une observation COMPLETE : un noeud absent serait
+    /// reellement disparu. C est une DECLARATION, PAS une preuve : une
+    /// declaration erronee detruit de la connaissance (voir tests).
+    DeclaredComplete,
+    /// L appelant DECLARE une observation PARTIELLE : un noeud absent n a
+    /// simplement pas ete vu. La revision PRESERVE les non observes.
+    DeclaredPartial,
+}
+
+// ---------------------------------------------------------------------------
+// AdaptiveRevisionParams — constantes MESURABLES de la revision non monotone
+// ---------------------------------------------------------------------------
+
+/// Parametres de la revision NON MONOTONE. Les valeurs par defaut ne sont PAS
+/// universelles : ce struct permet de MESURER leur effet (vitesse de
+/// decroissance, plancher de retrait) au lieu de les tenir pour acquises.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveRevisionParams {
+    /// Taux d alignement de base (renforcement vers l observation).
+    pub lr_base: f64,
+    /// Gain du taux d alignement par l erreur de prediction.
+    pub lr_error_gain: f64,
+    /// Plafond du taux d alignement.
+    pub lr_max: f64,
+    /// Plancher de retrait : un noeud decroisse sous ce poids est retire.
+    pub floor: f64,
+}
+
+impl Default for AdaptiveRevisionParams {
+    fn default() -> Self {
+        Self {
+            lr_base: 0.3,
+            lr_error_gain: 0.5,
+            lr_max: 0.8,
+            floor: 0.05,
+        }
+    }
+}
+
+impl AdaptiveRevisionParams {
+    /// VALIDE les parametres AVANT tout calcul. Une valeur non finie, un taux
+    /// negatif, un `lr_max` hors ]0,1], un `lr_base > lr_max` ou un plancher
+    /// hors ]0,1] sont REJETES (erreur typee), jamais calcules silencieusement.
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, v) in [
+            ("lr_base", self.lr_base),
+            ("lr_error_gain", self.lr_error_gain),
+            ("lr_max", self.lr_max),
+            ("floor", self.floor),
+        ] {
+            if !v.is_finite() {
+                return Err(format!("{name} non fini ({v})"));
+            }
+        }
+        if self.lr_base < 0.0 || self.lr_error_gain < 0.0 {
+            return Err("taux negatif".into());
+        }
+        if self.lr_max <= 0.0 || self.lr_max > 1.0 {
+            return Err(format!("lr_max hors ]0,1] ({})", self.lr_max));
+        }
+        if self.lr_base > self.lr_max {
+            return Err(format!("lr_base ({}) > lr_max ({})", self.lr_base, self.lr_max));
+        }
+        if self.floor <= 0.0 || self.floor > 1.0 {
+            return Err(format!("floor hors ]0,1] ({})", self.floor));
+        }
+        Ok(())
+    }
 }

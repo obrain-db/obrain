@@ -25,11 +25,17 @@ use super::observation::{
     SourceRevision,
 };
 use super::observe::EngramMetricsCollector;
-use super::recall::{RecallEngine, RecallResult, WarmupConfig, WarmupSelector, reconsolidate};
+use super::recall::{
+    reconsolidate, reconsolidate_adaptive, RecallEngine, RecallResult, WarmupConfig,
+    WarmupSelector,
+};
 use super::spectral::SpectralEncoder;
 use super::store::{EngramStore, LoadReport, MaterializeOutcome, StoreError};
 use super::traits::VectorIndex;
-use super::types::{Engram, EngramHorizon, EngramId, RecallEvent, RecallFeedback};
+use super::types::{
+    AdaptiveRevisionParams, Engram, EngramHorizon, EngramId, ObservationScope, RecallEvent,
+    RecallFeedback,
+};
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -100,31 +106,212 @@ pub struct EngramManager {
 /// membres pondérés, signature) pour vérification et comparaison.
 #[derive(Debug, Clone)]
 pub struct EngramRevision {
-    /// Identifiant de l'engramme révisé.
     pub engram_id: EngramId,
     /// Révision GLOBALE du store (borne inférieure) — n'identifie pas à elle
     /// seule le snapshot ; l'état réellement publié est `members`+`signature`.
     pub revision: u64,
-    /// Membres pondérés effectivement publiés.
     pub members: Vec<(NodeId, f64)>,
-    /// Signature spectrale effectivement publiée.
     pub signature: Vec<f64>,
 }
 
 /// Erreurs de révision, distinguées (pas un simple Option).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RevisionError {
-    /// L'engramme ciblé n'existe pas.
     EngramAbsent(EngramId),
-    /// Observation invalide (erreur non finie, ensemble vide…).
     InvalidObservation(String),
-    /// Le candidat a échoué la validation canonique.
+    /// Parametres de revision invalides (non finis, bornes incoherentes).
+    InvalidParams(String),
     ValidationFailed(String),
-    /// Échec de persistance ou de la primitive d'observation.
     PersistenceFailed(String),
-    /// Recalculs de révision épuisés (conflit de révision persistant) : l'appel
-    /// peut être rejoué avec la même identité une fois l'état stabilisé.
-    RetryExhausted,
+}
+
+/// Erreur d un pas de boucle predictive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PredictiveStepError {
+    /// Dimension de l embedding predit differente de la dimension observee :
+    /// aucune distance L2 n est calculee entre deux espaces heterogenes.
+    DimensionMismatch { predicted: usize, observed: usize },
+    /// Observation vide : aucune erreur calculable.
+    EmptyObservation,
+}
+
+/// Politique de formation / revision d un pas predictif.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PredictivePolicy {
+    /// Formation Hebbienne + reconsolidation ADDITIVE (historique).
+    Consolidating,
+    /// Formation Hebbienne + revision NON MONOTONE. La portee decide si
+    /// l ABSENCE d un noeud est une preuve (Complete) ou une non-observation
+    /// (Partial, qui preserve).
+    Adaptive(ObservationScope),
+    /// Formation EPISODIQUE : un engramme par ensemble observe, ce qui DIFFERENCIE
+    /// deux contextes partageant des participants (la formation par composantes
+    /// connexes les fusionne).
+    Episodic,
+}
+
+/// Strategie de reconsolidation, traitee par UNE SEULE autorite (`revise_with`) :
+/// memes garanties de validation, persistance, coherence spectrale, publication
+/// d index, propagation d erreur et rejeu pour toutes les variantes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReconsolidationStrategy {
+    /// Additive (historique) : ajoute les noeuds manquants, ne retire rien.
+    Additive,
+    /// Non monotone : aligne l ensemble sur l observation selon la portee et
+    /// les parametres de decroissance/retrait.
+    Adaptive(ObservationScope, AdaptiveRevisionParams),
+}
+
+/// Un pas d un OPERATEUR DE REVISION natif, parametre STRUCTURELLEMENT : la
+/// CIBLE n est pas un identifiant concret mais un SELECTEUR resolu contre
+/// l etat COURANT de l engramme au moment de l application.
+#[derive(Debug, Clone)]
+pub struct RevisionStep {
+    pub target: RevisionTarget,
+    pub prediction_error: f64,
+    pub scope: ObservationScope,
+    pub params: AdaptiveRevisionParams,
+}
+
+/// Cible d un pas : concrete (identifiants) ou STRUCTURELLE (selecteur).
+#[derive(Debug, Clone)]
+pub enum RevisionTarget {
+    Concrete(Vec<NodeId>),
+    Structural(NodeSelector),
+}
+
+/// Selecteur STRUCTUREL, INDEPENDANT des identifiants concrets : le meme
+/// operateur s applique a des engrams differents.
+#[derive(Debug, Clone)]
+pub enum NodeSelector {
+    /// Tous les membres courants.
+    All,
+    /// Les k membres de plus fort poids.
+    TopK(usize),
+    /// Les membres dont le poids depasse `w`.
+    AboveWeight(f64),
+    /// Les membres dont le poids est inferieur a `w`.
+    BelowWeight(f64),
+}
+
+/// Erreur d application : RESTITUE le prefixe deja publie et l indice du pas fautif.
+#[derive(Debug)]
+pub struct RevisionApplyError {
+    pub applied: Vec<EngramRevision>,
+    pub failed_step: usize,
+    pub cause: RevisionError,
+}
+
+/// Un OPERATEUR NATIF REUTILISABLE : une sequence ORDONNEE de pas appliques
+/// contre l etat courant. `compose` est une simple CONCATENATION : l
+/// associativite est ACQUISE PAR CONSTRUCTION, pas « decouverte ». Ce n est PAS
+/// un operateur abstrait transferable : les selecteurs le rendent reutilisable
+/// sur des situations nouvelles, rien de plus.
+#[derive(Debug, Clone, Default)]
+pub struct RevisionOp {
+    pub steps: Vec<RevisionStep>,
+}
+
+impl RevisionOp {
+    pub fn new() -> Self {
+        Self { steps: Vec::new() }
+    }
+
+    pub fn push(mut self, step: RevisionStep) -> Self {
+        self.steps.push(step);
+        self
+    }
+
+    /// Resout la cible d un pas contre l etat COURANT de l engramme.
+    pub fn resolve_target(
+        &self,
+        m: &EngramManager,
+        eid: EngramId,
+        target: &RevisionTarget,
+    ) -> Vec<NodeId> {
+        match target {
+            RevisionTarget::Concrete(nodes) => nodes.clone(),
+            RevisionTarget::Structural(sel) => {
+                let e = m.store().get(eid).expect("engramme absent");
+                let mut ens = e.ensemble.clone();
+                ens.sort_by(|x, y| {
+                    y.1.partial_cmp(&x.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                match sel {
+                    NodeSelector::All => ens.iter().map(|(n, _)| *n).collect(),
+                    NodeSelector::TopK(k) => ens.iter().take(*k).map(|(n, _)| *n).collect(),
+                    NodeSelector::AboveWeight(w) => {
+                        ens.iter().filter(|(_, x)| *x > *w).map(|(n, _)| *n).collect()
+                    }
+                    NodeSelector::BelowWeight(w) => {
+                        ens.iter().filter(|(_, x)| *x < *w).map(|(n, _)| *n).collect()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Applique la sequence. S ARRETE a la premiere erreur ; le `Err` RESTITUE le
+    /// prefixe deja publie (`applied`) et l indice du pas fautif.
+    pub fn apply(
+        &self,
+        m: &EngramManager,
+        eid: EngramId,
+    ) -> Result<Vec<EngramRevision>, RevisionApplyError> {
+        let mut applied = Vec::with_capacity(self.steps.len());
+        for (i, s) in self.steps.iter().enumerate() {
+            let nodes = self.resolve_target(m, eid, &s.target);
+            match m.revise_adaptive_with(eid, &nodes, s.prediction_error, s.scope, s.params) {
+                Ok(rev) => applied.push(rev),
+                Err(cause) => {
+                    return Err(RevisionApplyError {
+                        applied,
+                        failed_step: i,
+                        cause,
+                    })
+                }
+            }
+        }
+        Ok(applied)
+    }
+
+    /// Composition MATERIELISEE = concatenation des pas.
+    pub fn compose(a: &RevisionOp, b: &RevisionOp) -> RevisionOp {
+        RevisionOp {
+            steps: a.steps.iter().chain(b.steps.iter()).cloned().collect(),
+        }
+    }
+}
+
+/// Action effectuee par un pas de boucle predictive.
+#[derive(Debug, Clone)]
+pub enum PredictiveAction {
+    /// Aucun engramme recoupe : l observation a nourri la formation.
+    FedFormation,
+    /// Revision appliquee avec succes.
+    Revised(EngramRevision),
+    /// Revision demandee mais refusee (erreur conservee, jamais masquee).
+    RevisionFailed(RevisionError),
+}
+
+/// Resultat d un pas de boucle predictive native.
+#[derive(Debug, Clone)]
+pub struct PredictiveStep {
+    /// Embedding predit AVANT l observation (vecteur nul si aucune prediction).
+    pub predicted: Vec<f64>,
+    /// Embedding de l observation, produit independamment de la prediction.
+    pub observed: Vec<f64>,
+    /// Erreur L2 reelle (dimensions verifiees).
+    pub error: f64,
+    /// `predict()` a-t-il rendu une prediction ?
+    pub had_prediction: bool,
+    /// Engramme dominant de l attention (si prediction).
+    pub dominant: Option<EngramId>,
+    /// Action effectuee et son resultat.
+    pub action: PredictiveAction,
+    /// Nombre d engrams presents apres le pas.
+    pub engram_count: usize,
 }
 
 impl EngramManager {
@@ -135,12 +322,20 @@ impl EngramManager {
     pub fn new(config: EngramManagerConfig, vector_index: Arc<dyn VectorIndex>) -> Self {
         let store = Arc::new(EngramStore::new(None));
         let metrics = Arc::new(EngramMetricsCollector::new());
+        let spectral = SpectralEncoder::new();
+        // CONTRAT DE PROJECTION : le store recalcule la signature depuis
+        // l'ensemble (poids compris) via un encodeur DÉDIÉ (même spec
+        // déterministe que `spectral`). Aucun encodeur n'est imposé au store.
+        {
+            let proj_encoder = Arc::new(SpectralEncoder::new());
+            store.set_projection(Arc::new(move |ens| proj_encoder.encode(ens)));
+        }
 
         Self {
             store,
             formation: Mutex::new(HebbianWithSurprise::new(config.formation)),
             fsrs: FsrsScheduler::new(config.fsrs),
-            spectral: SpectralEncoder::new(),
+            spectral,
             recall_engine: RecallEngine::new(),
             warmup_config: config.warmup,
             homeostasis: HomeostasisEngine::new(config.homeostasis),
@@ -370,6 +565,31 @@ impl EngramManager {
         new_nodes: &[NodeId],
         prediction_error: f64,
     ) -> Result<EngramRevision, RevisionError> {
+        self.revise_with(
+            engram_id,
+            new_nodes,
+            prediction_error,
+            ReconsolidationStrategy::Additive,
+        )
+    }
+
+    /// AUTORITE UNIQUE de reconsolidation : toutes les variantes passent ici
+    /// (memes garanties AU NIVEAU DE L API : validation, verrou par engramme,
+    /// mutate candidat, persistance, signature spectrale recomputee, publication
+    /// d index, propagation d erreur, rejeu).
+    ///
+    /// PORTEE EXACTE : c est une autorite d API, PAS une garantie d isolation
+    /// transactionnelle durable. La durabilite, les contrats substrate/WAL et la
+    /// reconciliation des projections relevent de #418 (lot transactionnel) ; ce
+    /// point d entree ne les remplace ni ne les etend. Le verrou `revise_locks`
+    /// reste une PROTECTION PROVISOIRE.
+    pub fn revise_with(
+        &self,
+        engram_id: EngramId,
+        new_nodes: &[NodeId],
+        prediction_error: f64,
+        strategy: ReconsolidationStrategy,
+    ) -> Result<EngramRevision, RevisionError> {
         if !prediction_error.is_finite() || prediction_error < 0.0 {
             return Err(RevisionError::InvalidObservation(
                 "erreur de prédiction non finie ou négative".into(),
@@ -377,6 +597,11 @@ impl EngramManager {
         }
         if new_nodes.is_empty() {
             return Err(RevisionError::InvalidObservation("observation vide".into()));
+        }
+        // VALIDATION DES PARAMETRES AVANT TOUT CALCUL (erreur typee, pas de
+        // calcul silencieux sur des bornes incoherentes).
+        if let ReconsolidationStrategy::Adaptive(_, params) = strategy {
+            params.validate().map_err(RevisionError::InvalidParams)?;
         }
         // PROTECTION PROVISOIRE : sérialise mutate + lecture + upsert de la
         // projection, jusqu'à ce que la discipline native couvre la publication.
@@ -389,13 +614,29 @@ impl EngramManager {
                 .clone()
         };
         let _guard = lock.lock();
-        // A. RATTRAPAGE : une mutation sans identité ne doit JAMAIS partir
-        // d'un état en retard sur le registre (sinon un effet accepté mais non
-        // matérialisé serait perdu par le bump de révision).
+        // RATTRAPAGE : une mutation sans identité ne doit JAMAIS partir d'un
+        // état en retard sur le registre (un effet accepté mais non matérialisé
+        // serait perdu par le bump de révision).
         self.catch_up_store(engram_id)?;
         self.store
             .mutate(engram_id, |e| {
-                reconsolidate(e, new_nodes, prediction_error);
+                let mut before: Vec<NodeId> = e.node_ids();
+                match strategy {
+                    ReconsolidationStrategy::Additive => {
+                        reconsolidate(e, new_nodes, prediction_error)
+                    }
+                    ReconsolidationStrategy::Adaptive(scope, params) => {
+                        reconsolidate_adaptive(e, new_nodes, prediction_error, scope, params)
+                    }
+                }
+                let mut after: Vec<NodeId> = e.node_ids();
+                before.sort_unstable();
+                after.sort_unstable();
+                if before != after && e.structural_key.is_some() {
+                    // La definition (participants) a CHANGE : la cle fournie par
+                    // l appelant ne la decrit plus. Marque PERIMEE, jamais effacee.
+                    e.structural_key_stale = true;
+                }
                 // Projection dérivée : signature recalculée sur l'ensemble
                 // pondéré révisé, PAS conservée périmée.
                 e.spectral_signature = self.spectral.encode(&e.ensemble);
@@ -420,7 +661,226 @@ impl EngramManager {
         })
     }
 
-    // -----------------------------------------------------------------
+    /// Encode une observation (ensemble de noeuds, poids uniformes) dans
+    /// l espace spectral du manager. Primitive generique : aucune logique
+    /// propre a une experience.
+    pub fn encode_observation(&self, nodes: &[NodeId]) -> Vec<f64> {
+        let weighted: Vec<(NodeId, f64)> = nodes.iter().map(|&n| (n, 1.0)).collect();
+        self.spectral.encode(&weighted)
+    }
+
+    /// Encode un ensemble PONDERE (poids reels). Permet au temoin de calculer la
+    /// signature ATTENDUE sur les poids reels et de verifier que la signature
+    /// PUBLIEE est exactement celle-la (pas seulement « differente »).
+    pub fn encode_weighted(&self, ensemble: &[(NodeId, f64)]) -> Vec<f64> {
+        self.spectral.encode(ensemble)
+    }
+
+    /// Erreur L2 entre deux embeddings, DIMENSION VERIFIEE : jamais de distance
+    /// entre deux espaces de dimensions differentes (metriques non homogenes).
+    pub fn prediction_error(
+        &self,
+        predicted: &[f64],
+        observed: &[f64],
+    ) -> Result<f64, PredictiveStepError> {
+        if predicted.len() != observed.len() {
+            return Err(PredictiveStepError::DimensionMismatch {
+                predicted: predicted.len(),
+                observed: observed.len(),
+            });
+        }
+        Ok(predicted
+            .iter()
+            .zip(observed)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f64>()
+            .sqrt())
+    }
+
+    /// Un pas de boucle predictive NATIVE : predit AVANT d observer, encode
+    /// l observation independamment, calcule l erreur reelle, puis revise
+    /// l engramme recoupe (reconsolidation) ou nourrit la formation.
+    ///
+    /// Primitive GENERIQUE : le choix revise/former repose sur le seul
+    /// recoupement entre l observation et l engramme rappele, jamais sur une
+    /// regle propre a une experience. Le resultat de `revise` est CONSERVE
+    /// dans `PredictiveAction` (jamais ignore).
+    pub fn predictive_step(
+        &self,
+        cues: &[NodeId],
+        observed: &[NodeId],
+        k: usize,
+    ) -> Result<PredictiveStep, PredictiveStepError> {
+        self.predictive_step_with_policy(cues, observed, k, PredictivePolicy::Consolidating)
+    }
+
+    /// Un pas predictif selon une POLITIQUE de formation/revision. Le choix
+    /// revise/former reste generique (recoupement observation/engramme). Le
+    /// resultat de la revision est toujours conserve dans `PredictiveAction`.
+    pub fn predictive_step_with_policy(
+        &self,
+        cues: &[NodeId],
+        observed: &[NodeId],
+        k: usize,
+        policy: PredictivePolicy,
+    ) -> Result<PredictiveStep, PredictiveStepError> {
+        if observed.is_empty() {
+            return Err(PredictiveStepError::EmptyObservation);
+        }
+        let dim = self.spectral.dimensions();
+        let prediction = self.predict(cues, k);
+        let (predicted, dominant) = match &prediction {
+            Some(p) => (p.predicted.clone(), p.attention.first().map(|(id, _)| *id)),
+            None => (vec![0.0; dim], None),
+        };
+        let observed_emb = self.encode_observation(observed);
+        let error = self.prediction_error(&predicted, &observed_emb)?;
+
+        let revise_target = dominant.filter(|eid| {
+            self.store
+                .get(*eid)
+                .map(|e| e.node_ids().iter().any(|n| observed.contains(n)))
+                .unwrap_or(false)
+        });
+        let action = match policy {
+            PredictivePolicy::Consolidating => match revise_target {
+                Some(eid) => match self.revise(eid, observed, error) {
+                    Ok(rev) => PredictiveAction::Revised(rev),
+                    Err(err) => PredictiveAction::RevisionFailed(err),
+                },
+                None => {
+                    self.record_activation(observed, error);
+                    PredictiveAction::FedFormation
+                }
+            },
+            PredictivePolicy::Adaptive(scope) => match revise_target {
+                Some(eid) => match self.revise_adaptive(eid, observed, error, scope) {
+                    Ok(rev) => PredictiveAction::Revised(rev),
+                    Err(err) => PredictiveAction::RevisionFailed(err),
+                },
+                None => {
+                    self.record_activation(observed, error);
+                    PredictiveAction::FedFormation
+                }
+            },
+            PredictivePolicy::Episodic => {
+                let eid = self.form_observation(observed);
+                match self.revise_adaptive(eid, observed, error, ObservationScope::DeclaredComplete) {
+                    Ok(rev) => PredictiveAction::Revised(rev),
+                    Err(err) => PredictiveAction::RevisionFailed(err),
+                }
+            }
+        };
+        Ok(PredictiveStep {
+            predicted,
+            observed: observed_emb,
+            error,
+            had_prediction: prediction.is_some(),
+            dominant,
+            action,
+            engram_count: self.store.count(),
+        })
+    }
+
+    /// Formation EPISODIQUE : cree (ou retrouve) un engramme dont l ensemble est
+    /// EXACTEMENT l observation. Deux contextes partageant des participants
+    /// restent deux engrams distincts (pas de fusion par composante connexe).
+    pub fn form_observation(&self, nodes: &[NodeId]) -> EngramId {
+        self.form_observation_with(nodes, None)
+    }
+
+    /// Formation EPISODIQUE avec IDENTITE STRUCTURELLE optionnelle. Deux
+    /// ensembles de MEMES participants mais de cles structurelles differentes
+    /// (relations/directions/roles/contexte) donnent DEUX engrams distincts.
+    pub fn form_observation_with(
+        &self,
+        nodes: &[NodeId],
+        structural_key: Option<&str>,
+    ) -> EngramId {
+        let mut uniq: Vec<NodeId> = Vec::new();
+        for &n in nodes {
+            if !uniq.contains(&n) {
+                uniq.push(n);
+            }
+        }
+        let mut key: Vec<u64> = uniq.iter().map(|n| n.0).collect();
+        key.sort_unstable();
+        for e in self.store.list() {
+            let mut k: Vec<u64> = e.node_ids().iter().map(|n| n.0).collect();
+            k.sort_unstable();
+            // Une cle PERIMEE ne decrit plus la definition : elle ne peut PAS
+            // servir d'identite de deduplication (sinon on reutilise un engramme
+            // dont la cle ne correspond plus aux participants).
+            if k == key
+                && e.structural_key.as_deref() == structural_key
+                && !e.structural_key_stale
+            {
+                return e.id;
+            }
+        }
+        let id = self.store.next_id();
+        let ensemble: Vec<(NodeId, f64)> = uniq.iter().map(|&n| (n, 1.0)).collect();
+        let mut engram = Engram::new(id, ensemble);
+        engram.structural_key = structural_key.map(|s| s.to_string());
+        let signature = self.spectral.encode(&engram.ensemble);
+        engram.spectral_signature = signature.clone();
+        self.store.insert(engram);
+        self.vector_index.upsert(&id.to_string(), &signature);
+        self.metrics.record_formation();
+        id
+    }
+
+    /// (Re)DECLARE la cle structurelle d un engramme et leve l etat PERIME.
+    ///
+    /// Ce n est PAS une verification : la cle reste une etiquette opaque
+    /// fournie par l appelant. Lever `stale` signifie « l appelant re-declare
+    /// cette cle pour les participants COURANTS », PAS « la cle est prouvee ».
+    /// L autorite de DEFINITION reste #416 (Composition) ; ce champ ne la
+    /// remplace pas et ne cree pas d autorite parallele.
+    pub fn set_structural_key(&self, engram_id: EngramId, key: Option<&str>) {
+        self.store.update(engram_id, |e| {
+            e.structural_key = key.map(|s| s.to_string());
+            e.structural_key_stale = false;
+        });
+    }
+
+    /// Revision NON MONOTONE : comme `revise`, mais l ensemble est ALIGNE sur
+    /// l observation (noeuds absents decroisses puis retires). Corrige la limite
+    /// additive mesuree.
+    pub fn revise_adaptive(
+        &self,
+        engram_id: EngramId,
+        new_nodes: &[NodeId],
+        prediction_error: f64,
+        scope: ObservationScope,
+    ) -> Result<EngramRevision, RevisionError> {
+        self.revise_adaptive_with(
+            engram_id,
+            new_nodes,
+            prediction_error,
+            scope,
+            AdaptiveRevisionParams::default(),
+        )
+    }
+
+    /// Variante PARAMETRABLE (pour MESURER l effet des constantes), meme
+    /// autorite `revise_with` donc memes garanties.
+    pub fn revise_adaptive_with(
+        &self,
+        engram_id: EngramId,
+        new_nodes: &[NodeId],
+        prediction_error: f64,
+        scope: ObservationScope,
+        params: AdaptiveRevisionParams,
+    ) -> Result<EngramRevision, RevisionError> {
+        self.revise_with(
+            engram_id,
+            new_nodes,
+            prediction_error,
+            ReconsolidationStrategy::Adaptive(scope, params),
+        )
+    }
+
     // Révision avec identité d'observation (contrat RFC d59af717)
     // -----------------------------------------------------------------
 
@@ -698,12 +1158,21 @@ impl EngramManager {
                     .map_err(RevisionError::PersistenceFailed)?
                 {
                     ResolvedState::NotApplied => Ok((ObservationOutcome::Indeterminate, None)),
+                    ResolvedState::Indeterminate { .. } => {
+                        // Engagement INDÉTERMINÉ (jamais engagé OU preuve
+                        // compactée, indistinguable) : ne PAS rejouer en aveugle.
+                        Ok((ObservationOutcome::Indeterminate, None))
+                    }
                     ResolvedState::Applied {
                         definition: rec_def,
                         state: rec_state,
                         revision: rec_rev,
                     } => {
-                        // La résolution restitue l'état EFFECTIVEMENT enregistré.
+                        // La résolution restitue l'état EFFECTIVEMENT enregistré
+                        // pour `Applied` : l'effet a été ENGAGÉ historiquement
+                        // (éventuellement supplanté depuis). L'effet enregistré
+                        // est l'effet canonique à (ré)matérialiser si le store
+                        // est en retard (`live.revision < rec_rev`).
                         if rec_def != definition.canonical_bytes() {
                             return Err(RevisionError::ValidationFailed(
                                 "définition enregistrée différente de la définition tentée".into(),
@@ -755,6 +1224,8 @@ impl EngramManager {
             }
         }
     }
+
+    // -----------------------------------------------------------------
 
     // -----------------------------------------------------------------
     // Recall

@@ -35,6 +35,7 @@ pub mod checkpoint;
 pub mod compteurs;
 pub mod degree_column;
 pub mod dict;
+pub mod domaine_id;
 pub mod engram;
 pub mod engram_bitset;
 pub mod engram_recall;
@@ -100,12 +101,13 @@ pub use blob_column::{
 pub use blob_column_registry::BLOB_COLUMN_THRESHOLD_BYTES;
 pub use checkpoint::{CheckpointStats, checkpoint};
 pub use dict::DictSnapshot;
+pub use domaine_id::{FICHIER_DOMAINE_FORK, FICHIER_DOMAINE_ID, FICHIER_DOMAINE_INIT, forker};
 pub use engram::{
     ENGRAM_HEADER_SIZE, ENGRAM_MAGIC, ENGRAM_ZONE_VERSION, EngramZone, MAX_ENGRAM_ID,
 };
 pub use engram_bitset::{BITSET_ENTRY_SIZE, EngramBitsetColumn, engram_bit_mask};
 pub use engram_recall::{scan_overlap, scan_overlap_scalar, top_k_by_overlap};
-pub use error::{SubstrateError, SubstrateResult};
+pub use error::{EngramIncoherence, SubstrateError, SubstrateResult};
 pub use file::{SubstrateFile, Zone, ZoneFile, zone};
 pub use geometric::{
     CsrAdjacency, HKS_DT, HKS_HUTCHINSON_PROBES, HKS_T_GLOBAL, HKS_T_LOCAL, HKS_T_MESO,
@@ -170,8 +172,11 @@ pub use simplex_zone::{
 };
 pub use store::{
     BLOB_WAL_MAX_BYTES, DeclarationIndex, DeclarationProcedure, EdgePropsV2FinalizeStats,
-    PropsV2FinalizeStats, SKIP_ON_LOAD_PROP_KEYS, StoreMutationObserver, SubstrateStore,
-    noeuds_hydrates,
+    EffetResolu, EstampilleComplete, EtatPropriete, IntegriteTentative, IssuePublication,
+    ModePublication, Precondition, PreparationDifferee, PropsV2FinalizeStats,
+    REFERENCE_TENTATIVE_MAGIC, REFERENCE_TENTATIVE_VERSION, ReferenceTentative, ResolutionEffet,
+    ResolutionTentative, SKIP_ON_LOAD_PROP_KEYS, StoreMutationObserver, SubstrateStore,
+    TransformationPrete, VerdictEffet, noeuds_hydrates,
 };
 pub use tiers::{
     L0_BITS, L1_BITS, L2_DIM, Tier0, Tier1, Tier2, f16_to_f32, f32_to_f16, tier0_hamming,

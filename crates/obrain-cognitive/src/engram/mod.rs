@@ -43,6 +43,11 @@ pub use observation::{
     ResultingState, SourceRevision,
 };
 
+#[cfg(all(feature = "engram", feature = "substrate"))]
+mod observation_substrate;
+#[cfg(all(feature = "engram", feature = "substrate"))]
+pub use observation_substrate::SubstrateAtomicEventLedger;
+
 #[cfg(feature = "engram")]
 mod formation;
 #[cfg(all(feature = "engram", feature = "epigenetic"))]
@@ -75,9 +80,12 @@ pub use hybrid_recall::{
 mod recall;
 #[cfg(feature = "engram")]
 pub use recall::{
-    ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig, WarmupSelector,
-    reconsolidate,
+    reconsolidate, ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig,
+    WarmupSelector,
 };
+// NOTE : `reconsolidate_adaptive` n'est PAS re-exporte. C'est une brique interne
+// qui suppose des parametres DEJA valides ; le point d'entree public est
+// `EngramManager::revise_adaptive_with` (valide les parametres avant tout calcul).
 
 #[cfg(feature = "engram")]
 mod hopfield;
@@ -113,7 +121,11 @@ pub use crystallization::{
 #[cfg(feature = "engram")]
 mod manager;
 #[cfg(feature = "engram")]
-pub use manager::{EngramManager, EngramManagerConfig, EngramRevision, RevisionError};
+pub use manager::{
+    EngramManager, EngramManagerConfig, EngramRevision, PredictiveAction, PredictivePolicy,
+    NodeSelector, PredictiveStep, PredictiveStepError, ReconsolidationStrategy, RevisionApplyError,
+    RevisionError, RevisionOp, RevisionStep, RevisionTarget,
+};
 
 #[cfg(feature = "engram")]
 mod bridge;

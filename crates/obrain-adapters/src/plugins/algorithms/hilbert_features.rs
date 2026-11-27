@@ -2256,9 +2256,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_hilbert_features_perf_1000_nodes() {
-        // Build a random-ish graph with 1000 nodes
+    /// Graphe mutualisé 1000 nœuds + ~3000 arêtes (anneau + connexions sautées).
+    fn build_hilbert_1000_graph() -> SubstrateStore {
         let store = SubstrateStore::open_tempfile().unwrap();
         let mut nodes = Vec::with_capacity(1000);
         for i in 0..1000 {
@@ -2271,7 +2270,6 @@ mod tests {
             };
             nodes.push(store.create_node(&[label]));
         }
-        // Add ~3000 edges (ring + skip connections)
         for i in 0..1000 {
             let j = (i + 1) % 1000;
             store.create_edge(nodes[i], nodes[j], "LINK");
@@ -2280,7 +2278,25 @@ mod tests {
                 store.create_edge(nodes[i], nodes[i + 7], "LINK");
             }
         }
+        store
+    }
 
+    /// Qualification FONCTIONNELLE (exécutée sous couverture) : la structure
+    /// produite est correcte, sans contrainte temporelle.
+    #[test]
+    fn test_hilbert_features_1000_nodes() {
+        let store = build_hilbert_1000_graph();
+        let config = HilbertFeaturesConfig::default();
+        let result = hilbert_features(&store, &config);
+        assert_eq!(result.features.len(), 1000, "1000 nœuds → 1000 features");
+    }
+
+    /// Qualification de PERFORMANCE (job CI dédié, SANS instrumentation) : le
+    /// seuil de 5 s n'est pas compatible avec l'instrumentation de couverture.
+    #[test]
+    #[ignore = "perf : exécuté dans le job CI de performance dédié (sans instrumentation)"]
+    fn test_hilbert_features_perf_1000_nodes() {
+        let store = build_hilbert_1000_graph();
         let config = HilbertFeaturesConfig::default();
         let start = web_time::Instant::now();
         let result = hilbert_features(&store, &config);

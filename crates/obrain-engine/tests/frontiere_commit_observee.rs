@@ -154,6 +154,7 @@ fn taille_wal(base: &std::path::Path) -> u64 {
 // `#[ignore]` tant que le déclencheur réel des écritures cognitives n'est pas établi.
 #[ignore = "aucune écriture cognitive observée dans cette configuration : scénario non établi"]
 #[test]
+#[cfg(feature = "thinker")]
 fn d_ancien_oracle_contre_nouveau_sur_la_meme_execution() {
     let d = dir("d");
     let db = ObrainDB::open_substrate_with_thinkers(

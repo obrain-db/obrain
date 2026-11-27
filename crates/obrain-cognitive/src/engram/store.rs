@@ -42,9 +42,8 @@ use super::types::{Engram, EngramId};
 
 #[cfg(feature = "substrate")]
 use obrain_substrate::{
-    SubstrateError, SubstrateResult, Writer as SubstrateWriter, engram_bit_mask,
+    EngramIncoherence, SubstrateError, SubstrateResult, Writer as SubstrateWriter, engram_bit_mask,
 };
-#[cfg(feature = "substrate")]
 use parking_lot::RwLock as PlRwLock;
 
 /// Label used for engram nodes in the backing graph store.
@@ -83,6 +82,10 @@ pub struct EngramStore {
     /// conservative rule, because both the signature and the precision of an
     /// engram take part in the derived data.
     revision: AtomicU64,
+    /// Projection injectée : signature = f(ensemble). Optionnelle : sans elle,
+    /// le store reste NEUTRE vis-à-vis de l'encodeur. Quand elle est présente,
+    /// `insert` et `mutate` recalculent la signature (contrat de projection).
+    projection: PlRwLock<Option<Arc<dyn Fn(&[(NodeId, f64)]) -> Vec<f64> + Send + Sync>>>,
     /// Optional substrate writer for side-table + bitset mirror (T7 Step 2).
     #[cfg(feature = "substrate")]
     substrate: PlRwLock<Option<Arc<SubstrateWriter>>>,
@@ -201,6 +204,7 @@ impl EngramStore {
             node_ids: DashMap::new(),
             next_id: AtomicU64::new(1),
             revision: AtomicU64::new(0),
+            projection: PlRwLock::new(None),
             #[cfg(feature = "substrate")]
             substrate: PlRwLock::new(None),
             #[cfg(feature = "substrate")]
@@ -343,8 +347,30 @@ impl EngramStore {
         props
     }
 
+    /// Injecte la projection (signature = f(ensemble)). N'impose AUCUN encodeur
+    /// particulier : toute projection future peut s'y brancher. Sans projection,
+    /// le store reste neutre (aucun recalcul).
+    pub fn set_projection(
+        &self,
+        p: Arc<dyn Fn(&[(NodeId, f64)]) -> Vec<f64> + Send + Sync>,
+    ) {
+        *self.projection.write() = Some(p);
+    }
+
+    /// CONTRAT DE PROJECTION : recalcule la signature depuis l'ensemble (POIDS
+    /// COMPRIS) si une projection est injectée. La cohérence découle du vrai
+    /// contrat (projection = fonction déterministe de l'ensemble), PAS d'une
+    /// comparaison de vecteurs. (a) un changement de poids est recalculé ;
+    /// (b) une signature arbitraire est ÉCRASÉE ; (c) aucun faux rejet.
+    fn apply_projection(&self, eng: &mut Engram) {
+        if let Some(p) = self.projection.read().as_ref() {
+            eng.spectral_signature = p(&eng.ensemble);
+        }
+    }
+
     /// Inserts an engram into the cache and writes through to storage.
-    pub fn insert(&self, engram: Engram) {
+    pub fn insert(&self, mut engram: Engram) {
+        self.apply_projection(&mut engram);
         self.revision.fetch_add(1, Ordering::Relaxed);
         let id = engram.id;
         if let Some(storage) = &self.storage {
@@ -512,6 +538,30 @@ impl EngramStore {
             let (members, weights) = match writer.read_engram_state(eid_u16) {
                 Ok(Some(v)) => v,
                 Ok(None) => continue, // slot vide
+                Err(SubstrateError::EngramIncoherent {
+                    incoherence: EngramIncoherence::CardinaliteIncoherente { membres, poids },
+                    ..
+                }) => {
+                    // Incohérence STRUCTURELLE membres↔poids (cardinalité
+                    // incohérente) : rejetée avec sa cause DÉDIÉE, jamais une
+                    // erreur de lecture. Identifiant réservé (jamais réalloué),
+                    // engramme en quarantaine, aucun poids inventé.
+                    tracing::error!(
+                        engram_id = eid_u16,
+                        membres = membres,
+                        poids = poids,
+                        "incohérence membres/poids : engramme en quarantaine (aucun poids inventé)"
+                    );
+                    max_id = max_id.max(eid_u16 as u64);
+                    report.rejected.push((
+                        EngramId(eid_u16 as u64),
+                        RejectCause::InconsistentWeights {
+                            members: membres,
+                            weights: poids,
+                        },
+                    ));
+                    continue;
+                }
                 Err(e) => {
                     // Zone corrompue : on RÉSERVE l'identifiant (pour ne jamais
                     // le réallouer) et on met l'engramme en quarantaine.
@@ -848,6 +898,9 @@ impl EngramStore {
         // d'observation, quel que soit le chemin : revise, revise_with_id,
         // mutate, formation, update...).
         candidate.revision = candidate.revision.saturating_add(1);
+        // CONTRAT DE PROJECTION : recalcul (POIDS COMPRIS), pas de comparaison
+        // de vecteurs. La signature est toujours dérivée de l'ensemble final.
+        self.apply_projection(&mut candidate);
         // Invariance de l'identité logique : une révision ne change pas l'id.
         if candidate.id != id {
             return Err(StoreError::ValidationFailed(

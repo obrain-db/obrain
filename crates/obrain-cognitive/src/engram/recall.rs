@@ -665,6 +665,61 @@ pub fn reconsolidate(engram: &mut Engram, new_nodes: &[NodeId], prediction_error
     engram.recall_count += 1;
 }
 
+/// Revision NON MONOTONE d un engramme a partir d une observation independante.
+///
+/// Contrairement a `reconsolidate` (purement ADDITIVE), cette revision ALIGNE
+/// l ensemble sur l observation : les noeuds ABSENTS sont decroisses (puis
+/// RETIRES sous un plancher), les noeuds observes sont renforces. La vitesse
+/// d alignement suit l erreur de prediction (erreur forte = adaptation forte).
+/// L historique (strength, recall_count) est preserve ; aucune categorie fixe.
+/// BRIQUE INTERNE : suppose des parametres deja valides (voir
+/// `EngramManager::revise_adaptive_with`). Non re-exportee publiquement.
+#[allow(dead_code)]
+pub(crate) fn reconsolidate_adaptive(
+    engram: &mut Engram,
+    observed: &[NodeId],
+    prediction_error: f64,
+    scope: super::types::ObservationScope,
+    params: super::types::AdaptiveRevisionParams,
+) {
+    use super::types::ObservationScope;
+    if !prediction_error.is_finite() || prediction_error < 0.0 {
+        return;
+    }
+    let lr = (params.lr_base + prediction_error * params.lr_error_gain)
+        .clamp(0.0, params.lr_max);
+    // DEDUPLICATION de l observation : deux occurrences du MEME NodeId ne
+    // doivent pas provoquer un DOUBLE renforcement des poids.
+    let mut observed_uniq: Vec<NodeId> = Vec::new();
+    for &n in observed {
+        if !observed_uniq.contains(&n) {
+            observed_uniq.push(n);
+        }
+    }
+    // DECROISSANCE seulement si l observation est COMPLETE. Sous observation
+    // PARTIELLE, l absence n est PAS une preuve de disparition : on PRESERVE.
+    if scope == ObservationScope::DeclaredComplete {
+        for (nid, w) in engram.ensemble.iter_mut() {
+            if !observed_uniq.contains(nid) {
+                *w *= 1.0 - lr;
+            }
+        }
+    }
+    // Renforcement / ajout des noeuds OBSERVES (dans les deux portees).
+    for &nid in &observed_uniq {
+        match engram.ensemble.iter_mut().find(|(n, _)| *n == nid) {
+            Some((_, w)) => *w = (*w * (1.0 - lr) + lr).min(1.0),
+            None => engram.ensemble.push((nid, lr.max(0.1))),
+        }
+    }
+    // RETRAIT sous plancher : seulement quand l absence est une PREUVE.
+    if scope == ObservationScope::DeclaredComplete {
+        engram.ensemble.retain(|(_, w)| *w >= params.floor);
+    }
+    engram.strength = (engram.strength + 0.05).min(1.0);
+    engram.recall_count += 1;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

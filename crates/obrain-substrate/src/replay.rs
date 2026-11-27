@@ -1290,6 +1290,19 @@ fn apply(
             }
             let zf = engram_members_zone.as_mut().unwrap();
             crate::engram::EngramZone::set_members_raw(zf, *engram_id, members)?;
+            // (V4) Une suppression LOGIQUE (membres vides) invalide AUSSI les
+            // poids, exactement comme l'écriture directe : sans cela, un rejeu
+            // après vidage/repeuplement ressusciterait des poids périmés.
+            if members.is_empty() {
+                if engram_weights_zone.is_none() {
+                    *engram_weights_zone = Some(substrate.open_zone(Zone::EngramWeights)?);
+                }
+                crate::engram::EngramZone::set_members_raw(
+                    engram_weights_zone.as_mut().unwrap(),
+                    *engram_id,
+                    &[],
+                )?;
+            }
             Ok(Applied::Yes)
         }
 
@@ -1683,7 +1696,9 @@ fn apply(
                 apply_engram_states(
                     substrate,
                     engram_members_zone,
+                    engram_weights_zone,
                     engram_bitset_zone,
+                    permutation,
                     engram_members,
                     engram_bitsets,
                 )?;
@@ -1762,15 +1777,10 @@ fn apply(
                 touches,
                 ecartes,
             )?;
-            apply_engram_states(
-                substrate,
-                engram_members_zone,
-                engram_bitset_zone,
-                engram_members,
-                engram_bitsets,
-            )?;
             // Side-cars : permutation totale équivalente (identité +
-            // échanges old ↔ new), auto-gardée par en-tête.
+            // échanges old ↔ new), auto-gardée par en-tête. Calculée AVANT
+            // l'application des états engram : le ré-attachement en dérive
+            // les membres PRÉ-remap pour vérifier l'identité des poids.
             let domain = relocations
                 .iter()
                 .map(|&(old, new)| old.max(new))
@@ -1778,6 +1788,15 @@ fn apply(
                 .unwrap_or(0)
                 .saturating_add(1);
             let total_perm = crate::slot_remap::permutation_from_relocations(relocations, domain)?;
+            apply_engram_states(
+                substrate,
+                engram_members_zone,
+                engram_weights_zone,
+                engram_bitset_zone,
+                &total_perm,
+                engram_members,
+                engram_bitsets,
+            )?;
             // I3 — barrière de durabilité AVANT la confirmation, puis
             // side-cars (auto-gardés par leurs epochs d'en-tête).
             for z in [
@@ -1957,15 +1976,19 @@ fn apply(
             if engram_weights_zone.is_none() {
                 *engram_weights_zone = Some(substrate.open_zone(Zone::EngramWeights)?);
             }
+            // (V4) Le rejeu ré-écrit les poids LIÉS à l'IDENTITÉ des membres,
+            // jamais un fallback positionnel : après wipe+rejeu, la protection
+            // (empreinte) est RESTAURÉE, pas dégradée en réassociation.
             let ws: Vec<f32> = weights.iter().map(|b| f32::from_bits(*b)).collect();
             crate::engram::EngramZone::set_members_raw(
                 engram_members_zone.as_mut().unwrap(),
                 *engram_id,
                 members,
             )?;
-            crate::engram::EngramZone::set_weights_raw(
+            crate::engram::EngramZone::set_weights_bound(
                 engram_weights_zone.as_mut().unwrap(),
                 *engram_id,
+                members,
                 &ws,
             )?;
             Ok(Applied::Yes)
@@ -1980,17 +2003,42 @@ fn apply(
 fn apply_engram_states(
     substrate: &SubstrateFile,
     engram_members_zone: &mut Option<ZoneFile>,
+    engram_weights_zone: &mut Option<ZoneFile>,
     engram_bitset_zone: &mut Option<ZoneFile>,
+    old_to_new: &[u32],
     members: &[(u16, Vec<u32>)],
     bitsets: &[(u32, u64)],
 ) -> SubstrateResult<()> {
     if !members.is_empty() {
+        // Inverse de la permutation : retrouve les membres PRÉ-remap
+        // de chaque engramme SANS lire la zone membres (qui peut déjà
+        // être POST-remap si le rejeu repart après une interruption).
+        // C'est ce qui permet au ré-attachement de vérifier l'identité
+        // et de rester idempotent (AVANT / INTERMÉDIAIRE / APRÈS).
+        let mut new_to_old = vec![0u32; old_to_new.len()];
+        for (old, &new) in old_to_new.iter().enumerate() {
+            if let Some(cell) = new_to_old.get_mut(new as usize) {
+                *cell = old as u32;
+            }
+        }
         if engram_members_zone.is_none() {
             *engram_members_zone = Some(substrate.open_zone(Zone::EngramMembers)?);
         }
-        let zf = engram_members_zone.as_mut().unwrap();
+        if engram_weights_zone.is_none() {
+            *engram_weights_zone = Some(substrate.open_zone(Zone::EngramWeights)?);
+        }
+        let mz = engram_members_zone.as_mut().unwrap();
+        let wz = engram_weights_zone.as_mut().unwrap();
         for (engram_id, list) in members {
-            crate::engram::EngramZone::set_members_raw(zf, *engram_id, list)?;
+            // Membres PRÉ-remap dérivés de la permutation inverse : la zone
+            // membres est peut-être déjà POST-remap (rejeu interrompu), on
+            // ne la lit donc pas pour établir l'identité à vérifier.
+            let old_members: Vec<u32> = list
+                .iter()
+                .map(|&m| new_to_old.get(m as usize).copied().unwrap_or(m))
+                .collect();
+            crate::engram::EngramZone::set_members_raw(mz, *engram_id, list)?;
+            crate::engram::EngramZone::rebind_weights_after_remap(wz, *engram_id, &old_members, list)?;
         }
     }
     if !bitsets.is_empty() {
@@ -2989,6 +3037,70 @@ mod tests {
         );
         assert_eq!(stats.dangling_prop_anchors, 0, "aucune ancre non nulle ici");
     }
+
+    /// Le rejeu d'un record `HilbertRepermuteV2` (remap physique des slots)
+    /// doit ré-attacher les poids LIÉS d'un engramme pondéré : sans cela,
+    /// l'empreinte périmée rendrait `read_engram_state` → `EngramIncoherent`
+    /// après reconstruction, et l'engramme serait mis en quarantaine.
+    ///
+    /// Crash simulé entre le fsync du record V2 et la moindre mutation de
+    /// zone (ni permutation, ni états engram, ni epoch confirmé) : le rejeu
+    /// tombe dans le cas 3 du bras et ré-applique permutation + états
+    /// engram, y compris le ré-attachement des poids.
+    #[test]
+    fn replay_remap_rebind_les_poids_lies() {
+        let dir = tempdir().unwrap();
+        let sub_path = dir.path().join("kb");
+        // Bijection totale sur [0, 6), sentinelle épinglée : i → 6 - i.
+        let perm: Vec<u32> = vec![0, 5, 4, 3, 2, 1];
+        let members: Vec<u32> = vec![1, 2, 3];
+        let weights: Vec<f32> = vec![0.25, 0.5, 0.25];
+        let mapped: Vec<u32> = members.iter().map(|&m| perm[m as usize]).collect();
+
+        let baseline;
+        {
+            let sub = SubstrateFile::create(&sub_path).unwrap();
+            let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
+            for i in 1..6u32 {
+                w.write_node(i, n(i, 1)).unwrap();
+            }
+            w.set_engram_state(1, members.clone(), weights.clone())
+                .unwrap();
+            w.commit().unwrap();
+            w.msync_zones().unwrap();
+            // Baseline de production : tout ce qui précède est durable ; le
+            // rejeu repartira d'ici (le point exact du flush du store).
+            baseline = w.wal().offset();
+            w.note_durable_baseline(baseline);
+
+            // Record V2 journalisé + fsync, puis « crash ».
+            let rec = WalRecord {
+                lsn: 0,
+                timestamp: 0,
+                flags: 0,
+                payload: WalPayload::HilbertRepermuteV2 {
+                    permutation: perm.clone(),
+                    epoch: 1,
+                    engram_members: vec![(1u16, mapped.clone())],
+                    engram_bitsets: Vec::new(),
+                },
+            };
+            w.wal().append(rec).unwrap();
+            w.wal().fsync().unwrap();
+        }
+
+        let sub = SubstrateFile::open(&sub_path).unwrap();
+        let stats = replay_from(&sub, baseline).unwrap();
+        assert_eq!(stats.decode_errors, 0, "frame indécodable au rejeu");
+        let w = Writer::new(sub, SyncMode::Never).unwrap();
+        let (got_members, got_weights) = w.read_engram_state(1).unwrap().expect("engram disparu");
+        assert_eq!(got_members, mapped, "membres non remappés au rejeu");
+        assert_eq!(
+            got_weights.as_deref(),
+            Some(weights.as_slice()),
+            "poids altérés ou non ré-attachés au rejeu"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3026,8 +3138,11 @@ mod tests_rejeu_engramme {
         assert_eq!(wts, Some(vec![0.5, 0.75]));
     }
 
-    /// Le rejeu reconstruit les POIDS SEULS depuis le record `EngramWeightsSet`,
-    /// en ouvrant paresseusement la zone poids à la première occurrence.
+    /// Le rejeu reconstruit les POIDS SEULS depuis le record legacy
+    /// `EngramWeightsSet` (0x76), en ouvrant paresseusement la zone poids à la
+    /// première occurrence. Sous V4, un engramme « poids seuls » n'a pas de
+    /// membres : la lecture cohérente rend `None`, mais la zone des poids brute
+    /// est bien reconstruite.
     #[test]
     fn replay_reconstruit_les_poids_seuls_d_engramme() {
         let dir = tempdir().unwrap();
@@ -3035,7 +3150,7 @@ mod tests_rejeu_engramme {
         {
             let sub = SubstrateFile::create(&sub_path).unwrap();
             let w = Writer::new(sub, SyncMode::EveryCommit).unwrap();
-            w.set_engram_weights(2, vec![0.25, 0.5]).unwrap();
+            w.set_engram_weights_legacy(2, vec![0.25, 0.5]).unwrap();
             w.commit().unwrap();
         }
         std::fs::write(sub_path.join(crate::file::zone::ENGRAM_WEIGHTS), []).unwrap();
@@ -3045,6 +3160,17 @@ mod tests_rejeu_engramme {
         assert_eq!(stats.decode_errors, 0);
 
         let w2 = Writer::new(sub2, SyncMode::Never).unwrap();
-        assert_eq!(w2.engram_weights(2).unwrap(), Some(vec![0.25, 0.5]));
+        // V4 : pas de membres, donc la lecture cohérente rend l'absence.
+        assert_eq!(w2.engram_weights(2).unwrap(), None);
+        // La zone des poids brute, elle, a bien été reconstruite depuis le WAL.
+        let zf = w2
+            .substrate()
+            .lock()
+            .open_zone(crate::file::Zone::EngramWeights)
+            .unwrap();
+        assert_eq!(
+            crate::engram::EngramZone::members(&zf, 2).unwrap(),
+            Some(vec![0.25f32.to_bits(), 0.5f32.to_bits()])
+        );
     }
 }

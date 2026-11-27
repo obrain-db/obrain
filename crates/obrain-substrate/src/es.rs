@@ -238,6 +238,11 @@ pub trait FichierVerrou: Send + std::fmt::Debug {
     fn essayer_exclusif(&self) -> io::Result<bool>;
     /// Prend le verrou exclusif en bloquant.
     fn exclusif(&self) -> io::Result<()>;
+    /// Prend le verrou PARTAGÉ en bloquant : compatible avec d'autres verrous
+    /// partagés, exclusif vis-à-vis de [`exclusif`](Self::exclusif). C'est la
+    /// primitive lecteurs/écrivain qui sérialise une publication (partagé) contre
+    /// un fork (exclusif) SANS sérialisation globale permanente (#334/#418).
+    fn partage(&self) -> io::Result<()>;
     /// Rend le verrou explicitement (sinon : à la fermeture).
     fn liberer(&self) -> io::Result<()>;
 }
@@ -313,6 +318,13 @@ impl FichierVerrou for VerrouNatif {
     fn exclusif(&self) -> io::Result<()> {
         use fs2::FileExt as _;
         self.fichier.lock_exclusive()
+    }
+
+    fn partage(&self) -> io::Result<()> {
+        // `File::lock_shared` est la méthode INHÉRENTE de std (stabilisée) :
+        // même `flock(LOCK_SH)` que fs2, compatible avec `lock_exclusive` de
+        // `exclusif`. Pas d'import de trait nécessaire ici.
+        self.fichier.lock_shared()
     }
 
     fn liberer(&self) -> io::Result<()> {

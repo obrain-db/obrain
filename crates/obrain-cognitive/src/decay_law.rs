@@ -353,6 +353,52 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod tests_timestamps {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn epoch_secs_to_micros_est_borné_et_sans_panic() {
+        // Non fini → 0 (jamais un timestamp arbitraire).
+        assert_eq!(epoch_secs_to_micros(f64::NAN), 0);
+        assert_eq!(epoch_secs_to_micros(f64::INFINITY), 0);
+        assert_eq!(epoch_secs_to_micros(f64::NEG_INFINITY), 0);
+        // Zéro et négatif (epoch légitime ou non).
+        assert_eq!(epoch_secs_to_micros(0.0), 0);
+        assert_eq!(epoch_secs_to_micros(-1.0), -1_000_000);
+        // Hors capacité i64 → saturation (pas de panic, pas de UB).
+        assert_eq!(epoch_secs_to_micros(1e300), i64::MAX);
+        assert_eq!(epoch_secs_to_micros(-1e300), i64::MIN);
+        // Valeur ordinaire, arrondie.
+        assert_eq!(epoch_secs_to_micros(1.5), 1_500_000);
+    }
+
+    #[test]
+    fn elapsed_monotonic_est_borné_et_ne_remonte_pas() {
+        let t_ref = 1_000_000i64;
+        // t_hi < t_ref, now < t_ref → dt négatif → ZERO (pas de remontée).
+        assert_eq!(elapsed_monotonic(t_ref, t_ref - 500, t_ref - 1000), Duration::ZERO);
+        // now recule sous t_hi → high-water mark borne (monotonie de session).
+        let e1 = elapsed_monotonic(t_ref, t_ref + 2000, t_ref + 1000);
+        let e2 = elapsed_monotonic(t_ref, t_ref + 500, t_ref + 2000);
+        assert_eq!(e1, e2, "recul d'horloge borné par t_hi");
+        // Différence susceptible de déborder → saturating_sub (borné).
+        let big = elapsed_monotonic(i64::MIN, i64::MAX, i64::MIN);
+        // saturating_sub borne à i64::MAX : pas de débordement, pas de panic.
+        assert_eq!(big, Duration::from_micros(i64::MAX as u64));
+        // Ancre dans le futur → zéro.
+        assert_eq!(elapsed_monotonic(t_ref + 1000, t_ref, t_ref), Duration::ZERO);
+    }
+
+    #[test]
+    fn demi_vie_nulle_ou_negative_est_remplacee() {
+        assert_eq!(DecayLaw::new(Duration::ZERO).half_life(), Duration::from_secs(24 * 3600));
+        assert_eq!(DecayLaw::new(Duration::from_secs(64)).half_life(), Duration::from_secs(64));
+    }
+}
+
 #[cfg(test)]
 mod tests_branches_limites {
     use super::*;

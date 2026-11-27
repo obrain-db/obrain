@@ -1388,6 +1388,36 @@ impl PropsZone {
 
     /// Append a node-owned property entry. See [`append_entry_inner`](Self::append_entry_inner)
     /// for full semantics.
+    /// Prépare une NOUVELLE page privée (inaccessible depuis la tête canonique),
+    /// dont `next_page` référence `head`. Utilisée pour une publication différée.
+    pub fn preparer_page_privee(
+        &mut self,
+        owner_id: u32,
+        kind: OwnerKind,
+        head: Option<u64>,
+        entry: &PropertyEntry,
+    ) -> SubstrateResult<u64> {
+        self.allouer_page_neuve_sur(owner_id, kind, head, entry)
+            .map(|idx| u64::from(idx))
+    }
+
+    /// Rattache une page privée (préparée par [`Self::preparer_page_privee`])
+    /// à un nouveau successeur `nouveau_suivant`. Nécessaire quand la tête
+    /// canonique a avancé entre la préparation et la publication : la chaîne
+    /// privée doit alors pointer la tête COURANTE, pas celle de la préparation,
+    /// sous peine de perdre les écritures intermédiaires.
+    pub fn rattacher_page_privee(
+        &mut self,
+        page: u64,
+        nouveau_suivant: u64,
+    ) -> SubstrateResult<()> {
+        let idx = page as u32;
+        let mut p = self.read_page(idx)?;
+        p.header.next_page = crate::record::U48::from_u64(nouveau_suivant);
+        p.seal_crc32();
+        self.write_page(idx, &p)
+    }
+
     #[inline]
     pub fn append_entry_node(
         &mut self,

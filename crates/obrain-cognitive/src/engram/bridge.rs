@@ -581,21 +581,34 @@ mod tests {
             .filter(|e| e.ensemble.len() == 3)
             .map(|e| e.ensemble.clone())
             .collect();
-        assert!(abc.len() >= 2, "deux ABC attendus : {}", abc.len());
-        let l1 = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f64>();
-        let sig_orig: Vec<Vec<f64>> = abc.iter().map(|ens| enc.encode(ens)).collect();
-        let l1_orig = l1(&sig_orig[0], &sig_orig[1]);
-        let egal = |ens: &[(NodeId, f64)]| {
-            let nodes: Vec<(NodeId, f64)> = ens.iter().map(|(n, _)| (*n, 2.0 / 3.0)).collect();
-            enc.encode(&nodes)
-        };
-        let l1_egal = l1(&egal(&abc[0]), &egal(&abc[1]));
-        eprintln!("E_EGAL l1_orig={l1_orig:e} l1_egal={l1_egal:e}");
-        assert!(
-            l1_orig > 1e-9,
-            "poids d'origine différents -> signatures différentes"
+        // Formation IDEMPOTENTE : UN seul engramme de taille 3 (pas de doublon).
+        assert_eq!(abc.len(), 1, "un seul ABC (formation idempotente) : {}", abc.len());
+        // La signature PUBLIÉE est l'encode des POIDS RÉELS (pas seulement
+        // « différente ») : témoin renforcé (a)(b).
+        let pub_sig = mgr
+            .store()
+            .list()
+            .iter()
+            .find(|e| e.ensemble.len() == 3)
+            .unwrap()
+            .spectral_signature
+            .clone();
+        assert_eq!(
+            pub_sig,
+            enc.encode(&abc[0]),
+            "signature publiée = encode des poids réels"
         );
-        assert!(l1_egal < 1e-12, "poids égalisés -> signatures identiques");
+        // Poids d'origine NON uniformes : les égaliser change la signature
+        // (la signature dépend des POIDS, pas seulement de l'ensemble).
+        let egal: Vec<(NodeId, f64)> = abc[0].iter().map(|(n, _)| (*n, 2.0 / 3.0)).collect();
+        let sig_egal = enc.encode(&egal);
+        let l1 = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f64>();
+        let l1_egal = l1(&pub_sig, &sig_egal);
+        eprintln!("E_EGAL l1(origine, égalisée)={l1_egal:e}");
+        assert!(
+            l1_egal > 1e-9,
+            "poids d'origine non uniformes -> égalisation change la signature"
+        );
     }
 
     #[tokio::test]

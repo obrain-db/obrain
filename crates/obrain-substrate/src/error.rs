@@ -2,6 +2,58 @@
 
 use thiserror::Error;
 
+/// Classification structurée d'une incohérence membres/poids d'engramme.
+///
+/// Trois familles disjointes, matchables sans décoder un message textuel :
+/// - [`EngramIncoherence::PoidsNonLies`] — état pondéré NON QUALIFIÉ (legacy
+///   positionnel 0x76) : la cardinalité coïncide avec celle des membres mais
+///   aucune identité n'est enregistrée ; réassocier par position serait faux.
+/// - [`EngramIncoherence::EmpreinteDivergente`] — poids liés à d'AUTRES
+///   membres (empreinte en contradiction avec les membres courants) :
+///   corruption d'association.
+/// - [`EngramIncoherence::CardinaliteIncoherente`] — incohérence STRUCTURELLE
+///   membres↔poids : les longueurs comptables diffèrent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngramIncoherence {
+    /// Poids non liés (legacy positionnel) : `membres` membres et autant de
+    /// poids, mais aucune empreinte d'identité enregistrée.
+    PoidsNonLies { membres: usize },
+    /// Poids liés à d'autres membres : l'empreinte stockée ne correspond pas
+    /// à celle des membres courants.
+    EmpreinteDivergente {
+        /// Empreinte lue en tête de la zone des poids.
+        empreinte_stockee: u64,
+        /// Empreinte recalculée depuis les membres courants.
+        empreinte_attendue: u64,
+    },
+    /// Cardinalité incohérente : `membres` membres, `poids` poids lus.
+    CardinaliteIncoherente { membres: usize, poids: usize },
+}
+
+impl std::fmt::Display for EngramIncoherence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PoidsNonLies { membres } => write!(
+                f,
+                "poids non liés (legacy positionnel) : {membres} membres, {membres} poids \
+                 sans empreinte — réassociation par position refusée"
+            ),
+            Self::EmpreinteDivergente {
+                empreinte_stockee,
+                empreinte_attendue,
+            } => write!(
+                f,
+                "les poids sont liés à d'autres membres (empreinte {empreinte_stockee:#016x} \
+                 != {empreinte_attendue:#016x})"
+            ),
+            Self::CardinaliteIncoherente { membres, poids } => write!(
+                f,
+                "cardinalité incohérente : {membres} membres, {poids} poids"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SubstrateError {
     #[error("I/O error: {0}")]
@@ -295,6 +347,44 @@ pub enum SubstrateError {
     /// public error API.
     #[error("substrate invariant violated: {0}")]
     Internal(String),
+    /// ── LECTURE D'UN ÉTAT D'ENGRAMME INCOHÉRENT : REFUS NOMMÉ ───────────
+    ///
+    /// Les poids d'un engramme sont liés à l'IDENTITÉ des membres (empreinte
+    /// 64 bits), pas à leur position. Un écrivain qui mute les membres sans
+    /// réécrire les poids (chemin « membres seuls », 0x70) laisse une
+    /// empreinte périmée dans la zone des poids ; réassocier les poids PAR
+    /// POSITION ferait hériter silencieusement à un membre nouveau le poids
+    /// d'un membre disparu. La lecture refuse donc, en nommant la cause, au
+    /// lieu de réassocier en silence.
+    #[error(
+        "engram {engram_id} : état membres/poids incohérent ({incoherence}) — lecture refusée \
+         (pas de réassociation par position)"
+    )]
+    EngramIncoherent {
+        engram_id: u16,
+        incoherence: EngramIncoherence,
+    },
+
+    /// ── ÉCRIRE DES POIDS SEULS EST IMPOSSIBLE EN V4 ───────────────────────
+    ///
+    /// `Writer::set_engram_weights` est l'ancienne porte « poids seuls » (0x76,
+    /// forme NON LIÉE, sans empreinte). Sous V4, les poids sont liés à
+    /// l'IDENTITÉ des membres : écrire des poids sans membres recréerait un
+    /// état pondéré non qualifié que la lecture refuse ensuite. La porte
+    /// REFUSE donc, au lieu d'écrire en silence.
+    #[error(
+        "engram {engram_id} : `set_engram_weights` (poids seuls, non liés) est impossible en V4 \
+         — les poids sont liés à l'identité des membres ; utiliser `set_engram_state(membres, \
+         poids)`"
+    )]
+    PoidsNonLiesImpossiblesEnV4 { engram_id: u16 },
+
+    /// Une référence de tentative ne peut pas être ATTRIBUÉE en l'état — cas
+    /// nommé : le chemin de préparation différée, où l'estampille n'existe
+    /// qu'à la matérialisation. Refus explicite et matchable : jamais une
+    /// estampille anticipée, jamais un `None` silencieux.
+    #[error("référence de tentative non attribuable : {raison}")]
+    ReferenceNonAttribuable { raison: String },
 
     /// (jalon 3) Un principal est DEJA pose sur ce handle de store. Le
     /// principal est immuable une fois pose — pas de re-pose, pas
@@ -345,6 +435,38 @@ pub enum SubstrateError {
         demandeur: u32,
         frontiere: u32,
     },
+
+    /// ── PUBLICATION REFUSÉE : LE DOMAINE A ÉTÉ FORKÉ DEPUIS LA PRÉPARATION ──
+    ///
+    /// Une transformation a CAPTURÉ l'identité de DOMAINE de la base à la
+    /// PRÉPARATION (`domaine.id`, #334). Si un AUTRE processus a fork le
+    /// domaine entre-temps, le domaine PERSISTANT a changé : publier sous
+    /// l'ancienne origine produirait un commit fantôme — une confirmation
+    /// qu'aucun résolveur au domaine courant n'accepterait (la garde de
+    /// `resoudre_reference` la rendrait indéterminée). Refus net, rien n'est
+    /// écrit.
+    #[error(
+        "publication refusée : le domaine a été fork depuis la préparation \
+         (préparé sous {prepare_sous:#x}, courant {courant:#x}) — pas de commit fantôme"
+    )]
+    DomaineForke { prepare_sous: u128, courant: u128 },
+
+    /// ── RESTAURATION CONTINUE REFUSÉE : L'IMAGE NE PORTE PAS L'IDENTITÉ ───
+    ///
+    /// Une restauration DÉCLARÉE CONTINUE (`instantane::restaurer_continue`)
+    /// exige que l'image transporte la paire `domaine.id` + `domaine.init`
+    /// (identité persistée cohérente). Si elle ne la porte pas (instantané pris
+    /// PENDANT un fork — la paire en cours de réécriture est exclue, cf.
+    /// `file::zone_names`), restaurer produirait une base ÉPHÉMÈRE : la
+    /// continuité d'origine serait perdue SILENCIEUSEMENT. Refus explicite —
+    /// l'appelant choisit entre une restauration sans continuité (`restaurer`)
+    /// ou le rétablissement d'une identité par migration legacy explicite.
+    #[error(
+        "restauration continue refusée : l'instantané ne porte pas la paire \
+         domaine.id + domaine.init (continuité d'origine indisponible) — \
+         restaurer sans continuité, ou matérialiser une identité explicitement"
+    )]
+    ContinuiteIndisponible,
 
     /// Le parcours a ete INTERROMPU par une annulation cooperative.
     ///
