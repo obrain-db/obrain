@@ -89,9 +89,18 @@ fn formation_non_uniforme_persiste_des_poids_exacts() {
     let ws = weights.expect("poids liés");
     assert_eq!(members.len(), 3, "3 membres persistés");
     assert_eq!(ws.len(), 3, "3 poids persistés");
-    assert!((poids_substrat(writer.as_ref(), id, a) - 0.95).abs() < 1e-5, "substrat A=0.95");
-    assert!((poids_substrat(writer.as_ref(), id, b) - 0.95).abs() < 1e-5, "substrat B=0.95");
-    assert!((poids_substrat(writer.as_ref(), id, c) - 0.5).abs() < 1e-5, "substrat C=0.5");
+    assert!(
+        (poids_substrat(writer.as_ref(), id, a) - 0.95).abs() < 1e-5,
+        "substrat A=0.95"
+    );
+    assert!(
+        (poids_substrat(writer.as_ref(), id, b) - 0.95).abs() < 1e-5,
+        "substrat B=0.95"
+    );
+    assert!(
+        (poids_substrat(writer.as_ref(), id, c) - 0.5).abs() < 1e-5,
+        "substrat C=0.5"
+    );
 }
 
 // ===========================================================================
@@ -115,8 +124,14 @@ fn revision_d_un_poids_ne_laisse_aucun_demi_etat() {
         .revise_adaptive(id, &[a], 0.5, ObservationScope::DeclaredComplete)
         .expect("révision adaptative");
 
-    assert!((weight_of(&rev.members, a) - 0.9775).abs() < 1e-6, "A=0.9775");
-    assert!((weight_of(&rev.members, b) - 0.4275).abs() < 1e-6, "B=0.4275");
+    assert!(
+        (weight_of(&rev.members, a) - 0.9775).abs() < 1e-6,
+        "A=0.9775"
+    );
+    assert!(
+        (weight_of(&rev.members, b) - 0.4275).abs() < 1e-6,
+        "B=0.4275"
+    );
     assert!((weight_of(&rev.members, c) - 0.225).abs() < 1e-6, "C=0.225");
 
     // Substrat : lecture RÉUSSIT (empreinte liée valide) et le couple est
@@ -126,9 +141,18 @@ fn revision_d_un_poids_ne_laisse_aucun_demi_etat() {
     let ws = weights.expect("poids liés (pas de demi-état)");
     assert_eq!(members.len(), 3);
     assert_eq!(ws.len(), members.len(), "cardinalité membres == poids");
-    assert!((poids_substrat(writer.as_ref(), id, a) - 0.9775).abs() < 1e-5, "substrat A=0.9775");
-    assert!((poids_substrat(writer.as_ref(), id, b) - 0.4275).abs() < 1e-5, "substrat B=0.4275");
-    assert!((poids_substrat(writer.as_ref(), id, c) - 0.225).abs() < 1e-5, "substrat C=0.225");
+    assert!(
+        (poids_substrat(writer.as_ref(), id, a) - 0.9775).abs() < 1e-5,
+        "substrat A=0.9775"
+    );
+    assert!(
+        (poids_substrat(writer.as_ref(), id, b) - 0.4275).abs() < 1e-5,
+        "substrat B=0.4275"
+    );
+    assert!(
+        (poids_substrat(writer.as_ref(), id, c) - 0.225).abs() < 1e-5,
+        "substrat C=0.225"
+    );
 }
 
 // ===========================================================================
@@ -254,9 +278,18 @@ fn rappel_preserve_les_associations_membres_poids_apres_rechargement() {
         .find(|r| r.engram_id == id)
         .expect("rappel après réouverture");
     assert_eq!(hit.engram.ensemble.len(), 3, "3 membres");
-    assert!((weight_of(&hit.engram.ensemble, a) - 0.95).abs() < 1e-6, "A=0.95 préservé");
-    assert!((weight_of(&hit.engram.ensemble, b) - 0.95).abs() < 1e-6, "B=0.95 préservé");
-    assert!((weight_of(&hit.engram.ensemble, c) - 0.5).abs() < 1e-6, "C=0.5 préservé");
+    assert!(
+        (weight_of(&hit.engram.ensemble, a) - 0.95).abs() < 1e-6,
+        "A=0.95 préservé"
+    );
+    assert!(
+        (weight_of(&hit.engram.ensemble, b) - 0.95).abs() < 1e-6,
+        "B=0.95 préservé"
+    );
+    assert!(
+        (weight_of(&hit.engram.ensemble, c) - 0.5).abs() < 1e-6,
+        "C=0.5 préservé"
+    );
 }
 
 // ===========================================================================
@@ -293,9 +326,18 @@ fn persistance_et_rechargement_preservent_les_poids_intacts() {
     let ws = weights.expect("poids liés");
     assert_eq!(members.len(), 3);
     assert_eq!(ws.len(), 3);
-    assert!((poids_substrat(writer.as_ref(), id, a) - 0.9775).abs() < 1e-5, "substrat A");
-    assert!((poids_substrat(writer.as_ref(), id, b) - 0.4275).abs() < 1e-5, "substrat B");
-    assert!((poids_substrat(writer.as_ref(), id, c) - 0.225).abs() < 1e-5, "substrat C");
+    assert!(
+        (poids_substrat(writer.as_ref(), id, a) - 0.9775).abs() < 1e-5,
+        "substrat A"
+    );
+    assert!(
+        (poids_substrat(writer.as_ref(), id, b) - 0.4275).abs() < 1e-5,
+        "substrat B"
+    );
+    assert!(
+        (poids_substrat(writer.as_ref(), id, c) - 0.225).abs() < 1e-5,
+        "substrat C"
+    );
 
     // Et le cache rechargé depuis le substrat porte les mêmes poids.
     let mgr = EngramManager::new(
@@ -418,9 +460,18 @@ fn effacement_et_rejeu_preservent_le_couple_lie() {
     let ws = weights.expect("poids liés restaurés");
     assert_eq!(members.len(), 3);
     assert_eq!(ws.len(), 3);
-    assert!((poids_substrat(writer2.as_ref(), id, a) - 0.95).abs() < 1e-5, "A=0.95 restauré");
-    assert!((poids_substrat(writer2.as_ref(), id, b) - 0.95).abs() < 1e-5, "B=0.95 restauré");
-    assert!((poids_substrat(writer2.as_ref(), id, c) - 0.5).abs() < 1e-5, "C=0.5 restauré");
+    assert!(
+        (poids_substrat(writer2.as_ref(), id, a) - 0.95).abs() < 1e-5,
+        "A=0.95 restauré"
+    );
+    assert!(
+        (poids_substrat(writer2.as_ref(), id, b) - 0.95).abs() < 1e-5,
+        "B=0.95 restauré"
+    );
+    assert!(
+        (poids_substrat(writer2.as_ref(), id, c) - 0.5).abs() < 1e-5,
+        "C=0.5 restauré"
+    );
 
     // Et le chargement cognitif complet (`load_from_substrate`) le réhydrate.
     let store2 = EngramStore::new(None);
@@ -463,6 +514,12 @@ fn mutation_des_membres_seule_est_mise_en_quarantaine_par_le_cognitif() {
 
     assert_eq!(report.coherent, 0, "aucun engramme chargé cohérent");
     assert_eq!(report.rejected.len(), 1, "un rejet nommé");
-    assert!(store2.get(id).is_none(), "aucun poids réassocié : engramme non chargé");
-    assert!(store2.next_id().0 > id.0, "identifiant réservé après corruption");
+    assert!(
+        store2.get(id).is_none(),
+        "aucun poids réassocié : engramme non chargé"
+    );
+    assert!(
+        store2.next_id().0 > id.0,
+        "identifiant réservé après corruption"
+    );
 }

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use obrain_cognitive::decay_clock;
-use obrain_cognitive::decay_law::{unix_micros, DecayLaw};
+use obrain_cognitive::decay_law::{DecayLaw, unix_micros};
 use obrain_common::types::{NodeId, Value};
 use obrain_core::graph::GraphStoreMut;
 use obrain_substrate::{IssuePublication, ModePublication, SubstrateStore};
@@ -40,7 +40,12 @@ fn la_garde_du_miroir_refuse_une_estampille_perimee() {
     // Ancre A (0,3) publiée sous l'autorité conditionnelle.
     let pre_a = sub.capturer_precondition(n, &[cle]).unwrap();
     let prep_a = sub
-        .preparer_transformation(n, &[(cle, ancre_value(0.3))], &pre_a, ModePublication::Strict)
+        .preparer_transformation(
+            n,
+            &[(cle, ancre_value(0.3))],
+            &pre_a,
+            ModePublication::Strict,
+        )
         .unwrap();
     let (auteur_a, horloge_a) = prep_a.estampille_effet();
     assert!(matches!(
@@ -57,7 +62,12 @@ fn la_garde_du_miroir_refuse_une_estampille_perimee() {
     // Ancre B (0,4) plus récente, puis son miroir.
     let pre_b = sub.capturer_precondition(n, &[cle]).unwrap();
     let prep_b = sub
-        .preparer_transformation(n, &[(cle, ancre_value(0.4))], &pre_b, ModePublication::Strict)
+        .preparer_transformation(
+            n,
+            &[(cle, ancre_value(0.4))],
+            &pre_b,
+            ModePublication::Strict,
+        )
         .unwrap();
     let (auteur_b, horloge_b) = prep_b.estampille_effet();
     assert!(matches!(
@@ -71,8 +81,7 @@ fn la_garde_du_miroir_refuse_une_estampille_perimee() {
 
     // L'estampille PÉRIMÉE de A ne doit PLUS pouvoir écrire le miroir.
     assert!(
-        !sub
-            .set_node_energy_f32_si_propriete_intacte(n, 0.3, cle, Some((auteur_a, horloge_a)))
+        !sub.set_node_energy_f32_si_propriete_intacte(n, 0.3, cle, Some((auteur_a, horloge_a)))
             .unwrap(),
         "l'estampille périmée de A doit être refusée"
     );
@@ -99,14 +108,11 @@ fn le_miroir_obsolete_de_a_n_ecrase_pas_le_miroir_de_b() {
     sub.flush().unwrap();
 
     // Arme le blocage (test) entre l'ancre et le miroir.
-    let (liberation, arrivee) =
-        obrain_common::utils::panne::armer_blocage_entre_ancre_et_miroir();
+    let (liberation, arrivee) = obrain_common::utils::panne::armer_blocage_entre_ancre_et_miroir();
 
     // A : renforce 0,1 → 0,3, puis se bloque entre ancre et miroir.
     let sub_a = sub.clone();
-    let a = std::thread::spawn(move || {
-        decay_clock::reinforce(&sub_a, id, 0.1, &law, 1.0, now)
-    });
+    let a = std::thread::spawn(move || decay_clock::reinforce(&sub_a, id, 0.1, &law, 1.0, now));
 
     // Attend que A ait publié son ancre (0,3) et soit bloqué.
     arrivee.recv().unwrap();

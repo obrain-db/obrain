@@ -201,6 +201,9 @@ const ENTETE_FORK: &[u8; 6] = b"OBRF1\n";
 const TAILLE_FORK: usize = 6 + 16;
 
 /// Nanosecondes depuis l'epoch, 0 si l'horloge est indisponible.
+/// (Natif seulement : `std::time::SystemTime` panique sur `wasm32-unknown-unknown`,
+/// et la source wasm de [`tirer`] est `getrandom`, sans horloge.)
+#[cfg(not(target_arch = "wasm32"))]
 fn nanos() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -208,6 +211,8 @@ fn nanos() -> u64 {
 }
 
 /// Compteur monotone : deux tirages dans le MÊME processus restent distincts.
+/// (Natif seulement : la source wasm de [`tirer`] est `getrandom`, sans compteur.)
+#[cfg(not(target_arch = "wasm32"))]
 static COMPTEUR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Point d'interruption de fork pour les tests kill -9 : réutilise le seam de
@@ -226,31 +231,53 @@ fn point_interruption(_nom: &str) {}
 
 /// Tire un `domaine_id` frais : 16 octets, version/variant UUID v4 (RFC 4122).
 ///
-/// L'entropie combine la source aléatoire de `RandomState` (graine tirée par
-/// l'OS au démarrage du processus), l'horloge, le pid et le compteur monotone —
-/// mêlés deux fois pour 128 bits. Ce n'est pas un RNG cryptographique, et ce
-/// n'est pas requis : un `domaine_id` est un séparateur de domaines, pas un
-/// secret. Les bits de version (4) et de variant (0b10) sont posés pour que les
-/// 16 octets soient reconnaissables comme UUID v4.
+/// **Natif** — l'entropie combine la source aléatoire de `RandomState` (graine
+/// tirée par l'OS au démarrage du processus), l'horloge, le pid et le compteur
+/// monotone, mêlés deux fois pour 128 bits. Ce n'est pas un RNG cryptographique,
+/// et ce n'est pas requis : un `domaine_id` est un séparateur de domaines, pas un
+/// secret.
+///
+/// **wasm32** — `std::process::id()` et `std::time::SystemTime` ne sont pas
+/// disponibles sur `wasm32-unknown-unknown` (panique à l'exécution). La source
+/// est explicite et unique : `getrandom` (feature `wasm_js`, c'est-à-dire
+/// `crypto.getRandomValues` du navigateur). Le domaine est tiré UNE fois puis
+/// persisté par le protocole `domaine.id`/`domaine.init` (voir
+/// `lire_ou_materieliser`) : la source d'identité ne rend pas l'identité éphémère.
+///
+/// Les bits de version (4) et de variant (0b10) sont posés dans les deux cas pour
+/// que les 16 octets soient reconnaissables comme UUID v4.
 pub(crate) fn tirer() -> u128 {
-    use std::hash::{BuildHasher, Hasher};
-    let mut h1 = std::collections::hash_map::RandomState::new().build_hasher();
-    h1.write_u32(std::process::id());
-    h1.write_u64(nanos());
-    h1.write_u64(COMPTEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-    let a = h1.finish();
-    let mut h2 = std::collections::hash_map::RandomState::new().build_hasher();
-    h2.write_u64(a);
-    h2.write_u64(nanos());
-    let b = h2.finish();
-    let mut octets = [0u8; 16];
-    octets[..8].copy_from_slice(&a.to_le_bytes());
-    octets[8..].copy_from_slice(&b.to_le_bytes());
-    // RFC 4122 : version = 4 (nibble haut de l'octet 6), variant = 0b10
-    // (2 bits hauts de l'octet 8), en ordre canonique big-endian.
-    octets[6] = (octets[6] & 0x0f) | 0x40;
-    octets[8] = (octets[8] & 0x3f) | 0x80;
-    u128::from_be_bytes(octets)
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut octets = [0u8; 16];
+        getrandom::fill(&mut octets).expect(
+            "domaine_id::tirer : getrandom (crypto.getRandomValues) indisponible sur wasm32",
+        );
+        octets[6] = (octets[6] & 0x0f) | 0x40;
+        octets[8] = (octets[8] & 0x3f) | 0x80;
+        u128::from_be_bytes(octets)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::hash::{BuildHasher, Hasher};
+        let mut h1 = std::collections::hash_map::RandomState::new().build_hasher();
+        h1.write_u32(std::process::id());
+        h1.write_u64(nanos());
+        h1.write_u64(COMPTEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let a = h1.finish();
+        let mut h2 = std::collections::hash_map::RandomState::new().build_hasher();
+        h2.write_u64(a);
+        h2.write_u64(nanos());
+        let b = h2.finish();
+        let mut octets = [0u8; 16];
+        octets[..8].copy_from_slice(&a.to_le_bytes());
+        octets[8..].copy_from_slice(&b.to_le_bytes());
+        // RFC 4122 : version = 4 (nibble haut de l'octet 6), variant = 0b10
+        // (2 bits hauts de l'octet 8), en ordre canonique big-endian.
+        octets[6] = (octets[6] & 0x0f) | 0x40;
+        octets[8] = (octets[8] & 0x3f) | 0x80;
+        u128::from_be_bytes(octets)
+    }
 }
 
 /// L'EMPREINTE d'un `domaine_id` : l'identité COMPLÈTE sur 128 bits (les 16
@@ -441,7 +468,7 @@ fn ecrire_atomique(dir: &Path, id: u128) -> io::Result<()> {
 
 /// Écrit `domaine.init` par PUBLICATION ATOMIQUE : `domaine.init.tmp` (écriture
 /// + `sync_all`), `rename` vers `domaine.init`, fsync du répertoire. Même
-/// séquence de durabilité que `ecrire_atomique`.
+///   séquence de durabilité que `ecrire_atomique`.
 fn ecrire_init_atomique(dir: &Path, emp: [u8; 16]) -> io::Result<()> {
     let final_chemin = dir.join(FICHIER_DOMAINE_INIT);
     let tmp_chemin = dir.join(TMP_DOMAINE_INIT);
@@ -667,9 +694,9 @@ pub(crate) fn lire_ou_materieliser(dir: &Path) -> io::Result<u128> {
 /// Migration legacy EXPLICITE : même matrice que la création (matérialise une
 /// identité persistée sur « absent + absent », migre le marqueur sur « présent
 /// + absent »), mais posée comme l'opération EXPLICITE qui lève l'ambiguïté
-/// d'une base existante non vide à l'historique inconnu. C'est l'opération que
-/// le consommateur appelle pour établir une identité stable sur une base legacy
-/// ouverte en réouverture (qui, elle, n'a reçu qu'une identité éphémère).
+///   d'une base existante non vide à l'historique inconnu. C'est l'opération que
+///   le consommateur appelle pour établir une identité stable sur une base legacy
+///   ouverte en réouverture (qui, elle, n'a reçu qu'une identité éphémère).
 pub fn migrer_legacy(dir: &Path) -> io::Result<u128> {
     resoudre(dir, Regime::Creation)
 }
@@ -766,6 +793,37 @@ mod tests {
             lire_ou_materieliser(a.path()).unwrap(),
             lire_ou_materieliser(b.path()).unwrap()
         );
+    }
+
+    /// Persistance NATIVE du domaine : l'identité tirée est un UUID v4 valide,
+    /// persistée (`domaine.id` + `domaine.init` concordants), relue à la
+    /// réouverture, et régénérée (distincte) après un fork DÉCLARÉ. C'est la
+    /// contrepartie native de la source wasm de [`tirer`] (`getrandom`) : le
+    /// protocole de persistance ne dépend pas de la cible.
+    #[test]
+    fn tirer_valide_et_persistance_reouverture_fork() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Matérialisation : identité neuve persistée.
+        let id = lire_ou_materieliser(dir.path()).unwrap();
+        let octets = id.to_be_bytes();
+        assert_ne!(octets, [0u8; 16], "l'identité n'est jamais nulle");
+        assert_eq!(octets[6] >> 4, 4, "version UUID = 4");
+        assert_eq!(octets[8] >> 6, 0b10, "variant RFC 4122 = 0b10");
+        assert_eq!(lire(dir.path()).unwrap(), Some(id));
+        assert_eq!(lire_init(dir.path()).unwrap(), Some(empreinte(id)));
+
+        // Réouverture : la MÊME identité est relue, jamais régénérée.
+        assert_eq!(lire_ou_reouvrir(dir.path()).unwrap(), id);
+
+        // Fork DÉCLARÉ : identité DISTINCTE, elle aussi persistée et valide.
+        let forke = forker(dir.path()).unwrap();
+        assert_ne!(forke, id, "un fork déclaré régénère le domaine");
+        assert_eq!(lire(dir.path()).unwrap(), Some(forke));
+        assert_eq!(lire_init(dir.path()).unwrap(), Some(empreinte(forke)));
+        let octets_fork = forke.to_be_bytes();
+        assert_eq!(octets_fork[6] >> 4, 4);
+        assert_eq!(octets_fork[8] >> 6, 0b10);
     }
 
     #[test]
@@ -1036,7 +1094,10 @@ mod tests {
         ecrire_atomique(dir.path(), id).unwrap();
         assert_eq!(lire_init(dir.path()).unwrap(), None);
         let relu = lire_ou_materieliser(dir.path()).unwrap();
-        assert_eq!(relu, id, "crash avant le marqueur = migration, pas de perte");
+        assert_eq!(
+            relu, id,
+            "crash avant le marqueur = migration, pas de perte"
+        );
         assert_eq!(lire_init(dir.path()).unwrap(), Some(empreinte(id)));
     }
 

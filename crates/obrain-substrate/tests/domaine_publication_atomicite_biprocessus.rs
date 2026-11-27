@@ -245,7 +245,11 @@ fn publication_et_fork_sont_mutuellement_exclusifs() {
     // est un COMMIT RÉEL, pas un fantôme — la donnée est là, le domaine a avancé.
     {
         let store = SubstrateStore::open(&base).unwrap();
-        assert_eq!(store.domaine_id(), d1, "le domaine courant est celui du fork");
+        assert_eq!(
+            store.domaine_id(),
+            d1,
+            "le domaine courant est celui du fork"
+        );
         assert_eq!(
             store.get_node_property(id, &PropertyKey::new("a")),
             Some(Value::Int64(2)),
@@ -279,7 +283,10 @@ fn publication_apres_fork_complet_est_refusee() {
     // une origine déjà invalidée.
     let mut b = Enfant::lancer("publieur", &base, None);
     let pret_b = b.attendre("PRET_B");
-    assert!(pret_b.contains(&format!("{d0:#x}")), "B cache encore D0 : {pret_b}");
+    assert!(
+        pret_b.contains(&format!("{d0:#x}")),
+        "B cache encore D0 : {pret_b}"
+    );
     b.attendre("PREPARE_B");
 
     // Fork en écriture PARTAGÉE (même verrou de répertoire que B, qui reste

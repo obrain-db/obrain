@@ -582,7 +582,12 @@ mod tests {
             .map(|e| e.ensemble.clone())
             .collect();
         // Formation IDEMPOTENTE : UN seul engramme de taille 3 (pas de doublon).
-        assert_eq!(abc.len(), 1, "un seul ABC (formation idempotente) : {}", abc.len());
+        assert_eq!(
+            abc.len(),
+            1,
+            "un seul ABC (formation idempotente) : {}",
+            abc.len()
+        );
         // La signature PUBLIÉE est l'encode des POIDS RÉELS (pas seulement
         // « différente ») : témoin renforcé (a)(b).
         let pub_sig = mgr

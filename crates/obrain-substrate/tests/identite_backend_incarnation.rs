@@ -36,10 +36,8 @@ fn copier_base(src: &std::path::Path, dst: &std::path::Path) {
 
 /// Lit `writer.id` (8 octets LE) — observation directe du writer_id persisté.
 fn lire_writer_id(base: &std::path::Path) -> u64 {
-    let octets = std::fs::read(
-        base.join(obrain_substrate::writer_id::FICHIER_WRITER_ID),
-    )
-    .expect("writer.id présent dans la base");
+    let octets = std::fs::read(base.join(obrain_substrate::writer_id::FICHIER_WRITER_ID))
+        .expect("writer.id présent dans la base");
     u64::from_le_bytes(octets.as_slice().try_into().expect("8 octets"))
 }
 
@@ -61,7 +59,12 @@ fn copie_puis_divergence_resout_selon_les_donnees_reelles() {
         store.set_node_property(id, "a", Value::Int64(1));
         let pre = store.capturer_precondition(id, &["a"]).unwrap();
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         let reference = prep.reference_tentative();
         store.publier_si_precondition_intacte(prep).unwrap();
@@ -83,7 +86,12 @@ fn copie_puis_divergence_resout_selon_les_donnees_reelles() {
         let store = SubstrateStore::open(&base_a).unwrap();
         let pre = store.capturer_precondition(cible, &["a"]).unwrap();
         let prep = store
-            .preparer_transformation(cible, &[("a", Value::Int64(20))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                cible,
+                &[("a", Value::Int64(20))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         let reference = prep.reference_tentative();
         store.publier_si_precondition_intacte(prep).unwrap();
@@ -97,7 +105,12 @@ fn copie_puis_divergence_resout_selon_les_donnees_reelles() {
         let store = SubstrateStore::open(&base_b).unwrap();
         let pre = store.capturer_precondition(cible, &["a"]).unwrap();
         let prep = store
-            .preparer_transformation(cible, &[("a", Value::Int64(30))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                cible,
+                &[("a", Value::Int64(30))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         let reference = prep.reference_tentative();
         store.publier_si_precondition_intacte(prep).unwrap();
@@ -109,20 +122,38 @@ fn copie_puis_divergence_resout_selon_les_donnees_reelles() {
     // ── résolution dans chaque base ───────────────────────────────────────
     let store_a = SubstrateStore::open(&base_a).unwrap();
     let store_b = SubstrateStore::open(&base_b).unwrap();
-    let r_orig_a = store_a.resoudre_reference(&ReferenceTentative::from_bytes(&ref_orig).unwrap()).unwrap();
-    let r_orig_b = store_b.resoudre_reference(&ReferenceTentative::from_bytes(&ref_orig).unwrap()).unwrap();
-    let r_diva_a = store_a.resoudre_reference(&ReferenceTentative::from_bytes(&ref_div_a).unwrap()).unwrap();
-    let r_diva_b = store_b.resoudre_reference(&ReferenceTentative::from_bytes(&ref_div_a).unwrap()).unwrap();
-    let r_divb_b = store_b.resoudre_reference(&ReferenceTentative::from_bytes(&ref_div_b).unwrap()).unwrap();
-    let r_divb_a = store_a.resoudre_reference(&ReferenceTentative::from_bytes(&ref_div_b).unwrap()).unwrap();
+    let r_orig_a = store_a
+        .resoudre_reference(&ReferenceTentative::from_bytes(&ref_orig).unwrap())
+        .unwrap();
+    let r_orig_b = store_b
+        .resoudre_reference(&ReferenceTentative::from_bytes(&ref_orig).unwrap())
+        .unwrap();
+    let r_diva_a = store_a
+        .resoudre_reference(&ReferenceTentative::from_bytes(&ref_div_a).unwrap())
+        .unwrap();
+    let r_diva_b = store_b
+        .resoudre_reference(&ReferenceTentative::from_bytes(&ref_div_a).unwrap())
+        .unwrap();
+    let r_divb_b = store_b
+        .resoudre_reference(&ReferenceTentative::from_bytes(&ref_div_b).unwrap())
+        .unwrap();
+    let r_divb_a = store_a
+        .resoudre_reference(&ReferenceTentative::from_bytes(&ref_div_b).unwrap())
+        .unwrap();
 
     // (1) l'entrée historique H0 a été copiée : l'engagement est VRAI dans les deux.
     assert_eq!(r_orig_a.integrite(), IntegriteTentative::Integrale);
     assert_eq!(r_orig_b.integrite(), IntegriteTentative::Integrale);
 
     // (2) mais l'estampille COURANTE a divergé : chaque base a masqué H0 avec SA écriture.
-    assert_ne!(r_orig_a.effet(0).estampille_courante(), Some((auteur, horloge_orig)));
-    assert_ne!(r_orig_b.effet(0).estampille_courante(), Some((auteur, horloge_orig)));
+    assert_ne!(
+        r_orig_a.effet(0).estampille_courante(),
+        Some((auteur, horloge_orig))
+    );
+    assert_ne!(
+        r_orig_b.effet(0).estampille_courante(),
+        Some((auteur, horloge_orig))
+    );
 
     // (3) pas de fausse confirmation croisée : chaque divergence ne résout QUE chez elle.
     assert_eq!(r_diva_a.integrite(), IntegriteTentative::Integrale);
@@ -165,7 +196,12 @@ fn deux_bases_independantes_partageant_writer_id() {
         store.set_node_property(id, "a", Value::Int64(1));
         let pre = store.capturer_precondition(id, &["a"]).unwrap();
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         let reference = prep.reference_tentative();
         store.publier_si_precondition_intacte(prep).unwrap();
@@ -198,7 +234,12 @@ fn deux_bases_independantes_partageant_writer_id() {
         store.set_node_property(id, "a", Value::Int64(50));
         let pre = store.capturer_precondition(id, &["a"]).unwrap();
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(100))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(100))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         let reference = prep.reference_tentative();
         store.publier_si_precondition_intacte(prep).unwrap();
@@ -208,8 +249,14 @@ fn deux_bases_independantes_partageant_writer_id() {
     };
 
     // ── identité partagée, incarnation distincte par horloge ──────────────
-    assert_eq!(auteur_a, auteur_b, "les deux bases partagent le writer.id copié");
-    assert_eq!(cible_a, cible_b, "chaque base alloue son premier nœud à NodeId(1)");
+    assert_eq!(
+        auteur_a, auteur_b,
+        "les deux bases partagent le writer.id copié"
+    );
+    assert_eq!(
+        cible_a, cible_b,
+        "chaque base alloue son premier nœud à NodeId(1)"
+    );
 
     let ref_a = ReferenceTentative::from_bytes(&ref_a).unwrap();
     let ref_b = ReferenceTentative::from_bytes(&ref_b).unwrap();
@@ -245,7 +292,8 @@ fn deux_bases_independantes_partageant_writer_id() {
     assert_eq!(res_aa.auteur_resolvant(), auteur_a);
     assert_eq!(res_bb.auteur_resolvant(), auteur_b);
     assert_eq!(
-        res_aa.auteur_resolvant(), res_bb.auteur_resolvant(),
+        res_aa.auteur_resolvant(),
+        res_bb.auteur_resolvant(),
         "writer.id partagé → auteur_resolvant identique : l'auteur n'est pas une identité de base"
     );
 
@@ -264,12 +312,17 @@ fn deux_bases_independantes_partageant_writer_id() {
 #[test]
 fn reference_engagee_avant_suppression_est_indeterminee() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let id = store.create_node(&["ressource"]);
     store.set_node_property(id, "a", Value::Int64(1));
     let pre = store.capturer_precondition(id, &["a"]).unwrap();
     let prep = store
-        .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
+        .preparer_transformation(
+            id,
+            &[("a", Value::Int64(10))],
+            &pre,
+            ModePublication::Strict,
+        )
         .unwrap();
     let reference = prep.reference_tentative();
     store.publier_si_precondition_intacte(prep).unwrap();
@@ -280,7 +333,10 @@ fn reference_engagee_avant_suppression_est_indeterminee() {
     assert_eq!(avant.effet(0).etat(), ResolutionEffet::Engage);
 
     // supprimer la cible, puis résoudre
-    assert!(store.delete_node(id), "delete_node doit confirmer la vivacité");
+    assert!(
+        store.delete_node(id),
+        "delete_node doit confirmer la vivacité"
+    );
     let apres = store.resoudre_reference(&reference).unwrap();
     assert_eq!(
         apres.integrite(),
@@ -289,7 +345,8 @@ fn reference_engagee_avant_suppression_est_indeterminee() {
     );
     assert_eq!(apres.effet(0).etat(), ResolutionEffet::Indetermine);
     assert_eq!(
-        apres.effet(0).estampille_courante(), None,
+        apres.effet(0).estampille_courante(),
+        None,
         "nœud non vivant → aucune estampille courante"
     );
     // Distingue « nœud non vivant » de « entrée compactée sur un nœud vivant » :
@@ -312,13 +369,18 @@ fn reference_engagee_avant_suppression_est_indeterminee() {
 #[test]
 fn recreation_de_cible_renouvelle_le_node_id() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
 
     let id_avant = store.create_node(&["ressource"]);
     store.set_node_property(id_avant, "a", Value::Int64(1));
     let pre = store.capturer_precondition(id_avant, &["a"]).unwrap();
     let prep = store
-        .preparer_transformation(id_avant, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
+        .preparer_transformation(
+            id_avant,
+            &[("a", Value::Int64(10))],
+            &pre,
+            ModePublication::Strict,
+        )
         .unwrap();
     let reference = prep.reference_tentative();
     store.publier_si_precondition_intacte(prep).unwrap();
@@ -347,7 +409,12 @@ fn recreation_de_cible_renouvelle_le_node_id() {
     store.set_node_property(id_apres, "b", Value::Int64(2));
     let pre2 = store.capturer_precondition(id_apres, &["b"]).unwrap();
     let prep2 = store
-        .preparer_transformation(id_apres, &[("b", Value::Int64(20))], &pre2, ModePublication::Strict)
+        .preparer_transformation(
+            id_apres,
+            &[("b", Value::Int64(20))],
+            &pre2,
+            ModePublication::Strict,
+        )
         .unwrap();
     let reference2 = prep2.reference_tentative();
     store.publier_si_precondition_intacte(prep2).unwrap();

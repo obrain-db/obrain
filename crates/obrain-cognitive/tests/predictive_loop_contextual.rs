@@ -17,11 +17,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use obrain_common::types::NodeId;
+use obrain_cognitive::InMemoryVectorIndex;
 use obrain_cognitive::engram::{
     EngramManager, EngramManagerConfig, ObservationScope, PredictiveAction, PredictivePolicy,
 };
-use obrain_cognitive::InMemoryVectorIndex;
+use obrain_common::types::NodeId;
 
 type Ep = Vec<NodeId>;
 
@@ -129,9 +129,7 @@ fn run_stream(
     out: &mut Vec<StepResult>,
 ) {
     for (ctx, obs) in stream {
-        let step = m
-            .predictive_step(&[*ctx], obs, k)
-            .expect("pas prédictif");
+        let step = m.predictive_step(&[*ctx], obs, k).expect("pas prédictif");
         let last = set_error(m, &w.last(*ctx), obs);
         let freq = set_error(m, &w.freq(*ctx), obs);
         let union = set_error(m, &w.union(*ctx), obs);
@@ -180,7 +178,10 @@ fn a_apprentissage_contextuel_depuis_le_vide() {
         "Obrain sans mémoire : erreur ~1.0, obtenu {}",
         res[0].obrain
     );
-    assert!(!res[0].had_prediction, "aucune prédiction avant le premier engramme");
+    assert!(
+        !res[0].had_prediction,
+        "aucune prédiction avant le premier engramme"
+    );
     assert!(res[0].last > 0.99, "témoin sans histoire : erreur ~1.0");
 
     // APPREND : l'erreur résiduelle est inférieure à l'erreur initiale.
@@ -307,7 +308,10 @@ struct Witnesses {
 
 impl Witnesses {
     fn observe(&mut self, ctx: NodeId, outcome: &Ep) {
-        self.ctx_history.entry(ctx).or_default().push(outcome.clone());
+        self.ctx_history
+            .entry(ctx)
+            .or_default()
+            .push(outcome.clone());
         if let Some(p) = &self.prev {
             *self
                 .transitions
@@ -458,7 +462,14 @@ fn c_regimes_temporels_et_probabilistes() {
     let mut seed = 42u64;
     let mut aleatoire = Vec::new();
     for _ in 0..14 {
-        aleatoire.push((ctx, if lcg(&mut seed) % 2 == 0 { ab.clone() } else { cd.clone() }));
+        aleatoire.push((
+            ctx,
+            if lcg(&mut seed).is_multiple_of(2) {
+                ab.clone()
+            } else {
+                cd.clone()
+            },
+        ));
     }
     // 4. Distribution CONDITIONNELLE : ctx_a -> AB 80 %, ctx_b -> CD 80 %.
     let mut seed2 = 7u64;
@@ -527,10 +538,7 @@ fn c_regimes_temporels_et_probabilistes() {
         if *name == "vraiment_aleatoire" {
             // Sur le hasard, AUCUNE méthode n'est quasi-parfaite (pas de signal).
             assert!(
-                r.temporal > 0.05
-                    && r.ctx_freq > 0.05
-                    && r.marginal > 0.05
-                    && r.obrain > 0.05,
+                r.temporal > 0.05 && r.ctx_freq > 0.05 && r.marginal > 0.05 && r.obrain > 0.05,
                 "aucune méthode n'est quasi-parfaite sur le hasard"
             );
         }
@@ -597,10 +605,7 @@ fn d_contextes_partiellement_communs_interference() {
 
     // L'engramme de ctx1 reste présent et l'erreur ne s'effondre pas : on
     // rapporte le chiffre, sans prétendre qu'il n'y a pas d'interférence.
-    assert!(
-        after.is_finite() && before.is_finite(),
-        "mesures finies"
-    );
+    assert!(after.is_finite() && before.is_finite(), "mesures finies");
     // Les deux contextes PARTAGENT a,b : la composante connexe de co-activation
     // les FUSIONNE en UN seul engramme. Limite mesurée de la formation.
     assert_eq!(
@@ -631,11 +636,7 @@ fn e_sensibilite_du_seuil_de_reconsolidation() {
     for _ in 0..3 {
         let _ = m.predictive_step(&[a], &pair, 8).expect("pas");
     }
-    let eid = m
-        .predict(&[a], 8)
-        .expect("prédiction")
-        .attention[0]
-        .0;
+    let eid = m.predict(&[a], 8).expect("prédiction").attention[0].0;
     let size_before = m.store().get(eid).unwrap().node_ids().len();
     assert_eq!(size_before, 2, "engramme {{a,b}} formé");
 
@@ -709,10 +710,15 @@ fn f_plasticite_revision_non_monotone_et_differenciation() {
     };
 
     let cons = run(PredictivePolicy::Consolidating);
-    let ada = run(PredictivePolicy::Adaptive(ObservationScope::DeclaredComplete));
+    let ada = run(PredictivePolicy::Adaptive(
+        ObservationScope::DeclaredComplete,
+    ));
     let tail_cons = mean(&cons[cons.len().saturating_sub(2)..]);
     let tail_ada = mean(&ada[ada.len().saturating_sub(2)..]);
-    eprintln!("[F] rétrécissement — résiduel consolidating={:.4} adaptive={:.4}", tail_cons, tail_ada);
+    eprintln!(
+        "[F] rétrécissement — résiduel consolidating={:.4} adaptive={:.4}",
+        tail_cons, tail_ada
+    );
     assert!(
         tail_ada < tail_cons,
         "la révision NON MONOTONE réduit le résidu ({} < {})",
@@ -755,7 +761,10 @@ fn f_plasticite_revision_non_monotone_et_differenciation() {
         "la formation ÉPISODIQUE garde deux contextes distincts (count={})",
         epi_count
     );
-    assert!(fused, "la formation HEBBIENNE fusionne les contextes partagés");
+    assert!(
+        fused,
+        "la formation HEBBIENNE fusionne les contextes partagés"
+    );
 
     // (3) L'historique est PRÉSERVÉ : les engrams touchés ont un recall_count > 0.
     let mut touched = 0;

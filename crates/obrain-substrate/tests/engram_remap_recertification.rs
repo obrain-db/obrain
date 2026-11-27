@@ -209,7 +209,11 @@ fn bulk_conserve_poids_lies_valides() {
         w.set_engram_state(ENGRAM, MEMBERS.to_vec(), WEIGHTS.to_vec())
             .unwrap();
     });
-    assert_eq!(c.avant, Etat::Coherent(WEIGHTS.to_vec()), "pré-remap incohérent");
+    assert_eq!(
+        c.avant,
+        Etat::Coherent(WEIGHTS.to_vec()),
+        "pré-remap incohérent"
+    );
     assert_eq!(
         c.direct,
         Etat::Coherent(WEIGHTS.to_vec()),
@@ -225,7 +229,10 @@ fn bulk_conserve_poids_lies_valides() {
         Some(MEMBERS.as_slice()),
         "remap sans effet sur les membres — témoin non probant"
     );
-    assert_eq!(c.membres_direct, c.membres_rejeu, "membres divergents direct/rejeu");
+    assert_eq!(
+        c.membres_direct, c.membres_rejeu,
+        "membres divergents direct/rejeu"
+    );
 }
 
 #[test]
@@ -234,7 +241,11 @@ fn compact_conserve_poids_lies_valides() {
         w.set_engram_state(ENGRAM, MEMBERS.to_vec(), WEIGHTS.to_vec())
             .unwrap();
     });
-    assert_eq!(c.avant, Etat::Coherent(WEIGHTS.to_vec()), "pré-remap incohérent");
+    assert_eq!(
+        c.avant,
+        Etat::Coherent(WEIGHTS.to_vec()),
+        "pré-remap incohérent"
+    );
     assert_eq!(
         c.direct,
         Etat::Coherent(WEIGHTS.to_vec()),
@@ -250,7 +261,10 @@ fn compact_conserve_poids_lies_valides() {
         Some(MEMBERS.as_slice()),
         "compaction sans effet sur les membres — témoin non probant"
     );
-    assert_eq!(c.membres_direct, c.membres_rejeu, "membres divergents direct/rejeu");
+    assert_eq!(
+        c.membres_direct, c.membres_rejeu,
+        "membres divergents direct/rejeu"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -267,14 +281,19 @@ fn bulk_ne_recertifie_pas_une_empreinte_divergente() {
         w.set_engram_members(ENGRAM, MEMBERS_DIVERGENTS.to_vec())
             .unwrap();
     });
-    assert_eq!(c.avant, Etat::Divergent, "le témoin n'est pas divergente avant remap");
+    assert_eq!(
+        c.avant,
+        Etat::Divergent,
+        "le témoin n'est pas divergente avant remap"
+    );
     let direct_blanchi = c.direct != Etat::Divergent;
     let rejeu_blanchi = c.rejeu != Etat::Divergent;
     assert!(
         !direct_blanchi && !rejeu_blanchi,
         "DÉFAUT: recertification d'une association divergente jamais vérifiée — \
          direct={:?} (blanchi={direct_blanchi}), rejeu={:?} (blanchi={rejeu_blanchi})",
-        c.direct, c.rejeu
+        c.direct,
+        c.rejeu
     );
 }
 
@@ -286,14 +305,19 @@ fn compact_ne_recertifie_pas_une_empreinte_divergente() {
         w.set_engram_members(ENGRAM, MEMBERS_DIVERGENTS.to_vec())
             .unwrap();
     });
-    assert_eq!(c.avant, Etat::Divergent, "le témoin n'est pas divergente avant remap");
+    assert_eq!(
+        c.avant,
+        Etat::Divergent,
+        "le témoin n'est pas divergente avant remap"
+    );
     let direct_blanchi = c.direct != Etat::Divergent;
     let rejeu_blanchi = c.rejeu != Etat::Divergent;
     assert!(
         !direct_blanchi && !rejeu_blanchi,
         "DÉFAUT: recertification d'une association divergente jamais vérifiée — \
          direct={:?} (blanchi={direct_blanchi}), rejeu={:?} (blanchi={rejeu_blanchi})",
-        c.direct, c.rejeu
+        c.direct,
+        c.rejeu
     );
 }
 
@@ -307,7 +331,11 @@ fn bulk_ne_certifie_pas_les_poids_legacy_non_lies() {
         w.set_engram_members(ENGRAM, MEMBERS.to_vec()).unwrap();
         common::set_engram_weights_legacy(w, ENGRAM, WEIGHTS.to_vec()).unwrap();
     });
-    assert_eq!(c.avant, Etat::NonLie, "le témoin n'est pas legacy avant remap");
+    assert_eq!(
+        c.avant,
+        Etat::NonLie,
+        "le témoin n'est pas legacy avant remap"
+    );
     assert_eq!(
         c.direct,
         Etat::NonLie,
@@ -326,7 +354,11 @@ fn compact_ne_certifie_pas_les_poids_legacy_non_lies() {
         w.set_engram_members(ENGRAM, MEMBERS.to_vec()).unwrap();
         common::set_engram_weights_legacy(w, ENGRAM, WEIGHTS.to_vec()).unwrap();
     });
-    assert_eq!(c.avant, Etat::NonLie, "le témoin n'est pas legacy avant remap");
+    assert_eq!(
+        c.avant,
+        Etat::NonLie,
+        "le témoin n'est pas legacy avant remap"
+    );
     assert_eq!(
         c.direct,
         Etat::NonLie,

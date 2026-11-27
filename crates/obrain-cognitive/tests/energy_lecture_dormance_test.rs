@@ -12,8 +12,8 @@
 
 #![cfg(feature = "energy")]
 
+use obrain_cognitive::{EnergyConfig, EnergyStore, NodeEnergy, effective_half_life, energy_score};
 use obrain_common::types::{NodeId, Value};
-use obrain_cognitive::{effective_half_life, energy_score, EnergyConfig, EnergyStore, NodeEnergy};
 use obrain_core::graph::GraphStoreMut;
 use std::sync::Arc;
 use std::time::Duration;
@@ -107,7 +107,11 @@ fn energy_score_bornes() {
 fn effective_half_life_bornes() {
     let base = Duration::from_secs(3600);
     assert_eq!(effective_half_life(base, 10, 0.0), base, "α = 0 → base");
-    assert_eq!(effective_half_life(base, 10, f64::NAN), base, "α NaN → base");
+    assert_eq!(
+        effective_half_life(base, 10, f64::NAN),
+        base,
+        "α NaN → base"
+    );
     assert_eq!(effective_half_life(base, 0, 1.0), base, "degré 0 → base");
     let renforcée = effective_half_life(base, 10, 1.0);
     assert!(renforcée > base, "degré 10 renforce : {renforcée:?}");
@@ -210,7 +214,11 @@ fn eviction_lru_borne_le_cache() {
     store.boost(node(1), 1.0);
     store.boost(node(2), 1.0);
     store.boost(node(3), 1.0);
-    assert_eq!(store.len(), 2, "le 3e boost évince l'entrée la moins récente");
+    assert_eq!(
+        store.len(),
+        2,
+        "le 3e boost évince l'entrée la moins récente"
+    );
 }
 
 // ---------------------------------------------------------------------------

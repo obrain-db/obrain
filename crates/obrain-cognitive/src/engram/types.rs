@@ -334,7 +334,10 @@ impl AdaptiveRevisionParams {
             return Err(format!("lr_max hors ]0,1] ({})", self.lr_max));
         }
         if self.lr_base > self.lr_max {
-            return Err(format!("lr_base ({}) > lr_max ({})", self.lr_base, self.lr_max));
+            return Err(format!(
+                "lr_base ({}) > lr_max ({})",
+                self.lr_base, self.lr_max
+            ));
         }
         if self.floor <= 0.0 || self.floor > 1.0 {
             return Err(format!("floor hors ]0,1] ({})", self.floor));

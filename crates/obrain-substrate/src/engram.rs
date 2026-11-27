@@ -366,8 +366,7 @@ impl EngramZone {
             if slot + DIRECTORY_ENTRY_SIZE > bytes.len() {
                 break; // directory truncated — treat the rest as absent (defensive)
             }
-            let offset =
-                u32::from_le_bytes(bytes[slot..slot + 4].try_into().unwrap()) as usize;
+            let offset = u32::from_le_bytes(bytes[slot..slot + 4].try_into().unwrap()) as usize;
             let len = u32::from_le_bytes(bytes[slot + 4..slot + 8].try_into().unwrap()) as usize;
             if len == 0 {
                 continue;

@@ -3182,8 +3182,6 @@ mod frontiere_par_tx {
     }
 }
 
-
-
 /// Issue d'une application transactionnelle d'événement (générique, expérimentale).
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum IssueEvenement {
@@ -3196,7 +3194,6 @@ pub enum IssueEvenement {
     /// Révision de la cible différente de la révision attendue : refus.
     ConflitRevision,
 }
-
 
 /// Compteur d'incarnation des stores (par ouverture) — voir
 /// `SubstrateStore::incarnation`. Lie un descripteur de transformation préparée
@@ -3377,11 +3374,11 @@ pub struct ReferenceTentative {
 pub const REFERENCE_TENTATIVE_MAGIC: [u8; 4] = *b"OBRT";
 /// Version du format d'encodage d'une [`ReferenceTentative`].
 ///
-/// * v2 (courante, produite par [`Self::to_bytes`]) :
+/// * v2 (courante, produite par [`ReferenceTentative::to_bytes`]) :
 ///   `magic(4) | version(1) | auteur(8 LE) | horloge(8 LE) | cible(8 LE) |
 ///   domaine(16 BE) | n(4 LE) | [len(4 LE) | octets]*n` — la référence porte
 ///   l'identité de DOMAINE (u128, UUID RFC 4122, big-endian comme `domaine.id`).
-/// * v1 (lue par [`Self::from_bytes`], plus jamais produite) : MÊME format SANS
+/// * v1 (lue par [`ReferenceTentative::from_bytes`], plus jamais produite) : MÊME format SANS
 ///   le champ `domaine` — décode `domaine == 0`, « domaine non spécifié
 ///   (legacy) ». Une référence v1 reste AMBIGUË entre domaines (limite
 ///   historique documentée, jamais une confirmation fictive).
@@ -3649,9 +3646,7 @@ impl EffetResolu {
             EtatPropriete::Presente { estampille, .. } => {
                 Some((estampille.auteur, estampille.horloge))
             }
-            EtatPropriete::Supprimee(estampille) => {
-                Some((estampille.auteur, estampille.horloge))
-            }
+            EtatPropriete::Supprimee(estampille) => Some((estampille.auteur, estampille.horloge)),
             EtatPropriete::Absente | EtatPropriete::RessourceInexistante => None,
         }
     }
@@ -3679,7 +3674,6 @@ impl EffetResolu {
             | EtatPropriete::RessourceInexistante => None,
         }
     }
-
 }
 
 /// Intégrité d'une tentative multi-effets. N'est JAMAIS déduite d'un seul effet.
@@ -3861,7 +3855,7 @@ impl TransformationPrete {
     /// Référence OPAQUE de CETTE tentative, disponible AVANT publication et
     /// indépendante de son sort : c'est elle que l'on conserve pour résoudre
     /// une réponse perdue. Ne consomme PAS le descripteur (contrairement à
-    /// [`Self::publier_si_precondition_intacte`]… voir
+    /// [`SubstrateStore::publier_si_precondition_intacte`]… voir
     /// [`SubstrateStore::publier_si_precondition_intacte`], qui le prend par
     /// valeur).
     pub fn reference_tentative(&self) -> ReferenceTentative {
@@ -4125,6 +4119,7 @@ impl SubstrateStore {
     /// sous le même verrou : ce n'est PAS une attestation de compatibilité de
     /// contenu avec ce que la tentative écrivait, ni une promesse de validité
     /// au-delà de l'instant de la résolution.
+    #[allow(unused_variables)]
     pub fn resoudre_reference(
         &self,
         reference: &ReferenceTentative,
@@ -4343,13 +4338,13 @@ impl SubstrateStore {
                         | EtatPropriete::Supprimee(estampille) => Some(estampille),
                         _ => None,
                     };
-                    if let Some(estampille) = estampille {
-                        if (horloge, self.writer_id) <= (estampille.horloge, estampille.auteur) {
-                            return Err(SubstrateError::Internal(format!(
-                                "preparer_transformation : l'estampille de l'effet ne domine pas {} (mode strict)",
-                                dep.cle
-                            )));
-                        }
+                    if let Some(estampille) = estampille
+                        && (horloge, self.writer_id) <= (estampille.horloge, estampille.auteur)
+                    {
+                        return Err(SubstrateError::Internal(format!(
+                            "preparer_transformation : l'estampille de l'effet ne domine pas {} (mode strict)",
+                            dep.cle
+                        )));
                     }
                 }
             }
@@ -4549,7 +4544,9 @@ impl SubstrateStore {
         for cle in &prep.ecritures {
             match self.lire_etat_propriete(prep.cible, cle)? {
                 EtatPropriete::Presente { estampille, .. } => {
-                    if estampille.auteur != self.writer_id || estampille.horloge != prep.horloge_effet {
+                    if estampille.auteur != self.writer_id
+                        || estampille.horloge != prep.horloge_effet
+                    {
                         integrale = false;
                         break;
                     }
@@ -4669,12 +4666,8 @@ impl SubstrateStore {
             .iter()
             .map(|(c, v)| (c.as_str(), v.clone()))
             .collect();
-        let physique = self.preparer_transformation(
-            prep.cible,
-            &nouvelles,
-            &prep.precondition,
-            prep.mode,
-        )?;
+        let physique =
+            self.preparer_transformation(prep.cible, &nouvelles, &prep.precondition, prep.mode)?;
         self.publier_si_precondition_intacte(physique)
     }
 }
@@ -4716,7 +4709,11 @@ pub fn appliquer_evenement(
     #[cfg(test)]
     store.suspension.suspendre_apres_preuve();
     store.set_node_property(cible, "etat", etat_resultant);
-    store.set_node_property(cible, "revision", Value::from(nouvelle_revision.to_string()));
+    store.set_node_property(
+        cible,
+        "revision",
+        Value::from(nouvelle_revision.to_string()),
+    );
     Ok(IssueEvenement::Applique)
 }
 
@@ -4783,8 +4780,6 @@ impl SuspensionEvenement {
         e.reprendre = false;
     }
 }
-
-
 
 /// Verrous de publication shardés (256) : séparent les lecteurs cohérents des
 /// écrivains pendant une publication atomique. EXPÉRIMENTAL — pas une garantie
@@ -8507,7 +8502,9 @@ impl SubstrateStore {
             .map(Self::wal_inline_encode_value)
             .transpose()
             .map_err(|e| {
-                SubstrateError::Internal(format!("TxProprieteAvant : valeur d'avant indécodable : {e}"))
+                SubstrateError::Internal(format!(
+                    "TxProprieteAvant : valeur d'avant indécodable : {e}"
+                ))
             })?;
         if avant.as_ref().is_some_and(|a| a.len() > BLOB_WAL_MAX_BYTES) {
             return Err(SubstrateError::Internal(format!(
@@ -8516,7 +8513,9 @@ impl SubstrateStore {
         }
         #[cfg(test)]
         if *self.echec_append_wal.lock() {
-            return Err(SubstrateError::Internal("TxProprieteAvant : append saboté (test)".to_string()));
+            return Err(SubstrateError::Internal(
+                "TxProprieteAvant : append saboté (test)".to_string(),
+            ));
         }
         self.writer
             .append_payload(WalPayload::TxProprieteAvant {
@@ -8526,7 +8525,9 @@ impl SubstrateStore {
                 key: key.to_string(),
                 avant,
             })
-            .map_err(|e| SubstrateError::Internal(format!("TxProprieteAvant non journalisée : {e}")))?;
+            .map_err(|e| {
+                SubstrateError::Internal(format!("TxProprieteAvant non journalisée : {e}"))
+            })?;
         self.tx_avec_valeur_avant.lock().insert(tx.0);
         Ok(())
     }
@@ -8547,20 +8548,8 @@ impl SubstrateStore {
         // 1. Préparation COMPLÈTE (stricte) avant toute mutation.
         let avant1 = self.get_node_property(cible, &PropertyKey::new(cle1));
         let avant2 = self.get_node_property(cible, &PropertyKey::new(cle2));
-        self.journaliser_valeur_avant_strict(
-            tx,
-            EntityKind::Node,
-            cible.0 as u64,
-            cle1,
-            avant1.as_ref(),
-        )?;
-        self.journaliser_valeur_avant_strict(
-            tx,
-            EntityKind::Node,
-            cible.0 as u64,
-            cle2,
-            avant2.as_ref(),
-        )?;
+        self.journaliser_valeur_avant_strict(tx, EntityKind::Node, cible.0, cle1, avant1.as_ref())?;
+        self.journaliser_valeur_avant_strict(tx, EntityKind::Node, cible.0, cle2, avant2.as_ref())?;
         // 2. Mutation.
         self.set_node_property(cible, cle1, valeur1);
         self.set_node_property(cible, cle2, valeur2);
@@ -8574,7 +8563,7 @@ impl SubstrateStore {
     /// verrou d'écriture de publication est tenu pendant les deux mutations,
     /// donc un lecteur cohérent (lire_deux_proprietes_coherent) ne peut observer
     /// que V0 ou V1, jamais le mélange. EXPÉRIMENTAL.
-    /// OBSOLÈTE — supersédée par [`Self::publier_si_precondition_intacte`] :
+    /// OBSOLÈTE — supersédée par [`SubstrateStore::publier_si_precondition_intacte`] :
     /// elle synchronise sur `verrou_publication` (RwLock statique global), une
     /// autorité DIFFÉRENTE du `verrou_ecriture_noeud` que prennent
     /// `set_node_property` ET la publication conditionnelle. Deux chemins qui ne
@@ -9175,23 +9164,13 @@ impl SubstrateStore {
     /// Create a new substrate at `path` and open it in `EveryCommit` mode.
     pub fn create(path: impl AsRef<Path>) -> SubstrateResult<Self> {
         let sub = SubstrateFile::create(path.as_ref())?;
-        Self::from_substrate_partage(
-            sub,
-            SyncMode::EveryCommit,
-            true,
-            DomaineOuverture::Creation,
-        )
+        Self::from_substrate_partage(sub, SyncMode::EveryCommit, true, DomaineOuverture::Creation)
     }
 
     /// Open with an explicit sync mode — useful in benches.
     pub fn open_with_mode(path: impl AsRef<Path>, sync_mode: SyncMode) -> SubstrateResult<Self> {
         let sub = SubstrateFile::open(path.as_ref())?;
-        Self::from_substrate_partage(
-            sub,
-            sync_mode,
-            true,
-            DomaineOuverture::Reouverture,
-        )
+        Self::from_substrate_partage(sub, sync_mode, true, DomaineOuverture::Reouverture)
     }
 
     /// Create a new substrate at `path` with an explicit sync mode (T5 batch-WAL,
@@ -9202,12 +9181,7 @@ impl SubstrateStore {
     /// `EveryCommit` — this is opt-in only.
     pub fn create_with_mode(path: impl AsRef<Path>, sync_mode: SyncMode) -> SubstrateResult<Self> {
         let sub = SubstrateFile::create(path.as_ref())?;
-        Self::from_substrate_partage(
-            sub,
-            sync_mode,
-            true,
-            DomaineOuverture::Creation,
-        )
+        Self::from_substrate_partage(sub, sync_mode, true, DomaineOuverture::Creation)
     }
 
     /// Explicit WAL fsync — see [`Writer::fsync_wal`]. Cheap durability
@@ -9376,12 +9350,7 @@ impl SubstrateStore {
     /// concerne que `open()` sur un chemin.
     pub fn open_tempfile() -> SubstrateResult<Self> {
         let sub = SubstrateFile::open_tempfile()?;
-        Self::from_substrate_partage(
-            sub,
-            SyncMode::Never,
-            true,
-            DomaineOuverture::Creation,
-        )
+        Self::from_substrate_partage(sub, SyncMode::Never, true, DomaineOuverture::Creation)
     }
 
     /// Exécute `f` avec un accès VERROUILLÉ au substrat sous-jacent.
@@ -9402,12 +9371,7 @@ impl SubstrateStore {
     /// temps de la session de l'hôte JS.
     pub fn open_memory() -> SubstrateResult<Self> {
         let sub = SubstrateFile::open_memory()?;
-        Self::from_substrate_partage(
-            sub,
-            SyncMode::EveryCommit,
-            true,
-            DomaineOuverture::Creation,
-        )
+        Self::from_substrate_partage(sub, SyncMode::EveryCommit, true, DomaineOuverture::Creation)
     }
 
     // ── GARANTIE MEMOIRE (2026-07-25) : proprietes scalaires dans le WAL ──
@@ -17881,10 +17845,9 @@ impl SubstrateStore {
         let _un_ecrivain = self.verrou_ecriture_noeud(id).lock();
         let courant = self.lire_etat_propriete(id, cle_ancre)?;
         let intacte = match (&courant, estampille_attendue) {
-            (
-                EtatPropriete::Presente { estampille, .. },
-                Some((auteur, horloge)),
-            ) => estampille.auteur == auteur && estampille.horloge == horloge,
+            (EtatPropriete::Presente { estampille, .. }, Some((auteur, horloge))) => {
+                estampille.auteur == auteur && estampille.horloge == horloge
+            }
             (EtatPropriete::Absente, None) => true,
             _ => false,
         };
@@ -28168,15 +28131,11 @@ impl GraphStoreMut for SubstrateStore {
                 tx: transaction_id.0,
             },
         };
-        let (position, longueur) = self
-            .writer
-            .wal()
-            .append_encoded(&rec)
-            .map_err(|e| {
-                obrain_common::utils::error::Error::Internal(format!(
-                    "scellement du commit dans le WAL : {e}"
-                ))
-            })?;
+        let (position, longueur) = self.writer.wal().append_encoded(&rec).map_err(|e| {
+            obrain_common::utils::error::Error::Internal(format!(
+                "scellement du commit dans le WAL : {e}"
+            ))
+        })?;
         // Instrumentation (banc this-harness) : publier la fin de la frame sur CE FIL
         // (thread-local, sans verrou), pour vérifier la couverture durable sans passer
         // par `taille_wal()`, qui inclut les frames d'un écrivain concurrent.
@@ -48438,12 +48397,11 @@ mod fenetre_remplacement_blob {
     }
 }
 
-
 #[cfg(test)]
 mod application_evenement {
     use super::*;
 
-    fn nœud(store: &SubstrateStore) -> NodeId {
+    fn creer_noeud(store: &SubstrateStore) -> NodeId {
         let id = store.create_node(&["ressource"]);
         store.set_node_property(id, "revision", Value::from("rev0"));
         id
@@ -48453,17 +48411,9 @@ mod application_evenement {
     fn a_premiere_application_etat_et_preuve_presents() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
-        let id = nœud(&store);
-        let r = appliquer_evenement(
-            &store,
-            id,
-            "e1",
-            "def-e1",
-            "rev0",
-            "rev1",
-            Value::Int64(7),
-        )
-        .unwrap();
+        let id = creer_noeud(&store);
+        let r = appliquer_evenement(&store, id, "e1", "def-e1", "rev0", "rev1", Value::Int64(7))
+            .unwrap();
         assert_eq!(r, IssueEvenement::Applique);
         assert_eq!(
             store.get_node_property(id, &PropertyKey::new("etat")),
@@ -48479,9 +48429,10 @@ mod application_evenement {
     fn b_rejeu_identique_aucun_nouvel_effet() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
-        let id = nœud(&store);
+        let id = creer_noeud(&store);
         appliquer_evenement(&store, id, "e1", "def-e1", "rev0", "rev1", Value::Int64(7)).unwrap();
-        let r = appliquer_evenement(&store, id, "e1", "def-e1", "rev1", "rev2", Value::Int64(9)).unwrap();
+        let r = appliquer_evenement(&store, id, "e1", "def-e1", "rev1", "rev2", Value::Int64(9))
+            .unwrap();
         assert_eq!(r, IssueEvenement::RejeuIdentique);
         assert_eq!(
             store.get_node_property(id, &PropertyKey::new("etat")),
@@ -48494,9 +48445,10 @@ mod application_evenement {
     fn c_meme_identite_contenu_different_conflit() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
-        let id = nœud(&store);
+        let id = creer_noeud(&store);
         appliquer_evenement(&store, id, "e1", "def-a", "rev0", "rev1", Value::Int64(1)).unwrap();
-        let r = appliquer_evenement(&store, id, "e1", "def-b", "rev1", "rev2", Value::Int64(2)).unwrap();
+        let r = appliquer_evenement(&store, id, "e1", "def-b", "rev1", "rev2", Value::Int64(2))
+            .unwrap();
         assert_eq!(r, IssueEvenement::ConflitIdentite);
     }
 
@@ -48504,8 +48456,17 @@ mod application_evenement {
     fn d_conflit_de_revision_refus() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
-        let id = nœud(&store);
-        let r = appliquer_evenement(&store, id, "e1", "def-e1", "rev-ancienne", "rev1", Value::Int64(1)).unwrap();
+        let id = creer_noeud(&store);
+        let r = appliquer_evenement(
+            &store,
+            id,
+            "e1",
+            "def-e1",
+            "rev-ancienne",
+            "rev1",
+            Value::Int64(1),
+        )
+        .unwrap();
         assert_eq!(r, IssueEvenement::ConflitRevision);
         assert_eq!(
             store.get_node_property(id, &PropertyKey::new("etat")),
@@ -48514,7 +48475,6 @@ mod application_evenement {
         );
     }
 }
-
 
 #[cfg(test)]
 mod divergence_evenement {
@@ -48557,7 +48517,6 @@ mod divergence_evenement {
     }
 }
 
-
 #[cfg(test)]
 mod journalisation_stricte {
     use super::*;
@@ -48577,7 +48536,10 @@ mod journalisation_stricte {
             "k",
             Some(&obrain_common::types::Value::Int64(1)),
         );
-        assert!(r.is_err(), "la variante stricte doit propager l'échec de préparation");
+        assert!(
+            r.is_err(),
+            "la variante stricte doit propager l'échec de préparation"
+        );
         // l'ancienne variante avale silencieusement (retourne ())
         store.journaliser_valeur_avant(
             tx,
@@ -48588,18 +48550,19 @@ mod journalisation_stricte {
         );
         *store.echec_append_wal.lock() = false;
         // sans échec : la stricte réussit
-        assert!(store
-            .journaliser_valeur_avant_strict(
-                tx,
-                crate::vec_column::EntityKind::Node,
-                id.0 as u64,
-                "k",
-                Some(&obrain_common::types::Value::Int64(1)),
-            )
-            .is_ok());
+        assert!(
+            store
+                .journaliser_valeur_avant_strict(
+                    tx,
+                    crate::vec_column::EntityKind::Node,
+                    id.0 as u64,
+                    "k",
+                    Some(&obrain_common::types::Value::Int64(1)),
+                )
+                .is_ok()
+        );
     }
 }
-
 
 #[cfg(test)]
 mod mutation_conditionnelle {
@@ -48666,7 +48629,6 @@ mod mutation_conditionnelle {
     }
 }
 
-
 #[cfg(test)]
 mod visibilite_transactionnelle {
     use super::*;
@@ -48694,11 +48656,10 @@ mod visibilite_transactionnelle {
     }
 }
 
-
 #[cfg(test)]
 mod publication_atomique {
     use super::*;
-    use std::sync::{mpsc, Arc};
+    use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::Duration;
 
@@ -48740,7 +48701,6 @@ mod publication_atomique {
     }
 }
 
-
 #[cfg(test)]
 mod contournement_publication {
     use super::*;
@@ -48763,7 +48723,13 @@ mod contournement_publication {
         store.suspension.armer();
         let ecrivain = thread::spawn(move || {
             store2
-                .publier_deux_proprietes_atomiquement(id, "a", Value::Int64(10), "b", Value::Int64(20))
+                .publier_deux_proprietes_atomiquement(
+                    id,
+                    "a",
+                    Value::Int64(10),
+                    "b",
+                    Value::Int64(20),
+                )
                 .unwrap();
         });
         store.suspension.attendre_suspension();
@@ -48774,10 +48740,13 @@ mod contournement_publication {
         let a = store.get_node_property(id, &PropertyKey::new("a"));
         eprintln!("APRES_CONTOURNEMENT a={a:?}");
         // Le résultat démontre le contournement (l'écriture 99 a traversé).
-        assert_eq!(a, Some(Value::Int64(99)), "l'écrivain historique a écrit pendant la publication");
+        assert_eq!(
+            a,
+            Some(Value::Int64(99)),
+            "l'écrivain historique a écrit pendant la publication"
+        );
     }
 }
-
 
 #[cfg(test)]
 mod contournement_lecture_magasin {
@@ -48798,7 +48767,13 @@ mod contournement_lecture_magasin {
         store.suspension.armer();
         let ecrivain = thread::spawn(move || {
             store2
-                .publier_deux_proprietes_atomiquement(id, "a", Value::Int64(10), "b", Value::Int64(20))
+                .publier_deux_proprietes_atomiquement(
+                    id,
+                    "a",
+                    Value::Int64(10),
+                    "b",
+                    Value::Int64(20),
+                )
                 .unwrap();
         });
         store.suspension.attendre_suspension();
@@ -48806,7 +48781,11 @@ mod contournement_lecture_magasin {
         let a = store.get_node_property(id, &PropertyKey::new("a"));
         let b = store.get_node_property(id, &PropertyKey::new("b"));
         eprintln!("LECTEUR_HISTORIQUE a={a:?} b={b:?}");
-        assert_eq!((a, b), (Some(Value::Int64(10)), Some(Value::Int64(2))), "état partiel visible");
+        assert_eq!(
+            (a, b),
+            (Some(Value::Int64(10)), Some(Value::Int64(2))),
+            "état partiel visible"
+        );
         store.suspension.relacher();
         ecrivain.join().unwrap();
     }
@@ -48821,7 +48800,7 @@ mod contournement_lecture_magasin {
         let store2 = Arc::new(SubstrateStore::create(td2.path().join("kb")).unwrap());
         let id = store1.create_node(&["ressource"]);
         let _ = store2.create_node(&["ressource"]); // même NodeId(1)
-        let store1b = Arc::clone(&store1);
+        let _store1b = Arc::clone(&store1);
         let ecrivain = thread::spawn(move || {
             let _g = verrou_publication(id).write();
             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -48832,11 +48811,13 @@ mod contournement_lecture_magasin {
         let _g = verrou_publication(id).read();
         let el = debut.elapsed();
         eprintln!("MAGASIN2_ATTENTE={:?}", el);
-        assert!(el >= std::time::Duration::from_millis(50), "le verrou global bloque le magasin 2");
+        assert!(
+            el >= std::time::Duration::from_millis(50),
+            "le verrou global bloque le magasin 2"
+        );
         ecrivain.join().unwrap();
     }
 }
-
 
 #[cfg(test)]
 mod publication_differee {
@@ -48854,7 +48835,7 @@ mod publication_differee {
         store.set_node_property(id, "b", Value::Int64(2));
         let slot = id.0 as u32;
         let prop_a = store.prop_keys.read().lookup("a").unwrap();
-        let prop_b = store.prop_keys.read().lookup("b").unwrap();
+        let _prop_b = store.prop_keys.read().lookup("b").unwrap();
         let auteur = store.writer_id;
 
         let pz_lock = store.props_zone.as_ref().expect("zone v2");
@@ -48868,7 +48849,10 @@ mod publication_differee {
         let e_a = PropertyEntry::new_stamped(prop_a, PropertyValue::I64(10), auteur, u64::MAX);
         pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e_a)
             .unwrap();
-        let lu_a = pz.get_latest_for_key_unite(Some(h0), prop_a).unwrap().unwrap();
+        let lu_a = pz
+            .get_latest_for_key_unite(Some(h0), prop_a)
+            .unwrap()
+            .unwrap();
         eprintln!("APRES_APPEND_SANS_PUBLICATION a={:?}", lu_a.value);
         assert_eq!(
             lu_a.value,
@@ -48877,7 +48861,6 @@ mod publication_differee {
         );
     }
 }
-
 
 #[cfg(test)]
 mod preparation_privee_positive {
@@ -48900,7 +48883,13 @@ mod preparation_privee_positive {
         let horloge = store.horloge.lock().maintenant(millis).pack();
 
         let pz_lock = store.props_zone.as_ref().unwrap();
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
 
         // 1. prépare a=10 dans une page privée (next_page = H0), récupère P.
         let p = {
@@ -48963,7 +48952,6 @@ mod preparation_privee_positive {
     }
 }
 
-
 #[cfg(test)]
 mod revision_canonique {
     use super::*;
@@ -48978,17 +48966,28 @@ mod revision_canonique {
         let id = store.create_node(&["ressource"]);
         store.set_node_property(id, "a", Value::Int64(1));
         let slot = id.0 as u32;
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         // mutation historique in-place
         store.set_node_property(id, "a", Value::Int64(30));
-        let h1 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h1 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         let valeur = store.get_node_property(id, &PropertyKey::new("a"));
         eprintln!("TETE_INCHANGEE h0={h0} h1={h1} valeur={valeur:?}");
         assert_eq!(h0, h1, "la tête est INCHANGÉE malgré la mutation in-place");
         assert_eq!(valeur, Some(Value::Int64(30)), "mais la valeur a changé");
     }
 }
-
 
 #[cfg(test)]
 mod autorite_revision {
@@ -49013,12 +49012,14 @@ mod autorite_revision {
         let r2 = store.horloge.lock().derniere().pack();
         eprintln!("HLC r0={r0} r1={r1} r2={r2}");
         assert!(r1 > r0, "l'horloge avance sur la mutation in-place");
-        assert!(r2 > r1, "l'horloge avance aussi sur une AUTRE ressource (globale)");
+        assert!(
+            r2 > r1,
+            "l'horloge avance aussi sur une AUTRE ressource (globale)"
+        );
         // l'horloge est GLOBALE : r1 (mutation sur A) ne distingue pas A de B.
         eprintln!("HLC_GLOBALE : la même horloge sert toutes les ressources");
     }
 }
-
 
 #[cfg(test)]
 mod revision_composite {
@@ -49028,8 +49029,8 @@ mod revision_composite {
         let pz_lock = store.props_zone.as_ref()?;
         let pz = pz_lock.read();
         let node_rec = store.writer.read_node(id.0 as u32).ok()??;
-        let tete = (node_rec.first_prop_off.to_u64() != 0)
-            .then(|| node_rec.first_prop_off.to_u64());
+        let tete =
+            (node_rec.first_prop_off.to_u64() != 0).then(|| node_rec.first_prop_off.to_u64());
         let prop_key_id = store.prop_keys.read().lookup(key)?;
         let entry = pz.get_latest_for_key_unite(tete, prop_key_id).ok()??;
         entry.horloge
@@ -49041,7 +49042,7 @@ mod revision_composite {
     fn precondition_composite_sur_estampilles() {
         let td = tempfile::tempdir().unwrap();
         let chemin = td.path().join("kb");
-        let (sa, sb, sa2, sb2) = {
+        let (_sa, sb, sa2, sb2) = {
             let store = SubstrateStore::create(&chemin).unwrap();
             let id = store.create_node(&["ressource"]);
             store.set_node_property(id, "a", Value::Int64(1));
@@ -49075,15 +49076,24 @@ mod revision_composite {
         // réouverture : conservation des estampilles
         let store2 = SubstrateStore::open(&chemin).unwrap();
         // (a et b de id ont été mutées : a changé, b conservé)
-        assert_eq!(horloge_de(&store2, NodeId(1), "b"), Some(sb), "réouverture : b conservé");
-        assert_eq!(horloge_de(&store2, NodeId(2), "a"), Some(sa2), "réouverture : a(id2) conservé");
-        assert_eq!(horloge_de(&store2, NodeId(2), "b"), Some(sb2), "réouverture : b(id2) conservé");
+        assert_eq!(
+            horloge_de(&store2, NodeId(1), "b"),
+            Some(sb),
+            "réouverture : b conservé"
+        );
+        assert_eq!(
+            horloge_de(&store2, NodeId(2), "a"),
+            Some(sa2),
+            "réouverture : a(id2) conservé"
+        );
+        assert_eq!(
+            horloge_de(&store2, NodeId(2), "b"),
+            Some(sb2),
+            "réouverture : b(id2) conservé"
+        );
         eprintln!("REVISION_COMPOSITE OK : estampilles persistées et précondition par dépendances");
     }
 }
-
-
-
 
 #[cfg(test)]
 mod publication_conditionnelle_native {
@@ -49118,13 +49128,28 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         store.set_node_property(id, "a", Value::Int64(99));
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::ConflitPrecondition, "A : conflit explicite");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(99)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
+        assert_eq!(
+            r,
+            IssuePublication::ConflitPrecondition,
+            "A : conflit explicite"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(99))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(2))
+        );
         eprintln!("A_OK : mutation de a → conflit, aucun effet publié");
     }
 
@@ -49136,14 +49161,28 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         store.set_node_property(id, "c", Value::Int64(30));
         let r = store.publier_si_precondition_intacte(prep).unwrap();
         assert_eq!(r, IssuePublication::PublieIntegrale, "B : acceptée");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(30)));
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(30))
+        );
         eprintln!("B_OK : mutation de c acceptée, c=30 conservé");
     }
 
@@ -49157,13 +49196,24 @@ mod publication_conditionnelle_native {
         store.set_node_property(id2, "z", Value::Int64(9));
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         store.set_node_property(id2, "z", Value::Int64(99));
         let r = store.publier_si_precondition_intacte(prep).unwrap();
         assert_eq!(r, IssuePublication::PublieIntegrale, "C : acceptée");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
-        assert_eq!(store.get_node_property(id2, &PropertyKey::new("z")), Some(Value::Int64(99)));
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id2, &PropertyKey::new("z")),
+            Some(Value::Int64(99))
+        );
         eprintln!("C_OK : autre ressource → aucune invalidation");
     }
 
@@ -49174,13 +49224,28 @@ mod publication_conditionnelle_native {
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
         let pre = precond(&store, id);
-        let prep1 = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
-        let prep2 = store.preparer_transformation(id, &[("a", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+        let prep1 = store
+            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww)
+            .unwrap();
+        let prep2 = store
+            .preparer_transformation(id, &[("a", Value::Int64(20))], &pre, ModePublication::Lww)
+            .unwrap();
         let r1 = store.publier_si_precondition_intacte(prep1).unwrap();
         let r2 = store.publier_si_precondition_intacte(prep2).unwrap();
-        assert_eq!(r1, IssuePublication::PublieIntegrale, "D : première publiée");
-        assert_eq!(r2, IssuePublication::ConflitPrecondition, "D : seconde refusée");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(
+            r1,
+            IssuePublication::PublieIntegrale,
+            "D : première publiée"
+        );
+        assert_eq!(
+            r2,
+            IssuePublication::ConflitPrecondition,
+            "D : seconde refusée"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
         eprintln!("D_OK : une seule des deux transformations publie");
     }
 
@@ -49193,26 +49258,66 @@ mod publication_conditionnelle_native {
         let pc = store.prop_keys.read().lookup("c").unwrap();
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         let slot = id.0 as u32;
         let auteur = store.writer_id;
-        let horloge = store.horloge.lock().maintenant(crate::horloge_hybride::horloge_murale_millis()).pack();
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let horloge = store
+            .horloge
+            .lock()
+            .maintenant(crate::horloge_hybride::horloge_murale_millis())
+            .pack();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         let h1 = {
             let pz_lock = store.props_zone.as_ref().unwrap();
             let mut pz = pz_lock.write();
             let e_c = PropertyEntry::new_stamped(pc, PropertyValue::I64(30), auteur, horloge);
-            pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_c).unwrap()
+            pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_c)
+                .unwrap()
         };
-        store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(h1)).unwrap();
-        assert_eq!(stamp(&store, id, "a"), pre.estampille_dependance(0), "a inchangé");
-        assert_eq!(stamp(&store, id, "b"), pre.estampille_dependance(1), "b inchangé");
+        store
+            .writer
+            .update_node_first_prop_off(slot, crate::record::U48::from_u64(h1))
+            .unwrap();
+        assert_eq!(
+            stamp(&store, id, "a"),
+            pre.estampille_dependance(0),
+            "a inchangé"
+        );
+        assert_eq!(
+            stamp(&store, id, "b"),
+            pre.estampille_dependance(1),
+            "b inchangé"
+        );
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::PublieIntegrale, "validation logique réussit");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(30)));
+        assert_eq!(
+            r,
+            IssuePublication::PublieIntegrale,
+            "validation logique réussit"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(30))
+        );
         eprintln!("E_OK : rattachement conserve c après changement de tête");
     }
 
@@ -49225,23 +49330,58 @@ mod publication_conditionnelle_native {
         let pc = store.prop_keys.read().lookup("c").unwrap();
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         let slot = id.0 as u32;
         let auteur = store.writer_id;
-        let horloge = store.horloge.lock().maintenant(crate::horloge_hybride::horloge_murale_millis()).pack();
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let horloge = store
+            .horloge
+            .lock()
+            .maintenant(crate::horloge_hybride::horloge_murale_millis())
+            .pack();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         let h1 = {
             let pz_lock = store.props_zone.as_ref().unwrap();
             let mut pz = pz_lock.write();
             let e_c = PropertyEntry::new_stamped(pc, PropertyValue::I64(30), auteur, horloge);
-            pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_c).unwrap()
+            pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_c)
+                .unwrap()
         };
-        store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(h1)).unwrap();
-        store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(prep.tete_privee_pour_test())).unwrap();
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(3)), "c=30 PERDU");
+        store
+            .writer
+            .update_node_first_prop_off(slot, crate::record::U48::from_u64(h1))
+            .unwrap();
+        store
+            .writer
+            .update_node_first_prop_off(
+                slot,
+                crate::record::U48::from_u64(prep.tete_privee_pour_test()),
+            )
+            .unwrap();
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(3)),
+            "c=30 PERDU"
+        );
         eprintln!("F_OK : publication naive perd c — le rattachement est nécessaire");
     }
 
@@ -49252,7 +49392,9 @@ mod publication_conditionnelle_native {
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
         let pre = precond(&store, id);
-        let prep = store.preparer_transformation(id, &[], &pre, ModePublication::Lww).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[], &pre, ModePublication::Lww)
+            .unwrap();
         let r = store.publier_si_precondition_intacte(prep);
         assert!(r.is_err(), "transformation vide → erreur");
         eprintln!("VIDE_OK : transformation vide refusée");
@@ -49266,12 +49408,27 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = store.capturer_precondition(id, &[]).unwrap();
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::PublieIntegrale, "écriture aveugle publiée");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+        assert_eq!(
+            r,
+            IssuePublication::PublieIntegrale,
+            "écriture aveugle publiée"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20))
+        );
         eprintln!("AVEUGLE_OK : précondition vide = écriture aveugle, publiée");
     }
 
@@ -49282,12 +49439,23 @@ mod publication_conditionnelle_native {
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
         let pre = precond(&store, id);
-        let prep = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww)
+            .unwrap();
         let slot = id.0 as u32;
-        store.writer.update_node_first_prop_off(slot, crate::record::U48::from_u64(prep.tete_privee_pour_test())).unwrap();
+        store
+            .writer
+            .update_node_first_prop_off(
+                slot,
+                crate::record::U48::from_u64(prep.tete_privee_pour_test()),
+            )
+            .unwrap();
         let r = store.publier_si_precondition_intacte(prep);
         assert!(r.is_err(), "re-publication refusée");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
         eprintln!("REPUBLICATION_OK : garde anti-cycle refuse sans boucler");
     }
 
@@ -49303,15 +49471,29 @@ mod publication_conditionnelle_native {
         let prop_a = store.prop_keys.read().lookup("a").unwrap();
         let prop_b = store.prop_keys.read().lookup("b").unwrap();
         let auteur = store.writer_id;
-        let horloge = store.horloge.lock().maintenant(crate::horloge_hybride::horloge_murale_millis()).pack();
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let horloge = store
+            .horloge
+            .lock()
+            .maintenant(crate::horloge_hybride::horloge_murale_millis())
+            .pack();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         let (p, p2) = {
             let pz_lock = store.props_zone.as_ref().unwrap();
             let mut pz = pz_lock.write();
             let e_a = PropertyEntry::new_stamped(prop_a, PropertyValue::I64(10), auteur, horloge);
-            let p = pz.preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_a).unwrap();
+            let p = pz
+                .preparer_page_privee(slot, OwnerKind::Node, Some(h0), &e_a)
+                .unwrap();
             let e_b = PropertyEntry::new_stamped(prop_b, PropertyValue::I64(20), auteur, horloge);
-            let p2 = pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(p), &e_b).unwrap();
+            let p2 = pz
+                .append_entree_sur_chainee(slot, OwnerKind::Node, Some(p), &e_b)
+                .unwrap();
             pz.rattacher_page_privee(p, p2).unwrap();
             (p, p2)
         };
@@ -49344,7 +49526,9 @@ mod publication_conditionnelle_native {
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
         let pre = precond(&store, id);
-        let prep = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww)
+            .unwrap();
         assert!(store.delete_node(id), "suppression effective");
         let r = store.publier_si_precondition_intacte(prep);
         assert!(r.is_err(), "cible supprimée → refus");
@@ -49360,7 +49544,9 @@ mod publication_conditionnelle_native {
         let id_a = base(&store_a);
         let _id_b = base(&store_b);
         let pre = precond(&store_a, id_a);
-        let prep = store_a.preparer_transformation(id_a, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        let prep = store_a
+            .preparer_transformation(id_a, &[("a", Value::Int64(10))], &pre, ModePublication::Lww)
+            .unwrap();
         let r = store_b.publier_si_precondition_intacte(prep);
         assert!(r.is_err(), "descripteur étranger refusé");
         eprintln!("ETRANGER_OK : descripteur d'un autre store refusé (incarnation)");
@@ -49376,7 +49562,12 @@ mod publication_conditionnelle_native {
         store.set_node_property(id2, "a", Value::Int64(1));
         store.set_node_property(id2, "b", Value::Int64(2));
         let pre = precond(&store, id1); // capturée sur id1
-        let r = store.preparer_transformation(id2, &[("a", Value::Int64(10))], &pre, ModePublication::Lww);
+        let r = store.preparer_transformation(
+            id2,
+            &[("a", Value::Int64(10))],
+            &pre,
+            ModePublication::Lww,
+        );
         assert!(r.is_err(), "précondition d'une autre cible refusée");
         eprintln!("AUTRE_CIBLE_OK : précondition d'une autre ressource refusée");
     }
@@ -49389,13 +49580,28 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = precond(&store, id); // dépendances : a, b — PAS d
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         store.set_node_property(id, "d", Value::Int64(7));
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::PublieIntegrale, "écriture non dépendante n'invalide pas");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("d")), Some(Value::Int64(7)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
+        assert_eq!(
+            r,
+            IssuePublication::PublieIntegrale,
+            "écriture non dépendante n'invalide pas"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("d")),
+            Some(Value::Int64(7))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
         eprintln!("NON_DEP_OK : écriture sur propriété non dépendante préservée");
     }
 
@@ -49407,14 +49613,39 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = precond(&store, id); // dépendances : a,b — PAS c
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[
+                    ("a", Value::Int64(10)),
+                    ("b", Value::Int64(20)),
+                    ("c", Value::Int64(30)),
+                ],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         store.set_node_property(id, "c", Value::Int64(99));
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::PubliePartielle, "tête basculée, effet aveugle masqué");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)), "dépendance a canonique");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)), "dépendance b canonique");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(99)), "aveugle c=30 OBSOLÈTE");
+        assert_eq!(
+            r,
+            IssuePublication::PubliePartielle,
+            "tête basculée, effet aveugle masqué"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10)),
+            "dépendance a canonique"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20)),
+            "dépendance b canonique"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(99)),
+            "aveugle c=30 OBSOLÈTE"
+        );
         eprintln!("OBSOLETE_OK : Publie distingue dépendance canonique et aveugle obsolète");
     }
 
@@ -49429,7 +49660,12 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let p0 = precond(&store, id); // capture a=1,b=2
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &p0, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &p0,
+                ModePublication::Lww,
+            )
             .unwrap();
         // une dépendance change APRÈS la capture p0 (donc T est calculée depuis
         // un état périmé).
@@ -49437,8 +49673,16 @@ mod publication_conditionnelle_native {
         // publier(prep) relit p0 (liée) : a (5) != p0 (1) → conflit. On ne peut
         // PAS substituer une capture p1 plus fraîche (pas d'argument).
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::ConflitPrecondition, "T calculée depuis p0 refusée quand a a changé");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(5)), "a inchangé");
+        assert_eq!(
+            r,
+            IssuePublication::ConflitPrecondition,
+            "T calculée depuis p0 refusée quand a a changé"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(5)),
+            "a inchangé"
+        );
         eprintln!("LIEN_OK : la transformation est liée à la capture qui l'a calculée");
     }
 
@@ -49449,7 +49693,12 @@ mod publication_conditionnelle_native {
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
         let pre = precond(&store, id); // dépendances : a,b — PAS c
-        let r = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("c", Value::Int64(30))], &pre, ModePublication::Strict);
+        let r = store.preparer_transformation(
+            id,
+            &[("a", Value::Int64(10)), ("c", Value::Int64(30))],
+            &pre,
+            ModePublication::Strict,
+        );
         assert!(r.is_err(), "strict refuse d'écrire c non déclarée");
         eprintln!("STRICT_REFUS_OK : écriture non déclarée refusée en mode strict");
     }
@@ -49463,13 +49712,33 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = store.capturer_precondition(id, &["a", "b", "c"]).unwrap();
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[
+                    ("a", Value::Int64(10)),
+                    ("b", Value::Int64(20)),
+                    ("c", Value::Int64(30)),
+                ],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         store.set_node_property(id, "c", Value::Int64(99));
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::ConflitPrecondition, "strict : c a changé → refus");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)), "rien publié");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(99)));
+        assert_eq!(
+            r,
+            IssuePublication::ConflitPrecondition,
+            "strict : c a changé → refus"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(1)),
+            "rien publié"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(99))
+        );
         eprintln!("STRICT_CANONIQUE_OK : mode strict refuse un effet non intégralement canonique");
     }
 
@@ -49483,13 +49752,35 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = store.capturer_precondition(id, &["a", "b", "c"]).unwrap();
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[
+                    ("a", Value::Int64(10)),
+                    ("b", Value::Int64(20)),
+                    ("c", Value::Int64(30)),
+                ],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::PublieIntegrale, "strict : succès intégral");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(30)));
+        assert_eq!(
+            r,
+            IssuePublication::PublieIntegrale,
+            "strict : succès intégral"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(30))
+        );
         eprintln!("STRICT_SUCCES_OK : strict réussi → intégral, sans lecture-retour");
     }
 
@@ -49504,16 +49795,31 @@ mod publication_conditionnelle_native {
         store.set_node_property(id, "a", Value::Int64(1));
         let slot = id.0 as u32;
         let prop_a = store.prop_keys.read().lookup("a").unwrap();
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         {
             let pz_lock = store.props_zone.as_ref().unwrap();
             let mut pz = pz_lock.write();
             let e = PropertyEntry::new_stamped(prop_a, PropertyValue::I64(999), 99, u64::MAX);
-            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e).unwrap();
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e)
+                .unwrap();
         }
         let pre = store.capturer_precondition(id, &["a"]).unwrap();
-        let r = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict);
-        assert!(r.is_err(), "mode strict refuse : l'effet ne domine pas l'estampille maximale");
+        let r = store.preparer_transformation(
+            id,
+            &[("a", Value::Int64(10))],
+            &pre,
+            ModePublication::Strict,
+        );
+        assert!(
+            r.is_err(),
+            "mode strict refuse : l'effet ne domine pas l'estampille maximale"
+        );
         eprintln!("DOMINANCE_OK : strict refuse un effet non dominant (estampille maximale)");
     }
 
@@ -49526,17 +49832,32 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let slot = id.0 as u32;
         let prop_b = store.prop_keys.read().lookup("b").unwrap();
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         {
             let pz_lock = store.props_zone.as_ref().unwrap();
             let mut pz = pz_lock.write();
             let e = PropertyEntry::new_stamped(prop_b, PropertyValue::I64(999), 99, u64::MAX);
-            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e).unwrap();
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e)
+                .unwrap();
         }
         // R = {a, b}, W = {a} : b est seulement LUE, a est écrit.
         let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
-        let r = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict);
-        assert!(r.is_ok(), "b (lue, non écrite) ne doit pas déclencher la dominance");
+        let r = store.preparer_transformation(
+            id,
+            &[("a", Value::Int64(10))],
+            &pre,
+            ModePublication::Strict,
+        );
+        assert!(
+            r.is_ok(),
+            "b (lue, non écrite) ne doit pas déclencher la dominance"
+        );
         eprintln!("DOMINANCE_W_OK : dépendance lue non dominée acceptée (seul W est soumis)");
     }
 
@@ -49550,16 +49871,31 @@ mod publication_conditionnelle_native {
         store.set_node_property(id, "a", Value::Int64(1));
         let slot = id.0 as u32;
         let prop_a = store.prop_keys.read().lookup("a").unwrap();
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         {
             let pz_lock = store.props_zone.as_ref().unwrap();
             let mut pz = pz_lock.write();
             let e = PropertyEntry::tombstone_stamped(prop_a, 99, u64::MAX);
-            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e).unwrap();
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e)
+                .unwrap();
         }
         let pre = store.capturer_precondition(id, &["a"]).unwrap();
-        let r = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict);
-        assert!(r.is_err(), "strict refuse : l'effet ne domine pas le tombstone à estampille maximale");
+        let r = store.preparer_transformation(
+            id,
+            &[("a", Value::Int64(10))],
+            &pre,
+            ModePublication::Strict,
+        );
+        assert!(
+            r.is_err(),
+            "strict refuse : l'effet ne domine pas le tombstone à estampille maximale"
+        );
         eprintln!("TOMBSTONE_OK : strict refuse un effet non dominant sur un tombstone");
     }
 
@@ -49573,16 +49909,31 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = precond(&store, id);
         let prep1 = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         let id1 = prep1.empreinte();
         let prep2 = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         let id2 = prep2.empreinte();
         assert_eq!(id1, id2, "même contenu → même empreinte");
         let prep3 = store
-            .preparer_transformation(id, &[("a", Value::Int64(99)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(99)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         let id3 = prep3.empreinte();
         assert_ne!(id1, id3, "effet différent → empreinte différente");
@@ -49602,11 +49953,18 @@ mod publication_conditionnelle_native {
         // A : préparation privée SANS publication → Indetermine (page orpheline)
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         let horloge_orpheline = prep.horloge_effet_pour_test();
         assert_eq!(
-            store.resoudre_effet_historique(id, "a", auteur, horloge_orpheline).unwrap(),
+            store
+                .resoudre_effet_historique(id, "a", auteur, horloge_orpheline)
+                .unwrap(),
             ResolutionEffet::Indetermine,
             "A : préparation privée non engagée → indéterminé"
         );
@@ -49614,13 +49972,20 @@ mod publication_conditionnelle_native {
         // B : publication réelle → Engage
         let pre2 = precond(&store, id);
         let prep2 = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre2, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre2,
+                ModePublication::Lww,
+            )
             .unwrap();
         let horloge_engagee = prep2.horloge_effet_pour_test();
         let r = store.publier_si_precondition_intacte(prep2).unwrap();
         assert_eq!(r, IssuePublication::PublieIntegrale);
         assert_eq!(
-            store.resoudre_effet_historique(id, "a", auteur, horloge_engagee).unwrap(),
+            store
+                .resoudre_effet_historique(id, "a", auteur, horloge_engagee)
+                .unwrap(),
             ResolutionEffet::Engage,
             "B : publication réelle → engagé"
         );
@@ -49628,7 +49993,9 @@ mod publication_conditionnelle_native {
         // C : remplacement ultérieur → l'effet reste historiquement engagé (masqué)
         store.set_node_property(id, "a", Value::Int64(99));
         assert_eq!(
-            store.resoudre_effet_historique(id, "a", auteur, horloge_engagee).unwrap(),
+            store
+                .resoudre_effet_historique(id, "a", auteur, horloge_engagee)
+                .unwrap(),
             ResolutionEffet::Engage,
             "C : masqué par une écriture ultérieure mais historiquement engagé"
         );
@@ -49648,7 +50015,12 @@ mod publication_conditionnelle_native {
             store.set_node_property(id, "b", Value::Int64(2));
             let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
             let prep = store
-                .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Strict)
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Strict,
+                )
                 .unwrap();
             let auteur = store.writer_id;
             let horloge = prep.horloge_effet_pour_test();
@@ -49660,12 +50032,20 @@ mod publication_conditionnelle_native {
         let store2 = SubstrateStore::open(&chemin).unwrap();
         let id = NodeId(1);
         // résolution SANS republier
-        let res = store2.resoudre_effet_historique(id, "a", auteur, horloge).unwrap();
-        assert_eq!(res, ResolutionEffet::Engage, "H3 : l'engagement est attesté après réouverture, réponse perdue");
+        let res = store2
+            .resoudre_effet_historique(id, "a", auteur, horloge)
+            .unwrap();
+        assert_eq!(
+            res,
+            ResolutionEffet::Engage,
+            "H3 : l'engagement est attesté après réouverture, réponse perdue"
+        );
         // masquage ultérieur : l'historique atteste toujours l'engagement
         store2.set_node_property(id, "a", Value::Int64(99));
         assert_eq!(
-            store2.resoudre_effet_historique(id, "a", auteur, horloge).unwrap(),
+            store2
+                .resoudre_effet_historique(id, "a", auteur, horloge)
+                .unwrap(),
             ResolutionEffet::Engage,
             "H3 : masqué mais l'événement historique reste attesté"
         );
@@ -49690,13 +50070,26 @@ mod publication_conditionnelle_native {
 
         // A : +0.1 (0.2 → 0.3)
         let prep_a = store
-            .preparer_transformation(id, &[("energie", Value::Float64(0.3))], &pre_a, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("energie", Value::Float64(0.3))],
+                &pre_a,
+                ModePublication::Strict,
+            )
             .unwrap();
-        assert_eq!(store.publier_si_precondition_intacte(prep_a).unwrap(), IssuePublication::PublieIntegrale);
+        assert_eq!(
+            store.publier_si_precondition_intacte(prep_a).unwrap(),
+            IssuePublication::PublieIntegrale
+        );
 
         // B : +0.1 depuis 0.2 (0.2 → 0.3) — précondition devenue obsolète
         let prep_b = store
-            .preparer_transformation(id, &[("energie", Value::Float64(0.3))], &pre_b, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("energie", Value::Float64(0.3))],
+                &pre_b,
+                ModePublication::Strict,
+            )
             .unwrap();
         assert_eq!(
             store.publier_si_precondition_intacte(prep_b).unwrap(),
@@ -49707,9 +50100,17 @@ mod publication_conditionnelle_native {
         // B recalculée depuis l'état courant (0.3 → 0.4)
         let pre_b2 = store.capturer_precondition(id, &["energie"]).unwrap();
         let prep_b2 = store
-            .preparer_transformation(id, &[("energie", Value::Float64(0.4))], &pre_b2, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("energie", Value::Float64(0.4))],
+                &pre_b2,
+                ModePublication::Strict,
+            )
             .unwrap();
-        assert_eq!(store.publier_si_precondition_intacte(prep_b2).unwrap(), IssuePublication::PublieIntegrale);
+        assert_eq!(
+            store.publier_si_precondition_intacte(prep_b2).unwrap(),
+            IssuePublication::PublieIntegrale
+        );
 
         assert_eq!(
             store.get_node_property(id, &PropertyKey::new("energie")),
@@ -49730,14 +50131,31 @@ mod publication_conditionnelle_native {
         let auteur = store.writer_id;
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         let horloge = prep.horloge_effet_pour_test();
         store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(store.resoudre_effet_historique(id, "a", auteur, horloge).unwrap(), ResolutionEffet::Engage);
-        assert_eq!(store.resoudre_effet_historique(id, "b", auteur, horloge).unwrap(), ResolutionEffet::Engage);
         assert_eq!(
-            store.resoudre_effet_historique(id, "c", auteur, horloge).unwrap(),
+            store
+                .resoudre_effet_historique(id, "a", auteur, horloge)
+                .unwrap(),
+            ResolutionEffet::Engage
+        );
+        assert_eq!(
+            store
+                .resoudre_effet_historique(id, "b", auteur, horloge)
+                .unwrap(),
+            ResolutionEffet::Engage
+        );
+        assert_eq!(
+            store
+                .resoudre_effet_historique(id, "c", auteur, horloge)
+                .unwrap(),
             ResolutionEffet::Indetermine,
             "c n'a pas été écrit par cette transformation → non résolu"
         );
@@ -49754,7 +50172,12 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         let reference = prep.reference_tentative();
         store.publier_si_precondition_intacte(prep).unwrap();
@@ -49769,7 +50192,10 @@ mod publication_conditionnelle_native {
         let debut = std::time::Instant::now();
         let res = store.resoudre_reference(&reference).unwrap();
         let el = debut.elapsed();
-        eprintln!("RESOLUTION_COHERENTE attente={el:?} integrite={:?}", res.integrite());
+        eprintln!(
+            "RESOLUTION_COHERENTE attente={el:?} integrite={:?}",
+            res.integrite()
+        );
         ecrivain.join().unwrap();
         assert!(
             el >= std::time::Duration::from_millis(50),
@@ -49778,7 +50204,10 @@ mod publication_conditionnelle_native {
         assert_eq!(res.integrite(), IntegriteTentative::Integrale);
         for i in 0..res.nb_effets() {
             let e = res.effet(i);
-            assert_eq!(e.estampille_courante(), Some((reference.auteur(), reference.horloge())));
+            assert_eq!(
+                e.estampille_courante(),
+                Some((reference.auteur(), reference.horloge()))
+            );
         }
     }
 
@@ -49793,14 +50222,24 @@ mod publication_conditionnelle_native {
         // K1 : a→10 (rev 1)
         let pre1 = precond(&store, id);
         let prep1 = store
-            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre1, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10))],
+                &pre1,
+                ModePublication::Strict,
+            )
             .unwrap();
         let ref1 = prep1.reference_tentative();
         store.publier_si_precondition_intacte(prep1).unwrap();
         // K2 : a→20 (rev 2), supplante K1
         let pre2 = store.capturer_precondition(id, &["a"]).unwrap();
         let prep2 = store
-            .preparer_transformation(id, &[("a", Value::Int64(20))], &pre2, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(20))],
+                &pre2,
+                ModePublication::Strict,
+            )
             .unwrap();
         let ref2 = prep2.reference_tentative();
         store.publier_si_precondition_intacte(prep2).unwrap();
@@ -49823,7 +50262,12 @@ mod publication_conditionnelle_native {
         // P0 — préparée mais JAMAIS publiée : Indetermine, PAS « jamais engagé ».
         let pre3 = store.capturer_precondition(id, &["a"]).unwrap();
         let prep3 = store
-            .preparer_transformation(id, &[("a", Value::Int64(40))], &pre3, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(40))],
+                &pre3,
+                ModePublication::Strict,
+            )
             .unwrap();
         let ref3 = prep3.reference_tentative();
         // prep3 n'est JAMAIS publiée (abandonnée)
@@ -49839,7 +50283,12 @@ mod publication_conditionnelle_native {
         // P0 — engagée puis SUPPRIMÉE par un tombstone ultérieur.
         let pre4 = store.capturer_precondition(id, &["a"]).unwrap();
         let prep4 = store
-            .preparer_transformation(id, &[("a", Value::Int64(50))], &pre4, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(50))],
+                &pre4,
+                ModePublication::Strict,
+            )
             .unwrap();
         let ref4 = prep4.reference_tentative();
         store.publier_si_precondition_intacte(prep4).unwrap();
@@ -49861,13 +50310,22 @@ mod publication_conditionnelle_native {
         let id = base(&store);
         let pre = precond(&store, id);
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         let reference = prep.reference_tentative();
         store.delete_node(id);
         let _id2 = store.create_node(&["ressource"]);
         let res = store.resoudre_reference(&reference).unwrap();
-        assert_eq!(res.integrite(), IntegriteTentative::Indeterminee, "cible recréée → indéterminé");
+        assert_eq!(
+            res.integrite(),
+            IntegriteTentative::Indeterminee,
+            "cible recréée → indéterminé"
+        );
         eprintln!("RECREATION_OK : la référence d'une incarnation morte est indéterminée");
     }
 
@@ -49884,7 +50342,12 @@ mod publication_conditionnelle_native {
             store.set_node_property(id, "a", Value::Int64(1));
             let pre = store.capturer_precondition(id, &["a"]).unwrap();
             let prep = store
-                .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10))],
+                    &pre,
+                    ModePublication::Strict,
+                )
                 .unwrap();
             let reference = prep.reference_tentative();
             store.publier_si_precondition_intacte(prep).unwrap();
@@ -49901,8 +50364,14 @@ mod publication_conditionnelle_native {
         let store_copie = SubstrateStore::open(&chemin_copie).unwrap();
         let reference = ReferenceTentative::from_bytes(&reference_bytes).unwrap();
         let res = store_copie.resoudre_reference(&reference).unwrap();
-        assert_eq!(res.integrite(), IntegriteTentative::Integrale, "la copie porte les mêmes données");
-        eprintln!("COPIE_OK : la copie de base résout la référence (writer_id+horloge = tentative, pas base)");
+        assert_eq!(
+            res.integrite(),
+            IntegriteTentative::Integrale,
+            "la copie porte les mêmes données"
+        );
+        eprintln!(
+            "COPIE_OK : la copie de base résout la référence (writer_id+horloge = tentative, pas base)"
+        );
     }
 
     /// P0 — CONTRE-ÉPREUVE DISCRIMINANTE (protocole try_lock) : interleaving
@@ -49922,7 +50391,12 @@ mod publication_conditionnelle_native {
         // publier V0 = (a=10, b=20), référence = tentative V0
         let pre0 = precond(&store, id);
         let prep0 = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre0, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre0,
+                ModePublication::Strict,
+            )
             .unwrap();
         let reference = prep0.reference_tentative();
         store.publier_si_precondition_intacte(prep0).unwrap();
@@ -49931,7 +50405,8 @@ mod publication_conditionnelle_native {
         store.suspension.armer();
         let store2 = Arc::clone(&store);
         let ref_resolvant = reference.clone();
-        let resolvant = std::thread::spawn(move || store2.resoudre_reference(&ref_resolvant).unwrap());
+        let resolvant =
+            std::thread::spawn(move || store2.resoudre_reference(&ref_resolvant).unwrap());
         store.suspension.attendre_suspension();
 
         // SONDE DÉTERMINISTE (sans sleep ni try_recv) : pendant la suspension,
@@ -49954,7 +50429,12 @@ mod publication_conditionnelle_native {
         let mutant = std::thread::spawn(move || {
             let pre1 = store3.capturer_precondition(id, &["a", "b"]).unwrap();
             let prep1 = store3
-                .preparer_transformation(id, &[("a", Value::Int64(30)), ("b", Value::Int64(40))], &pre1, ModePublication::Strict)
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(30)), ("b", Value::Int64(40))],
+                    &pre1,
+                    ModePublication::Strict,
+                )
                 .unwrap();
             let r = store3.publier_si_precondition_intacte(prep1).unwrap();
             tx.send(r).unwrap();
@@ -49967,15 +50447,32 @@ mod publication_conditionnelle_native {
 
         // POSITIF : V1 a publié APRÈS la libération du verrou — la valeur
         // canonique finale est V1 (30/40), pas V0.
-        assert_eq!(r1, IssuePublication::PublieIntegrale, "V1 publiée intégralement après libération");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(30)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(40)));
+        assert_eq!(
+            r1,
+            IssuePublication::PublieIntegrale,
+            "V1 publiée intégralement après libération"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(30))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(40))
+        );
 
         // DISCRIMINANT : les deux clés portent la MÊME estampille courante (V0)
         let s0 = res.effet(0).estampille_courante();
         let s1 = res.effet(1).estampille_courante();
-        assert_eq!(s0, s1, "jamais un mélange de deux états qui n'ont pas coexisté");
-        assert_eq!(s0, Some((reference.auteur(), reference.horloge())), "V0, pas V1");
+        assert_eq!(
+            s0, s1,
+            "jamais un mélange de deux états qui n'ont pas coexisté"
+        );
+        assert_eq!(
+            s0,
+            Some((reference.auteur(), reference.horloge())),
+            "V0, pas V1"
+        );
 
         // ESTAMPILLES OBSERVÉES : V0 (résolue, les deux clés) puis V1 (canonique finale).
         let stamp_v0 = (reference.auteur(), reference.horloge());
@@ -49984,8 +50481,13 @@ mod publication_conditionnelle_native {
             (s.auteur, s.horloge)
         };
         eprintln!("ESTAMPILLES V0={stamp_v0:?} V1_finale={stamp_v1_final:?}");
-        assert_ne!(stamp_v1_final, stamp_v0, "V1 a masqué V0 (estampille distincte)");
-        eprintln!("INTERLEAVING_OK : try_lock échoue (verrou détenu), instantané V0 cohérent, V1 publiée après libération");
+        assert_ne!(
+            stamp_v1_final, stamp_v0,
+            "V1 a masqué V0 (estampille distincte)"
+        );
+        eprintln!(
+            "INTERLEAVING_OK : try_lock échoue (verrou détenu), instantané V0 cohérent, V1 publiée après libération"
+        );
     }
 
     /// P0 — OBSERVATION VALEUR+ESTAMPILLE sous UNE lecture : `resoudre_reference`
@@ -50002,7 +50504,9 @@ mod publication_conditionnelle_native {
         // V0 — la tentative que l'on va résoudre (référence = engagement V0).
         let payload0: std::sync::Arc<[u8]> = (0..32u8).collect::<Vec<u8>>().into();
         let score0 = Value::Float64(0.25);
-        let pre0 = store.capturer_precondition(id, &["payload", "score"]).unwrap();
+        let pre0 = store
+            .capturer_precondition(id, &["payload", "score"])
+            .unwrap();
         let prep0 = store
             .preparer_transformation(
                 id,
@@ -50020,7 +50524,9 @@ mod publication_conditionnelle_native {
         // V1 — masque V0 : l'état courant devient V1, l'engagement reste V0.
         let payload1: std::sync::Arc<[u8]> = (100..132u8).collect::<Vec<u8>>().into();
         let score1 = Value::Float64(0.75);
-        let pre1 = store.capturer_precondition(id, &["payload", "score"]).unwrap();
+        let pre1 = store
+            .capturer_precondition(id, &["payload", "score"])
+            .unwrap();
         let prep1 = store
             .preparer_transformation(
                 id,
@@ -50049,7 +50555,12 @@ mod publication_conditionnelle_native {
         // ENGAGEMENT HISTORIQUE : V0 est engagé (même masqué par V1).
         assert_eq!(res.integrite(), IntegriteTentative::Integrale);
 
-        let par_cle = |cle: &str| (0..res.nb_effets()).map(|i| res.effet(i)).find(|e| e.cle() == cle).unwrap();
+        let par_cle = |cle: &str| {
+            (0..res.nb_effets())
+                .map(|i| res.effet(i))
+                .find(|e| e.cle() == cle)
+                .unwrap()
+        };
 
         // OBSERVATION COURANTE — Bytes(32) : valeur ET estampille = la paire
         // lue atomiquement (V1), pas une relecture indépendante.
@@ -50107,7 +50618,10 @@ mod publication_conditionnelle_native {
 
         let cas: Vec<(&str, Value)> = vec![
             ("k_int", Value::Int64(42)),
-            ("k_bytes", Value::Bytes((0..32u8).collect::<Vec<u8>>().into())),
+            (
+                "k_bytes",
+                Value::Bytes((0..32u8).collect::<Vec<u8>>().into()),
+            ),
             ("k_float", Value::Float64(0.25)),
         ];
         for (cle, val) in cas {
@@ -50152,11 +50666,16 @@ mod publication_conditionnelle_native {
             let res = store.resoudre_reference(&reference).unwrap();
             let e = res.effet(0);
             assert_eq!(
-                e.etat(), ResolutionEffet::Engage,
+                e.etat(),
+                ResolutionEffet::Engage,
                 "{cle} : l'engagement survit au tombstone (historique)"
             );
             assert_eq!(e.estampille_courante(), Some(s));
-            assert_eq!(e.valeur_courante(), None, "tombstone → pas de valeur courante");
+            assert_eq!(
+                e.valeur_courante(),
+                None,
+                "tombstone → pas de valeur courante"
+            );
             assert_eq!(
                 e.etat_courant(),
                 &EtatPropriete::Supprimee(EstampilleComplete {
@@ -50168,7 +50687,9 @@ mod publication_conditionnelle_native {
 
             // ABSENTE : référence à une clé jamais écrite → Indetermine + (None, None).
             let cle_absente = format!("{cle}_jamais_ecrite");
-            let pre_abs = store.capturer_precondition(id, &[cle_absente.as_str()]).unwrap();
+            let pre_abs = store
+                .capturer_precondition(id, &[cle_absente.as_str()])
+                .unwrap();
             let prep_abs = store
                 .preparer_transformation(
                     id,
@@ -50187,7 +50708,8 @@ mod publication_conditionnelle_native {
             // DISTINCTION EXPLICITE : clé jamais écrite = Absente (pas
             // RessourceInexistante, pas une erreur).
             assert_eq!(
-                e.etat_courant(), &EtatPropriete::Absente,
+                e.etat_courant(),
+                &EtatPropriete::Absente,
                 "{cle} jamais écrite → etat_courant = Absente"
             );
         }
@@ -50206,7 +50728,12 @@ mod publication_conditionnelle_native {
         store.set_node_property(id, "a", Value::Float64(1.0));
         let pre = store.capturer_precondition(id, &["a"]).unwrap();
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Float64(2.0))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Float64(2.0))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         let reference = prep.reference_tentative();
         store.publier_si_precondition_intacte(prep).unwrap();
@@ -50221,12 +50748,17 @@ mod publication_conditionnelle_native {
         assert_eq!(res.integrite(), IntegriteTentative::Indeterminee);
         let e = res.effet(0);
         assert_eq!(e.etat(), ResolutionEffet::Indetermine);
-        assert_eq!(e.estampille_courante(), None, "nœud inexistant → pas d'estampille");
+        assert_eq!(
+            e.estampille_courante(),
+            None,
+            "nœud inexistant → pas d'estampille"
+        );
         assert_eq!(e.valeur_courante(), None, "nœud inexistant → pas de valeur");
         // DISTINCTION EXPLICITE : nœud mort = RessourceInexistante (pas Absente,
         // pas une erreur) — la vivacité se lit sur le record du nœud.
         assert_eq!(
-            e.etat_courant(), &EtatPropriete::RessourceInexistante,
+            e.etat_courant(),
+            &EtatPropriete::RessourceInexistante,
             "cible fantôme → etat_courant = RessourceInexistante"
         );
         eprintln!("INEXISTANT_OK : cible fantôme → RessourceInexistante, jamais une erreur");
@@ -50268,7 +50800,13 @@ mod publication_conditionnelle_native {
         // (LWW : (horloge, auteur) décroissant).
         let prop_payload = store.prop_keys.read().lookup("payload").unwrap();
         let slot = id.0 as u32;
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         {
             let pz_lock = store.props_zone.as_ref().unwrap();
             let mut pz = pz_lock.write();
@@ -50315,13 +50853,18 @@ mod publication_conditionnelle_native {
             "corrompue",
             Value::Bytes((0..32u8).collect::<Vec<u8>>().into()),
         );
-        let pre = store.capturer_precondition(id, &["saine", "corrompue"]).unwrap();
+        let pre = store
+            .capturer_precondition(id, &["saine", "corrompue"])
+            .unwrap();
         let prep = store
             .preparer_transformation(
                 id,
                 &[
                     ("saine", Value::Int64(2)),
-                    ("corrompue", Value::Bytes((100..132u8).collect::<Vec<u8>>().into())),
+                    (
+                        "corrompue",
+                        Value::Bytes((100..132u8).collect::<Vec<u8>>().into()),
+                    ),
                 ],
                 &pre,
                 ModePublication::Strict,
@@ -50335,7 +50878,13 @@ mod publication_conditionnelle_native {
         // plus récente en LWW). La clé "saine" reste parfaitement lisible.
         let prop = store.prop_keys.read().lookup("corrompue").unwrap();
         let slot = id.0 as u32;
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         {
             let pz_lock = store.props_zone.as_ref().unwrap();
             let mut pz = pz_lock.write();
@@ -50355,7 +50904,9 @@ mod publication_conditionnelle_native {
         // La clé "saine" est intacte, mais l'échec de "corrompue" doit faire
         // échouer TOUTE la résolution : pas de `par_cle` partiel trompeur.
         assert!(store.resoudre_reference(&reference).is_err());
-        eprintln!("MULTICLES_ERR_OK : une clé corrompue → Err globale, pas de résolution partielle");
+        eprintln!(
+            "MULTICLES_ERR_OK : une clé corrompue → Err globale, pas de résolution partielle"
+        );
     }
 
     fn f64_de_capture(pre: &Precondition) -> f64 {
@@ -50387,12 +50938,25 @@ mod publication_conditionnelle_native {
         let b = e0 + 0.1;
 
         let prep_a = store
-            .preparer_transformation(id, &[("energie", Value::Float64(a))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("energie", Value::Float64(a))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
-        assert_eq!(store.publier_si_precondition_intacte(prep_a).unwrap(), IssuePublication::PublieIntegrale);
+        assert_eq!(
+            store.publier_si_precondition_intacte(prep_a).unwrap(),
+            IssuePublication::PublieIntegrale
+        );
 
         let prep_b = store
-            .preparer_transformation(id, &[("energie", Value::Float64(b))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("energie", Value::Float64(b))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
         assert_eq!(
             store.publier_si_precondition_intacte(prep_b).unwrap(),
@@ -50405,13 +50969,26 @@ mod publication_conditionnelle_native {
         let e1 = f64_de_capture(&pre2);
         let b2 = e1 + 0.1;
         let prep_b2 = store
-            .preparer_transformation(id, &[("energie", Value::Float64(b2))], &pre2, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("energie", Value::Float64(b2))],
+                &pre2,
+                ModePublication::Strict,
+            )
             .unwrap();
-        assert_eq!(store.publier_si_precondition_intacte(prep_b2).unwrap(), IssuePublication::PublieIntegrale);
+        assert_eq!(
+            store.publier_si_precondition_intacte(prep_b2).unwrap(),
+            IssuePublication::PublieIntegrale
+        );
 
         let resultat = f64_de_capture(&store.capturer_precondition(id, &["energie"]).unwrap());
-        assert!((resultat - 0.4).abs() < 1e-9, "résultat proche de 0.4, lu {resultat}");
-        eprintln!("RECALCUL_OK : e0={e0} → A={a} engagée → B={b} refusée → recapture e1={e1} → B'={b2} → {resultat}");
+        assert!(
+            (resultat - 0.4).abs() < 1e-9,
+            "résultat proche de 0.4, lu {resultat}"
+        );
+        eprintln!(
+            "RECALCUL_OK : e0={e0} → A={a} engagée → B={b} refusée → recapture e1={e1} → B'={b2} → {resultat}"
+        );
     }
 
     /// P0-A — ANCRE Bytes versionnée : la capture préserve contenu + estampille
@@ -50427,7 +51004,10 @@ mod publication_conditionnelle_native {
 
         let pre = store.capturer_precondition(id, &["ancre"]).unwrap();
         let e0 = match pre.etat_dependance(0) {
-            EtatPropriete::Presente { valeur: Value::Bytes(b), .. } => f64::from_le_bytes(b[..8].try_into().unwrap()),
+            EtatPropriete::Presente {
+                valeur: Value::Bytes(b),
+                ..
+            } => f64::from_le_bytes(b[..8].try_into().unwrap()),
             autre => panic!("attendu Bytes, lu {autre:?}"),
         };
         assert!((e0 - 0.2).abs() < 1e-9);
@@ -50436,24 +51016,46 @@ mod publication_conditionnelle_native {
         let prep_a = store
             .preparer_transformation(id, &[("ancre", enc(a))], &pre, ModePublication::Strict)
             .unwrap();
-        assert_eq!(store.publier_si_precondition_intacte(prep_a).unwrap(), IssuePublication::PublieIntegrale);
+        assert_eq!(
+            store.publier_si_precondition_intacte(prep_a).unwrap(),
+            IssuePublication::PublieIntegrale
+        );
 
         // B depuis la même capture (obsolète)
         let prep_b = store
-            .preparer_transformation(id, &[("ancre", enc(e0 + 0.1))], &pre, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("ancre", enc(e0 + 0.1))],
+                &pre,
+                ModePublication::Strict,
+            )
             .unwrap();
-        assert_eq!(store.publier_si_precondition_intacte(prep_b).unwrap(), IssuePublication::ConflitPrecondition);
+        assert_eq!(
+            store.publier_si_precondition_intacte(prep_b).unwrap(),
+            IssuePublication::ConflitPrecondition
+        );
 
         // recapture + recalcul → 0.4
         let pre2 = store.capturer_precondition(id, &["ancre"]).unwrap();
         let e1 = match pre2.etat_dependance(0) {
-            EtatPropriete::Presente { valeur: Value::Bytes(b), .. } => f64::from_le_bytes(b[..8].try_into().unwrap()),
+            EtatPropriete::Presente {
+                valeur: Value::Bytes(b),
+                ..
+            } => f64::from_le_bytes(b[..8].try_into().unwrap()),
             autre => panic!("attendu Bytes, lu {autre:?}"),
         };
         let prep_b2 = store
-            .preparer_transformation(id, &[("ancre", enc(e1 + 0.1))], &pre2, ModePublication::Strict)
+            .preparer_transformation(
+                id,
+                &[("ancre", enc(e1 + 0.1))],
+                &pre2,
+                ModePublication::Strict,
+            )
             .unwrap();
-        assert_eq!(store.publier_si_precondition_intacte(prep_b2).unwrap(), IssuePublication::PublieIntegrale);
+        assert_eq!(
+            store.publier_si_precondition_intacte(prep_b2).unwrap(),
+            IssuePublication::PublieIntegrale
+        );
         eprintln!("BYTES_OK : ancre Bytes versionnée, capture+recalcul → 0.4");
     }
 
@@ -50478,7 +51080,14 @@ mod publication_conditionnelle_native {
         let avant = pz.read().allocated_page_count();
         let t = Instant::now();
         for _ in 0..n {
-            store.preparer_transformation_differee(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict).unwrap();
+            store
+                .preparer_transformation_differee(
+                    id,
+                    &[("a", Value::Int64(10))],
+                    &pre,
+                    ModePublication::Strict,
+                )
+                .unwrap();
         }
         let abandon_pages = pz.read().allocated_page_count() - avant;
         let abandon_ns = t.elapsed().as_nanos() as f64 / n as f64;
@@ -50487,8 +51096,17 @@ mod publication_conditionnelle_native {
         let avant2 = pz.read().allocated_page_count();
         let t = Instant::now();
         for _ in 0..n {
-            let prep = store.preparer_transformation_differee(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict).unwrap();
-            let r = store.publier_si_precondition_intacte_differee(prep).unwrap();
+            let prep = store
+                .preparer_transformation_differee(
+                    id,
+                    &[("a", Value::Int64(10))],
+                    &pre,
+                    ModePublication::Strict,
+                )
+                .unwrap();
+            let r = store
+                .publier_si_precondition_intacte_differee(prep)
+                .unwrap();
             assert_eq!(r, IssuePublication::ConflitPrecondition);
         }
         let conflit_pages = pz.read().allocated_page_count() - avant2;
@@ -50500,7 +51118,10 @@ mod publication_conditionnelle_native {
         assert_eq!(abandon_pages, 0, "l'abandon logique n'alloue aucune page");
         // CORRIGÉ : la validation préalable (sans allocation) refuse le conflit
         // AVANT matérialisation → zéro page.
-        assert_eq!(conflit_pages, 0, "conflit refusé avant matérialisation : zéro page");
+        assert_eq!(
+            conflit_pages, 0,
+            "conflit refusé avant matérialisation : zéro page"
+        );
     }
 
     /// P0 — écriture répétée d'une même clé : refusée à la préparation.
@@ -50510,7 +51131,12 @@ mod publication_conditionnelle_native {
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
         let pre = precond(&store, id);
-        let r = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("a", Value::Int64(20))], &pre, ModePublication::Lww);
+        let r = store.preparer_transformation(
+            id,
+            &[("a", Value::Int64(10)), ("a", Value::Int64(20))],
+            &pre,
+            ModePublication::Lww,
+        );
         assert!(r.is_err(), "écriture répétée de a refusée");
         eprintln!("REPETEE_OK : écriture répétée refusée");
     }
@@ -50525,20 +51151,46 @@ mod publication_conditionnelle_native {
         let pc = store.prop_keys.read().lookup("c").unwrap();
         let pre = precond(&store, id); // dépendances a,b — PAS c
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20)), ("c", Value::Int64(30))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[
+                    ("a", Value::Int64(10)),
+                    ("b", Value::Int64(20)),
+                    ("c", Value::Int64(30)),
+                ],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         let slot = id.0 as u32;
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         {
             let pz_lock = store.props_zone.as_ref().unwrap();
             let mut pz = pz_lock.write();
             let e = PropertyEntry::new_stamped(pc, PropertyValue::I64(999), 99, u64::MAX);
-            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e).unwrap();
+            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &e)
+                .unwrap();
         }
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::PubliePartielle, "effet aveugle c masqué par une estampille distante");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("c")), Some(Value::Int64(999)));
+        assert_eq!(
+            r,
+            IssuePublication::PubliePartielle,
+            "effet aveugle c masqué par une estampille distante"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("c")),
+            Some(Value::Int64(999))
+        );
         eprintln!("DISTANT_OK : estampille distante supérieure → application partielle");
     }
 
@@ -50548,12 +51200,24 @@ mod publication_conditionnelle_native {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = base(&store);
-        let pre = store.capturer_precondition(id, &["a", "inexistante"]).unwrap();
-        let prep = store.preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww).unwrap();
+        let pre = store
+            .capturer_precondition(id, &["a", "inexistante"])
+            .unwrap();
+        let prep = store
+            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Lww)
+            .unwrap();
         store.set_node_property(id, "inexistante", Value::Int64(42));
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::ConflitPrecondition, "dépendance absente devenue présente");
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)), "rien publié");
+        assert_eq!(
+            r,
+            IssuePublication::ConflitPrecondition,
+            "dépendance absente devenue présente"
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(1)),
+            "rien publié"
+        );
         eprintln!("ABSENT_OK : dépendance absente devenue présente → conflit");
     }
 }
@@ -50563,7 +51227,9 @@ impl EtatPropriete {
     /// (tests) extrait l'estampille d'un état présent/supprimé.
     fn into_stamp(self) -> EstampilleComplete {
         match self {
-            EtatPropriete::Presente { estampille, .. } | EtatPropriete::Supprimee(estampille) => estampille,
+            EtatPropriete::Presente { estampille, .. } | EtatPropriete::Supprimee(estampille) => {
+                estampille
+            }
             _ => panic!("pas d'estampille sur cet état"),
         }
     }
@@ -50579,7 +51245,10 @@ mod mission1_identite_estampille {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
         let id = store.create_node(&["ressource"]);
-        assert_eq!(store.lire_etat_propriete(id, "a").unwrap(), EtatPropriete::Absente);
+        assert_eq!(
+            store.lire_etat_propriete(id, "a").unwrap(),
+            EtatPropriete::Absente
+        );
         store.set_node_property(id, "a", Value::Int64(1));
         match store.lire_etat_propriete(id, "a").unwrap() {
             EtatPropriete::Presente { estampille, valeur } => {
@@ -50594,8 +51263,13 @@ mod mission1_identite_estampille {
             EtatPropriete::Supprimee(estampille) => assert_eq!(estampille.auteur, store.writer_id),
             autre => panic!("a attendue supprimée, lu {autre:?}"),
         }
-        assert_eq!(store.lire_etat_propriete(NodeId(4242), "a").unwrap(), EtatPropriete::RessourceInexistante);
-        eprintln!("ETATS_OK : présente/absente/supprimée/inexistante distinguées, estampille complète");
+        assert_eq!(
+            store.lire_etat_propriete(NodeId(4242), "a").unwrap(),
+            EtatPropriete::RessourceInexistante
+        );
+        eprintln!(
+            "ETATS_OK : présente/absente/supprimée/inexistante distinguées, estampille complète"
+        );
     }
 
     #[test]
@@ -50606,17 +51280,42 @@ mod mission1_identite_estampille {
         store.set_node_property(id, "a", Value::Int64(1));
         let slot = id.0 as u32;
         let prop_a = store.prop_keys.read().lookup("a").unwrap();
-        let horloge = store.horloge.lock().maintenant(crate::horloge_hybride::horloge_murale_millis()).pack();
-        let h0 = store.writer.read_node(slot).unwrap().unwrap().first_prop_off.to_u64();
+        let horloge = store
+            .horloge
+            .lock()
+            .maintenant(crate::horloge_hybride::horloge_murale_millis())
+            .pack();
+        let h0 = store
+            .writer
+            .read_node(slot)
+            .unwrap()
+            .unwrap()
+            .first_prop_off
+            .to_u64();
         {
             let pz_lock = store.props_zone.as_ref().unwrap();
             let mut pz = pz_lock.write();
-            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &PropertyEntry::new_stamped(prop_a, PropertyValue::I64(100), 2, horloge)).unwrap();
-            pz.append_entree_sur_chainee(slot, OwnerKind::Node, Some(h0), &PropertyEntry::new_stamped(prop_a, PropertyValue::I64(200), 3, horloge)).unwrap();
+            pz.append_entree_sur_chainee(
+                slot,
+                OwnerKind::Node,
+                Some(h0),
+                &PropertyEntry::new_stamped(prop_a, PropertyValue::I64(100), 2, horloge),
+            )
+            .unwrap();
+            pz.append_entree_sur_chainee(
+                slot,
+                OwnerKind::Node,
+                Some(h0),
+                &PropertyEntry::new_stamped(prop_a, PropertyValue::I64(200), 3, horloge),
+            )
+            .unwrap();
         }
         let pz_lock = store.props_zone.as_ref().unwrap();
         let pz = pz_lock.read();
-        let lu = pz.get_latest_for_key_unite(Some(h0), prop_a).unwrap().unwrap();
+        let lu = pz
+            .get_latest_for_key_unite(Some(h0), prop_a)
+            .unwrap()
+            .unwrap();
         assert_eq!(lu.value, PropertyValue::I64(200));
         assert_eq!(lu.auteur, Some(3));
         eprintln!("LWW_OK : (horloge, auteur) départage les écritures à horloge égale");
@@ -50644,7 +51343,11 @@ mod mission4_lecture_coherente {
             EtatPropriete::Presente { valeur, .. } => valeur.clone(),
             autre => panic!("b attendue présente, lu {autre:?}"),
         };
-        assert_eq!((va, vb), (Value::Int64(1), Value::Int64(2)), "capture cohérente V0");
+        assert_eq!(
+            (va, vb),
+            (Value::Int64(1), Value::Int64(2)),
+            "capture cohérente V0"
+        );
         eprintln!("CAPTURE_OK : a et b lues sous la même autorité (verrou de nœud)");
     }
 }
@@ -50663,7 +51366,10 @@ mod mission5_reouverture {
             store.set_node_property(id, "a", Value::Int64(1));
             let avant = store.lire_etat_propriete(id, "a").unwrap().into_stamp();
             store.remove_node_property(id, "a");
-            assert!(matches!(store.lire_etat_propriete(id, "a").unwrap(), EtatPropriete::Supprimee(_)));
+            assert!(matches!(
+                store.lire_etat_propriete(id, "a").unwrap(),
+                EtatPropriete::Supprimee(_)
+            ));
             store.set_node_property(id, "a", Value::Int64(1));
             let apres = store.lire_etat_propriete(id, "a").unwrap().into_stamp();
             assert_ne!(avant.horloge, apres.horloge);
@@ -50709,7 +51415,14 @@ mod mesure_couts {
         let n_prep = 1_000;
         let t = Instant::now();
         for _ in 0..n_prep {
-            store.preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+            store
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
         }
         let preparation_ns = t.elapsed().as_nanos() as f64 / n_prep as f64;
         let apres = pz.read().allocated_page_count();
@@ -50719,7 +51432,10 @@ mod mesure_couts {
             "COUTS capture={capture_ns:.0}ns preparation_2props={preparation_ns:.0}ns ; \
              pages orphelines après {n_prep} préparations non publiées = {croissance} (NON récupérées)"
         );
-        assert!(croissance >= n_prep as u32, "chaque préparation alloue au moins une page");
+        assert!(
+            croissance >= n_prep as u32,
+            "chaque préparation alloue au moins une page"
+        );
     }
 }
 
@@ -50745,7 +51461,12 @@ mod projections_publiees {
             // publication conditionnelle : age -> 40 (contourne le crochet d'index)
             let pre = store.capturer_precondition(id, &["age"]).unwrap();
             let prep = store
-                .preparer_transformation(id, &[("age", Value::Int64(40))], &pre, ModePublication::Strict)
+                .preparer_transformation(
+                    id,
+                    &[("age", Value::Int64(40))],
+                    &pre,
+                    ModePublication::Strict,
+                )
                 .unwrap();
             let r = store.publier_si_precondition_intacte(prep).unwrap();
             assert_eq!(r, IssuePublication::PublieIntegrale);
@@ -50760,9 +51481,16 @@ mod projections_publiees {
             let cherche_40 = store.find_nodes_by_property("age", &Value::Int64(40));
             eprintln!("APRES_PUBLICATION age=30 -> {cherche_30:?} ; age=40 -> {cherche_40:?}");
             // age=30 est revérifié exactement : le nœud porte 40, donc exclu.
-            assert!(cherche_30.is_empty(), "30 n'est plus porté (revérifié exact)");
+            assert!(
+                cherche_30.is_empty(),
+                "30 n'est plus porté (revérifié exact)"
+            );
             // CORRIGÉ : l'index a été invalidé, la recherche rebâtit et trouve 40.
-            assert_eq!(cherche_40, vec![id], "l'index retrouve 40 après invalidations");
+            assert_eq!(
+                cherche_40,
+                vec![id],
+                "l'index retrouve 40 après invalidations"
+            );
             store.close().unwrap();
             id
         };
@@ -50771,8 +51499,16 @@ mod projections_publiees {
         let direct = store2.get_node_property(id, &PropertyKey::new("age"));
         let cherche_40 = store2.find_nodes_by_property("age", &Value::Int64(40));
         eprintln!("APRES_REOUVERTURE direct={direct:?} age=40 -> {cherche_40:?}");
-        assert_eq!(direct, Some(Value::Int64(40)), "lecture directe après réouverture : 40 conservé");
-        assert_eq!(cherche_40, vec![id], "après réouverture, l'index retrouve 40");
+        assert_eq!(
+            direct,
+            Some(Value::Int64(40)),
+            "lecture directe après réouverture : 40 conservé"
+        );
+        assert_eq!(
+            cherche_40,
+            vec![id],
+            "après réouverture, l'index retrouve 40"
+        );
     }
 
     /// P0 — réouverture SANS recherche intermédiaire : après publication on
@@ -50791,7 +51527,12 @@ mod projections_publiees {
             assert_eq!(avant, vec![id], "index initial construit");
             let pre = store.capturer_precondition(id, &["age"]).unwrap();
             let prep = store
-                .preparer_transformation(id, &[("age", Value::Int64(40))], &pre, ModePublication::Strict)
+                .preparer_transformation(
+                    id,
+                    &[("age", Value::Int64(40))],
+                    &pre,
+                    ModePublication::Strict,
+                )
                 .unwrap();
             let r = store.publier_si_precondition_intacte(prep).unwrap();
             assert_eq!(r, IssuePublication::PublieIntegrale);
@@ -50804,7 +51545,11 @@ mod projections_publiees {
         let cherche_40 = store2.find_nodes_by_property("age", &Value::Int64(40));
         eprintln!("REOUVERTURE_SANS_RECHERCHE direct={direct:?} age=40 -> {cherche_40:?}");
         assert_eq!(direct, Some(Value::Int64(40)));
-        assert_eq!(cherche_40, vec![id], "réouverture retrouve 40 sans recherche intermédiaire");
+        assert_eq!(
+            cherche_40,
+            vec![id],
+            "réouverture retrouve 40 sans recherche intermédiaire"
+        );
     }
 }
 
@@ -50812,7 +51557,7 @@ mod projections_publiees {
 mod concurrence_reelle {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
     use std::time::Duration;
 
@@ -50895,9 +51640,21 @@ mod concurrence_reelle {
         let r = h1.join().expect("écrivain conditionnel");
         h2.join().expect("écrivain historique");
 
-        assert_eq!(r, IssuePublication::ConflitPrecondition, "a modifiée → conflit");
-        assert_eq!(lire_i64(&store, id, "a"), 99, "l'écriture historique de a est conservée");
-        assert_eq!(lire_i64(&store, id, "b"), 2, "b inchangée : aucun effet publié");
+        assert_eq!(
+            r,
+            IssuePublication::ConflitPrecondition,
+            "a modifiée → conflit"
+        );
+        assert_eq!(
+            lire_i64(&store, id, "a"),
+            99,
+            "l'écriture historique de a est conservée"
+        );
+        assert_eq!(
+            lire_i64(&store, id, "b"),
+            2,
+            "b inchangée : aucun effet publié"
+        );
         eprintln!("CONCUR_1a_OK : dépendance modifiée pendant la préparation → conflit");
     }
 
@@ -50942,10 +51699,18 @@ mod concurrence_reelle {
         let r = h1.join().expect("écrivain conditionnel");
         h2.join().expect("écrivain historique");
 
-        assert_eq!(r, IssuePublication::PublieIntegrale, "écriture indépendante n'invalide pas");
+        assert_eq!(
+            r,
+            IssuePublication::PublieIntegrale,
+            "écriture indépendante n'invalide pas"
+        );
         assert_eq!(lire_i64(&store, id, "a"), 10);
         assert_eq!(lire_i64(&store, id, "b"), 20);
-        assert_eq!(lire_i64(&store, id, "c"), 30, "c conservé malgré le rattachement");
+        assert_eq!(
+            lire_i64(&store, id, "c"),
+            30,
+            "c conservé malgré le rattachement"
+        );
         eprintln!("CONCUR_1b_OK : écriture indépendante acceptée, c conservé");
     }
 
@@ -50979,11 +51744,18 @@ mod concurrence_reelle {
             h1 = tete(&store, id);
             i += 1;
         }
-        assert_ne!(h1, h0, "le remplissage via set_node_property a forcé une nouvelle page de tête");
+        assert_ne!(
+            h1, h0,
+            "le remplissage via set_node_property a forcé une nouvelle page de tête"
+        );
         assert!(i > 0, "au moins une écriture de bourrage");
 
         let r = store.publier_si_precondition_intacte(prep).unwrap();
-        assert_eq!(r, IssuePublication::PublieIntegrale, "rattachement → publication intégrale");
+        assert_eq!(
+            r,
+            IssuePublication::PublieIntegrale,
+            "rattachement → publication intégrale"
+        );
         assert_eq!(lire_i64(&store, id, "a"), 10);
         assert_eq!(lire_i64(&store, id, "b"), 20);
         assert_eq!(lire_i64(&store, id, "c"), 3, "c de la chaîne H0 conservé");
@@ -50993,7 +51765,9 @@ mod concurrence_reelle {
             derniere as i64,
             "la dernière écriture de bourrage est conservée (pas perdue par le rattachement)"
         );
-        eprintln!("CONCUR_2_OK : H0→H1 via set_node_property ({i} écritures), rattachement conserve tout");
+        eprintln!(
+            "CONCUR_2_OK : H0→H1 via set_node_property ({i} écritures), rattachement conserve tout"
+        );
     }
 
     /// 3 — Lecteur concurrent SOUS le verrou d'écriture de nœud (la même autorité
@@ -51033,7 +51807,12 @@ mod concurrence_reelle {
         // publication conditionnelle pendant que le lecteur tourne
         let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
         let r = store.publier_si_precondition_intacte(prep).unwrap();
 
@@ -51064,7 +51843,12 @@ mod concurrence_reelle {
 
         let pre = store.capturer_precondition(id, &["a", "b"]).unwrap();
         let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+            .preparer_transformation(
+                id,
+                &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                &pre,
+                ModePublication::Lww,
+            )
             .unwrap();
 
         // lecteur historique : lit a AVANT la bascule, puis b APRÈS la bascule
@@ -51100,21 +51884,37 @@ mod concurrence_reelle {
         let ha = thread::spawn(move || {
             let pre = sa.capturer_precondition(id_a, &["a", "b"]).unwrap();
             let prep = sa
-                .preparer_transformation(id_a, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww)
+                .preparer_transformation(
+                    id_a,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
                 .unwrap();
-            tx_a.send(sa.publier_si_precondition_intacte(prep).unwrap()).unwrap();
+            tx_a.send(sa.publier_si_precondition_intacte(prep).unwrap())
+                .unwrap();
         });
         let sb = Arc::clone(&store_b);
         let hb = thread::spawn(move || {
             let pre = sb.capturer_precondition(id_b, &["a", "b"]).unwrap();
             let prep = sb
-                .preparer_transformation(id_b, &[("a", Value::Int64(100)), ("b", Value::Int64(200))], &pre, ModePublication::Lww)
+                .preparer_transformation(
+                    id_b,
+                    &[("a", Value::Int64(100)), ("b", Value::Int64(200))],
+                    &pre,
+                    ModePublication::Lww,
+                )
                 .unwrap();
-            tx_b.send(sb.publier_si_precondition_intacte(prep).unwrap()).unwrap();
+            tx_b.send(sb.publier_si_precondition_intacte(prep).unwrap())
+                .unwrap();
         });
 
-        let ra = rx_a.recv_timeout(Duration::from_secs(5)).expect("borne : store A");
-        let rb = rx_b.recv_timeout(Duration::from_secs(5)).expect("borne : store B");
+        let ra = rx_a
+            .recv_timeout(Duration::from_secs(5))
+            .expect("borne : store A");
+        let rb = rx_b
+            .recv_timeout(Duration::from_secs(5))
+            .expect("borne : store B");
         ha.join().expect("store A");
         hb.join().expect("store B");
 
@@ -51180,9 +51980,14 @@ mod preparation_differee {
         // Une dépendance change APRÈS la capture : la publication relit la
         // précondition LIÉE et refuse.
         store.set_node_property(id, "a", Value::Int64(5));
-        let r = store.publier_si_precondition_intacte_differee(prep).unwrap();
+        let r = store
+            .publier_si_precondition_intacte_differee(prep)
+            .unwrap();
         assert_eq!(r, IssuePublication::ConflitPrecondition);
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(5)));
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(5))
+        );
         eprintln!("LIEN_DIFFERE_OK : précondition liée relue, substitution impossible");
     }
 
@@ -51202,11 +52007,22 @@ mod preparation_differee {
             )
             .unwrap();
         let avant = pages_allouees(&store);
-        let r = store.publier_si_precondition_intacte_differee(prep).unwrap();
+        let r = store
+            .publier_si_precondition_intacte_differee(prep)
+            .unwrap();
         assert_eq!(r, IssuePublication::PublieIntegrale);
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
-        assert!(pages_allouees(&store) > avant, "la matérialisation alloue des pages à la publication");
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(10))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(20))
+        );
+        assert!(
+            pages_allouees(&store) > avant,
+            "la matérialisation alloue des pages à la publication"
+        );
         eprintln!("HEUREUX_OK : matérialisation à la publication, effet canonique");
     }
 
@@ -51234,9 +52050,14 @@ mod preparation_differee {
         }
         let pages_apres = pages_allouees(&store);
         let props_apres = taille_props(&chemin);
-        eprintln!("ABANDON_DIFFERE {n} : pages {pages_avant}->{pages_apres}, props {props_avant}->{props_apres}");
+        eprintln!(
+            "ABANDON_DIFFERE {n} : pages {pages_avant}->{pages_apres}, props {props_avant}->{props_apres}"
+        );
         assert_eq!(pages_apres, pages_avant, "aucune page allouée");
-        assert_eq!(props_apres, props_avant, "aucune croissance du fichier props");
+        assert_eq!(
+            props_apres, props_avant,
+            "aucune croissance du fichier props"
+        );
     }
 
     /// ABANDON physique : les pages orphelines PERSISTENT (fuite mesurée), y
@@ -51266,9 +52087,17 @@ mod preparation_differee {
         };
         let store2 = SubstrateStore::open(&chemin).unwrap();
         let pages_reopen = pages_allouees(&store2);
-        eprintln!("ORPHELINES_PHYSIQUE : {pages_avant}->{pages_apres}, après réouverture {pages_reopen}");
-        assert!(pages_apres > pages_avant, "la préparation physique alloue des pages");
-        assert_eq!(pages_reopen, pages_apres, "les pages orphelines persistent après réouverture (fuite)");
+        eprintln!(
+            "ORPHELINES_PHYSIQUE : {pages_avant}->{pages_apres}, après réouverture {pages_reopen}"
+        );
+        assert!(
+            pages_apres > pages_avant,
+            "la préparation physique alloue des pages"
+        );
+        assert_eq!(
+            pages_reopen, pages_apres,
+            "les pages orphelines persistent après réouverture (fuite)"
+        );
     }
 
     /// MESURE COMPARATIVE : physique vs logique (temps/pages/octets) + coût de
@@ -51289,14 +52118,28 @@ mod preparation_differee {
         let n10000 = 10_000usize;
         let t = Instant::now();
         for _ in 0..n1000 {
-            let _ = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+            let _ = store
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
         }
         let phys_1000_ns = t.elapsed().as_nanos() as f64 / n1000 as f64;
         let pages_1000 = pages_allouees(&store);
 
         let t = Instant::now();
         for _ in 0..n10000 {
-            let _ = store.preparer_transformation(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+            let _ = store
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
         }
         let phys_10000_ns = t.elapsed().as_nanos() as f64 / n10000 as f64;
         let pages_physique = pages_allouees(&store);
@@ -51307,37 +52150,77 @@ mod preparation_differee {
         let props_avant_logique = taille_props(&chemin);
         let t = Instant::now();
         for _ in 0..n1000 {
-            let _ = store.preparer_transformation_differee(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+            let _ = store
+                .preparer_transformation_differee(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
         }
         let log_1000_ns = t.elapsed().as_nanos() as f64 / n1000 as f64;
         let t = Instant::now();
         for _ in 0..n10000 {
-            let _ = store.preparer_transformation_differee(id, &[("a", Value::Int64(10)), ("b", Value::Int64(20))], &pre, ModePublication::Lww).unwrap();
+            let _ = store
+                .preparer_transformation_differee(
+                    id,
+                    &[("a", Value::Int64(10)), ("b", Value::Int64(20))],
+                    &pre,
+                    ModePublication::Lww,
+                )
+                .unwrap();
         }
         let log_10000_ns = t.elapsed().as_nanos() as f64 / n10000 as f64;
         let pages_apres_logique = pages_allouees(&store);
         let props_apres_logique = taille_props(&chemin);
 
         // COÛT DE PUBLICATION (matérialisation + bascule) d'une hypothèse retenue.
-        let prep_ret = store.preparer_transformation_differee(id, &[("a", Value::Int64(11)), ("b", Value::Int64(21))], &pre, ModePublication::Lww).unwrap();
+        let prep_ret = store
+            .preparer_transformation_differee(
+                id,
+                &[("a", Value::Int64(11)), ("b", Value::Int64(21))],
+                &pre,
+                ModePublication::Lww,
+            )
+            .unwrap();
         let t = Instant::now();
-        let r = store.publier_si_precondition_intacte_differee(prep_ret).unwrap();
+        let r = store
+            .publier_si_precondition_intacte_differee(prep_ret)
+            .unwrap();
         let pub_ns = t.elapsed().as_nanos() as f64;
 
         eprintln!("=== COMPARAISON (2 props / transformation, jamais publiées) ===");
-        eprintln!("PHYSIQUE  N=1000 : {phys_1000_ns:.0} ns/prép   N=10000 : {phys_10000_ns:.0} ns/prép");
-        eprintln!("LOGIQUE   N=1000 : {log_1000_ns:.0} ns/prép   N=10000 : {log_10000_ns:.0} ns/prép");
-        eprintln!("PAGES     physique : {pages_debut}->{pages_physique} (+{})   logique : {pages_avant_logique}->{pages_apres_logique} (+{})",
+        eprintln!(
+            "PHYSIQUE  N=1000 : {phys_1000_ns:.0} ns/prép   N=10000 : {phys_10000_ns:.0} ns/prép"
+        );
+        eprintln!(
+            "LOGIQUE   N=1000 : {log_1000_ns:.0} ns/prép   N=10000 : {log_10000_ns:.0} ns/prép"
+        );
+        eprintln!(
+            "PAGES     physique : {pages_debut}->{pages_physique} (+{})   logique : {pages_avant_logique}->{pages_apres_logique} (+{})",
             pages_physique - pages_debut,
-            pages_apres_logique - pages_avant_logique);
-        eprintln!("substrate.props.v2  début={props_debut}  après physique={props_physique}  après logique={props_apres_logique}  (Δ logique = {})",
-            props_apres_logique - props_avant_logique);
+            pages_apres_logique - pages_avant_logique
+        );
+        eprintln!(
+            "substrate.props.v2  début={props_debut}  après physique={props_physique}  après logique={props_apres_logique}  (Δ logique = {})",
+            props_apres_logique - props_avant_logique
+        );
         eprintln!("PUBLICATION (matérialisation + bascule) : {pub_ns:.0} ns");
 
         assert_eq!(r, IssuePublication::PublieIntegrale);
-        assert!(pages_1000 >= pages_debut + 1_000, "chaque prép physique alloue au moins 1 page");
-        assert_eq!(pages_apres_logique, pages_avant_logique, "logique n'alloue aucune page");
-        assert_eq!(props_apres_logique, props_avant_logique, "logique ne fait pas croître le fichier");
+        assert!(
+            pages_1000 >= pages_debut + 1_000,
+            "chaque prép physique alloue au moins 1 page"
+        );
+        assert_eq!(
+            pages_apres_logique, pages_avant_logique,
+            "logique n'alloue aucune page"
+        );
+        assert_eq!(
+            props_apres_logique, props_avant_logique,
+            "logique ne fait pas croître le fichier"
+        );
     }
 }
 
@@ -51346,12 +52229,12 @@ mod preparation_differee {
 /// Question : « zéro page » ne signifie pas « zéro coût ». On chiffre le coût
 /// NON nul d'un refus de précondition (ConflitPrecondition), en séparant :
 ///   - coût LOGIQUE   : validation seule (lecture des dépendances sous verrou),
-///                      sans allocation, sans estampille, sans WAL ;
+///     sans allocation, sans estampille, sans WAL ;
 ///   - coût PHYSIQUE  : allocation de pages privées (chemin natif) AVANT le
-///                      refus — pages orphelines jamais récupérées ;
+///     refus — pages orphelines jamais récupérées ;
 ///   - amplification DURABLE : croissance du fichier `substrate.props.v2` après
-///                      fermeture (flush) + réouverture (la fuite devient
-///                      permanente sur disque).
+///     fermeture (flush) + réouverture (la fuite devient
+///     permanente sur disque).
 ///
 /// Les chiffres sortent en `eprintln!` (cargo test --lib -- --nocapture).
 #[cfg(test)]
@@ -51417,7 +52300,9 @@ mod cout_conflictuel_10000 {
                     ModePublication::Lww,
                 )
                 .unwrap();
-            let r = store.publier_si_precondition_intacte_differee(prep).unwrap();
+            let r = store
+                .publier_si_precondition_intacte_differee(prep)
+                .unwrap();
             assert_eq!(r, IssuePublication::ConflitPrecondition);
         }
         let dt = t0.elapsed();
@@ -51428,8 +52313,14 @@ mod cout_conflictuel_10000 {
         let hlc_apres = horloge_pack(&store);
 
         // Effets persistés : AUCUN — a reste 5, b reste 2.
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(5)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(5))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(2))
+        );
 
         // Récupération : fermeture (flush) + réouverture.
         let t_close = Instant::now();
@@ -51443,17 +52334,41 @@ mod cout_conflictuel_10000 {
         let props_reopen = taille(&chemin, crate::props_zone::PROPS_V2_FILENAME);
 
         eprintln!("=== DIFFÉRÉ CONFLIT N={N} ===");
-        eprintln!("temps       : {:?}  ({:.0} ns/refus)", dt, dt.as_nanos() as f64 / N as f64);
-        eprintln!("pages       : {pages_avant} -> {pages_apres}  (Δ {})", pages_apres as i64 - pages_avant as i64);
-        eprintln!("WAL         : {wal_avant} -> {wal_apres}  (Δ {})", wal_apres as i64 - wal_avant as i64);
-        eprintln!("props.v2    : {props_avant} -> {props_apres}  (Δ {})", props_apres as i64 - props_avant as i64);
-        eprintln!("HLC         : {hlc_avant:#x} -> {hlc_apres:#x}  (Δ {})", hlc_apres as i64 - hlc_avant as i64);
+        eprintln!(
+            "temps       : {:?}  ({:.0} ns/refus)",
+            dt,
+            dt.as_nanos() as f64 / N as f64
+        );
+        eprintln!(
+            "pages       : {pages_avant} -> {pages_apres}  (Δ {})",
+            pages_apres as i64 - pages_avant as i64
+        );
+        eprintln!(
+            "WAL         : {wal_avant} -> {wal_apres}  (Δ {})",
+            wal_apres as i64 - wal_avant as i64
+        );
+        eprintln!(
+            "props.v2    : {props_avant} -> {props_apres}  (Δ {})",
+            props_apres as i64 - props_avant as i64
+        );
+        eprintln!(
+            "HLC         : {hlc_avant:#x} -> {hlc_apres:#x}  (Δ {})",
+            hlc_apres as i64 - hlc_avant as i64
+        );
         eprintln!("récupération: close {:?}  open {:?}", dt_close, dt_open);
-        eprintln!("après réouverture : pages {pages_reopen}  props.v2 {props_reopen}  WAL {wal_reopen}");
+        eprintln!(
+            "après réouverture : pages {pages_reopen}  props.v2 {props_reopen}  WAL {wal_reopen}"
+        );
 
-        assert_eq!(pages_apres, pages_avant, "zéro page allouée au refus différé");
+        assert_eq!(
+            pages_apres, pages_avant,
+            "zéro page allouée au refus différé"
+        );
         assert_eq!(wal_apres, wal_avant, "zéro octet WAL au refus différé");
-        assert_eq!(hlc_apres, hlc_avant, "zéro estampille consommée au refus différé");
+        assert_eq!(
+            hlc_apres, hlc_avant,
+            "zéro estampille consommée au refus différé"
+        );
         assert_eq!(pages_reopen, pages_avant, "aucune amplification durable");
         assert_eq!(props_reopen, props_avant, "le fichier props ne croît pas");
     }
@@ -51494,8 +52409,14 @@ mod cout_conflictuel_10000 {
         let hlc_apres = horloge_pack(&store);
 
         // Effets persistés : AUCUN (les pages orphelines ne sont pas atteignables).
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(5)));
-        assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("a")),
+            Some(Value::Int64(5))
+        );
+        assert_eq!(
+            store.get_node_property(id, &PropertyKey::new("b")),
+            Some(Value::Int64(2))
+        );
 
         // Récupération : le flush rend la fuite DURABLE sur disque.
         let t_close = Instant::now();
@@ -51508,548 +52429,653 @@ mod cout_conflictuel_10000 {
         let props_reopen = taille(&chemin, crate::props_zone::PROPS_V2_FILENAME);
 
         eprintln!("=== PHYSIQUE CONFLIT N={N} ===");
-        eprintln!("temps       : {:?}  ({:.0} ns/refus)", dt, dt.as_nanos() as f64 / N as f64);
-        eprintln!("pages       : {pages_avant} -> {pages_apres}  (Δ {})", pages_apres - pages_avant);
-        eprintln!("WAL         : {wal_avant} -> {wal_apres}  (Δ {})", wal_apres as i64 - wal_avant as i64);
-        eprintln!("props.v2    : {props_avant} -> {props_apres}  (Δ {})", props_apres as i64 - props_avant as i64);
-        eprintln!("HLC         : {hlc_avant:#x} -> {hlc_apres:#x}  (Δ {})", hlc_apres as i64 - hlc_avant as i64);
+        eprintln!(
+            "temps       : {:?}  ({:.0} ns/refus)",
+            dt,
+            dt.as_nanos() as f64 / N as f64
+        );
+        eprintln!(
+            "pages       : {pages_avant} -> {pages_apres}  (Δ {})",
+            pages_apres - pages_avant
+        );
+        eprintln!(
+            "WAL         : {wal_avant} -> {wal_apres}  (Δ {})",
+            wal_apres as i64 - wal_avant as i64
+        );
+        eprintln!(
+            "props.v2    : {props_avant} -> {props_apres}  (Δ {})",
+            props_apres as i64 - props_avant as i64
+        );
+        eprintln!(
+            "HLC         : {hlc_avant:#x} -> {hlc_apres:#x}  (Δ {})",
+            hlc_apres as i64 - hlc_avant as i64
+        );
         eprintln!("récupération: close {:?}  open {:?}", dt_close, dt_open);
         eprintln!("après réouverture : pages {pages_reopen}  props.v2 {props_reopen}");
 
-        assert!(pages_apres >= pages_avant + N as u32, "chaque préparation physique alloue des pages");
-        assert!(hlc_apres > hlc_avant, "l'horloge HLC avance à chaque préparation physique");
-        assert_eq!(pages_reopen, pages_apres, "les pages orphelines persistent après réouverture");
-        assert!(props_reopen > props_avant, "la fuite devient durable (fichier props croît au flush)");
+        assert!(
+            pages_apres >= pages_avant + N as u32,
+            "chaque préparation physique alloue des pages"
+        );
+        assert!(
+            hlc_apres > hlc_avant,
+            "l'horloge HLC avance à chaque préparation physique"
+        );
+        assert_eq!(
+            pages_reopen, pages_apres,
+            "les pages orphelines persistent après réouverture"
+        );
+        assert!(
+            props_reopen > props_avant,
+            "la fuite devient durable (fichier props croît au flush)"
+        );
     }
 }
 
 #[cfg(test)]
 mod collision_hlc_controlee {
-//! ── COLLISION HLC CONTRÔLÉE — deux bases, même `writer.id`, même horloge ──
-//!
-//! Démonstration DÉTERMINISTE (sans temporisation) de ce que change le DOMAINE
-//! (codec v2, #334) quand deux bases INDÉPENDANTES partagent le même `writer.id`
-//! (copie du fichier) et produisent la MÊME estampille `(auteur, horloge)` via
-//! le seam [`SubstrateStore::forcer_horloge_pour_test`].
-//!
-//! Les cinq identités à distinguer (contrat d'identité backend) :
-//!   * DOMAINE DE STOCKAGE  = la base (répertoire). DEPUIS la v2, PORTÉ par la
-//!     référence (`domaine()`, u128) : c'est lui qui rend la collision
-//!     DÉTECTABLE.
-//!   * ÉCRIVAIN             = `writer_id` persisté dans `writer.id` (auteur).
-//!     N'est PAS une identité de base : deux bases peuvent le partager par
-//!     copie du fichier, et il ne garantit PAS l'unicité inter-bases.
-//!   * INCARNATION DE RESSOURCE = `cible` (NodeId, alloué monotone LOCALEMENT).
-//!     Deux bases allouent chacune leur premier nœud à `NodeId(1)`.
-//!   * OPÉRATION LOGIQUE    = l'intention du consommateur (la transformation
-//!     voulue). ABSENTE de la référence : rien ne la nomme.
-//!   * TENTATIVE PHYSIQUE   = l'entrée estampillée réellement posée dans la
-//!     chaîne canonique d'UNE base. C'est ce que résout `resoudre_reference`.
-//!
-//! La v2 PROUVE : deux TENTATIVES PHYSIQUES distinctes produisent des
-//! références DISTINCTES par leur domaine (byte-distinctes), et le résolveur
-//! REFUSE le domaine étranger — la référence de A résout `Engage` dans A et
-//! `Indetermine` dans B. La limite v1 (référence sans domaine, `domaine == 0`)
-//! reste AMBIGUË entre domaines : c'est la limite historique, documentée et
-//! éprouvée par `*_v1_legacy_*` ci-dessous.
+    //! ── COLLISION HLC CONTRÔLÉE — deux bases, même `writer.id`, même horloge ──
+    //!
+    //! Démonstration DÉTERMINISTE (sans temporisation) de ce que change le DOMAINE
+    //! (codec v2, #334) quand deux bases INDÉPENDANTES partagent le même `writer.id`
+    //! (copie du fichier) et produisent la MÊME estampille `(auteur, horloge)` via
+    //! le seam [`SubstrateStore::forcer_horloge_pour_test`].
+    //!
+    //! Les cinq identités à distinguer (contrat d'identité backend) :
+    //!   * DOMAINE DE STOCKAGE  = la base (répertoire). DEPUIS la v2, PORTÉ par la
+    //!     référence (`domaine()`, u128) : c'est lui qui rend la collision
+    //!     DÉTECTABLE.
+    //!   * ÉCRIVAIN             = `writer_id` persisté dans `writer.id` (auteur).
+    //!     N'est PAS une identité de base : deux bases peuvent le partager par
+    //!     copie du fichier, et il ne garantit PAS l'unicité inter-bases.
+    //!   * INCARNATION DE RESSOURCE = `cible` (NodeId, alloué monotone LOCALEMENT).
+    //!     Deux bases allouent chacune leur premier nœud à `NodeId(1)`.
+    //!   * OPÉRATION LOGIQUE    = l'intention du consommateur (la transformation
+    //!     voulue). ABSENTE de la référence : rien ne la nomme.
+    //!   * TENTATIVE PHYSIQUE   = l'entrée estampillée réellement posée dans la
+    //!     chaîne canonique d'UNE base. C'est ce que résout `resoudre_reference`.
+    //!
+    //! La v2 PROUVE : deux TENTATIVES PHYSIQUES distinctes produisent des
+    //! références DISTINCTES par leur domaine (byte-distinctes), et le résolveur
+    //! REFUSE le domaine étranger — la référence de A résout `Engage` dans A et
+    //! `Indetermine` dans B. La limite v1 (référence sans domaine, `domaine == 0`)
+    //! reste AMBIGUË entre domaines : c'est la limite historique, documentée et
+    //! éprouvée par `*_v1_legacy_*` ci-dessous.
 
-use super::*;
-use crate::writer_id::FICHIER_WRITER_ID;
+    use super::*;
+    use crate::writer_id::FICHIER_WRITER_ID;
 
-/// Estampille HLC forcée, identique dans les deux bases : `physique = 2^44`
-/// (au-delà de toute horloge murale plausible ; le champ physique tient sur
-/// 48 bits), `logique = 0x42` — arbitraire mais FIXE, pour une collision
-/// déterministe sans temporisation.
-const HORLOGE_FORCEE: u64 = (1u64 << 44) << 16 | 0x42;
+    /// Estampille HLC forcée, identique dans les deux bases : `physique = 2^44`
+    /// (au-delà de toute horloge murale plausible ; le champ physique tient sur
+    /// 48 bits), `logique = 0x42` — arbitraire mais FIXE, pour une collision
+    /// déterministe sans temporisation.
+    const HORLOGE_FORCEE: u64 = (1u64 << 44) << 16 | 0x42;
 
-/// Lit `writer.id` (8 octets LE) — observation directe du writer_id persisté.
-fn lire_writer_id(base: &std::path::Path) -> u64 {
-    let octets = std::fs::read(base.join(FICHIER_WRITER_ID))
-        .expect("writer.id présent dans la base");
-    u64::from_le_bytes(octets.as_slice().try_into().expect("8 octets"))
-}
+    /// Lit `writer.id` (8 octets LE) — observation directe du writer_id persisté.
+    fn lire_writer_id(base: &std::path::Path) -> u64 {
+        let octets =
+            std::fs::read(base.join(FICHIER_WRITER_ID)).expect("writer.id présent dans la base");
+        u64::from_le_bytes(octets.as_slice().try_into().expect("8 octets"))
+    }
 
-/// Écrase le `writer.id` de `dst` par celui de `src` (partage d'identité).
-fn copier_writer_id(src: &std::path::Path, dst: &std::path::Path) {
-    std::fs::copy(
-        src.join(FICHIER_WRITER_ID),
-        dst.join(FICHIER_WRITER_ID),
-    )
-    .unwrap();
-}
+    /// Écrase le `writer.id` de `dst` par celui de `src` (partage d'identité).
+    fn copier_writer_id(src: &std::path::Path, dst: &std::path::Path) {
+        std::fs::copy(src.join(FICHIER_WRITER_ID), dst.join(FICHIER_WRITER_ID)).unwrap();
+    }
 
-/// Copie byte-à-byte du CONTENU d'un répertoire de base (tous les fichiers de
-/// premier niveau, y compris `writer.id` et `substrate.meta`).
-fn copier_base(src: &std::path::Path, dst: &std::path::Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entree in std::fs::read_dir(src).unwrap() {
-        let e = entree.unwrap();
-        let chemin = e.path();
-        if chemin.is_file() {
-            std::fs::copy(&chemin, dst.join(e.file_name())).unwrap();
+    /// Copie byte-à-byte du CONTENU d'un répertoire de base (tous les fichiers de
+    /// premier niveau, y compris `writer.id` et `substrate.meta`).
+    fn copier_base(src: &std::path::Path, dst: &std::path::Path) {
+        std::fs::create_dir_all(dst).unwrap();
+        for entree in std::fs::read_dir(src).unwrap() {
+            let e = entree.unwrap();
+            let chemin = e.path();
+            if chemin.is_file() {
+                std::fs::copy(&chemin, dst.join(e.file_name())).unwrap();
+            }
         }
     }
-}
 
-/// Prépare + publie une transformation sur `cle`, d'estampille HLC FORCÉE
-/// (via le seam), et rend sa [`ReferenceTentative`].
-fn publier_avec_horloge_forcee(
-    store: &SubstrateStore,
-    cible: NodeId,
-    cle: &str,
-    valeur: i64,
-) -> ReferenceTentative {
-    let pre = store.capturer_precondition(cible, &[cle]).unwrap();
-    store.forcer_horloge_pour_test(HORLOGE_FORCEE);
-    let prep = store
-        .preparer_transformation(cible, &[(cle, Value::Int64(valeur))], &pre, ModePublication::Strict)
-        .unwrap();
-    let reference = prep.reference_tentative();
-    store.publier_si_precondition_intacte(prep).unwrap();
-    reference
-}
-
-/// Référence v1 LEGACY (sans domaine, `domaine == 0`), forgée à la main au
-/// format v1. La v2 porte le domaine et est refusée hors de son domaine ; une
-/// v1 n'a pas de domaine et résout par (cible, clé, auteur, horloge) — c'est
-/// la limite historique : elle reste AMBIGUË entre domaines (jamais une
-/// confirmation fictive, mais jamais une détection non plus).
-fn reference_v1_legacy(auteur: u64, horloge: u64, cible: NodeId, cles: &[&str]) -> ReferenceTentative {
-    let mut out = Vec::new();
-    out.extend_from_slice(&REFERENCE_TENTATIVE_MAGIC);
-    out.push(1);
-    out.extend_from_slice(&auteur.to_le_bytes());
-    out.extend_from_slice(&horloge.to_le_bytes());
-    out.extend_from_slice(&cible.0.to_le_bytes());
-    out.extend_from_slice(&(cles.len() as u32).to_le_bytes());
-    for c in cles {
-        out.extend_from_slice(&(c.len() as u32).to_le_bytes());
-        out.extend_from_slice(c.as_bytes());
-    }
-    ReferenceTentative::from_bytes(&out).unwrap()
-}
-
-// ── Scénario 1 : la collision contrôlée devient DÉTECTABLE (v2) ────────────
-//
-// Deux bases indépendantes, même `writer.id` (copie), même horloge FORCÉE :
-// deux tentatives physiques distinctes (a=10 dans A, a=20 dans B) portent
-// désormais des DOMAINES distincts. Les références ne sont plus byte-identiques,
-// et le résolveur REFUSE le domaine étranger : la référence de A résout
-// `Engage` dans A et `Indetermine` dans B — le faux positif croisé est écarté.
-#[test]
-fn collision_hlc_controlee_detectable_par_domaine() {
-    let td = tempfile::tempdir().unwrap();
-    let base_a = td.path().join("a");
-    let base_b = td.path().join("b");
-
-    // base A : writer.id propre, premier nœud, propriété initiale.
-    let cible_a = {
-        let store = SubstrateStore::create(&base_a).unwrap();
-        let id = store.create_node(&["n"]);
-        store.set_node_property(id, "a", Value::Int64(1));
-        store.close().unwrap();
-        id
-    };
-
-    // base B : neuve, puis ÉCRASER son writer.id par celui de A (partage).
-    {
-        let store = SubstrateStore::create(&base_b).unwrap();
-        store.close().unwrap();
-    }
-    copier_writer_id(&base_a, &base_b);
-    assert_eq!(lire_writer_id(&base_a), lire_writer_id(&base_b), "writer.id partagé byte-à-byte");
-
-    // Dans CHAQUE base : une écriture d'estampille HLC FORCÉE (même horloge).
-    let ref_a = {
-        let store = SubstrateStore::open(&base_a).unwrap();
-        let r = publier_avec_horloge_forcee(&store, cible_a, "a", 10);
-        store.close().unwrap();
-        r
-    };
-    let (ref_b, cible_b) = {
-        let store = SubstrateStore::open(&base_b).unwrap();
-        let id = store.create_node(&["n"]);
-        store.set_node_property(id, "a", Value::Int64(5));
-        let r = publier_avec_horloge_forcee(&store, id, "a", 20);
-        store.close().unwrap();
-        (r, id)
-    };
-
-    // mêmes (auteur, horloge, cible, effets) MAIS domaines DISTINCTS → les
-    // références ne sont plus byte-identiques : le domaine les sépare.
-    assert_eq!(ref_a.auteur(), ref_b.auteur(), "writer.id partagé");
-    assert_eq!(ref_a.horloge(), ref_b.horloge(), "horloge forcée identique");
-    assert_eq!(ref_a.horloge(), HORLOGE_FORCEE, "l'horloge forcée est celle de la référence");
-    assert_eq!(ref_a.cible(), cible_b, "chaque base alloue son premier nœud à NodeId(1)");
-    assert_eq!(ref_a.effets(), ref_b.effets());
-    assert_ne!(ref_a.domaine(), ref_b.domaine(), "deux bases indépendantes → deux domaines");
-    assert_ne!(ref_a.domaine(), 0, "une référence v2 porte toujours un domaine non nul");
-    assert_ne!(ref_a.to_bytes(), ref_b.to_bytes(), "le domaine rend les références byte-distinctes");
-
-    // résolution dans chaque base
-    let store_a = SubstrateStore::open(&base_a).unwrap();
-    let store_b = SubstrateStore::open(&base_b).unwrap();
-    let r_aa = store_a.resoudre_reference(&ref_a).unwrap();
-    let r_ab = store_b.resoudre_reference(&ref_a).unwrap();
-
-    // (1) la référence de A résout Engage DANS SON domaine, et Indetermine
-    //     dans le domaine ÉTRANGER (B) — le faux positif croisé est écarté.
-    assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
-    assert_eq!(r_ab.integrite(), IntegriteTentative::Indeterminee);
-    assert_eq!(r_aa.effet(0).etat(), ResolutionEffet::Engage);
-    assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Indetermine);
-
-    // (2) les valeurs restent DIFFÉRENTES (a=10 dans A, a=20 dans B) : la
-    //     détection par domaine n'a pas besoin de comparer les contenus.
-    match store_a.lire_etat_propriete(cible_a, "a").unwrap() {
-        EtatPropriete::Presente { valeur, .. } => assert_eq!(valeur, Value::Int64(10)),
-        autre => panic!("base A : attendu 10, lu {autre:?}"),
-    }
-    match store_b.lire_etat_propriete(cible_b, "a").unwrap() {
-        EtatPropriete::Presente { valeur, .. } => assert_eq!(valeur, Value::Int64(20)),
-        autre => panic!("base B : attendu 20, lu {autre:?}"),
+    /// Prépare + publie une transformation sur `cle`, d'estampille HLC FORCÉE
+    /// (via le seam), et rend sa [`ReferenceTentative`].
+    fn publier_avec_horloge_forcee(
+        store: &SubstrateStore,
+        cible: NodeId,
+        cle: &str,
+        valeur: i64,
+    ) -> ReferenceTentative {
+        let pre = store.capturer_precondition(cible, &[cle]).unwrap();
+        store.forcer_horloge_pour_test(HORLOGE_FORCEE);
+        let prep = store
+            .preparer_transformation(
+                cible,
+                &[(cle, Value::Int64(valeur))],
+                &pre,
+                ModePublication::Strict,
+            )
+            .unwrap();
+        let reference = prep.reference_tentative();
+        store.publier_si_precondition_intacte(prep).unwrap();
+        reference
     }
 
-    // (3) auteur_resolvant identique : writer.id ne discrimine PAS les bases.
-    assert_eq!(r_aa.auteur_resolvant(), r_ab.auteur_resolvant());
+    /// Référence v1 LEGACY (sans domaine, `domaine == 0`), forgée à la main au
+    /// format v1. La v2 porte le domaine et est refusée hors de son domaine ; une
+    /// v1 n'a pas de domaine et résout par (cible, clé, auteur, horloge) — c'est
+    /// la limite historique : elle reste AMBIGUË entre domaines (jamais une
+    /// confirmation fictive, mais jamais une détection non plus).
+    fn reference_v1_legacy(
+        auteur: u64,
+        horloge: u64,
+        cible: NodeId,
+        cles: &[&str],
+    ) -> ReferenceTentative {
+        let mut out = Vec::new();
+        out.extend_from_slice(&REFERENCE_TENTATIVE_MAGIC);
+        out.push(1);
+        out.extend_from_slice(&auteur.to_le_bytes());
+        out.extend_from_slice(&horloge.to_le_bytes());
+        out.extend_from_slice(&cible.0.to_le_bytes());
+        out.extend_from_slice(&(cles.len() as u32).to_le_bytes());
+        for c in cles {
+            out.extend_from_slice(&(c.len() as u32).to_le_bytes());
+            out.extend_from_slice(c.as_bytes());
+        }
+        ReferenceTentative::from_bytes(&out).unwrap()
+    }
 
-    // (4) la résolution dans SON domaine observe la valeur courante (a=10) ;
-    //     celle du domaine ÉTRANGER ne CONSULTE rien : aucune valeur courante
-    //     n'est rapportée (`None`), jamais une observation du contenu de B.
-    assert_eq!(r_aa.effet(0).valeur_courante(), Some(Value::Int64(10)));
-    assert_eq!(r_ab.effet(0).valeur_courante(), None);
+    // ── Scénario 1 : la collision contrôlée devient DÉTECTABLE (v2) ────────────
+    //
+    // Deux bases indépendantes, même `writer.id` (copie), même horloge FORCÉE :
+    // deux tentatives physiques distinctes (a=10 dans A, a=20 dans B) portent
+    // désormais des DOMAINES distincts. Les références ne sont plus byte-identiques,
+    // et le résolveur REFUSE le domaine étranger : la référence de A résout
+    // `Engage` dans A et `Indetermine` dans B — le faux positif croisé est écarté.
+    #[test]
+    fn collision_hlc_controlee_detectable_par_domaine() {
+        let td = tempfile::tempdir().unwrap();
+        let base_a = td.path().join("a");
+        let base_b = td.path().join("b");
 
-    eprintln!(
-        "COLLISION_DETECTEE : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A, \
+        // base A : writer.id propre, premier nœud, propriété initiale.
+        let cible_a = {
+            let store = SubstrateStore::create(&base_a).unwrap();
+            let id = store.create_node(&["n"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            store.close().unwrap();
+            id
+        };
+
+        // base B : neuve, puis ÉCRASER son writer.id par celui de A (partage).
+        {
+            let store = SubstrateStore::create(&base_b).unwrap();
+            store.close().unwrap();
+        }
+        copier_writer_id(&base_a, &base_b);
+        assert_eq!(
+            lire_writer_id(&base_a),
+            lire_writer_id(&base_b),
+            "writer.id partagé byte-à-byte"
+        );
+
+        // Dans CHAQUE base : une écriture d'estampille HLC FORCÉE (même horloge).
+        let ref_a = {
+            let store = SubstrateStore::open(&base_a).unwrap();
+            let r = publier_avec_horloge_forcee(&store, cible_a, "a", 10);
+            store.close().unwrap();
+            r
+        };
+        let (ref_b, cible_b) = {
+            let store = SubstrateStore::open(&base_b).unwrap();
+            let id = store.create_node(&["n"]);
+            store.set_node_property(id, "a", Value::Int64(5));
+            let r = publier_avec_horloge_forcee(&store, id, "a", 20);
+            store.close().unwrap();
+            (r, id)
+        };
+
+        // mêmes (auteur, horloge, cible, effets) MAIS domaines DISTINCTS → les
+        // références ne sont plus byte-identiques : le domaine les sépare.
+        assert_eq!(ref_a.auteur(), ref_b.auteur(), "writer.id partagé");
+        assert_eq!(ref_a.horloge(), ref_b.horloge(), "horloge forcée identique");
+        assert_eq!(
+            ref_a.horloge(),
+            HORLOGE_FORCEE,
+            "l'horloge forcée est celle de la référence"
+        );
+        assert_eq!(
+            ref_a.cible(),
+            cible_b,
+            "chaque base alloue son premier nœud à NodeId(1)"
+        );
+        assert_eq!(ref_a.effets(), ref_b.effets());
+        assert_ne!(
+            ref_a.domaine(),
+            ref_b.domaine(),
+            "deux bases indépendantes → deux domaines"
+        );
+        assert_ne!(
+            ref_a.domaine(),
+            0,
+            "une référence v2 porte toujours un domaine non nul"
+        );
+        assert_ne!(
+            ref_a.to_bytes(),
+            ref_b.to_bytes(),
+            "le domaine rend les références byte-distinctes"
+        );
+
+        // résolution dans chaque base
+        let store_a = SubstrateStore::open(&base_a).unwrap();
+        let store_b = SubstrateStore::open(&base_b).unwrap();
+        let r_aa = store_a.resoudre_reference(&ref_a).unwrap();
+        let r_ab = store_b.resoudre_reference(&ref_a).unwrap();
+
+        // (1) la référence de A résout Engage DANS SON domaine, et Indetermine
+        //     dans le domaine ÉTRANGER (B) — le faux positif croisé est écarté.
+        assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
+        assert_eq!(r_ab.integrite(), IntegriteTentative::Indeterminee);
+        assert_eq!(r_aa.effet(0).etat(), ResolutionEffet::Engage);
+        assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Indetermine);
+
+        // (2) les valeurs restent DIFFÉRENTES (a=10 dans A, a=20 dans B) : la
+        //     détection par domaine n'a pas besoin de comparer les contenus.
+        match store_a.lire_etat_propriete(cible_a, "a").unwrap() {
+            EtatPropriete::Presente { valeur, .. } => assert_eq!(valeur, Value::Int64(10)),
+            autre => panic!("base A : attendu 10, lu {autre:?}"),
+        }
+        match store_b.lire_etat_propriete(cible_b, "a").unwrap() {
+            EtatPropriete::Presente { valeur, .. } => assert_eq!(valeur, Value::Int64(20)),
+            autre => panic!("base B : attendu 20, lu {autre:?}"),
+        }
+
+        // (3) auteur_resolvant identique : writer.id ne discrimine PAS les bases.
+        assert_eq!(r_aa.auteur_resolvant(), r_ab.auteur_resolvant());
+
+        // (4) la résolution dans SON domaine observe la valeur courante (a=10) ;
+        //     celle du domaine ÉTRANGER ne CONSULTE rien : aucune valeur courante
+        //     n'est rapportée (`None`), jamais une observation du contenu de B.
+        assert_eq!(r_aa.effet(0).valeur_courante(), Some(Value::Int64(10)));
+        assert_eq!(r_ab.effet(0).valeur_courante(), None);
+
+        eprintln!(
+            "COLLISION_DETECTEE : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A, \
          Indetermine dans B ; valeurs A=10 B=20 — la référence porte le DOMAINE et distingue les bases",
-        ref_a.auteur(),
-        ref_a.horloge(),
-        ref_a.cible().as_u64()
-    );
-}
-
-// ── Scénario 2 : même (auteur, horloge, cible) mais CLÉ différente ─────────
-//
-// Éprouvé via une référence v1 LEGACY (sans domaine, `domaine == 0`) : la
-// garde de domaine ne court-circuite pas, et la résolution procède par
-// (cible, clé, auteur, horloge). Même `writer.id`, même horloge forcée, même
-// cible — mais la base B écrit `b` au lieu de `a` : la référence de A (clé
-// `a`) reste Indetermine en B. C'est la limite v1 documentée : sans domaine,
-// seule la correspondance (cible, clé, auteur, horloge) discrimine.
-#[test]
-fn collision_hlc_sans_ecriture_de_la_cle_reste_indeterminee() {
-    let td = tempfile::tempdir().unwrap();
-    let base_a = td.path().join("a");
-    let base_b = td.path().join("b");
-
-    let ref_a = {
-        let store = SubstrateStore::create(&base_a).unwrap();
-        let id = store.create_node(&["n"]);
-        store.set_node_property(id, "a", Value::Int64(1));
-        let r = publier_avec_horloge_forcee(&store, id, "a", 10);
-        store.close().unwrap();
-        // Version v1 LEGACY (sans domaine) : elle court-circuite la garde de
-        // domaine et résout par (cible, clé, auteur, horloge) — la limite v1
-        // éprouvée ici (une référence v1 reste ambiguë, jamais une confirmation).
-        reference_v1_legacy(r.auteur(), r.horloge(), r.cible(), &["a"])
-    };
-
-    // base B : writer.id partagé, même horloge forcée, mais on écrit "b".
-    {
-        let store = SubstrateStore::create(&base_b).unwrap();
-        store.close().unwrap();
-    }
-    copier_writer_id(&base_a, &base_b);
-    {
-        let store = SubstrateStore::open(&base_b).unwrap();
-        let id = store.create_node(&["n"]);
-        store.set_node_property(id, "b", Value::Int64(5));
-        let _ = publier_avec_horloge_forcee(&store, id, "b", 50);
-        store.close().unwrap();
+            ref_a.auteur(),
+            ref_a.horloge(),
+            ref_a.cible().as_u64()
+        );
     }
 
-    let store_a = SubstrateStore::open(&base_a).unwrap();
-    let store_b = SubstrateStore::open(&base_b).unwrap();
+    // ── Scénario 2 : même (auteur, horloge, cible) mais CLÉ différente ─────────
+    //
+    // Éprouvé via une référence v1 LEGACY (sans domaine, `domaine == 0`) : la
+    // garde de domaine ne court-circuite pas, et la résolution procède par
+    // (cible, clé, auteur, horloge). Même `writer.id`, même horloge forcée, même
+    // cible — mais la base B écrit `b` au lieu de `a` : la référence de A (clé
+    // `a`) reste Indetermine en B. C'est la limite v1 documentée : sans domaine,
+    // seule la correspondance (cible, clé, auteur, horloge) discrimine.
+    #[test]
+    fn collision_hlc_sans_ecriture_de_la_cle_reste_indeterminee() {
+        let td = tempfile::tempdir().unwrap();
+        let base_a = td.path().join("a");
+        let base_b = td.path().join("b");
 
-    let r_aa = store_a.resoudre_reference(&ref_a).unwrap();
-    let r_ab = store_b.resoudre_reference(&ref_a).unwrap();
-    assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
-    assert_eq!(
-        r_ab.integrite(),
-        IntegriteTentative::Indeterminee,
-        "même (auteur, horloge, cible) mais clé non écrite en B → Indetermine"
-    );
-    assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Indetermine);
+        let ref_a = {
+            let store = SubstrateStore::create(&base_a).unwrap();
+            let id = store.create_node(&["n"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            let r = publier_avec_horloge_forcee(&store, id, "a", 10);
+            store.close().unwrap();
+            // Version v1 LEGACY (sans domaine) : elle court-circuite la garde de
+            // domaine et résout par (cible, clé, auteur, horloge) — la limite v1
+            // éprouvée ici (une référence v1 reste ambiguë, jamais une confirmation).
+            reference_v1_legacy(r.auteur(), r.horloge(), r.cible(), &["a"])
+        };
 
-    eprintln!("CONTRASTE_V1_OK : référence v1 legacy (domaine=0), même (auteur, horloge, cible) mais clé différente → Indetermine en B");
-}
+        // base B : writer.id partagé, même horloge forcée, mais on écrit "b".
+        {
+            let store = SubstrateStore::create(&base_b).unwrap();
+            store.close().unwrap();
+        }
+        copier_writer_id(&base_a, &base_b);
+        {
+            let store = SubstrateStore::open(&base_b).unwrap();
+            let id = store.create_node(&["n"]);
+            store.set_node_property(id, "b", Value::Int64(5));
+            let _ = publier_avec_horloge_forcee(&store, id, "b", 50);
+            store.close().unwrap();
+        }
 
-// ── Scénario 3 : déplacement du répertoire ─────────────────────────────────
-//
-// `writer.id` est un FICHIER DANS le répertoire : déplacer le répertoire le
-// déplace avec lui. L'auteur est donc stable, et une référence émise avant le
-// déplacement résout après — le chemin n'appartient pas à l'identité.
-#[test]
-fn deplacement_du_repertoire_preserve_l_identite_et_la_resolution() {
-    let td = tempfile::tempdir().unwrap();
-    let origine = td.path().join("avant");
-    let deplacee = td.path().join("apres");
+        let store_a = SubstrateStore::open(&base_a).unwrap();
+        let store_b = SubstrateStore::open(&base_b).unwrap();
 
-    let (octets, auteur) = {
-        let store = SubstrateStore::create(&origine).unwrap();
-        let id = store.create_node(&["n"]);
-        store.set_node_property(id, "a", Value::Int64(1));
-        let pre = store.capturer_precondition(id, &["a"]).unwrap();
-        let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
-            .unwrap();
-        let reference = prep.reference_tentative();
-        store.publier_si_precondition_intacte(prep).unwrap();
-        let t = (reference.to_bytes(), reference.auteur());
-        store.close().unwrap();
-        t
-    };
+        let r_aa = store_a.resoudre_reference(&ref_a).unwrap();
+        let r_ab = store_b.resoudre_reference(&ref_a).unwrap();
+        assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
+        assert_eq!(
+            r_ab.integrite(),
+            IntegriteTentative::Indeterminee,
+            "même (auteur, horloge, cible) mais clé non écrite en B → Indetermine"
+        );
+        assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Indetermine);
 
-    // déplacer le RÉPERTOIRE ENTIER
-    std::fs::rename(&origine, &deplacee).unwrap();
-    assert!(!origine.exists() && deplacee.exists());
+        eprintln!(
+            "CONTRASTE_V1_OK : référence v1 legacy (domaine=0), même (auteur, horloge, cible) mais clé différente → Indetermine en B"
+        );
+    }
 
-    let store = SubstrateStore::open(&deplacee).unwrap();
-    let reference = ReferenceTentative::from_bytes(&octets).unwrap();
-    let res = store.resoudre_reference(&reference).unwrap();
-    assert_eq!(res.integrite(), IntegriteTentative::Integrale);
-    assert_eq!(res.auteur_resolvant(), auteur, "writer.id a suivi le répertoire");
+    // ── Scénario 3 : déplacement du répertoire ─────────────────────────────────
+    //
+    // `writer.id` est un FICHIER DANS le répertoire : déplacer le répertoire le
+    // déplace avec lui. L'auteur est donc stable, et une référence émise avant le
+    // déplacement résout après — le chemin n'appartient pas à l'identité.
+    #[test]
+    fn deplacement_du_repertoire_preserve_l_identite_et_la_resolution() {
+        let td = tempfile::tempdir().unwrap();
+        let origine = td.path().join("avant");
+        let deplacee = td.path().join("apres");
 
-    eprintln!("DEPLACEMENT_OK : auteur stable après rename du répertoire ; référence Engage");
-}
+        let (octets, auteur) = {
+            let store = SubstrateStore::create(&origine).unwrap();
+            let id = store.create_node(&["n"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            let pre = store.capturer_precondition(id, &["a"]).unwrap();
+            let prep = store
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10))],
+                    &pre,
+                    ModePublication::Strict,
+                )
+                .unwrap();
+            let reference = prep.reference_tentative();
+            store.publier_si_precondition_intacte(prep).unwrap();
+            let t = (reference.to_bytes(), reference.auteur());
+            store.close().unwrap();
+            t
+        };
 
-// ── Scénario 4 : restauration depuis sauvegarde ────────────────────────────
-//
-// Une sauvegarde est une copie du répertoire (writer.id compris). Restaurer
-// revient à écraser la base par la copie : l'écriture ANTÉRIEURE à la
-// sauvegarde résout, celle POSTÉRIEURE est perdue (Indetermine). L'auteur
-// reste identique : writer.id ne porte aucune notion de « fraîcheur ».
-#[test]
-fn restauration_depuis_sauvegarde_perd_les_ecritures_posterieures() {
-    let td = tempfile::tempdir().unwrap();
-    let base = td.path().join("kb");
-    let sauvegarde = td.path().join("sauvegarde");
+        // déplacer le RÉPERTOIRE ENTIER
+        std::fs::rename(&origine, &deplacee).unwrap();
+        assert!(!origine.exists() && deplacee.exists());
 
-    let (ref_pre, cible, auteur) = {
-        let store = SubstrateStore::create(&base).unwrap();
-        let id = store.create_node(&["n"]);
-        store.set_node_property(id, "a", Value::Int64(1));
-        let pre = store.capturer_precondition(id, &["a"]).unwrap();
-        let prep = store
-            .preparer_transformation(id, &[("a", Value::Int64(10))], &pre, ModePublication::Strict)
-            .unwrap();
-        let reference = prep.reference_tentative();
-        store.publier_si_precondition_intacte(prep).unwrap();
-        let t = (reference.to_bytes(), id, reference.auteur());
-        store.close().unwrap();
-        t
-    };
+        let store = SubstrateStore::open(&deplacee).unwrap();
+        let reference = ReferenceTentative::from_bytes(&octets).unwrap();
+        let res = store.resoudre_reference(&reference).unwrap();
+        assert_eq!(res.integrite(), IntegriteTentative::Integrale);
+        assert_eq!(
+            res.auteur_resolvant(),
+            auteur,
+            "writer.id a suivi le répertoire"
+        );
 
-    // sauvegarde (copie du répertoire entier, writer.id compris)
-    copier_base(&base, &sauvegarde);
+        eprintln!("DEPLACEMENT_OK : auteur stable après rename du répertoire ; référence Engage");
+    }
 
-    // écriture POSTÉRIEURE à la sauvegarde (même nœud, valeur 99)
-    let ref_post = {
+    // ── Scénario 4 : restauration depuis sauvegarde ────────────────────────────
+    //
+    // Une sauvegarde est une copie du répertoire (writer.id compris). Restaurer
+    // revient à écraser la base par la copie : l'écriture ANTÉRIEURE à la
+    // sauvegarde résout, celle POSTÉRIEURE est perdue (Indetermine). L'auteur
+    // reste identique : writer.id ne porte aucune notion de « fraîcheur ».
+    #[test]
+    fn restauration_depuis_sauvegarde_perd_les_ecritures_posterieures() {
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path().join("kb");
+        let sauvegarde = td.path().join("sauvegarde");
+
+        let (ref_pre, cible, auteur) = {
+            let store = SubstrateStore::create(&base).unwrap();
+            let id = store.create_node(&["n"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            let pre = store.capturer_precondition(id, &["a"]).unwrap();
+            let prep = store
+                .preparer_transformation(
+                    id,
+                    &[("a", Value::Int64(10))],
+                    &pre,
+                    ModePublication::Strict,
+                )
+                .unwrap();
+            let reference = prep.reference_tentative();
+            store.publier_si_precondition_intacte(prep).unwrap();
+            let t = (reference.to_bytes(), id, reference.auteur());
+            store.close().unwrap();
+            t
+        };
+
+        // sauvegarde (copie du répertoire entier, writer.id compris)
+        copier_base(&base, &sauvegarde);
+
+        // écriture POSTÉRIEURE à la sauvegarde (même nœud, valeur 99)
+        let ref_post = {
+            let store = SubstrateStore::open(&base).unwrap();
+            let pre = store.capturer_precondition(cible, &["a"]).unwrap();
+            let prep = store
+                .preparer_transformation(
+                    cible,
+                    &[("a", Value::Int64(99))],
+                    &pre,
+                    ModePublication::Strict,
+                )
+                .unwrap();
+            let reference = prep.reference_tentative();
+            store.publier_si_precondition_intacte(prep).unwrap();
+            let t = reference.to_bytes();
+            store.close().unwrap();
+            t
+        };
+
+        // restauration : écraser la base par la sauvegarde
+        std::fs::remove_dir_all(&base).unwrap();
+        copier_base(&sauvegarde, &base);
+
         let store = SubstrateStore::open(&base).unwrap();
-        let pre = store.capturer_precondition(cible, &["a"]).unwrap();
-        let prep = store
-            .preparer_transformation(cible, &[("a", Value::Int64(99))], &pre, ModePublication::Strict)
+        let r_pre = store
+            .resoudre_reference(&ReferenceTentative::from_bytes(&ref_pre).unwrap())
             .unwrap();
-        let reference = prep.reference_tentative();
-        store.publier_si_precondition_intacte(prep).unwrap();
-        let t = reference.to_bytes();
-        store.close().unwrap();
-        t
-    };
+        let r_post = store
+            .resoudre_reference(&ReferenceTentative::from_bytes(&ref_post).unwrap())
+            .unwrap();
 
-    // restauration : écraser la base par la sauvegarde
-    std::fs::remove_dir_all(&base).unwrap();
-    copier_base(&sauvegarde, &base);
+        assert_eq!(
+            r_pre.integrite(),
+            IntegriteTentative::Integrale,
+            "l'écriture antérieure à la sauvegarde a été restaurée"
+        );
+        assert_eq!(
+            r_post.integrite(),
+            IntegriteTentative::Indeterminee,
+            "l'écriture postérieure à la sauvegarde a été perdue"
+        );
+        assert_eq!(
+            r_pre.auteur_resolvant(),
+            auteur,
+            "writer.id restauré est identique"
+        );
 
-    let store = SubstrateStore::open(&base).unwrap();
-    let r_pre = store
-        .resoudre_reference(&ReferenceTentative::from_bytes(&ref_pre).unwrap())
-        .unwrap();
-    let r_post = store
-        .resoudre_reference(&ReferenceTentative::from_bytes(&ref_post).unwrap())
-        .unwrap();
-
-    assert_eq!(
-        r_pre.integrite(),
-        IntegriteTentative::Integrale,
-        "l'écriture antérieure à la sauvegarde a été restaurée"
-    );
-    assert_eq!(
-        r_post.integrite(),
-        IntegriteTentative::Indeterminee,
-        "l'écriture postérieure à la sauvegarde a été perdue"
-    );
-    assert_eq!(r_pre.auteur_resolvant(), auteur, "writer.id restauré est identique");
-
-    eprintln!("RESTAURATION_OK : écriture pré-sauvegarde Engage, post-sauvegarde Indetermine ; auteur inchangé");
-}
-
-// ── Scénario 5 : CONTENU IDENTIQUE — la collision reste DÉTECTABLE ─────────
-//
-// La contre-épreuve décisive : deux bases INDÉPENDANTES partageant `writer.id`
-// publient le MÊME contenu (la MÊME valeur 42) sous la MÊME horloge forcée.
-// AVANT le domaine, ce cas était le faux positif TOTALEMENT indétectable (octets
-// identiques, valeurs identiques, auteur identique). AVEC la v2, les références
-// portent des DOMAINES distincts : même contenu, même (auteur, horloge, cible),
-// la référence de A résout `Engage` dans A et `Indetermine` dans B — la
-// détection ne dépend d'AUCUNE comparaison de valeurs.
-#[test]
-fn collision_hlc_contenu_identique_detecte_par_domaine() {
-    let td = tempfile::tempdir().unwrap();
-    let base_a = td.path().join("a");
-    let base_b = td.path().join("b");
-
-    // base A : writer.id propre, premier nœud, propriété initiale.
-    let cible_a = {
-        let store = SubstrateStore::create(&base_a).unwrap();
-        let id = store.create_node(&["n"]);
-        store.set_node_property(id, "a", Value::Int64(1));
-        store.close().unwrap();
-        id
-    };
-
-    // base B : neuve, puis ÉCRASER son writer.id par celui de A (partage).
-    {
-        let store = SubstrateStore::create(&base_b).unwrap();
-        store.close().unwrap();
+        eprintln!(
+            "RESTAURATION_OK : écriture pré-sauvegarde Engage, post-sauvegarde Indetermine ; auteur inchangé"
+        );
     }
-    copier_writer_id(&base_a, &base_b);
-    assert_eq!(lire_writer_id(&base_a), lire_writer_id(&base_b), "writer.id partagé byte-à-byte");
 
-    // Dans CHAQUE base : MÊME contenu (valeur 42), MÊME horloge forcée.
-    let ref_a = {
-        let store = SubstrateStore::open(&base_a).unwrap();
-        let r = publier_avec_horloge_forcee(&store, cible_a, "a", 42);
-        store.close().unwrap();
-        r
-    };
-    let (ref_b, cible_b) = {
-        let store = SubstrateStore::open(&base_b).unwrap();
-        let id = store.create_node(&["n"]);
-        store.set_node_property(id, "a", Value::Int64(1));
-        let r = publier_avec_horloge_forcee(&store, id, "a", 42);
-        store.close().unwrap();
-        (r, id)
-    };
+    // ── Scénario 5 : CONTENU IDENTIQUE — la collision reste DÉTECTABLE ─────────
+    //
+    // La contre-épreuve décisive : deux bases INDÉPENDANTES partageant `writer.id`
+    // publient le MÊME contenu (la MÊME valeur 42) sous la MÊME horloge forcée.
+    // AVANT le domaine, ce cas était le faux positif TOTALEMENT indétectable (octets
+    // identiques, valeurs identiques, auteur identique). AVEC la v2, les références
+    // portent des DOMAINES distincts : même contenu, même (auteur, horloge, cible),
+    // la référence de A résout `Engage` dans A et `Indetermine` dans B — la
+    // détection ne dépend d'AUCUNE comparaison de valeurs.
+    #[test]
+    fn collision_hlc_contenu_identique_detecte_par_domaine() {
+        let td = tempfile::tempdir().unwrap();
+        let base_a = td.path().join("a");
+        let base_b = td.path().join("b");
 
-    // Même auteur, même horloge, même cible, mêmes effets — MAIS domaines
-    // DISTINCTS : les références ne sont plus byte-identiques.
-    assert_eq!(ref_a.cible(), cible_b, "chaque base alloue son premier nœud à NodeId(1)");
-    assert_ne!(ref_a.domaine(), ref_b.domaine(), "deux bases indépendantes → deux domaines");
-    assert_ne!(ref_a.to_bytes(), ref_b.to_bytes(), "le domaine rend les références byte-distinctes");
+        // base A : writer.id propre, premier nœud, propriété initiale.
+        let cible_a = {
+            let store = SubstrateStore::create(&base_a).unwrap();
+            let id = store.create_node(&["n"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            store.close().unwrap();
+            id
+        };
 
-    // résolution dans chaque base
-    let store_a = SubstrateStore::open(&base_a).unwrap();
-    let store_b = SubstrateStore::open(&base_b).unwrap();
-    let r_aa = store_a.resoudre_reference(&ref_a).unwrap();
-    let r_ab = store_b.resoudre_reference(&ref_a).unwrap();
+        // base B : neuve, puis ÉCRASER son writer.id par celui de A (partage).
+        {
+            let store = SubstrateStore::create(&base_b).unwrap();
+            store.close().unwrap();
+        }
+        copier_writer_id(&base_a, &base_b);
+        assert_eq!(
+            lire_writer_id(&base_a),
+            lire_writer_id(&base_b),
+            "writer.id partagé byte-à-byte"
+        );
 
-    // (1) la référence de A résout Engage DANS SON domaine, Indetermine dans
-    //     le domaine ÉTRANGER (B) — MÊME CONTENU, la détection tient par le
-    //     domaine seul.
-    assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
-    assert_eq!(r_ab.integrite(), IntegriteTentative::Indeterminee);
-    assert_eq!(r_aa.effet(0).etat(), ResolutionEffet::Engage);
-    assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Indetermine);
+        // Dans CHAQUE base : MÊME contenu (valeur 42), MÊME horloge forcée.
+        let ref_a = {
+            let store = SubstrateStore::open(&base_a).unwrap();
+            let r = publier_avec_horloge_forcee(&store, cible_a, "a", 42);
+            store.close().unwrap();
+            r
+        };
+        let (ref_b, cible_b) = {
+            let store = SubstrateStore::open(&base_b).unwrap();
+            let id = store.create_node(&["n"]);
+            store.set_node_property(id, "a", Value::Int64(1));
+            let r = publier_avec_horloge_forcee(&store, id, "a", 42);
+            store.close().unwrap();
+            (r, id)
+        };
 
-    // (2) le contenu est IDENTIQUE (42 partout) : la valeur courante n'est
-    //     observée que dans SON domaine ; le domaine étranger n'est PAS lu.
-    assert_eq!(r_aa.effet(0).valeur_courante(), Some(Value::Int64(42)));
-    assert_eq!(r_ab.effet(0).valeur_courante(), None);
+        // Même auteur, même horloge, même cible, mêmes effets — MAIS domaines
+        // DISTINCTS : les références ne sont plus byte-identiques.
+        assert_eq!(
+            ref_a.cible(),
+            cible_b,
+            "chaque base alloue son premier nœud à NodeId(1)"
+        );
+        assert_ne!(
+            ref_a.domaine(),
+            ref_b.domaine(),
+            "deux bases indépendantes → deux domaines"
+        );
+        assert_ne!(
+            ref_a.to_bytes(),
+            ref_b.to_bytes(),
+            "le domaine rend les références byte-distinctes"
+        );
 
-    // (3) auteur_resolvant identique : writer.id ne discrimine PAS les bases —
-    //     la détection repose sur le domaine, pas sur l'auteur.
-    assert_eq!(r_aa.auteur_resolvant(), r_ab.auteur_resolvant());
+        // résolution dans chaque base
+        let store_a = SubstrateStore::open(&base_a).unwrap();
+        let store_b = SubstrateStore::open(&base_b).unwrap();
+        let r_aa = store_a.resoudre_reference(&ref_a).unwrap();
+        let r_ab = store_b.resoudre_reference(&ref_a).unwrap();
 
-    eprintln!(
-        "CONTENU_IDENTIQUE_DETECTE : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A, \
+        // (1) la référence de A résout Engage DANS SON domaine, Indetermine dans
+        //     le domaine ÉTRANGER (B) — MÊME CONTENU, la détection tient par le
+        //     domaine seul.
+        assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
+        assert_eq!(r_ab.integrite(), IntegriteTentative::Indeterminee);
+        assert_eq!(r_aa.effet(0).etat(), ResolutionEffet::Engage);
+        assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Indetermine);
+
+        // (2) le contenu est IDENTIQUE (42 partout) : la valeur courante n'est
+        //     observée que dans SON domaine ; le domaine étranger n'est PAS lu.
+        assert_eq!(r_aa.effet(0).valeur_courante(), Some(Value::Int64(42)));
+        assert_eq!(r_ab.effet(0).valeur_courante(), None);
+
+        // (3) auteur_resolvant identique : writer.id ne discrimine PAS les bases —
+        //     la détection repose sur le domaine, pas sur l'auteur.
+        assert_eq!(r_aa.auteur_resolvant(), r_ab.auteur_resolvant());
+
+        eprintln!(
+            "CONTENU_IDENTIQUE_DETECTE : ref (auteur={:#x}, horloge={:#x}, cible={}) Engage dans A, \
          Indetermine dans B ; valeur IDENTIQUE 42 des deux côtés — la v2 porte le DOMAINE, \
          la collision est détectable sans comparer les valeurs",
-        ref_a.auteur(),
-        ref_a.horloge(),
-        ref_a.cible().as_u64()
-    );
-}
-
-// ── Scénario 6 : LIMITE v1 — une référence legacy reste AMBIGUË ────────────
-//
-// Documente la limite historique : une référence v1 (SANS domaine, `domaine ==
-// 0`) n'est pas refusée par la garde de domaine et résout par (cible, clé,
-// auteur, horloge) seul. Deux bases INDÉPENDANTES partageant `writer.id`,
-// même contenu, même horloge forcée : une référence v1 forgée résout `Engage`
-// dans les DEUX bases — le faux positif persiste pour les références ANCIENNES.
-// Ce n'est JAMAIS une confirmation fictive (l'entrée est réellement présente
-// dans les deux chaînes), mais ce n'est pas non plus une détection de domaine.
-#[test]
-fn collision_hlc_v1_legacy_reste_ambigue_entre_domaines() {
-    let td = tempfile::tempdir().unwrap();
-    let base_a = td.path().join("a");
-    let base_b = td.path().join("b");
-
-    // base A : writer.id propre, premier nœud, contenu identique à B.
-    let cible_a = {
-        let store = SubstrateStore::create(&base_a).unwrap();
-        let id = store.create_node(&["n"]);
-        store.set_node_property(id, "a", Value::Int64(42));
-        store.close().unwrap();
-        id
-    };
-
-    // base B : neuve, puis writer.id partagé.
-    {
-        let store = SubstrateStore::create(&base_b).unwrap();
-        store.close().unwrap();
-    }
-    copier_writer_id(&base_a, &base_b);
-
-    // Dans CHAQUE base : même contenu 42, même horloge forcée.
-    let (auteur, horloge, cible) = {
-        let store = SubstrateStore::open(&base_a).unwrap();
-        let r = publier_avec_horloge_forcee(&store, cible_a, "a", 42);
-        let t = (r.auteur(), r.horloge(), r.cible());
-        store.close().unwrap();
-        t
-    };
-    {
-        let store = SubstrateStore::open(&base_b).unwrap();
-        let id = store.create_node(&["n"]);
-        store.set_node_property(id, "a", Value::Int64(42));
-        let _ = publier_avec_horloge_forcee(&store, id, "a", 42);
-        store.close().unwrap();
+            ref_a.auteur(),
+            ref_a.horloge(),
+            ref_a.cible().as_u64()
+        );
     }
 
-    // Une référence v1 LEGACY (domaine == 0) est forgée à la main : elle ne
-    // porte PAS le domaine, donc la garde de domaine ne la refuse pas.
-    let legacy = reference_v1_legacy(auteur, horloge, cible, &["a"]);
+    // ── Scénario 6 : LIMITE v1 — une référence legacy reste AMBIGUË ────────────
+    //
+    // Documente la limite historique : une référence v1 (SANS domaine, `domaine ==
+    // 0`) n'est pas refusée par la garde de domaine et résout par (cible, clé,
+    // auteur, horloge) seul. Deux bases INDÉPENDANTES partageant `writer.id`,
+    // même contenu, même horloge forcée : une référence v1 forgée résout `Engage`
+    // dans les DEUX bases — le faux positif persiste pour les références ANCIENNES.
+    // Ce n'est JAMAIS une confirmation fictive (l'entrée est réellement présente
+    // dans les deux chaînes), mais ce n'est pas non plus une détection de domaine.
+    #[test]
+    fn collision_hlc_v1_legacy_reste_ambigue_entre_domaines() {
+        let td = tempfile::tempdir().unwrap();
+        let base_a = td.path().join("a");
+        let base_b = td.path().join("b");
 
-    let store_a = SubstrateStore::open(&base_a).unwrap();
-    let store_b = SubstrateStore::open(&base_b).unwrap();
-    let r_aa = store_a.resoudre_reference(&legacy).unwrap();
-    let r_ab = store_b.resoudre_reference(&legacy).unwrap();
+        // base A : writer.id propre, premier nœud, contenu identique à B.
+        let cible_a = {
+            let store = SubstrateStore::create(&base_a).unwrap();
+            let id = store.create_node(&["n"]);
+            store.set_node_property(id, "a", Value::Int64(42));
+            store.close().unwrap();
+            id
+        };
 
-    // LIMITE v1 : la même référence v1 résout Engage dans les DEUX bases —
-    //     le faux positif persiste pour les références anciennes sans domaine.
-    assert_eq!(legacy.domaine(), 0, "une référence v1 a un domaine == 0 (legacy)");
-    assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
-    assert_eq!(r_ab.integrite(), IntegriteTentative::Integrale);
-    assert_eq!(r_aa.effet(0).etat(), ResolutionEffet::Engage);
-    assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Engage);
+        // base B : neuve, puis writer.id partagé.
+        {
+            let store = SubstrateStore::create(&base_b).unwrap();
+            store.close().unwrap();
+        }
+        copier_writer_id(&base_a, &base_b);
 
-    eprintln!(
-        "LIMITE_V1_OK : ref v1 (domaine=0, auteur={auteur:#x}, horloge={horloge:#x}) Engage dans A ET B — \
+        // Dans CHAQUE base : même contenu 42, même horloge forcée.
+        let (auteur, horloge, cible) = {
+            let store = SubstrateStore::open(&base_a).unwrap();
+            let r = publier_avec_horloge_forcee(&store, cible_a, "a", 42);
+            let t = (r.auteur(), r.horloge(), r.cible());
+            store.close().unwrap();
+            t
+        };
+        {
+            let store = SubstrateStore::open(&base_b).unwrap();
+            let id = store.create_node(&["n"]);
+            store.set_node_property(id, "a", Value::Int64(42));
+            let _ = publier_avec_horloge_forcee(&store, id, "a", 42);
+            store.close().unwrap();
+        }
+
+        // Une référence v1 LEGACY (domaine == 0) est forgée à la main : elle ne
+        // porte PAS le domaine, donc la garde de domaine ne la refuse pas.
+        let legacy = reference_v1_legacy(auteur, horloge, cible, &["a"]);
+
+        let store_a = SubstrateStore::open(&base_a).unwrap();
+        let store_b = SubstrateStore::open(&base_b).unwrap();
+        let r_aa = store_a.resoudre_reference(&legacy).unwrap();
+        let r_ab = store_b.resoudre_reference(&legacy).unwrap();
+
+        // LIMITE v1 : la même référence v1 résout Engage dans les DEUX bases —
+        //     le faux positif persiste pour les références anciennes sans domaine.
+        assert_eq!(
+            legacy.domaine(),
+            0,
+            "une référence v1 a un domaine == 0 (legacy)"
+        );
+        assert_eq!(r_aa.integrite(), IntegriteTentative::Integrale);
+        assert_eq!(r_ab.integrite(), IntegriteTentative::Integrale);
+        assert_eq!(r_aa.effet(0).etat(), ResolutionEffet::Engage);
+        assert_eq!(r_ab.effet(0).etat(), ResolutionEffet::Engage);
+
+        eprintln!(
+            "LIMITE_V1_OK : ref v1 (domaine=0, auteur={auteur:#x}, horloge={horloge:#x}) Engage dans A ET B — \
          une référence ancienne reste ambiguë entre domaines (jamais une confirmation fictive)",
-    );
-}
+        );
+    }
 }
 
 #[cfg(test)]

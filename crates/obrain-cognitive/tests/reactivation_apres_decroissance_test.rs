@@ -9,8 +9,8 @@ use obrain_cognitive::energy::{EnergyConfig, EnergyStore};
 use obrain_common::types::NodeId;
 use obrain_core::graph::GraphStoreMut;
 use obrain_substrate::SubstrateStore;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 const BASE: i64 = 1_000_000_000_000_000;
@@ -30,9 +30,13 @@ fn une_decroissance_complete_puis_un_renforcement_reactive() {
     let node: NodeId = sub.create_node(&["n"]);
     sub.flush().unwrap();
     let store = EnergyStore::with_substrate(
-        EnergyConfig { default_half_life: H, ..Default::default() },
+        EnergyConfig {
+            default_half_life: H,
+            ..Default::default()
+        },
         sub.clone(),
-    ).with_clock(clock_fn.clone());
+    )
+    .with_clock(clock_fn.clone());
     let law = DecayLaw::new(H);
 
     store.boost(node, 1.0);
@@ -46,16 +50,26 @@ fn une_decroissance_complete_puis_un_renforcement_reactive() {
     drop(store);
     let sub2 = Arc::new(SubstrateStore::open(&chemin).unwrap());
     let store2 = EnergyStore::with_substrate(
-        EnergyConfig { default_half_life: H, ..Default::default() },
+        EnergyConfig {
+            default_half_life: H,
+            ..Default::default()
+        },
         sub2.clone(),
-    ).with_clock(clock_fn);
+    )
+    .with_clock(clock_fn);
     let r1 = store2.read_qualified(node);
     eprintln!("après réouverture: {r1:?}");
-    assert!(matches!(r1, EnergyRead::Effective(e) if e == 0.0), "EnergyRead = Effective(0.0), obtenu {r1:?}");
+    assert!(
+        matches!(r1, EnergyRead::Effective(e) if e == 0.0),
+        "EnergyRead = Effective(0.0), obtenu {r1:?}"
+    );
 
     // Réactivation : renforcement +0,1 -> ~0,1 exploitable.
     store2.boost(node, 0.1);
     let r2 = store2.read_qualified(node);
     eprintln!("après renforcement: {r2:?}");
-    assert!(matches!(r2, EnergyRead::Effective(e) if (e - 0.1).abs() < 1e-3), "EnergyRead ≈ Effective(0.1), obtenu {r2:?}");
+    assert!(
+        matches!(r2, EnergyRead::Effective(e) if (e - 0.1).abs() < 1e-3),
+        "EnergyRead ≈ Effective(0.1), obtenu {r2:?}"
+    );
 }

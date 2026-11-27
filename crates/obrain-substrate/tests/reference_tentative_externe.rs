@@ -7,13 +7,13 @@
 //!
 //! Ce qui est éprouvé, dans l'ordre du contrat :
 //!   1. préparer ; 2. obtenir la référence ; 3. la sérialiser ; 4. publier en
-//!   perdant la réponse ; 5. fermer ; 6. rouvrir ; 7. désérialiser et résoudre ;
+//!      perdant la réponse ; 5. fermer ; 6. rouvrir ; 7. désérialiser et résoudre ;
 //!   8. masquer l'effet ; 9. résoudre de nouveau sans republier.
-//! Plus les cas adverses : référence étrangère, référence altérée, effets
-//! incompatibles, décodage d'octets invalides, refus du chemin différé.
+//!      Plus les cas adverses : référence étrangère, référence altérée, effets
+//!      incompatibles, décodage d'octets invalides, refus du chemin différé.
 
 use obrain_common::types::{NodeId, Value};
-use obrain_core::graph::{GraphStore as _, GraphStoreMut as _};
+use obrain_core::graph::GraphStoreMut as _;
 use obrain_substrate::store::{
     EtatPropriete, IntegriteTentative, ModePublication, ResolutionEffet,
 };
@@ -80,7 +80,8 @@ fn reference_survit_a_la_perte_de_reponse_et_au_masquage() {
     let res = store.resoudre_reference(&reference).unwrap();
     assert_eq!(res.cible(), cible);
     assert_eq!(
-        res.auteur_resolvant(), auteur,
+        res.auteur_resolvant(),
+        auteur,
         "l'auteur persistant du répertoire est stable à travers la réouverture"
     );
     assert_eq!(
@@ -99,7 +100,10 @@ fn reference_survit_a_la_perte_de_reponse_et_au_masquage() {
         IntegriteTentative::Integrale,
         "masqué n'est pas absence : les deux effets restent engagés"
     );
-    let a = (0..res2.nb_effets()).map(|i| res2.effet(i)).find(|e| e.cle() == "a").unwrap();
+    let a = (0..res2.nb_effets())
+        .map(|i| res2.effet(i))
+        .find(|e| e.cle() == "a")
+        .unwrap();
     assert_eq!(a.etat(), ResolutionEffet::Engage);
     assert_ne!(
         a.estampille_courante(),
@@ -185,8 +189,14 @@ fn reference_alteree_ne_produit_jamais_engage() {
     ))
     .unwrap();
     let res = store.resoudre_reference(&forgee).unwrap();
-    let a = (0..res.nb_effets()).map(|i| res.effet(i)).find(|e| e.cle() == "a").unwrap();
-    let j = (0..res.nb_effets()).map(|i| res.effet(i)).find(|e| e.cle() == "jamais_ecrite").unwrap();
+    let a = (0..res.nb_effets())
+        .map(|i| res.effet(i))
+        .find(|e| e.cle() == "a")
+        .unwrap();
+    let j = (0..res.nb_effets())
+        .map(|i| res.effet(i))
+        .find(|e| e.cle() == "jamais_ecrite")
+        .unwrap();
     assert_eq!(a.etat(), ResolutionEffet::Engage);
     assert_eq!(
         j.etat(),
@@ -204,7 +214,7 @@ fn reference_alteree_ne_produit_jamais_engage() {
 #[test]
 fn decodage_controle_refuse_les_octets_invalides() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let id = store.create_node(&["n"]);
     store.set_node_property(id, "a", Value::Int64(1));
     let pre = store.capturer_precondition(id, &["a"]).unwrap();
@@ -243,7 +253,7 @@ fn decodage_controle_refuse_les_octets_invalides() {
 #[test]
 fn preparation_differee_refuse_une_reference() {
     let td = tempfile::tempdir().unwrap();
-    let store = SubstrateStore::create(&td.path().join("kb")).unwrap();
+    let store = SubstrateStore::create(td.path().join("kb")).unwrap();
     let id = store.create_node(&["n"]);
     store.set_node_property(id, "a", Value::Int64(1));
     let pre = store.capturer_precondition(id, &["a"]).unwrap();

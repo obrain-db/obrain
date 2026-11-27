@@ -26,12 +26,13 @@
 
 #![cfg(all(feature = "engram", feature = "substrate"))]
 
+use std::fmt::Write;
 use std::sync::Arc;
 
-use obrain_common::types::NodeId;
 use obrain_cognitive::engram::{
     AtomicEventLedger, LedgerOutcome, ResolvedState, SubstrateAtomicEventLedger,
 };
+use obrain_common::types::NodeId;
 use obrain_core::graph::GraphStoreMut;
 use obrain_substrate::{EtatPropriete, SubstrateStore};
 
@@ -68,14 +69,11 @@ fn noeud_autorite(ledger: &SubstrateAtomicEventLedger) -> Option<NodeId> {
 /// L'enregistrement canonique `obs:<hex>` de l'identité, s'il existe sur le
 /// nœud d'autorité (diagnostic physique : UNE seule autorité pour toutes les
 /// ressources).
-fn enregistrement_canonique(
-    ledger: &SubstrateAtomicEventLedger,
-    ev: &[u8; 16],
-) -> Option<Vec<u8>> {
+fn enregistrement_canonique(ledger: &SubstrateAtomicEventLedger, ev: &[u8; 16]) -> Option<Vec<u8>> {
     let mut cle = String::with_capacity(4 + 32);
     cle.push_str("obs:");
     for b in ev {
-        cle.push_str(&format!("{b:02x}"));
+        let _ = write!(cle, "{b:02x}");
     }
     match ledger
         .store()
@@ -252,9 +250,7 @@ fn s5_redemarrage_puis_resolution() {
     let resolved_b = ledger.resolve_on(&ressource_bytes(b), &oid(5)).unwrap();
     // Résolution CANONIQUE depuis l'identité SEULE (sans ressource).
     let resolved = ledger.resolve(&oid(5)).unwrap();
-    eprintln!(
-        "S5 resolved_a={resolved_a:?} resolved_b={resolved_b:?} resolved={resolved:?}"
-    );
+    eprintln!("S5 resolved_a={resolved_a:?} resolved_b={resolved_b:?} resolved={resolved:?}");
 
     assert!(
         matches!(resolved_a, ResolvedState::Applied { revision: 1, .. }),
@@ -275,7 +271,10 @@ fn s5_redemarrage_puis_resolution() {
         .apply_event(&oid(5), &ressource_bytes(a), b"def-D", 0, b"eff-A", 1)
         .unwrap();
     eprintln!("S5 rejeu_a_apres_redemarrage={rejeu:?}");
-    assert!(matches!(rejeu, LedgerOutcome::AlreadyApplied { revision: 1, .. }));
+    assert!(matches!(
+        rejeu,
+        LedgerOutcome::AlreadyApplied { revision: 1, .. }
+    ));
 }
 
 // S6 — deux applications concurrentes de K sur A et B.
@@ -500,7 +499,10 @@ fn t_norm_concurrence_pas_de_double_reservation() {
         .iter()
         .filter(|o| matches!(o, LedgerOutcome::AlreadyApplied { .. }))
         .count();
-    assert_eq!(n_applied, 1, "une seule réservation (out_a={out_a:?} out_b={out_b:?})");
+    assert_eq!(
+        n_applied, 1,
+        "une seule réservation (out_a={out_a:?} out_b={out_b:?})"
+    );
     assert_eq!(n_rejoues, 1);
     // Un seul enregistrement canonique physique pour K.
     assert!(

@@ -11,12 +11,13 @@
 
 use std::sync::Arc;
 
-use obrain_common::types::NodeId;
+use obrain_cognitive::InMemoryVectorIndex;
 use obrain_cognitive::engram::{
     EngramId, EngramManager, EngramManagerConfig, ObservationScope, RevisionError,
 };
-use obrain_cognitive::InMemoryVectorIndex;
+use obrain_common::types::NodeId;
 
+#[allow(dead_code)]
 type Ep = Vec<NodeId>;
 
 fn manager() -> EngramManager {
@@ -93,8 +94,14 @@ fn e1_commutativite_renforcements_independants() {
     revise(&m2, e2, &[a], 0.4, ObservationScope::DeclaredPartial);
     let s2 = snapshot(&m2, e2);
 
-    eprintln!("[E1] T1(T2) ensemble={:?} ; T2(T1) ensemble={:?}", s1.ensemble, s2.ensemble);
-    assert_eq!(s1, s2, "E1 : deux renforcements indépendants COMMUTENT (état complet)");
+    eprintln!(
+        "[E1] T1(T2) ensemble={:?} ; T2(T1) ensemble={:?}",
+        s1.ensemble, s2.ensemble
+    );
+    assert_eq!(
+        s1, s2,
+        "E1 : deux renforcements indépendants COMMUTENT (état complet)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -122,9 +129,18 @@ fn e2_meme_participant_non_idempotent() {
 
     eprintln!("[E2] T={:?} ; T∘T={:?}", s_t.ensemble, s_tt.ensemble);
     // Commutativité triviale (même fonction), mais NON idempotent.
-    assert_ne!(s_tt.ensemble, s_t.ensemble, "E2 : renforcement NON idempotent");
-    assert!((s_t.ensemble[0].1 - 0.6).abs() < 1e-9, "E2 : 1 renforcement = 0.6");
-    assert!((s_tt.ensemble[0].1 - 0.8).abs() < 1e-9, "E2 : 2 renforcements = 0.8 (pas 0.9 : 0.6 -> 0.8)");
+    assert_ne!(
+        s_tt.ensemble, s_t.ensemble,
+        "E2 : renforcement NON idempotent"
+    );
+    assert!(
+        (s_t.ensemble[0].1 - 0.6).abs() < 1e-9,
+        "E2 : 1 renforcement = 0.6"
+    );
+    assert!(
+        (s_tt.ensemble[0].1 - 0.8).abs() < 1e-9,
+        "E2 : 2 renforcements = 0.8 (pas 0.9 : 0.6 -> 0.8)"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -254,9 +270,16 @@ fn e7_reversibilite_impossible() {
         "[E7] état initial={:?} après 2 renforcements={:?} (pas de retour exact)",
         s0.ensemble, s2.ensemble
     );
-    assert_ne!(s0.ensemble, s2.ensemble, "E7 : pas de retour exact -> transformation LOSSY");
+    assert_ne!(
+        s0.ensemble, s2.ensemble,
+        "E7 : pas de retour exact -> transformation LOSSY"
+    );
     // Invariant conservé : l'IDENTITÉ ne change pas.
-    assert_eq!(s0.signature.len(), s2.signature.len(), "dimension de signature conservée");
+    assert_eq!(
+        s0.signature.len(),
+        s2.signature.len(),
+        "dimension de signature conservée"
+    );
 }
 
 fn revi0(m: &EngramManager, eid: EngramId) {
@@ -282,8 +305,8 @@ fn e8_associativite_structurelle() {
     // quel que soit le groupement. On le vérifie sur l'état complet.
     let (m1, e1) = mk();
     revise(&m1, e1, &[a, b], 0.4, ObservationScope::DeclaredPartial); // T1 : renforce a,b
-    revise(&m1, e1, &[b], 0.4, ObservationScope::DeclaredComplete);    // T2 : décroît a
-    revise(&m1, e1, &[a], 0.4, ObservationScope::DeclaredPartial);     // T3 : renforce a
+    revise(&m1, e1, &[b], 0.4, ObservationScope::DeclaredComplete); // T2 : décroît a
+    revise(&m1, e1, &[a], 0.4, ObservationScope::DeclaredPartial); // T3 : renforce a
     let s = snapshot(&m1, e1);
 
     eprintln!(
@@ -293,5 +316,8 @@ fn e8_associativite_structurelle() {
     // L'algèbre est un SEMI-GROUPE : associative (triviale pour une séquence),
     // sans inverse (E7), sans idempotence (E2). On documente, on n'exige rien d'autre.
     assert!(s.ensemble.iter().all(|(_, w)| w.is_finite() && *w >= 0.0));
-    assert_eq!(s.recall_count, 3, "3 révisions -> recall_count = 3 (historique cohérent)");
+    assert_eq!(
+        s.recall_count, 3,
+        "3 révisions -> recall_count = 3 (historique cohérent)"
+    );
 }

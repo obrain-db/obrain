@@ -11,8 +11,8 @@ use obrain_cognitive::energy::{EnergyConfig, EnergyStore};
 use obrain_common::types::NodeId;
 use obrain_core::graph::GraphStoreMut;
 use obrain_substrate::SubstrateStore;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 const BASE: i64 = 1_000_000_000_000_000;
@@ -30,7 +30,10 @@ fn scenario(chemin: &std::path::Path, ends: &[i64]) -> (f64, u64) {
     let node: NodeId = sub.create_node(&["n"]);
     sub.flush().unwrap();
     let store = EnergyStore::with_substrate(
-        EnergyConfig { default_half_life: H, ..Default::default() },
+        EnergyConfig {
+            default_half_life: H,
+            ..Default::default()
+        },
         sub.clone(),
     )
     .with_clock(clock_fn);
@@ -43,7 +46,8 @@ fn scenario(chemin: &std::path::Path, ends: &[i64]) -> (f64, u64) {
         let s = decay_clock::advance_all(sub.as_ref(), &law, 0, BASE + fin).unwrap();
         ecritures += s.advanced;
     }
-    let e = decay_clock::energy_at(sub.as_ref(), node, &law, BASE + *ends.last().unwrap()).unwrap_or(0.0);
+    let e = decay_clock::energy_at(sub.as_ref(), node, &law, BASE + *ends.last().unwrap())
+        .unwrap_or(0.0);
     (e, ecritures)
 }
 
@@ -56,7 +60,10 @@ fn l_energie_effective_est_independante_de_la_partition() {
     let fin_c: Vec<i64> = (1..=1024).map(|i| i * 62_500).collect();
     let (e_c, w_c) = scenario(&td.path().join("c"), &fin_c);
     // Irrégulier : 10, 20, 30, 4 s (total 64 s).
-    let (e_d, w_d) = scenario(&td.path().join("d"), &[10_000_000, 30_000_000, 60_000_000, 64_000_000]);
+    let (e_d, w_d) = scenario(
+        &td.path().join("d"),
+        &[10_000_000, 30_000_000, 60_000_000, 64_000_000],
+    );
 
     eprintln!("A(unique): e={e_a:.12} écritures={w_a}");
     eprintln!("B(64×1s): e={e_b:.12} écritures={w_b}");
@@ -65,6 +72,9 @@ fn l_energie_effective_est_independante_de_la_partition() {
 
     for (e, n) in [(e_a, "A"), (e_b, "B"), (e_c, "C"), (e_d, "D")] {
         let rel = (e - REF).abs() / REF;
-        assert!(rel < 1e-6, "{n}: énergie {e} trop loin de {REF} (rel={rel:e})");
+        assert!(
+            rel < 1e-6,
+            "{n}: énergie {e} trop loin de {REF} (rel={rel:e})"
+        );
     }
 }

@@ -86,9 +86,8 @@ fn decode_anchor(v: &Value) -> Option<EnergyAnchor> {
     let t_hi = epoch_secs_to_micros(champs[2]);
     // `try_from_secs_f64` rejette NaN, infinie, négative et hors capacité
     // SANS paniquer ; la validation se fait donc APRÈS une conversion sûre.
-    let h = match Duration::try_from_secs_f64(champs[3]) {
-        Ok(h) => h,
-        Err(_) => return None,
+    let Ok(h) = Duration::try_from_secs_f64(champs[3]) else {
+        return None;
     };
     // e_ref == 0 est une énergie légitime (décroissance complète) : seul
     // e_ref < 0 ou non fini est aberrant.
@@ -126,11 +125,17 @@ pub enum EnergyRead {
     Effective(f64),
     /// Ancre corrompue : miroir consultable (diagnostic), NON exploitable.
     /// `stored: None` = miroir lui-même indisponible (erreur de lecture).
-    Corrupted { stored: Option<f64> },
+    Corrupted {
+        /// Énergie stockée au miroir, si consultable.
+        stored: Option<f64>,
+    },
     /// Pas d'ancre (temporalité inconnue) : colonne héritée. `stored: None` =
     /// miroir indisponible. Un nœud vivant sans ancre et colonne nulle est ici,
     /// PAS dans `Absent`.
-    Unanchored { stored: Option<f64> },
+    Unanchored {
+        /// Énergie stockée au miroir, si consultable.
+        stored: Option<f64>,
+    },
     /// Nœud réellement absent (ou tombstoné) : `get_node_energy_f32` rend `Ok(None)`.
     Absent,
     /// Lecture en erreur : `get_node_energy_f32` rend `Err` — PAS une absence
@@ -161,7 +166,9 @@ pub fn read_energy_qualified(
             },
         },
         AnchorState::Absent => match sub.get_node_energy_f32(node_id) {
-            Ok(Some(v)) => EnergyRead::Unanchored { stored: Some(v as f64) },
+            Ok(Some(v)) => EnergyRead::Unanchored {
+                stored: Some(v as f64),
+            },
             Ok(None) => EnergyRead::Absent,
             Err(_) => EnergyRead::Unqualified,
         },
@@ -172,8 +179,11 @@ pub fn read_energy_qualified(
 /// CORRUPTION. Une corruption ne doit jamais être confondue avec une absence.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnchorState {
+    /// Ancre absente : temporalité inconnue.
     Absent,
+    /// Ancre valide.
     Valid(EnergyAnchor),
+    /// Ancre corrompue : à distinguer d'une absence.
     Corrupted,
 }
 
@@ -404,10 +414,7 @@ pub fn reinforce(
         // L'énergie est calculée au MÊME temps logique τ auquel l'ancre est
         // ancrée, DEPUIS la valeur capturée : jamais de décroissance entre le
         // calcul et l'ancrage, jamais une seconde lecture indépendante.
-        let e_courante = match e_courante_depuis_capture(sub, node_id, &capture, law, tau) {
-            Some(e) => e,
-            None => return None,
-        };
+        let e_courante = e_courante_depuis_capture(sub, node_id, &capture, law, tau)?;
         let plafond = max_energy.min(1.0);
         let nouvelle = (e_courante + delta).clamp(0.0, plafond);
 
@@ -648,7 +655,8 @@ fn avancer_un_noeud(
                     }
                     None => {
                         // Aucune ancre : ancrage de migration à now (point 4).
-                        let a = construire_ancre(e_ref_col, now_micros, now_micros, law.half_life());
+                        let a =
+                            construire_ancre(e_ref_col, now_micros, now_micros, law.half_life());
                         match write_anchor(sub, node_id, &a, &pre)? {
                             (IssuePublication::PublieIntegrale, _) => {
                                 stats.unanchored += 1;
@@ -746,7 +754,6 @@ pub fn energy_from_parts(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -764,7 +771,10 @@ mod tests {
     fn decode_anchor_refuse_les_demi_vies_invalides_sans_paniquer() {
         for h in [f64::NEG_INFINITY, f64::NAN, f64::INFINITY, -1.0, 1e300] {
             let v = anchor_value(1.0, 1.0, 1.0, h);
-            assert!(decode_anchor(&v).is_none(), "demi-vie invalide {h} → None (sans panic)");
+            assert!(
+                decode_anchor(&v).is_none(),
+                "demi-vie invalide {h} → None (sans panic)"
+            );
         }
     }
 
@@ -777,7 +787,10 @@ mod tests {
             assert!(decode_anchor(&v).is_none(), "e_ref invalide {e} → None");
         }
         let bad = Value::Bytes(Arc::from(vec![1u8, 2, 3].as_slice()));
-        assert!(decode_anchor(&bad).is_none(), "longueur ≠ ANCHOR_BYTES → None");
+        assert!(
+            decode_anchor(&bad).is_none(),
+            "longueur ≠ ANCHOR_BYTES → None"
+        );
     }
 
     #[test]
@@ -789,20 +802,30 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod tests_encodeur {
     use super::*;
-    use std::sync::Arc;
 
     fn rt(e: f64) -> Option<f64> {
-        let a = EnergyAnchor { e_ref: e, t_ref_micros: 1_000_000, t_hi_micros: 1_000_000, half_life: Duration::from_secs(64) };
+        let a = EnergyAnchor {
+            e_ref: e,
+            t_ref_micros: 1_000_000,
+            t_hi_micros: 1_000_000,
+            half_life: Duration::from_secs(64),
+        };
         decode_anchor(&encode_anchor(&a)).map(|a| a.e_ref)
     }
 
     #[test]
     fn round_trip_accepte_les_energies_legitimes() {
-        for e in [1.0, 0.5, 2f64.powi(-16), 2f64.powi(-160), f64::MIN_POSITIVE, 0.0] {
+        for e in [
+            1.0,
+            0.5,
+            2f64.powi(-16),
+            2f64.powi(-160),
+            f64::MIN_POSITIVE,
+            0.0,
+        ] {
             let d = rt(e);
             assert!(d.is_some(), "E={e} doit décoder (état valide), obtenu None");
         }
@@ -811,8 +834,16 @@ mod tests_encodeur {
     #[test]
     fn round_trip_rejette_les_aberrants() {
         for e in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let a = EnergyAnchor { e_ref: e, t_ref_micros: 1_000_000, t_hi_micros: 1_000_000, half_life: Duration::from_secs(64) };
-            assert!(decode_anchor(&encode_anchor(&a)).is_none(), "E={e} doit être rejeté");
+            let a = EnergyAnchor {
+                e_ref: e,
+                t_ref_micros: 1_000_000,
+                t_hi_micros: 1_000_000,
+                half_life: Duration::from_secs(64),
+            };
+            assert!(
+                decode_anchor(&encode_anchor(&a)).is_none(),
+                "E={e} doit être rejeté"
+            );
         }
     }
 

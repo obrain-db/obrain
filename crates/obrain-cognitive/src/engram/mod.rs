@@ -80,8 +80,8 @@ pub use hybrid_recall::{
 mod recall;
 #[cfg(feature = "engram")]
 pub use recall::{
-    reconsolidate, ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig,
-    WarmupSelector,
+    ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig, WarmupSelector,
+    reconsolidate,
 };
 // NOTE : `reconsolidate_adaptive` n'est PAS re-exporte. C'est une brique interne
 // qui suppose des parametres DEJA valides ; le point d'entree public est
@@ -122,9 +122,9 @@ pub use crystallization::{
 mod manager;
 #[cfg(feature = "engram")]
 pub use manager::{
-    EngramManager, EngramManagerConfig, EngramRevision, PredictiveAction, PredictivePolicy,
-    NodeSelector, PredictiveStep, PredictiveStepError, ReconsolidationStrategy, RevisionApplyError,
-    RevisionError, RevisionOp, RevisionStep, RevisionTarget,
+    EngramManager, EngramManagerConfig, EngramRevision, NodeSelector, PredictiveAction,
+    PredictivePolicy, PredictiveStep, PredictiveStepError, ReconsolidationStrategy,
+    RevisionApplyError, RevisionError, RevisionOp, RevisionStep, RevisionTarget,
 };
 
 #[cfg(feature = "engram")]

@@ -11,12 +11,12 @@
 
 use std::sync::Arc;
 
-use obrain_common::types::NodeId;
+use obrain_cognitive::InMemoryVectorIndex;
 use obrain_cognitive::engram::{
     AdaptiveRevisionParams, EngramManager, EngramManagerConfig, NodeSelector, ObservationScope,
     RevisionOp, RevisionStep, RevisionTarget,
 };
-use obrain_cognitive::InMemoryVectorIndex;
+use obrain_common::types::NodeId;
 
 fn manager() -> EngramManager {
     EngramManager::new(
@@ -52,7 +52,10 @@ fn set_weight(m: &EngramManager, eid: obrain_cognitive::engram::EngramId, node: 
 }
 
 /// État complet réduit : ensemble (trié), recall_count, révision globale.
-fn snapshot(m: &EngramManager, eid: obrain_cognitive::engram::EngramId) -> (Vec<(u64, f64)>, u32, u64) {
+fn snapshot(
+    m: &EngramManager,
+    eid: obrain_cognitive::engram::EngramId,
+) -> (Vec<(u64, f64)>, u32, u64) {
     let e = m.store().get(eid).expect("engramme");
     let mut ens: Vec<(u64, f64)> = e.ensemble.iter().map(|(n, w)| (n.0, *w)).collect();
     ens.sort_by_key(|(n, _)| *n);
@@ -81,7 +84,10 @@ fn operateur_sequentiel_equivaut_materialise() {
     let s_comp = snapshot(&m2, e2);
 
     eprintln!("[op E1] séquentiel={:?} matérialisé={:?}", s_seq, s_comp);
-    assert_eq!(s_seq, s_comp, "séquentiel == matérialisé (résultat ET historique)");
+    assert_eq!(
+        s_seq, s_comp,
+        "séquentiel == matérialisé (résultat ET historique)"
+    );
     assert_eq!(r1.len() + r2.len(), r_comp.len(), "même nombre de pas");
 }
 
@@ -104,7 +110,10 @@ fn operateur_regroupement_associatif() {
     let right = run(&RevisionOp::compose(&o1, &RevisionOp::compose(&o2, &o3)));
 
     eprintln!("[op E2] (o1∘o2)∘o3={:?} ; o1∘(o2∘o3)={:?}", left, right);
-    assert_eq!(left, right, "regroupement différent -> même état (associativité matérialisée)");
+    assert_eq!(
+        left, right,
+        "regroupement différent -> même état (associativité matérialisée)"
+    );
 }
 
 // E3 — dépendance réelle : un pas dépend de l'effet du précédent.
@@ -113,7 +122,7 @@ fn operateur_dependance_reelle() {
     let (a, b, c) = (NodeId(1), NodeId(2), NodeId(3));
     let op = RevisionOp::new()
         .push(step(&[a, b, c], 0.4, ObservationScope::DeclaredPartial)) // ajoute c
-        .push(step(&[c], 0.4, ObservationScope::DeclaredPartial));       // renforce c
+        .push(step(&[c], 0.4, ObservationScope::DeclaredPartial)); // renforce c
     let m = manager();
     let e = m.form_observation(&[a, b]);
     op.apply(&m, e).expect("apply");
@@ -142,7 +151,7 @@ fn operateur_erreur_intermediaire_partielle() {
     };
     let op = RevisionOp::new()
         .push(step(&[a, b], 0.4, ObservationScope::DeclaredPartial)) // OK
-        .push(bad)                                                   // échoue (paramètres invalides)
+        .push(bad) // échoue (paramètres invalides)
         .push(step(&[a, b], 0.4, ObservationScope::DeclaredPartial)); // jamais atteint
     let m = manager();
     let e = m.form_observation(&[a]);
@@ -150,9 +159,18 @@ fn operateur_erreur_intermediaire_partielle() {
     let r = op.apply(&m, e);
     assert!(r.is_err(), "l'opérateur s'arrête à la première erreur");
     let eng = m.store().get(e).unwrap();
-    assert_eq!(eng.recall_count, 1, "application PARTIELLE : seul le premier pas est publié");
-    assert!(eng.node_ids().contains(&b), "le premier pas a bien ajouté b");
-    eprintln!("[op E4] erreur intermédiaire : recall_count={} (partiel, pas atomique)", eng.recall_count);
+    assert_eq!(
+        eng.recall_count, 1,
+        "application PARTIELLE : seul le premier pas est publié"
+    );
+    assert!(
+        eng.node_ids().contains(&b),
+        "le premier pas a bien ajouté b"
+    );
+    eprintln!(
+        "[op E4] erreur intermédiaire : recall_count={} (partiel, pas atomique)",
+        eng.recall_count
+    );
 }
 
 // E5 — conservation des invariants (identité, unicité, projection cohérente).
@@ -204,14 +222,19 @@ fn operateur_resultat_vs_historique() {
 
     let (ens1, rc1, _) = snapshot(&m1, e1);
     let (ens2, rc2, _) = snapshot(&m2, e2);
-    eprintln!("[op E6] un pas w={:?} (recall {rc1}) ; trois pas w={:?} (recall {rc2})", ens1[0].1, ens2[0].1);
-    assert_ne!(ens1[0].1, ens2[0].1, "résultat mathématique DIFFÉRENT (non idempotent)");
+    eprintln!(
+        "[op E6] un pas w={:?} (recall {rc1}) ; trois pas w={:?} (recall {rc2})",
+        ens1[0].1, ens2[0].1
+    );
+    assert_ne!(
+        ens1[0].1, ens2[0].1,
+        "résultat mathématique DIFFÉRENT (non idempotent)"
+    );
     assert_eq!(rc1, 1);
     assert_eq!(rc2, 3);
     // Équivalence de RÉSULTAT et équivalence d'HISTORIQUE sont deux notions
     // DISTINCTES : ici ni l'une ni l'autre ne tient.
 }
-
 
 // E7 — RÉUTILISATION : le même opérateur STRUCTUREL s'applique à des engrams
 // aux identifiants concrets DIFFÉRENTS.
@@ -256,7 +279,11 @@ fn operateur_prefixe_restitué_sur_erreur() {
     let m = manager();
     let e = m.form_observation(&[a]);
     let err = op.apply(&m, e).unwrap_err();
-    assert_eq!(err.applied.len(), 1, "le préfixe appliqué (1 pas) est restitué");
+    assert_eq!(
+        err.applied.len(),
+        1,
+        "le préfixe appliqué (1 pas) est restitué"
+    );
     assert_eq!(err.failed_step, 1, "l'indice du pas fautif est restitué");
     eprintln!(
         "[op E8] préfixe restitué : {} pas appliqués, pas fautif {}",

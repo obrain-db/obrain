@@ -397,9 +397,15 @@ impl EnergyStore {
     #[cfg(feature = "substrate")]
     pub fn read_qualified(&self, node_id: NodeId) -> crate::decay_clock::EnergyRead {
         let law = DecayLaw::new(self.config.default_half_life);
-        crate::decay_clock::read_energy_qualified(self.substrate.as_ref().unwrap(), node_id, &law, self.now_eff())
+        crate::decay_clock::read_energy_qualified(
+            self.substrate.as_ref().unwrap(),
+            node_id,
+            &law,
+            self.now_eff(),
+        )
     }
 
+    /// Énergie courante du nœud (projection f64), `0.0` si jamais suivi ou colonne absente.
     pub fn get_energy(&self, node_id: NodeId) -> f64 {
         // Substrate-backed: column = E_ref, property = t_ref.
         #[cfg(feature = "substrate")]

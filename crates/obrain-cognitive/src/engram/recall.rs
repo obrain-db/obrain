@@ -686,8 +686,7 @@ pub(crate) fn reconsolidate_adaptive(
     if !prediction_error.is_finite() || prediction_error < 0.0 {
         return;
     }
-    let lr = (params.lr_base + prediction_error * params.lr_error_gain)
-        .clamp(0.0, params.lr_max);
+    let lr = (params.lr_base + prediction_error * params.lr_error_gain).clamp(0.0, params.lr_max);
     // DEDUPLICATION de l observation : deux occurrences du MEME NodeId ne
     // doivent pas provoquer un DOUBLE renforcement des poids.
     let mut observed_uniq: Vec<NodeId> = Vec::new();
@@ -699,7 +698,7 @@ pub(crate) fn reconsolidate_adaptive(
     // DECROISSANCE seulement si l observation est COMPLETE. Sous observation
     // PARTIELLE, l absence n est PAS une preuve de disparition : on PRESERVE.
     if scope == ObservationScope::DeclaredComplete {
-        for (nid, w) in engram.ensemble.iter_mut() {
+        for (nid, w) in &mut engram.ensemble {
             if !observed_uniq.contains(nid) {
                 *w *= 1.0 - lr;
             }

@@ -161,7 +161,10 @@ fn bulk_sort_preserve_les_poids_lies_de_l_engramme() {
         assert_eq!(got_weights.as_deref(), Some(weights.as_slice()));
         let old_to_new = old_to_new_from_nodes(&w, n, &centrality);
         let expected: Vec<u32> = members.iter().map(|&m| old_to_new[m as usize]).collect();
-        assert_eq!(got_members, expected, "membres divergents après réouverture");
+        assert_eq!(
+            got_members, expected,
+            "membres divergents après réouverture"
+        );
 
         // ── 6. Révision ──
         let new_members = vec![1u32, 3, 5];
@@ -200,7 +203,10 @@ fn compact_community_preserve_les_poids_lies_de_l_engramme() {
 
     w.vider_fenetre_de_rejeu().unwrap();
     let result = w.compact_community(1, 7, 0, 4, 32).unwrap();
-    assert!(!result.relocations.is_empty(), "aucune relocation — non probant");
+    assert!(
+        !result.relocations.is_empty(),
+        "aucune relocation — non probant"
+    );
 
     // Membres remappés via la liste de relocations (identité ailleurs).
     let old_to_new: HashMap<u32, u32> = result.relocations.iter().copied().collect();
@@ -215,7 +221,10 @@ fn compact_community_preserve_les_poids_lies_de_l_engramme() {
         Some(weights.as_slice()),
         "poids altérés par la compaction"
     );
-    assert_eq!(got_members, expected, "membres non remappés par la compaction");
+    assert_eq!(
+        got_members, expected,
+        "membres non remappés par la compaction"
+    );
     assert_ne!(got_members, members, "compaction sans effet sur l'engramme");
 
     // Rappel cohérent après compaction (projection bitset remappée).

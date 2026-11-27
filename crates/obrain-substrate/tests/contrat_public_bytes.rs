@@ -30,31 +30,63 @@ fn contrat_public_mutation_conditionnelle_bytes_32() {
 
     // capture cohérente (contenu + version) — la valeur est lue DEPUIS la capture
     let pre: Precondition = store.capturer_precondition(id, &["ancre"]).unwrap();
-    let v0 = bytes_de(pre.valeur_capturee("ancre").expect("ancre capturée présente"));
+    let v0 = bytes_de(
+        pre.valeur_capturee("ancre")
+            .expect("ancre capturée présente"),
+    );
 
     // A : incrément calculé depuis la capture
     let a = incr_byte0(&v0);
     let prep_a = store
-        .preparer_transformation(id, &[("ancre", Value::Bytes(Arc::from(a.clone())))], &pre, ModePublication::Strict)
+        .preparer_transformation(
+            id,
+            &[("ancre", Value::Bytes(Arc::from(a.clone())))],
+            &pre,
+            ModePublication::Strict,
+        )
         .unwrap();
-    assert_eq!(store.publier_si_precondition_intacte(prep_a).unwrap(), IssuePublication::PublieIntegrale);
+    assert_eq!(
+        store.publier_si_precondition_intacte(prep_a).unwrap(),
+        IssuePublication::PublieIntegrale
+    );
 
     // B : même incrément depuis la MÊME capture → précondition obsolète
     let prep_b = store
-        .preparer_transformation(id, &[("ancre", Value::Bytes(Arc::from(a)))], &pre, ModePublication::Strict)
+        .preparer_transformation(
+            id,
+            &[("ancre", Value::Bytes(Arc::from(a)))],
+            &pre,
+            ModePublication::Strict,
+        )
         .unwrap();
-    assert_eq!(store.publier_si_precondition_intacte(prep_b).unwrap(), IssuePublication::ConflitPrecondition);
+    assert_eq!(
+        store.publier_si_precondition_intacte(prep_b).unwrap(),
+        IssuePublication::ConflitPrecondition
+    );
 
     // recapture + recalcul depuis l'état courant
     let pre2: Precondition = store.capturer_precondition(id, &["ancre"]).unwrap();
-    let v1 = bytes_de(pre2.valeur_capturee("ancre").expect("ancre recapturée présente"));
+    let v1 = bytes_de(
+        pre2.valeur_capturee("ancre")
+            .expect("ancre recapturée présente"),
+    );
     let b2 = incr_byte0(&v1);
     let prep_b2 = store
-        .preparer_transformation(id, &[("ancre", Value::Bytes(Arc::from(b2)))], &pre2, ModePublication::Strict)
+        .preparer_transformation(
+            id,
+            &[("ancre", Value::Bytes(Arc::from(b2)))],
+            &pre2,
+            ModePublication::Strict,
+        )
         .unwrap();
-    assert_eq!(store.publier_si_precondition_intacte(prep_b2).unwrap(), IssuePublication::PublieIntegrale);
+    assert_eq!(
+        store.publier_si_precondition_intacte(prep_b2).unwrap(),
+        IssuePublication::PublieIntegrale
+    );
 
-    let finale = store.get_node_property(id, &PropertyKey::new("ancre")).expect("ancre finale");
+    let finale = store
+        .get_node_property(id, &PropertyKey::new("ancre"))
+        .expect("ancre finale");
     assert_eq!(bytes_de(&finale)[0], 2, "deux incréments (0 → 1 → 2)");
     eprintln!("CONTRAT_PUBLIC_OK : Bytes 32 octets, capture→calcul→engagement→recapture→recalcul");
 }

@@ -76,6 +76,7 @@
 //! la simule pas : il rend les frontières explicites et récupérables, et nomme
 //! la primitive pour le secondaire.
 
+use std::fmt::Write;
 use std::sync::{Arc, Mutex};
 
 use obrain_common::types::{NodeId, Value};
@@ -86,8 +87,8 @@ use obrain_substrate::{
 };
 
 use super::observation::{
-    AbandonOutcome, AtomicEventLedger, LedgerOutcome, ResolvedState, EFFECT_FORMATION_DONE,
-    EFFECT_FORMATION_PENDING,
+    AbandonOutcome, AtomicEventLedger, EFFECT_FORMATION_DONE, EFFECT_FORMATION_PENDING,
+    LedgerOutcome, ResolvedState,
 };
 
 /// Clé de la révision courante d'une ressource.
@@ -161,7 +162,7 @@ fn cle_evenement(event_id: &[u8; 16]) -> String {
     let mut s = String::with_capacity(CLE_EVENEMENT_PREFIXE.len() + 32);
     s.push_str(CLE_EVENEMENT_PREFIXE);
     for b in event_id {
-        s.push_str(&format!("{b:02x}"));
+        let _ = write!(s, "{b:02x}");
     }
     s
 }
@@ -183,8 +184,15 @@ fn encode_record(
     reference: Option<&ReferenceTentative>,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(
-        1 + 4 + resource.len() + 4 + definition.len() + 4 + effet.len() + 8 + 4
-            + reference.map(|r| r.to_bytes().len()).unwrap_or(0),
+        1 + 4
+            + resource.len()
+            + 4
+            + definition.len()
+            + 4
+            + effet.len()
+            + 8
+            + 4
+            + reference.map_or(0, |r| r.to_bytes().len()),
     );
     out.push(prefixe);
     pousse_champ(&mut out, resource);
@@ -209,11 +217,11 @@ fn decode_record(record: &[u8]) -> Result<(u8, Option<PayloadEnregistrement>), S
         _ => {
             return Err(format!(
                 "enregistrement d'événement invalide (préfixe {prefixe:#04x})"
-            ))
+            ));
         }
     }
     let mut pos = 0usize;
-    let mut prend_champ = |reste: &[u8], pos: &mut usize| -> Result<Vec<u8>, String> {
+    let prend_champ = |reste: &[u8], pos: &mut usize| -> Result<Vec<u8>, String> {
         if reste.len() < *pos + 4 {
             return Err("enregistrement d'événement tronqué (longueur)".to_string());
         }
@@ -311,7 +319,7 @@ impl SubstrateAtomicEventLedger {
         if let Some(id) = *cache {
             return Ok(id);
         }
-        let mut noeuds = self.store.nodes_by_label_balayage(LABEL_AUTORITE);
+        let noeuds = self.store.nodes_by_label_balayage(LABEL_AUTORITE);
         let id = match noeuds.first() {
             Some(&id) => id,
             None => self.store.create_node(&[LABEL_AUTORITE]),
@@ -517,9 +525,7 @@ impl SubstrateAtomicEventLedger {
                         }
                     }
                     RECORD_ABANDONNE => Ok((LedgerOutcome::Abandoned, None)),
-                    _ => {
-                        Err("enregistrement d'événement invalide (préfixe inconnu)".to_string())
-                    }
+                    _ => Err("enregistrement d'événement invalide (préfixe inconnu)".to_string()),
                 };
             }
 
@@ -546,8 +552,7 @@ impl SubstrateAtomicEventLedger {
             let courant = pre_res
                 .valeur_capturee(CLE_REVISION)
                 .and_then(|v| v.as_int64())
-                .map(|v| v as u64)
-                .unwrap_or(0);
+                .map_or(0, |v| v as u64);
             if courant != precondition_revision {
                 // Course AVANT tout engagement : refus SANS commettre d'identité.
                 return Ok((
@@ -595,7 +600,7 @@ impl SubstrateAtomicEventLedger {
             {
                 IssuePublication::PublieIntegrale => {}
                 IssuePublication::PubliePartielle => {
-                    return Ok((LedgerOutcome::Indeterminate, None))
+                    return Ok((LedgerOutcome::Indeterminate, None));
                 }
                 IssuePublication::ConflitPrecondition => continue,
             }
@@ -702,9 +707,8 @@ impl SubstrateAtomicEventLedger {
         //    référence incohérente ou étrangère) ──
 
         // CIBLE : la référence doit viser le nœud ressource du payload.
-        let cible_payload = match decoder_cible(&payload.resource) {
-            Ok(c) => c,
-            Err(_) => return Ok(indetermine()), // ressource non-NodeId : incohérente
+        let Ok(cible_payload) = decoder_cible(&payload.resource) else {
+            return Ok(indetermine()); // ressource non-NodeId : incohérente
         };
         if reference.cible() != cible_payload {
             return Ok(indetermine()); // la référence vise une AUTRE ressource
@@ -811,14 +815,14 @@ impl SubstrateAtomicEventLedger {
                     let (prefixe, payload) = decode_record(record)?;
                     match prefixe {
                         RECORD_APPLIQUE => {
-                            let revision = payload.map(|p| p.revision).unwrap_or(0);
+                            let revision = payload.map_or(0, |p| p.revision);
                             return Ok(AbandonOutcome::AlreadyApplied { revision });
                         }
                         RECORD_ABANDONNE => return Ok(AbandonOutcome::Abandoned),
                         _ => {
                             return Err(
                                 "enregistrement d'événement invalide (préfixe inconnu)".to_string()
-                            )
+                            );
                         }
                     }
                 }
@@ -826,7 +830,12 @@ impl SubstrateAtomicEventLedger {
                     let nouvelles = [(cle_ev.as_str(), Value::from(vec![RECORD_ABANDONNE]))];
                     let prep = self
                         .store
-                        .preparer_transformation(autorite, &nouvelles, &pre, ModePublication::Strict)
+                        .preparer_transformation(
+                            autorite,
+                            &nouvelles,
+                            &pre,
+                            ModePublication::Strict,
+                        )
                         .map_err(err_substrat)?;
                     match self
                         .store
@@ -838,7 +847,7 @@ impl SubstrateAtomicEventLedger {
                             return Err(
                                 "abandon : publication partielle (inattendu en mode strict)"
                                     .to_string(),
-                            )
+                            );
                         }
                         IssuePublication::ConflitPrecondition => continue,
                     }
@@ -901,9 +910,7 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
             .lire_etat_propriete(cible, CLE_REVISION)
             .map_err(err_substrat)?
         {
-            EtatPropriete::Presente { valeur, .. } => {
-                Ok(valeur.as_int64().map(|v| v as u64).unwrap_or(0))
-            }
+            EtatPropriete::Presente { valeur, .. } => Ok(valeur.as_int64().map_or(0, |v| v as u64)),
             _ => Ok(0),
         }
     }
@@ -926,9 +933,7 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
             .lire_etat_propriete(cible, CLE_REVISION)
             .map_err(err_substrat)?
         {
-            EtatPropriete::Presente { valeur, .. } => {
-                valeur.as_int64().map(|v| v as u64).unwrap_or(0)
-            }
+            EtatPropriete::Presente { valeur, .. } => valeur.as_int64().map_or(0, |v| v as u64),
             _ => 0,
         };
         Ok(Some((effet, revision)))
@@ -1005,14 +1010,14 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
                     let (prefixe, payload) = decode_record(record)?;
                     match prefixe {
                         RECORD_APPLIQUE => {
-                            let revision = payload.map(|p| p.revision).unwrap_or(0);
+                            let revision = payload.map_or(0, |p| p.revision);
                             return Ok(AbandonOutcome::AlreadyApplied { revision });
                         }
                         RECORD_ABANDONNE => return Ok(AbandonOutcome::Abandoned),
                         _ => {
                             return Err(
                                 "enregistrement d'événement invalide (préfixe inconnu)".to_string()
-                            )
+                            );
                         }
                     }
                 }
@@ -1020,7 +1025,12 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
                     let nouvelles = [(cle_ev.as_str(), Value::from(vec![RECORD_ABANDONNE]))];
                     let prep = self
                         .store
-                        .preparer_transformation(autorite, &nouvelles, &pre, ModePublication::Strict)
+                        .preparer_transformation(
+                            autorite,
+                            &nouvelles,
+                            &pre,
+                            ModePublication::Strict,
+                        )
                         .map_err(err_substrat)?;
                     match self
                         .store
@@ -1032,7 +1042,7 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
                             return Err(
                                 "abandon : publication partielle (inattendu en mode strict)"
                                     .to_string(),
-                            )
+                            );
                         }
                         IssuePublication::ConflitPrecondition => continue,
                     }
@@ -1091,7 +1101,7 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
                     return Err(
                         "complete_formation : publication partielle (inattendu en mode strict)"
                             .to_string(),
-                    )
+                    );
                 }
                 IssuePublication::ConflitPrecondition => continue,
             }
@@ -1142,9 +1152,7 @@ mod tests {
         let rid = ressource_bytes(id);
         let def = b"def-1".to_vec();
         let eff = effet_revision(id, 7);
-        let out = ledger
-            .apply_event(&oid(1), &rid, &def, 0, &eff, 1)
-            .unwrap();
+        let out = ledger.apply_event(&oid(1), &rid, &def, 0, &eff, 1).unwrap();
         assert_eq!(out, LedgerOutcome::Applied);
         assert_eq!(ledger.resource_revision(&rid).unwrap(), 1);
         assert_eq!(ledger.resource_state(&rid).unwrap(), Some((eff.clone(), 1)));
@@ -1166,7 +1174,11 @@ mod tests {
                 revision: 1
             }
         );
-        assert_eq!(ledger.resource_revision(&rid).unwrap(), 1, "pas de double application");
+        assert_eq!(
+            ledger.resource_revision(&rid).unwrap(),
+            1,
+            "pas de double application"
+        );
     }
 
     // 3) même identité, contenu incompatible : refus nommé.
@@ -1174,7 +1186,9 @@ mod tests {
     fn meme_identite_contenu_incompatible() {
         let (ledger, id) = ledger_memoire();
         let rid = ressource_bytes(id);
-        ledger.apply_event(&oid(1), &rid, b"def-a", 0, &effet_revision(id, 7), 1).unwrap();
+        ledger
+            .apply_event(&oid(1), &rid, b"def-a", 0, &effet_revision(id, 7), 1)
+            .unwrap();
         let out = ledger
             .apply_event(&oid(1), &rid, b"def-b", 0, &effet_revision(id, 7), 1)
             .unwrap();
@@ -1184,7 +1198,11 @@ mod tests {
                 recorded_definition: b"def-a".to_vec()
             }
         );
-        assert_eq!(ledger.resource_revision(&rid).unwrap(), 1, "conflit sans effet");
+        assert_eq!(
+            ledger.resource_revision(&rid).unwrap(),
+            1,
+            "conflit sans effet"
+        );
     }
 
     // 4) révision devenue obsolète : PreconditionFailed.
@@ -1192,13 +1210,17 @@ mod tests {
     fn revision_obsolete() {
         let (ledger, id) = ledger_memoire();
         let rid = ressource_bytes(id);
-        ledger.apply_event(&oid(1), &rid, b"def-a", 0, &effet_revision(id, 7), 1).unwrap();
+        ledger
+            .apply_event(&oid(1), &rid, b"def-a", 0, &effet_revision(id, 7), 1)
+            .unwrap();
         let out = ledger
             .apply_event(&oid(2), &rid, b"def-b", 0, &effet_revision(id, 8), 2)
             .unwrap();
         assert_eq!(
             out,
-            LedgerOutcome::PreconditionFailed { current_revision: 1 }
+            LedgerOutcome::PreconditionFailed {
+                current_revision: 1
+            }
         );
         // Recalcul depuis la révision courante : applique.
         let recomputed = ledger
@@ -1251,14 +1273,20 @@ mod tests {
         let store = Arc::new(SubstrateStore::open(&chemin).unwrap());
         let ledger = SubstrateAtomicEventLedger::new(store);
         let rid = ressource_bytes(id);
-        assert_eq!(ledger.resource_revision(&rid).unwrap(), 1, "révision survivante");
+        assert_eq!(
+            ledger.resource_revision(&rid).unwrap(),
+            1,
+            "révision survivante"
+        );
         let eff_attendu = effet_revision(id, 7);
         assert_eq!(
             ledger.resource_state(&rid).unwrap(),
             Some((eff_attendu.clone(), 1)),
             "état survivant"
         );
-        let replay = ledger.apply_event(&oid(1), &rid, b"def-1", 0, &eff_attendu, 1).unwrap();
+        let replay = ledger
+            .apply_event(&oid(1), &rid, b"def-1", 0, &eff_attendu, 1)
+            .unwrap();
         assert_eq!(
             replay,
             LedgerOutcome::AlreadyApplied {
@@ -1280,7 +1308,14 @@ mod tests {
             let ledger = SubstrateAtomicEventLedger::new(store.clone());
             let def = b"def-1".to_vec();
             ledger
-                .apply_event(&oid(9), &ressource_bytes(id), &def, 0, &effet_revision(id, 3), 1)
+                .apply_event(
+                    &oid(9),
+                    &ressource_bytes(id),
+                    &def,
+                    0,
+                    &effet_revision(id, 3),
+                    1,
+                )
                 .unwrap();
             store.close().unwrap();
             (id, def)
@@ -1308,10 +1343,15 @@ mod tests {
         let (ledger, id) = ledger_memoire();
         let rid = ressource_bytes(id);
         let eff = effet_revision(id, 7);
-        ledger.apply_event(&oid(1), &rid, b"def-1", 0, &eff, 1).unwrap();
+        ledger
+            .apply_event(&oid(1), &rid, b"def-1", 0, &eff, 1)
+            .unwrap();
         // Le store (projection) est supposé en retard : l'état enregistré au
         // registre porte l'effet canonique à re-matérialiser.
-        let (etat, rev) = ledger.resource_state(&rid).unwrap().expect("état enregistré");
+        let (etat, rev) = ledger
+            .resource_state(&rid)
+            .unwrap()
+            .expect("état enregistré");
         assert_eq!(rev, 1);
         assert_eq!(etat.first(), Some(&0x01), "préfixe d'effet révision");
         assert_eq!(&etat[1..9], &id.0.to_be_bytes(), "cible dans l'effet");
@@ -1324,13 +1364,25 @@ mod tests {
     fn absence_de_double_application() {
         let (ledger, id) = ledger_memoire();
         let rid = ressource_bytes(id);
-        ledger.apply_event(&oid(1), &rid, b"d1", 0, &effet_revision(id, 1), 1).unwrap();
-        ledger.apply_event(&oid(2), &rid, b"d2", 1, &effet_revision(id, 2), 2).unwrap();
+        ledger
+            .apply_event(&oid(1), &rid, b"d1", 0, &effet_revision(id, 1), 1)
+            .unwrap();
+        ledger
+            .apply_event(&oid(2), &rid, b"d2", 1, &effet_revision(id, 2), 2)
+            .unwrap();
         assert_eq!(ledger.resource_revision(&rid).unwrap(), 2);
         // Rejeu des deux : la révision ne bouge pas.
-        ledger.apply_event(&oid(1), &rid, b"d1", 0, &effet_revision(id, 1), 1).unwrap();
-        ledger.apply_event(&oid(2), &rid, b"d2", 1, &effet_revision(id, 2), 2).unwrap();
-        assert_eq!(ledger.resource_revision(&rid).unwrap(), 2, "aucune avancée au rejeu");
+        ledger
+            .apply_event(&oid(1), &rid, b"d1", 0, &effet_revision(id, 1), 1)
+            .unwrap();
+        ledger
+            .apply_event(&oid(2), &rid, b"d2", 1, &effet_revision(id, 2), 2)
+            .unwrap();
+        assert_eq!(
+            ledger.resource_revision(&rid).unwrap(),
+            2,
+            "aucune avancée au rejeu"
+        );
     }
 
     // 10) réponse perdue résolue par la RÉFÉRENCE native (resoudre_reference),
@@ -1344,7 +1396,14 @@ mod tests {
             let id = store.create_node(&["ressource"]);
             let ledger = SubstrateAtomicEventLedger::new(store.clone());
             let (out, reference) = ledger
-                .apply_avec_reference(&oid(1), &ressource_bytes(id), b"def-1", 0, &effet_revision(id, 7), 1)
+                .apply_avec_reference(
+                    &oid(1),
+                    &ressource_bytes(id),
+                    b"def-1",
+                    0,
+                    &effet_revision(id, 7),
+                    1,
+                )
                 .unwrap();
             assert_eq!(out, LedgerOutcome::Applied);
             let reference = reference.expect("référence de tentative présente");
@@ -1362,7 +1421,9 @@ mod tests {
     fn abandon_d_une_appliquee_refuse() {
         let (ledger, id) = ledger_memoire();
         let rid = ressource_bytes(id);
-        ledger.apply_event(&oid(1), &rid, b"d1", 0, &effet_revision(id, 1), 1).unwrap();
+        ledger
+            .apply_event(&oid(1), &rid, b"d1", 0, &effet_revision(id, 1), 1)
+            .unwrap();
         assert_eq!(
             ledger.abandon_on(&rid, &oid(1)).unwrap(),
             AbandonOutcome::AlreadyApplied { revision: 1 }
@@ -1374,13 +1435,22 @@ mod tests {
     fn abandon_d_une_identite_neuve_accepte() {
         let (ledger, id) = ledger_memoire();
         let rid = ressource_bytes(id);
-        assert_eq!(ledger.abandon_on(&rid, &oid(5)).unwrap(), AbandonOutcome::Abandoned);
         assert_eq!(
-            ledger.apply_event(&oid(5), &rid, b"d5", 0, &effet_revision(id, 5), 1).unwrap(),
+            ledger.abandon_on(&rid, &oid(5)).unwrap(),
+            AbandonOutcome::Abandoned
+        );
+        assert_eq!(
+            ledger
+                .apply_event(&oid(5), &rid, b"d5", 0, &effet_revision(id, 5), 1)
+                .unwrap(),
             LedgerOutcome::Abandoned,
             "une identité abandonnée n'est jamais appliquée"
         );
-        assert_eq!(ledger.resource_revision(&rid).unwrap(), 0, "l'abandon n'a rien écrit");
+        assert_eq!(
+            ledger.resource_revision(&rid).unwrap(),
+            0,
+            "l'abandon n'a rien écrit"
+        );
     }
 
     // 13) resource_id de longueur non-8 : refus nommé.
@@ -1412,7 +1482,10 @@ mod tests {
             other => panic!("attendu Applied, reçu {other:?}"),
         }
         // Identité inconnue : NotApplied (une absence n'est pas une erreur).
-        assert_eq!(ledger.resolve(&oid(999)).unwrap(), ResolvedState::NotApplied);
+        assert_eq!(
+            ledger.resolve(&oid(999)).unwrap(),
+            ResolvedState::NotApplied
+        );
     }
 
     // 15) abandon depuis l'identité SEULE (sans ressource) : opérationnel.
@@ -1453,12 +1526,18 @@ mod tests {
         assert!(ledger.complete_formation(&k).unwrap(), "PENDING → DONE");
         match ledger.resolve(&k).unwrap() {
             ResolvedState::Applied { state, .. } => {
-                assert_eq!(state, vec![EFFECT_FORMATION_DONE])
+                assert_eq!(state, vec![EFFECT_FORMATION_DONE]);
             }
             other => panic!("attendu Applied, reçu {other:?}"),
         }
-        assert!(!ledger.complete_formation(&k).unwrap(), "déjà DONE : pas de transition");
-        assert!(!ledger.complete_formation(&oid(101)).unwrap(), "identité inconnue : pas de transition");
+        assert!(
+            !ledger.complete_formation(&k).unwrap(),
+            "déjà DONE : pas de transition"
+        );
+        assert!(
+            !ledger.complete_formation(&oid(101)).unwrap(),
+            "identité inconnue : pas de transition"
+        );
     }
 
     // 17) formation : rejeu idempotent + conflit d'identité, aucune création double.
@@ -1479,7 +1558,7 @@ mod tests {
             .unwrap()
         {
             LedgerOutcome::AlreadyApplied { state, .. } => {
-                assert_eq!(state, vec![EFFECT_FORMATION_PENDING])
+                assert_eq!(state, vec![EFFECT_FORMATION_PENDING]);
             }
             other => panic!("attendu AlreadyApplied, reçu {other:?}"),
         }
@@ -1541,7 +1620,7 @@ mod tests {
         // complete_formation jamais appelé : resolve rend PENDING.
         match ledger.resolve(&k).unwrap() {
             ResolvedState::Applied { state, .. } => {
-                assert_eq!(state, vec![EFFECT_FORMATION_PENDING])
+                assert_eq!(state, vec![EFFECT_FORMATION_PENDING]);
             }
             other => panic!("attendu Applied, reçu {other:?}"),
         }
@@ -1550,7 +1629,7 @@ mod tests {
             .unwrap()
         {
             LedgerOutcome::AlreadyApplied { state, .. } => {
-                assert_eq!(state, vec![EFFECT_FORMATION_PENDING])
+                assert_eq!(state, vec![EFFECT_FORMATION_PENDING]);
             }
             other => panic!("attendu AlreadyApplied, reçu {other:?}"),
         }
@@ -1609,7 +1688,10 @@ mod tests {
             .iter()
             .filter(|o| matches!(o, LedgerOutcome::AlreadyApplied { .. }))
             .count();
-        assert_eq!(n_applied, 1, "exactement une application (out1={out1:?} out2={out2:?})");
+        assert_eq!(
+            n_applied, 1,
+            "exactement une application (out1={out1:?} out2={out2:?})"
+        );
         assert_eq!(n_rejoues, 1, "l'autre est un rejeu");
     }
 
@@ -1660,17 +1742,24 @@ mod tests {
         let eff2 = effet_revision(id, 2);
         // K1 appliquée (révision 0 -> 1).
         assert_eq!(
-            ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap(),
+            ledger
+                .apply_event(&oid(1), &rid, &def1, 0, &eff1, 1)
+                .unwrap(),
             LedgerOutcome::Applied
         );
         // K2 supplante K1 (révision 1 -> 2).
         assert_eq!(
-            ledger.apply_event(&oid(2), &rid, &def2, 1, &eff2, 2).unwrap(),
+            ledger
+                .apply_event(&oid(2), &rid, &def2, 1, &eff2, 2)
+                .unwrap(),
             LedgerOutcome::Applied
         );
         // La projection courante ne porte QUE K2 (K1 est supplantée) ...
         assert_eq!(ledger.resource_revision(&rid).unwrap(), 2);
-        assert_eq!(ledger.resource_state(&rid).unwrap(), Some((eff2.clone(), 2)));
+        assert_eq!(
+            ledger.resource_state(&rid).unwrap(),
+            Some((eff2.clone(), 2))
+        );
         // ... mais K1 a ÉTÉ ENGAGÉE historiquement : resolve(K1) = Applied.
         match ledger.resolve(&oid(1)).unwrap() {
             ResolvedState::Applied {
@@ -1725,14 +1814,21 @@ mod tests {
         ledger.attendre_suspension_engagement();
 
         // K1 matérialise DÉTERMINISTEMENT pendant la suspension de K2.
-        let out1 = ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap();
+        let out1 = ledger
+            .apply_event(&oid(1), &rid, &def1, 0, &eff1, 1)
+            .unwrap();
         assert_eq!(out1, LedgerOutcome::Applied);
 
         // Relâcher K2 : sa matérialisation échoue (révision avancée), mais son
         // identité est déjà COMMISE.
         ledger.relacher_suspension_engagement();
         let out2 = t2.join().unwrap();
-        assert_eq!(out2, LedgerOutcome::PreconditionFailed { current_revision: 1 });
+        assert_eq!(
+            out2,
+            LedgerOutcome::PreconditionFailed {
+                current_revision: 1
+            }
+        );
 
         // NORME : K2 = INDÉTERMINÉE (identité commise, effet jamais matérialisé
         // — la preuve historique est absente, PAS une attestation de
@@ -1820,7 +1916,9 @@ mod tests {
         let eff1 = effet_revision(id, 1);
         let def2 = b"def-K2".to_vec();
         let eff2 = effet_revision(id, 2);
-        ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap();
+        ledger
+            .apply_event(&oid(1), &rid, &def1, 0, &eff1, 1)
+            .unwrap();
 
         // K2 : identité commise (révision résultante 2) puis SUSPENSION avant
         // matérialisation.
@@ -1840,17 +1938,25 @@ mod tests {
 
         // Pendant la suspension, la révision AVANCE (écriture concurrente) : à
         // la reprise K2 bute sur la révision et ne matérialise JAMAIS son effet.
-        ledger.store().set_node_property(id, "obs:revision", Value::from(2i64));
-        ledger.store().set_node_property(id, "obs:effect", Value::from(effet_revision(id, 2)));
+        ledger
+            .store()
+            .set_node_property(id, "obs:revision", Value::from(2i64));
+        ledger
+            .store()
+            .set_node_property(id, "obs:effect", Value::from(effet_revision(id, 2)));
         ledger.relacher_suspension_engagement();
         assert_eq!(
             t2.join().unwrap(),
-            LedgerOutcome::PreconditionFailed { current_revision: 2 }
+            LedgerOutcome::PreconditionFailed {
+                current_revision: 2
+            }
         );
 
         // K2 = INDÉTERMINÉE : effet enregistré restitué, jamais « non-engagé ».
         match ledger.resolve(&oid(2)).unwrap() {
-            ResolvedState::Indeterminate { state, revision, .. } => {
+            ResolvedState::Indeterminate {
+                state, revision, ..
+            } => {
                 assert_eq!(state, eff2);
                 assert_eq!(revision, 2);
             }
@@ -1858,13 +1964,24 @@ mod tests {
         }
 
         // Rejeu : AlreadyApplied, AUCUNE matérialisation supplémentaire.
-        let rejeu = ledger.apply_event(&oid(2), &rid, &def2, 1, &eff2, 2).unwrap();
-        assert!(matches!(rejeu, LedgerOutcome::AlreadyApplied { revision: 2, .. }));
+        let rejeu = ledger
+            .apply_event(&oid(2), &rid, &def2, 1, &eff2, 2)
+            .unwrap();
+        assert!(matches!(
+            rejeu,
+            LedgerOutcome::AlreadyApplied { revision: 2, .. }
+        ));
     }
 
     /// Encode une référence v2 « à la main » (magic OBRT, version 2, domaine
     /// big-endian) — le format documenté. Un attaquant ferait exactement cela.
-    fn encoder_v2(auteur: u64, horloge: u64, cible: NodeId, domaine: u128, cles: &[&str]) -> Vec<u8> {
+    fn encoder_v2(
+        auteur: u64,
+        horloge: u64,
+        cible: NodeId,
+        domaine: u128,
+        cles: &[&str],
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"OBRT");
         out.push(2);

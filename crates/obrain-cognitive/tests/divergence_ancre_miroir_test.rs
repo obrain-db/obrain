@@ -7,7 +7,7 @@
 use obrain_cognitive::decay_clock::{self, EnergyRead};
 use obrain_cognitive::decay_law::DecayLaw;
 use obrain_common::types::{NodeId, Value};
-use obrain_core::graph::{GraphStore, GraphStoreMut};
+use obrain_core::graph::GraphStoreMut;
 use obrain_substrate::SubstrateStore;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,13 +39,22 @@ fn la_divergence_ancre_miroir_est_detectable_et_l_ancre_fait_autorite() {
     let ancre = decay_clock::read_anchor(&sub, n).unwrap();
     eprintln!("miroir (Q1.15) = {miroir}, ancre e_ref = {}", ancre.e_ref);
     assert!((ancre.e_ref - 0.75).abs() < 1e-9, "ancre = 0,75 (autorité)");
-    assert!((miroir - 0.5).abs() < 1e-4, "miroir = 0,5 (projection obsolète)");
+    assert!(
+        (miroir - 0.5).abs() < 1e-4,
+        "miroir = 0,5 (projection obsolète)"
+    );
 
     // La lecture qualifiée rend l'ancre (Effective 0,75), pas le miroir obsolète.
     let r = decay_clock::read_energy_qualified(&sub, n, &law, BASE);
     eprintln!("read_energy_qualified = {r:?}");
-    assert!(matches!(r, EnergyRead::Effective(e) if (e - 0.75).abs() < 1e-3), "l'ancre fait autorité, pas le miroir");
+    assert!(
+        matches!(r, EnergyRead::Effective(e) if (e - 0.75).abs() < 1e-3),
+        "l'ancre fait autorité, pas le miroir"
+    );
 
     // La divergence est détectable : ancre ≠ miroir.
-    assert!((ancre.e_ref as f32 - miroir).abs() > 0.1, "divergence ancre/miroir observable");
+    assert!(
+        (ancre.e_ref as f32 - miroir).abs() > 0.1,
+        "divergence ancre/miroir observable"
+    );
 }

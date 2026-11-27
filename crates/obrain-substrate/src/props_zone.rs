@@ -1398,7 +1398,7 @@ impl PropsZone {
         entry: &PropertyEntry,
     ) -> SubstrateResult<u64> {
         self.allouer_page_neuve_sur(owner_id, kind, head, entry)
-            .map(|idx| u64::from(idx))
+            .map(u64::from)
     }
 
     /// Rattache une page privée (préparée par [`Self::preparer_page_privee`])

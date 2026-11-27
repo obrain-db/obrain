@@ -353,7 +353,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod tests_timestamps {
     use super::*;
@@ -379,7 +378,10 @@ mod tests_timestamps {
     fn elapsed_monotonic_est_borné_et_ne_remonte_pas() {
         let t_ref = 1_000_000i64;
         // t_hi < t_ref, now < t_ref → dt négatif → ZERO (pas de remontée).
-        assert_eq!(elapsed_monotonic(t_ref, t_ref - 500, t_ref - 1000), Duration::ZERO);
+        assert_eq!(
+            elapsed_monotonic(t_ref, t_ref - 500, t_ref - 1000),
+            Duration::ZERO
+        );
         // now recule sous t_hi → high-water mark borne (monotonie de session).
         let e1 = elapsed_monotonic(t_ref, t_ref + 2000, t_ref + 1000);
         let e2 = elapsed_monotonic(t_ref, t_ref + 500, t_ref + 2000);
@@ -389,13 +391,22 @@ mod tests_timestamps {
         // saturating_sub borne à i64::MAX : pas de débordement, pas de panic.
         assert_eq!(big, Duration::from_micros(i64::MAX as u64));
         // Ancre dans le futur → zéro.
-        assert_eq!(elapsed_monotonic(t_ref + 1000, t_ref, t_ref), Duration::ZERO);
+        assert_eq!(
+            elapsed_monotonic(t_ref + 1000, t_ref, t_ref),
+            Duration::ZERO
+        );
     }
 
     #[test]
     fn demi_vie_nulle_ou_negative_est_remplacee() {
-        assert_eq!(DecayLaw::new(Duration::ZERO).half_life(), Duration::from_secs(24 * 3600));
-        assert_eq!(DecayLaw::new(Duration::from_secs(64)).half_life(), Duration::from_secs(64));
+        assert_eq!(
+            DecayLaw::new(Duration::ZERO).half_life(),
+            Duration::from_secs(24 * 3600)
+        );
+        assert_eq!(
+            DecayLaw::new(Duration::from_secs(64)).half_life(),
+            Duration::from_secs(64)
+        );
     }
 }
 

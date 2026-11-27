@@ -47,7 +47,10 @@ fn creation_deux_bases_deux_domaines_distincts() {
     let td = tempfile::tempdir().unwrap();
     let a = creer_et_fermer(&td.path().join("a"));
     let b = creer_et_fermer(&td.path().join("b"));
-    assert_ne!(a, b, "deux bases neuves doivent avoir des domaines distincts");
+    assert_ne!(
+        a, b,
+        "deux bases neuves doivent avoir des domaines distincts"
+    );
     assert_ne!(a, 0, "un domaine neuf n'est jamais nul");
 }
 
@@ -58,7 +61,11 @@ fn reouverture_meme_base_meme_domaine() {
     let chemin = td.path().join("kb");
     let premier = creer_et_fermer(&chemin);
     let store = SubstrateStore::open(&chemin).unwrap();
-    assert_eq!(store.domaine_id(), premier, "la réouverture doit relire le même domaine");
+    assert_eq!(
+        store.domaine_id(),
+        premier,
+        "la réouverture doit relire le même domaine"
+    );
     store.close().unwrap();
 }
 
@@ -72,7 +79,11 @@ fn deplacement_repertoire_conserve_le_domaine() {
     let id = creer_et_fermer(&src);
     copier_repertoire(&src, &dst);
     let store = SubstrateStore::open(&dst).unwrap();
-    assert_eq!(store.domaine_id(), id, "le domaine suit les fichiers, pas le chemin");
+    assert_eq!(
+        store.domaine_id(),
+        id,
+        "le domaine suit les fichiers, pas le chemin"
+    );
     store.close().unwrap();
 }
 
@@ -120,7 +131,11 @@ fn domaine_id_tronque_refuse_l_ouverture() {
     );
     // Aucune réinitialisation silencieuse : le fichier reste corrompu.
     let brut = std::fs::read(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID)).unwrap();
-    assert_eq!(brut.len(), 8, "le fichier corrompu ne doit pas être réécrit");
+    assert_eq!(
+        brut.len(),
+        8,
+        "le fichier corrompu ne doit pas être réécrit"
+    );
 }
 
 /// `domaine.id` avec une version inconnue : l'ouverture refuse, sans régénérer.
@@ -241,7 +256,11 @@ fn creation_initiale_pose_le_marqueur() {
     let id = creer_et_fermer(&chemin);
     assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists());
     let brut = std::fs::read(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT)).unwrap();
-    assert_eq!(&brut[..6], b"OBRI1\n", "le marqueur porte le magic OBRI + version 1");
+    assert_eq!(
+        &brut[..6],
+        b"OBRI1\n",
+        "le marqueur porte le magic OBRI + version 1"
+    );
     assert_eq!(
         &brut[6..],
         &id.to_be_bytes()[..16],
@@ -304,8 +323,15 @@ fn migration_base_legacy_domaine_non_vide_conserve_donnees() {
         id,
         "la migration conserve l'identité existante (jamais de nouvelle identité)"
     );
-    assert!(chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT).exists(), "le marqueur est écrit");
-    assert_eq!(store.node_count(), 1, "les données survivent à la migration");
+    assert!(
+        chemin.join(obrain_substrate::FICHIER_DOMAINE_INIT).exists(),
+        "le marqueur est écrit"
+    );
+    assert_eq!(
+        store.node_count(),
+        1,
+        "les données survivent à la migration"
+    );
     store.close().unwrap();
 }
 
@@ -332,12 +358,20 @@ fn reouverture_ephemere_puis_migration_explicite_conserve_donnees() {
     // Réouverture : identité ÉPHÉMÈRE, rien n'est écrit.
     {
         let store = SubstrateStore::open(&chemin).unwrap();
-        assert_ne!(store.domaine_id(), 0, "une identité éphémère est servie, jamais refusée");
+        assert_ne!(
+            store.domaine_id(),
+            0,
+            "une identité éphémère est servie, jamais refusée"
+        );
         assert!(
             !chemin.join(obrain_substrate::FICHIER_DOMAINE_ID).exists(),
             "la réouverture ne doit PAS réattribuer d'identité persistée à une base legacy"
         );
-        assert_eq!(store.node_count(), 1, "les données d'une base legacy survivent");
+        assert_eq!(
+            store.node_count(),
+            1,
+            "les données d'une base legacy survivent"
+        );
         store.close().unwrap();
     }
 

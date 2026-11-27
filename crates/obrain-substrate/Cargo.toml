@@ -23,6 +23,10 @@ fs2 = { workspace = true }
 # Navigateur : colle JS du journal OPFS (voir src/opfs.rs).
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+# Source d'identité de domaine sur wasm32 (crypto.getRandomValues, feature
+# wasm_js) : std::process::id et std::time::SystemTime ne sont pas disponibles
+# sur cette cible (panique à l'exécution).
+getrandom = { workspace = true, features = ["wasm_js"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

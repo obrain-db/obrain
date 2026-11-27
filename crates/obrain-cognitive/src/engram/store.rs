@@ -350,10 +350,7 @@ impl EngramStore {
     /// Injecte la projection (signature = f(ensemble)). N'impose AUCUN encodeur
     /// particulier : toute projection future peut s'y brancher. Sans projection,
     /// le store reste neutre (aucun recalcul).
-    pub fn set_projection(
-        &self,
-        p: Arc<dyn Fn(&[(NodeId, f64)]) -> Vec<f64> + Send + Sync>,
-    ) {
+    pub fn set_projection(&self, p: Arc<dyn Fn(&[(NodeId, f64)]) -> Vec<f64> + Send + Sync>) {
         *self.projection.write() = Some(p);
     }
 

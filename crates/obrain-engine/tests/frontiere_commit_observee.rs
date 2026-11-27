@@ -57,7 +57,9 @@ fn a_commit_durable_avec_cognition_concurrente_doit_reussir() {
         s.begin_transaction().expect("begin");
         s.create_node(&["T"]);
         s.commit().expect("commit");
-        let fin = db.substrate_handle().and_then(|x| x.frontiere_du_commit_du_fil());
+        let fin = db
+            .substrate_handle()
+            .and_then(|x| x.frontiere_du_commit_du_fil());
         let durable = db.wal_octets_durables().unwrap_or(0);
         if !verifier(fin, durable, &format!("A k={i}")) {
             violations += 1;
@@ -82,7 +84,9 @@ fn b_marqueur_non_fsynce_doit_etre_detecte() {
     s.begin_transaction().expect("begin");
     s.create_node(&["T"]);
     s.commit().expect("commit");
-    let fin = db.substrate_handle().and_then(|x| x.frontiere_du_commit_du_fil());
+    let fin = db
+        .substrate_handle()
+        .and_then(|x| x.frontiere_du_commit_du_fil());
     let durable = db.wal_octets_durables().unwrap_or(0);
     let couvert = verifier(fin, durable, "B");
     db.close().expect("close");
@@ -115,10 +119,7 @@ fn c_deux_fils_evaluent_chacun_son_propre_marqueur() {
                     .and_then(|x| x.frontiere_du_commit_du_fil())
                     .expect("marqueur présent");
                 let durable = db.wal_octets_durables().unwrap_or(0);
-                assert!(
-                    fin <= durable,
-                    "fil {i} : fin={fin} > durable={durable}"
-                );
+                assert!(fin <= durable, "fil {i} : fin={fin} > durable={durable}");
                 resultats.push(fin);
             }
             db.close().expect("close");
@@ -196,7 +197,7 @@ fn d_ancien_oracle_contre_nouveau_sur_la_meme_execution() {
 
     // On laisse la flotte de thinkers travailler, en attendant un VRAI signe d'écriture
     // cognitive (le WAL dépasse le dernier marqueur applicatif) — pas un délai arbitraire.
-    let fin_dernier = mesures.last().map(|m| m.0).unwrap_or(0);
+    let fin_dernier = mesures.last().map_or(0, |m| m.0);
     let mut cognition_apres_coup = 0;
     for _ in 0..50 {
         if taille_wal(&d) > fin_dernier {
@@ -230,7 +231,6 @@ fn d_ancien_oracle_contre_nouveau_sur_la_meme_execution() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-
 /// **Contrôle minimal de l'oracle, sans cognition** : un écrivain secondaire emprunte le
 /// vrai chemin WAL (`Writer::reinforce_energy`, `flags: 0`) après un commit applicatif
 /// durable. On établit `C <= D` puis on MESURE si `D < T` — sans présumer que `flags: 0`
@@ -262,19 +262,28 @@ fn e_ecrivain_secondaire_controle_apres_commit_durable() {
         .expect("écriture secondaire d'énergie");
 
     let t_final = taille_wal(&d);
-    let d_final = db.wal_octets_durables().expect("frontière durable après écriture secondaire");
+    let d_final = db
+        .wal_octets_durables()
+        .expect("frontière durable après écriture secondaire");
     db.close().expect("close");
     let _ = std::fs::remove_dir_all(&d);
 
     println!(
         "commit acquitté : C={c} D={d_apres_ack} T={t_apres_ack} | après écriture secondaire : \
          T'={t_final} D'={d_final} | ancien oracle signalerait : {}",
-        if d_final < t_final { "OUI (D' < T')" } else { "non (D' >= T')" }
+        if d_final < t_final {
+            "OUI (D' < T')"
+        } else {
+            "non (D' >= T')"
+        }
     );
 
     // L'invariant porte sur les MÊMES frontières finales : une synchronisation complète
     // de l'écriture secondaire ferait disparaître le scénario sans faire échouer le test.
-    assert!(t_final > t_apres_ack, "l'écriture secondaire doit étendre le WAL");
+    assert!(
+        t_final > t_apres_ack,
+        "l'écriture secondaire doit étendre le WAL"
+    );
     assert!(
         c <= d_final,
         "l'oracle corrigé doit rester satisfait sur les frontières finales (C={c} <= D'={d_final})"

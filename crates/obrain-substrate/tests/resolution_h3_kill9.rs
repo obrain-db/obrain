@@ -192,7 +192,10 @@ fn tuer_9(child: &mut Child) {
     );
 }
 
-fn reference_et_resolution(store: &SubstrateStore, dir: &Path) -> (ReferenceTentative, ResolutionTentative) {
+fn reference_et_resolution(
+    store: &SubstrateStore,
+    dir: &Path,
+) -> (ReferenceTentative, ResolutionTentative) {
     let octets = std::fs::read(dir.join("reference.bin")).unwrap();
     let reference = ReferenceTentative::from_bytes(&octets).unwrap();
     let res = store.resoudre_reference(&reference).unwrap();
@@ -231,21 +234,35 @@ fn h3_kill9_avant_publication() {
     let id = node_id(td.path());
     let (reference, res) = reference_et_resolution(&store, td.path());
     assert_eq!(res.cible(), id);
-    assert_eq!(res.auteur_resolvant(), reference.auteur(), "autorité résolvante = auteur de la référence");
+    assert_eq!(
+        res.auteur_resolvant(),
+        reference.auteur(),
+        "autorité résolvante = auteur de la référence"
+    );
     assert_eq!(
         res.integrite(),
         IntegriteTentative::Indeterminee,
         "jamais engagée → indéterminé (jamais « absence définitive »)"
     );
-    assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(1)));
-    assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(2)));
+    assert_eq!(
+        store.get_node_property(id, &PropertyKey::new("a")),
+        Some(Value::Int64(1))
+    );
+    assert_eq!(
+        store.get_node_property(id, &PropertyKey::new("b")),
+        Some(Value::Int64(2))
+    );
     // IDENTITÉ EXACTE : l'estampille initiale (auteur + horloge) est CONSERVÉE
     // À L'IDENTIQUE après kill -9 avant bascule — pas seulement « différente de
     // la tentative ».
     let (estamp_a, estamp_b) = estampilles_initiales(td.path());
     for i in 0..res.nb_effets() {
         let e = res.effet(i);
-        assert_eq!(e.etat(), ResolutionEffet::Indetermine, "chaque clé est indéterminée");
+        assert_eq!(
+            e.etat(),
+            ResolutionEffet::Indetermine,
+            "chaque clé est indéterminée"
+        );
         let attendu = if e.cle() == "a" {
             estamp_a
         } else if e.cle() == "b" {
@@ -266,7 +283,9 @@ fn h3_kill9_avant_publication() {
             "l'estampille de la tentative n'est PAS la courante (jamais engagée)"
         );
     }
-    eprintln!("H3_KILL9_AVANT_OK : résolution indéterminée sans republication, estampille initiale conservée");
+    eprintln!(
+        "H3_KILL9_AVANT_OK : résolution indéterminée sans republication, estampille initiale conservée"
+    );
 }
 
 /// H3 — kill -9 APRÈS publication : réponse perdue, réouverture en processus
@@ -284,14 +303,24 @@ fn h3_kill9_apres_publication() {
     let id = node_id(td.path());
     let (reference, res) = reference_et_resolution(&store, td.path());
     assert_eq!(res.cible(), id);
-    assert_eq!(res.auteur_resolvant(), reference.auteur(), "autorité résolvante = auteur de la référence");
+    assert_eq!(
+        res.auteur_resolvant(),
+        reference.auteur(),
+        "autorité résolvante = auteur de la référence"
+    );
     assert_eq!(
         res.integrite(),
         IntegriteTentative::Integrale,
         "publication réelle attestée après kill -9"
     );
-    assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(10)));
-    assert_eq!(store.get_node_property(id, &PropertyKey::new("b")), Some(Value::Int64(20)));
+    assert_eq!(
+        store.get_node_property(id, &PropertyKey::new("a")),
+        Some(Value::Int64(10))
+    );
+    assert_eq!(
+        store.get_node_property(id, &PropertyKey::new("b")),
+        Some(Value::Int64(20))
+    );
     for i in 0..res.nb_effets() {
         let e = res.effet(i);
         assert_eq!(e.etat(), ResolutionEffet::Engage, "chaque clé est engagée");
@@ -304,7 +333,14 @@ fn h3_kill9_apres_publication() {
     // masquage ultérieur : l'événement historique reste attesté
     store.set_node_property(id, "a", Value::Int64(99));
     let (_reference, res2) = reference_et_resolution(&store, td.path());
-    assert_eq!(res2.integrite(), IntegriteTentative::Integrale, "masqué mais engagé");
-    assert_eq!(store.get_node_property(id, &PropertyKey::new("a")), Some(Value::Int64(99)));
+    assert_eq!(
+        res2.integrite(),
+        IntegriteTentative::Integrale,
+        "masqué mais engagé"
+    );
+    assert_eq!(
+        store.get_node_property(id, &PropertyKey::new("a")),
+        Some(Value::Int64(99))
+    );
     eprintln!("H3_KILL9_APRES_OK : résolution Engage + masquage, sans republication");
 }
