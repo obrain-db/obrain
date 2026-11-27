@@ -338,12 +338,17 @@ pub enum AbandonOutcome {
 }
 
 /// État d'une identité après interrogation (résolution d'un Indeterminate).
+/// La classification d'une RÉVISION repose sur la PREUVE TRANSACTIONNELLE
+/// HISTORIQUE (référence persévérée + `resoudre_reference` + `verdict_effet`),
+/// jamais sur la projection courante de la ressource.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedState {
     /// La transaction n'a PAS abouti : aucune application. Le rejeu peut
     /// appliquer (l'état courant n'a pas bougé).
     NotApplied,
-    /// Appliquée : identité + état résultant sont présents.
+    /// Appliquée : l'effet a été ENGAGÉ historiquement (présent dans la chaîne
+    /// canonique accessible), qu'il soit aujourd'hui l'état courant ou supplanté
+    /// par un effet plus récent. « Effet supplanté » ≠ « jamais matérialisé ».
     Applied {
         /// Définition enregistrée (octets canoniques).
         definition: Vec<u8>,
@@ -352,14 +357,18 @@ pub enum ResolvedState {
         /// Révision enregistrée.
         revision: u64,
     },
-    /// Identité COMMISE (APPLIQUE) mais effet NON matérialisé sur la ressource :
-    /// la projection ressource (CLE_REVISION / CLE_EFFET) ne porte PAS l'effet
-    /// enregistré — arrêt entre le commit d'identité et la matérialisation, ou
-    /// effet devenu incompatible (masqué par une écriture ultérieure).
-    /// RÉCUPÉRABLE : l'effet enregistré est restitué ici, un rejeu (via le
-    /// manager) répare la matérialisation. JAMAIS confondu avec `Applied`
-    /// (qui exige effet engagé ET matérialisé).
-    CommittedNotMaterialized {
+    /// Identité COMMISE (APPLIQUE) mais engagement de l'effet INDÉTERMINÉ :
+    /// la preuve transactionnelle HISTORIQUE (`resoudre_reference` +
+    /// `verdict_effet`) ne tranche PAS — l'entrée est absente de la chaîne
+    /// canonique accessible, soit « jamais engagé » (arrêt entre le commit
+    /// d'identité et la matérialisation), soit « preuve compactée » (effet
+    /// engagé dont l'histoire a été compactée). Indistinguable SANS preuve :
+    /// `Indetermine` n'est PAS une attestation d'absence définitive, et une
+    /// révision supérieure n'est PAS une preuve de non-matérialisation.
+    /// L'effet enregistré est restitué ici (récupérable), mais la
+    /// matérialisation réelle reste à déterminer — JAMAIS déduite de la
+    /// projection courante.
+    Indeterminate {
         /// Définition enregistrée (octets canoniques).
         definition: Vec<u8>,
         /// Effet enregistré (préfixé : 0x01 révision, 0x02 formation).

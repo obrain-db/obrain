@@ -176,7 +176,7 @@ pub use store::{
     ModePublication, Precondition, PreparationDifferee, PropsV2FinalizeStats,
     REFERENCE_TENTATIVE_MAGIC, REFERENCE_TENTATIVE_VERSION, ReferenceTentative, ResolutionEffet,
     ResolutionTentative, SKIP_ON_LOAD_PROP_KEYS, StoreMutationObserver, SubstrateStore,
-    TransformationPrete, noeuds_hydrates,
+    TransformationPrete, VerdictEffet, noeuds_hydrates,
 };
 pub use tiers::{
     L0_BITS, L1_BITS, L2_DIM, Tier0, Tier1, Tier2, f16_to_f32, f32_to_f16, tier0_hamming,

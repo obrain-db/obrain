@@ -1158,21 +1158,21 @@ impl EngramManager {
                     .map_err(RevisionError::PersistenceFailed)?
                 {
                     ResolvedState::NotApplied => Ok((ObservationOutcome::Indeterminate, None)),
+                    ResolvedState::Indeterminate { .. } => {
+                        // Engagement INDÉTERMINÉ (jamais engagé OU preuve
+                        // compactée, indistinguable) : ne PAS rejouer en aveugle.
+                        Ok((ObservationOutcome::Indeterminate, None))
+                    }
                     ResolvedState::Applied {
                         definition: rec_def,
                         state: rec_state,
                         revision: rec_rev,
-                    }
-                    | ResolvedState::CommittedNotMaterialized {
-                        definition: rec_def,
-                        state: rec_state,
-                        revision: rec_rev,
                     } => {
-                        // La résolution restitue l'état EFFECTIVEMENT enregistré —
-                        // qu'il soit matérialisé (`Applied`) ou engagé non
-                        // matérialisé (`CommittedNotMaterialized`) : dans les deux
-                        // cas l'effet enregistré est l'effet canonique à
-                        // (ré)matérialiser sur le store.
+                        // La résolution restitue l'état EFFECTIVEMENT enregistré
+                        // pour `Applied` : l'effet a été ENGAGÉ historiquement
+                        // (éventuellement supplanté depuis). L'effet enregistré
+                        // est l'effet canonique à (ré)matérialiser si le store
+                        // est en retard (`live.revision < rec_rev`).
                         if rec_def != definition.canonical_bytes() {
                             return Err(RevisionError::ValidationFailed(
                                 "définition enregistrée différente de la définition tentée".into(),

@@ -46,12 +46,14 @@
 //!    de la précondition, écriture de `obs:revision` + `obs:effect`.
 //!
 //! Un arrêt entre 3 et 4 laisse l'identité COMMISE mais l'effet NON matérialisé
-//! sur la ressource — état `ResolvedState::CommittedNotMaterialized` (référence
-//! déjà durable dans l'enregistrement d'identité, donc récupérable). `resolve` /
-//! `resolve_on` comparent l'enregistrement d'identité à la projection ressource
-//! (`obs:revision` / `obs:effect`) : l'effet n'est déclaré `Applied` que s'il est
-//! MATÉRIALISÉ tel quel ; une intention dont l'effet est devenu incompatible
-//! n'est JAMAIS déclarée engagée. L'autorité canonique porte l'effet : un rejeu
+//! sur la ressource — état `ResolvedState::Indeterminate` (la preuve historique
+//! est absente : jamais engagé OU preuve compactée, indistinguable ; l'effet
+//! enregistré reste récupérable). `resolve` / `resolve_on` tranchent par la
+//! PREUVE TRANSACTIONNELLE HISTORIQUE (référence persévérée +
+//! `resoudre_reference` + `verdict_effet`), jamais par la projection courante :
+//! l'effet est déclaré `Applied` dès qu'il a été ENGAGÉ historiquement (même
+//! supplanté par un effet plus récent) ; « effet supplanté » ≠ « jamais
+//! matérialisé ». L'autorité canonique porte l'effet : un rejeu
 //! (`AlreadyApplied`) répare la matérialisation via le manager. Une compensation
 //! n'est PAS une transaction atomique : cette frontière est RÉELLE et qualifiée,
 //! jamais devinée.
@@ -80,6 +82,7 @@ use obrain_common::types::{NodeId, Value};
 use obrain_core::graph::traits::GraphStoreMut;
 use obrain_substrate::{
     EtatPropriete, IssuePublication, ModePublication, ReferenceTentative, SubstrateStore,
+    VerdictEffet,
 };
 
 use super::observation::{
@@ -633,11 +636,11 @@ impl SubstrateAtomicEventLedger {
     /// Résolution SCOPÉE par ressource : l'identité appartient-elle à CETTE
     /// ressource ? (substitution incompatible → NotApplied, jamais devinée).
     ///
-    /// Compare l'enregistrement d'identité à la projection ressource
-    /// (`CLE_REVISION` / `CLE_EFFET`) : `Applied` si l'effet est matérialisé
-    /// tel quel, `CommittedNotMaterialized` si l'identité est commise mais que
-    /// l'effet ne l'est pas (ou plus) — jamais « engagé » sur un effet devenu
-    /// incompatible.
+    /// Classe par la PREUVE TRANSACTIONNELLE HISTORIQUE (référence persévérée +
+    /// `resoudre_reference` + `verdict_effet`), jamais par la projection
+    /// courante : `Applied` si l'effet a été engagé historiquement (même
+    /// supplanté), `Indeterminate` si la preuve est absente (jamais engagé OU
+    /// compacté — indistinguable).
     pub fn resolve_on(
         &self,
         resource_id: &[u8],
@@ -658,40 +661,68 @@ impl SubstrateAtomicEventLedger {
                     // ne migre pas vers celle-ci.
                     return Ok(ResolvedState::NotApplied);
                 }
-                self.classifier_revision(&p, resource_id)
+                self.classifier_revision(&p)
             }
             _ => Err("enregistrement d'événement invalide (préfixe inconnu)".to_string()),
         }
     }
 
-    /// Compare un enregistrement d'identité de RÉVISION (ressource déjà décodée
-    /// en NodeId) à la projection ressource (`CLE_REVISION` / `CLE_EFFET`) :
-    /// `Applied` si l'effet est matérialisé tel quel, `CommittedNotMaterialized`
-    /// sinon (identité engagée, effet non — ou plus — matérialisé, récupérable :
-    /// l'effet enregistré est restitué). Une intention dont l'effet est devenu
-    /// incompatible n'est JAMAIS déclarée engagée.
+    /// Classe un enregistrement d'identité de RÉVISION (ressource déjà décodée
+    /// en NodeId) par la PREUVE TRANSACTIONNELLE HISTORIQUE, jamais par la
+    /// projection courante : la référence de matérialisation persévérée avec
+    /// l'identité est résolue (`resoudre_reference`) et son verdict natif
+    /// (`verdict_effet`) tranche l'engagement.
+    ///
+    /// - `Engage*` (effet engagé historiquement, qu'il soit courant ou supplanté
+    ///   par un effet plus récent) → `Applied`. « Effet supplanté » ≠ « jamais
+    ///   matérialisé ».
+    /// - `Indetermine` (aucune preuve native positive : jamais engagé, refusé,
+    ///   ou preuve compactée) → `Indeterminate`, JAMAIS « non-engagé ».
+    ///
+    /// L'engagement n'est JAMAIS déduit de la révision courante de la ressource.
     fn classifier_revision(
         &self,
         payload: &PayloadEnregistrement,
-        resource_id: &[u8],
     ) -> Result<ResolvedState, String> {
-        let projection = self.resource_state(resource_id)?;
-        let materialise = matches!(
-            &projection,
-            Some((effet, revision)) if effet == &payload.effet && *revision == payload.revision
-        );
-        if materialise {
-            Ok(ResolvedState::Applied {
+        let Some(reference) = &payload.reference else {
+            // Enregistrement de révision SANS référence persévérée (ancien
+            // format) : la preuve historique est indisponible. On ne DÉDUIT PAS
+            // l'engagement de la projection courante — état indéterminé, jamais
+            // un faux « non-engagé ».
+            return Ok(ResolvedState::Indeterminate {
                 definition: payload.definition.clone(),
                 state: payload.effet.clone(),
                 revision: payload.revision,
-            })
-        } else {
-            Ok(ResolvedState::CommittedNotMaterialized {
+            });
+        };
+        // PREUVE TRANSACTIONNELLE HISTORIQUE : résolution de la référence
+        // persistée AVEC l'identité, SANS consulter la projection courante.
+        let resolution = self
+            .store
+            .resoudre_reference(reference)
+            .map_err(err_substrat)?;
+        // L'effet (CLE_EFFET) est le second effet de la tentative (CLE_REVISION
+        // en premier). Repéré par clé, jamais par position implicite.
+        let Some(i_effet) = resolution.par_cle.iter().position(|e| e.cle == CLE_EFFET) else {
+            return Ok(ResolvedState::Indeterminate {
                 definition: payload.definition.clone(),
                 state: payload.effet.clone(),
                 revision: payload.revision,
-            })
+            });
+        };
+        match resolution.verdict_effet(i_effet) {
+            VerdictEffet::EngageEtCourant
+            | VerdictEffet::EngagePuisSupplante
+            | VerdictEffet::EngagePuisSupprime => Ok(ResolvedState::Applied {
+                definition: payload.definition.clone(),
+                state: payload.effet.clone(),
+                revision: payload.revision,
+            }),
+            VerdictEffet::Indetermine => Ok(ResolvedState::Indeterminate {
+                definition: payload.definition.clone(),
+                state: payload.effet.clone(),
+                revision: payload.revision,
+            }),
         }
     }
 
@@ -868,8 +899,8 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
     /// Distingue la frontière d'engagement : une FORMATION (ressource
     /// synthétique) est `Applied` dès le commit — son effet est ENTIÈREMENT
     /// porté par l'identité (une seule écriture canonique) ; une RÉVISION est
-    /// `Applied` seulement si la projection ressource porte l'effet enregistré,
-    /// sinon `CommittedNotMaterialized`.
+    /// classée par la preuve transactionnelle historique : `Applied` si l'effet
+    /// a été engagé (même supplanté), `Indeterminate` si la preuve est absente.
     fn resolve(&self, event_id: &[u8; 16]) -> Result<ResolvedState, String> {
         let Some((prefixe, payload)) = self.lire_record(event_id)? else {
             return Ok(ResolvedState::NotApplied);
@@ -890,7 +921,7 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
                         revision: p.revision,
                     });
                 }
-                self.classifier_revision(&p, &p.resource)
+                self.classifier_revision(&p)
             }
             _ => Err("enregistrement d'événement invalide (préfixe inconnu)".to_string()),
         }
@@ -1554,10 +1585,55 @@ mod tests {
         );
     }
 
+    // 22bis) EFFET SUPPLANTÉ ≠ JAMAIS MATÉRIALISÉ (défaut corrigé) : K1
+    //     appliquée à la révision 1 puis SUPPLANTÉE par K2 à la révision 2 —
+    //     `resolve(K1)` rend `Applied` (l'effet a été ENGAGÉ historiquement),
+    //     jamais `CommittedNotMaterialized` (désormais `Indeterminate`).
+    #[test]
+    fn effet_supplante_resout_applied() {
+        let (ledger, id) = ledger_memoire();
+        let rid = ressource_bytes(id);
+        let def1 = b"def-K1".to_vec();
+        let eff1 = effet_revision(id, 1);
+        let def2 = b"def-K2".to_vec();
+        let eff2 = effet_revision(id, 2);
+        // K1 appliquée (révision 0 -> 1).
+        assert_eq!(
+            ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap(),
+            LedgerOutcome::Applied
+        );
+        // K2 supplante K1 (révision 1 -> 2).
+        assert_eq!(
+            ledger.apply_event(&oid(2), &rid, &def2, 1, &eff2, 2).unwrap(),
+            LedgerOutcome::Applied
+        );
+        // La projection courante ne porte QUE K2 (K1 est supplantée) ...
+        assert_eq!(ledger.resource_revision(&rid).unwrap(), 2);
+        assert_eq!(ledger.resource_state(&rid).unwrap(), Some((eff2.clone(), 2)));
+        // ... mais K1 a ÉTÉ ENGAGÉE historiquement : resolve(K1) = Applied.
+        match ledger.resolve(&oid(1)).unwrap() {
+            ResolvedState::Applied {
+                definition,
+                state,
+                revision,
+            } => {
+                assert_eq!(definition, def1);
+                assert_eq!(state, eff1);
+                assert_eq!(revision, 1);
+            }
+            other => panic!("K1 supplantée attendue Applied, reçu {other:?}"),
+        }
+        // resolve_on a la MÊME classification.
+        assert!(matches!(
+            ledger.resolve_on(&rid, &oid(1)).unwrap(),
+            ResolvedState::Applied { revision: 1, .. }
+        ));
+    }
+
     // 23) FRONTIÈRE D'ENGAGEMENT — entrelacement DÉTERMINISTE réel : deux K
     //     distincts sur la MÊME révision. K2 commet son identité puis SUSPEND
     //     (crochet test-only) ; K1 matérialise pendant la suspension ; K2 bute
-    //     sur la révision → resolve(K2) = CommittedNotMaterialized (jamais
+    //     sur la révision → resolve(K2) = Indeterminate (jamais
     //     Applied), la ressource ne porte QUE l'effet de K1.
     #[test]
     fn entrelacement_deterministe_deux_k_meme_revision() {
@@ -1597,9 +1673,11 @@ mod tests {
         let out2 = t2.join().unwrap();
         assert_eq!(out2, LedgerOutcome::PreconditionFailed { current_revision: 1 });
 
-        // NORME : K2 = engagée non matérialisée, JAMAIS Applied.
+        // NORME : K2 = INDÉTERMINÉE (identité commise, effet jamais matérialisé
+        // — la preuve historique est absente, PAS une attestation de
+        // non-engagement), JAMAIS Applied.
         match ledger.resolve(&oid(2)).unwrap() {
-            ResolvedState::CommittedNotMaterialized {
+            ResolvedState::Indeterminate {
                 definition,
                 state,
                 revision,
@@ -1608,12 +1686,12 @@ mod tests {
                 assert_eq!(state, eff2);
                 assert_eq!(revision, 1);
             }
-            other => panic!("K2 attendue CommittedNotMaterialized, reçu {other:?}"),
+            other => panic!("K2 attendue Indeterminate, reçu {other:?}"),
         }
         // resolve_on a la MÊME classification.
         assert!(matches!(
             ledger.resolve_on(&rid, &oid(2)).unwrap(),
-            ResolvedState::CommittedNotMaterialized { .. }
+            ResolvedState::Indeterminate { .. }
         ));
 
         // La ressource ne porte QUE l'effet de K1.
@@ -1666,43 +1744,60 @@ mod tests {
         );
     }
 
-    // 25) RÉCUPÉRATION : `CommittedNotMaterialized` restitue l'effet enregistré ;
-    //     une re-matérialisation (via le manager, simulée ici) fait repasser
-    //     `resolve` à `Applied`, et le rejeu n'applique JAMAIS deux fois.
+    // 25) INDÉTERMINÉ (jamais matérialisé, reproduit DÉTERMINISTEMENT) :
+    //     l'identité est commise (révision 2) mais l'effet n'est JAMAIS publié
+    //     (arrêt entre commit d'identité et matérialisation, via le crochet de
+    //     suspension). `resolve` restitue l'effet enregistré en `Indeterminate`
+    //     — PAS une attestation de non-engagement — et le rejeu n'applique
+    //     JAMAIS deux fois.
     #[test]
-    fn engage_non_materialise_recuperation_sans_double_application() {
+    fn indetermine_jamais_materialise_et_rejeu_sans_double_application() {
         let (ledger, id) = ledger_memoire();
+        let ledger = Arc::new(ledger);
         let rid = ressource_bytes(id);
         let def1 = b"def-K1".to_vec();
         let eff1 = effet_revision(id, 1);
         let def2 = b"def-K2".to_vec();
         let eff2 = effet_revision(id, 2);
         ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap();
-        ledger.apply_event(&oid(2), &rid, &def2, 1, &eff2, 2).unwrap();
-        // Simule l'arrêt entre commit d'identité (K2) et matérialisation.
-        ledger.store().set_node_property(id, "obs:revision", Value::from(1i64));
-        ledger.store().set_node_property(id, "obs:effect", Value::from(eff1.clone()));
 
-        // K2 = engagée non matérialisée, avec l'effet restitué.
+        // K2 : identité commise (révision résultante 2) puis SUSPENSION avant
+        // matérialisation.
+        ledger.armer_suspension_engagement();
+        let t2 = {
+            let ledger = Arc::clone(&ledger);
+            let rid = rid.clone();
+            let def2 = def2.clone();
+            let eff2 = eff2.clone();
+            std::thread::spawn(move || {
+                ledger
+                    .apply_event(&oid(2), &rid, &def2, 1, &eff2, 2)
+                    .unwrap()
+            })
+        };
+        ledger.attendre_suspension_engagement();
+
+        // Pendant la suspension, la révision AVANCE (écriture concurrente) : à
+        // la reprise K2 bute sur la révision et ne matérialise JAMAIS son effet.
+        ledger.store().set_node_property(id, "obs:revision", Value::from(2i64));
+        ledger.store().set_node_property(id, "obs:effect", Value::from(effet_revision(id, 2)));
+        ledger.relacher_suspension_engagement();
+        assert_eq!(
+            t2.join().unwrap(),
+            LedgerOutcome::PreconditionFailed { current_revision: 2 }
+        );
+
+        // K2 = INDÉTERMINÉE : effet enregistré restitué, jamais « non-engagé ».
         match ledger.resolve(&oid(2)).unwrap() {
-            ResolvedState::CommittedNotMaterialized { state, revision, .. } => {
+            ResolvedState::Indeterminate { state, revision, .. } => {
                 assert_eq!(state, eff2);
                 assert_eq!(revision, 2);
             }
-            other => panic!("attendu CommittedNotMaterialized, reçu {other:?}"),
+            other => panic!("attendu Indeterminate, reçu {other:?}"),
         }
 
-        // Récupération (simulée : le manager re-matérialise l'effet enregistré).
-        ledger.store().set_node_property(id, "obs:revision", Value::from(2i64));
-        ledger.store().set_node_property(id, "obs:effect", Value::from(eff2.clone()));
-        assert!(matches!(
-            ledger.resolve(&oid(2)).unwrap(),
-            ResolvedState::Applied { revision: 2, .. }
-        ));
-
-        // Le rejeu n'applique pas deux fois (l'effet est déjà là).
+        // Rejeu : AlreadyApplied, AUCUNE matérialisation supplémentaire.
         let rejeu = ledger.apply_event(&oid(2), &rid, &def2, 1, &eff2, 2).unwrap();
         assert!(matches!(rejeu, LedgerOutcome::AlreadyApplied { revision: 2, .. }));
-        assert_eq!(ledger.resource_revision(&rid).unwrap(), 2, "pas de double application");
     }
 }

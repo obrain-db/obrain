@@ -2,10 +2,13 @@
 //! `SubstrateAtomicEventLedger`
 //! (crates/obrain-cognitive/src/engram/observation_substrate.rs).
 //!
-//! Témoin historique (84ae1dd) PRÉSERVÉ + assertions normatives : le défaut
-//! « resolve(K2) rend Applied alors que l'effet de K2 n'est pas matérialisé »
-//! est CORRIGÉ — K2 se résout désormais en `ResolvedState::CommittedNotMaterialized`
-//! (identité engagée, effet non matérialisé, récupérable), JAMAIS en `Applied`.
+//! Assertions normatives : la classification d'une RÉVISION repose sur la
+//! PREUVE TRANSACTIONNELLE HISTORIQUE (référence persévérée +
+//! `resoudre_reference` + `verdict_effet`), jamais sur la projection courante.
+//! « Effet supplanté » ≠ « jamais matérialisé » : un effet ENGAGÉ puis supplanté
+//! se résout en `ResolvedState::Applied` ; un effet dont la preuve historique
+//! est absente (jamais engagé OU preuve compactée) se résout en
+//! `ResolvedState::Indeterminate` — JAMAIS en « non-engagé ».
 //!
 //! Scénario : deux ObservationId DISTINCTS K1 et K2, MÊME ressource, MÊME
 //! SourceRevision. Les deux passent la pré-vérification, tentent d'engager leur
@@ -19,7 +22,7 @@
 //! autorité, (2) pré-vérification de précondition (lecture seule), (3) commit
 //! d'identité `APPLIQUE` atomique (avec la référence de matérialisation
 //! PERSÉVÉRÉE), (4) matérialisation conditionnelle de l'effet sur la ressource.
-//! Un arrêt entre (3) et (4) laisse « engagé non matérialisé ».
+//! Un arrêt entre (3) et (4) laisse « engagé, matérialisation indéterminée ».
 
 #![cfg(all(feature = "engram", feature = "substrate"))]
 
@@ -111,23 +114,16 @@ fn frontiere_correcte_k2_refusee_avant_engagement() {
 }
 
 // ===================================================================
-// 2) NORME (défaut CORRIGÉ) : « identité engagée » n'est PLUS confondue avec
-//    « effet matérialisé ».
-//
-//    État reproduit (témoin 84ae1dd) : K1 matérialise (révision 0 -> 1) ; K2
-//    COMMIT son identité (APPLIQUE, révision résultante 2) mais son effet n'est
-//    PAS matérialisé sur la ressource — l'état laissé par un arrêt entre les
-//    étapes (3) et (4), ou par la course « K1 matérialise entre le commit
-//    d'identité de K2 et sa matérialisation ».
-//
-//    CORRIGÉ : `resolve(K2)` et `resolve_on(K2)` comparent l'enregistrement
-//    d'identité à la projection ressource (CLE_REVISION / CLE_EFFET) et rendent
-//    `CommittedNotMaterialized` — JAMAIS `Applied` (qui exige effet engagé ET
-//    matérialisé).
+// 2) EFFET SUPPLANTÉ ≠ JAMAIS MATÉRIALISÉ (défaut corrigé), durable : K2 est
+//    APPLIQUÉE (révision 1 -> 2) puis la projection ressource est remise à
+//    l'état post-K1 (écriture ultérieure = supplantation). Après REDÉMARRAGE,
+//    la preuve transactionnelle HISTORIQUE (référence persévérée + chaîne
+//    canonique persistée) identifie l'effet de K2 comme ENGAGÉ :
+//    `resolve(K2)` rend `Applied` — jamais `CommittedNotMaterialized`.
 // ===================================================================
 
 #[test]
-fn frontiere_corrigee_k2_committed_not_materialized() {
+fn frontiere_effet_supplante_durable_resout_applied() {
     let td = tempfile::tempdir().unwrap();
     let chemin = td.path().join("kb");
     let (r, eff1, def2, eff2) = {
@@ -151,16 +147,16 @@ fn frontiere_corrigee_k2_committed_not_materialized() {
             LedgerOutcome::Applied
         );
 
-        // ... puis on SIMULE un arrêt après le commit d'identité de K2 (étape 3)
-        // et AVANT sa matérialisation (étape 4) : la projection ressource est
-        // remise à l'état post-K1, l'identité de K2 reste COMMISE (APPLIQUE).
+        // ... puis la projection ressource est remise à l'état post-K1 : une
+        // écriture ultérieure SUPPLANTE l'effet de K2 (l'identité de K2 reste
+        // COMMISE, et sa tentative reste dans la chaîne canonique persistée).
         store.set_node_property(r, "obs:revision", Value::from(1i64));
         store.set_node_property(r, "obs:effect", Value::from(eff1.clone()));
         store.close().unwrap();
         (r, eff1, def2, eff2)
     };
 
-    // Redémarrage : l'identité COMMISE survit, la matérialisation est absente.
+    // Redémarrage : l'identité COMMISE et la chaîne canonique survivent.
     let store = Arc::new(SubstrateStore::open(&chemin).unwrap());
     let ledger = SubstrateAtomicEventLedger::new(store);
     let rid = ressource_bytes(r);
@@ -177,9 +173,10 @@ fn frontiere_corrigee_k2_committed_not_materialized() {
         ResolvedState::Applied { revision: 1, .. }
     ));
 
-    // NORME : K2 = engagée non matérialisée, JAMAIS Applied.
+    // NORME : K2 = ENGAGÉE historiquement (supplantée par la réécriture), donc
+    // `Applied` — JAMAIS `CommittedNotMaterialized` (désormais `Indeterminate`).
     match resolve_k2 {
-        ResolvedState::CommittedNotMaterialized {
+        ResolvedState::Applied {
             definition,
             state,
             revision,
@@ -188,16 +185,17 @@ fn frontiere_corrigee_k2_committed_not_materialized() {
             assert_eq!(state, eff2);
             assert_eq!(revision, 2);
         }
-        other => panic!("NORME : resolve(K2) attendu CommittedNotMaterialized, reçu {other:?}"),
+        other => panic!("NORME : resolve(K2) attendu Applied, reçu {other:?}"),
     }
     // resolve_on a la MÊME classification.
     assert!(
-        matches!(resolve_on_k2, ResolvedState::CommittedNotMaterialized { .. }),
-        "resolve_on(K2) rend aussi CommittedNotMaterialized"
+        matches!(resolve_on_k2, ResolvedState::Applied { revision: 2, .. }),
+        "resolve_on(K2) rend aussi Applied"
     );
 
-    // La ressource ne porte que K1 : K2 n'y a jamais matérialisé son effet.
-    assert_eq!(rev, 1, "révision ressource = celle de K1 (K2 jamais matérialisé)");
+    // La projection COURANTE ne porte que K1 (la réécriture l'a remise à K1) —
+    // mais cela ne détermine PAS l'engagement historique de K2.
+    assert_eq!(rev, 1, "révision ressource = celle de K1 (projection remise à K1)");
     assert_eq!(etat, Some((eff1, 1)), "état ressource = effet de K1 seulement");
 
     // Rejeu de K2 : AlreadyApplied SANS matérialiser (le registre ne répare PAS
@@ -215,8 +213,7 @@ fn frontiere_corrigee_k2_committed_not_materialized() {
         "le rejeu ne matérialise pas (registre)"
     );
 
-    // Abandon de K2 : refusé (identité APPLIQUE) — l'état « engagé non
-    // matérialisé » est COLLANT au niveau du registre.
+    // Abandon de K2 : refusé (identité APPLIQUE) — l'état engagé est COLLANT.
     assert_eq!(
         ledger.abandon(&oid(2)).unwrap(),
         AbandonOutcome::AlreadyApplied { revision: 2 }
@@ -224,12 +221,12 @@ fn frontiere_corrigee_k2_committed_not_materialized() {
 }
 
 // ===================================================================
-// 3) Classification CORRECTE désormais FOURNIE : `resolve` rend UN état
-//    distinct (`CommittedNotMaterialized`) sans croiser deux lectures.
+// 3) Classification CORRECTE : `resolve` tranche par la preuve historique —
+//    un effet ENGAGÉ puis supplanté est `Applied`, jamais « non-engagé ».
 // ===================================================================
 
 #[test]
-fn classification_correcte_desormais_fournie() {
+fn classification_supplante_resout_applied() {
     let (ledger, r) = registre_memoire();
     let rid = ressource_bytes(r);
     let def1 = b"def-K1".to_vec();
@@ -239,7 +236,7 @@ fn classification_correcte_desormais_fournie() {
 
     ledger.apply_event(&oid(1), &rid, &def1, 0, &eff1, 1).unwrap();
     ledger.apply_event(&oid(2), &rid, &def2, 1, &eff2, 2).unwrap();
-    // Simule la perte de matérialisation de K2 (arrêt entre les étapes 3 et 4).
+    // Une écriture ultérieure SUPPLANTE l'effet de K2 (projection remise à K1).
     ledger
         .store()
         .set_node_property(r, "obs:revision", Value::from(1i64));
@@ -247,18 +244,19 @@ fn classification_correcte_desormais_fournie() {
         .store()
         .set_node_property(r, "obs:effect", Value::from(eff1.clone()));
 
-    // La distinction est désormais FOURNIE comme UN état, plus dérivable.
+    // L'effet de K2 a ÉTÉ engagé : resolve(K2) = Applied (pas Indeterminate).
     assert!(
         matches!(
             ledger.resolve(&oid(2)).unwrap(),
-            ResolvedState::CommittedNotMaterialized { .. }
+            ResolvedState::Applied { revision: 2, .. }
         ),
-        "K2 : resolve rend directement CommittedNotMaterialized"
+        "K2 : effet supplanté → Applied"
     );
-    let effet_materialise = ledger
+    // La projection COURANTE, elle, ne porte plus l'effet de K2.
+    let effet_courant = ledger
         .resource_state(&rid)
         .unwrap()
         .map(|(e, rev)| rev == 2 && e == eff2)
         .unwrap_or(false);
-    assert!(!effet_materialise, "K2 : effet NON matérialisé");
+    assert!(!effet_courant, "K2 : effet supplanté (plus courant)");
 }
