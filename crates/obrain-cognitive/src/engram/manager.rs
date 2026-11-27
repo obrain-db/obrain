@@ -1629,4 +1629,93 @@ mod tests {
             "record_activation doit alimenter le PredictiveModel des engrams"
         );
     }
+
+    /// Le RECHARGEMENT depuis le substrat est ANNONCÉ : avec un souscripteur
+    /// installé, les champs de l'événement (cohérents, dégradés, rejetés) sont
+    /// ÉVALUÉS — un `tracing::info!` dont les champs ne sont jamais calculés ne
+    /// serait qu'un commentaire déguisé.
+    #[cfg(feature = "substrate")]
+    #[test]
+    fn le_rechargement_annonce_les_engrammes_restaures() {
+        use std::sync::Mutex;
+        use tracing::field::Visit;
+        use tracing::subscriber::with_default;
+
+        struct Journal(Mutex<Vec<(tracing::Level, String)>>);
+
+        struct CapteurMessage<'a>(&'a mut Option<String>);
+        impl Visit for CapteurMessage<'_> {
+            fn record_debug(
+                &mut self,
+                champ: &tracing::field::Field,
+                valeur: &dyn std::fmt::Debug,
+            ) {
+                if champ.name() == "message" {
+                    *self.0 = Some(format!("{valeur:?}"));
+                }
+            }
+        }
+
+        impl tracing::Subscriber for Journal {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn event(&self, evenement: &tracing::Event<'_>) {
+                let mut message = None;
+                evenement.record(&mut CapteurMessage(&mut message));
+                if let Some(m) = message {
+                    self.0
+                        .lock()
+                        .unwrap()
+                        .push((*evenement.metadata().level(), m));
+                }
+            }
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+            fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+                Some(tracing::level_filters::LevelFilter::TRACE)
+            }
+        }
+
+        let td = tempfile::tempdir().unwrap();
+        let chemin = td.path().join("kb");
+
+        // Première session : un engramme FORMÉ, persisté dans le substrat.
+        {
+            let m = make_manager();
+            let sous = obrain_substrate::SubstrateFile::create(&chemin).unwrap();
+            let w = obrain_substrate::Writer::new(sous, obrain_substrate::SyncMode::Never).unwrap();
+            m.attach_substrate(Arc::new(w));
+            m.store()
+                .form(&[NodeId(1), NodeId(2)])
+                .expect("formation engramme");
+        } // drop → les zones sont sur disque
+
+        // Réouverture : le rapport de chargement doit être ANNONCÉ.
+        let journal = Arc::new(Journal(Mutex::new(Vec::new())));
+        let rapport = with_default(journal.clone(), || {
+            let m = make_manager();
+            let sous = obrain_substrate::SubstrateFile::open(&chemin).unwrap();
+            let w = obrain_substrate::Writer::new(sous, obrain_substrate::SyncMode::Never).unwrap();
+            m.attach_substrate(Arc::new(w))
+        });
+
+        assert!(
+            rapport.coherent > 0,
+            "un engramme cohérent est rechargé (rapport = {rapport:?})"
+        );
+        let evenements = journal.0.lock().unwrap();
+        assert!(
+            evenements
+                .iter()
+                .any(|(niveau, message)| *niveau == tracing::Level::INFO
+                    && message.contains("engrams rechargés")),
+            "le rechargement est annoncé : {evenements:?}"
+        );
+    }
 }

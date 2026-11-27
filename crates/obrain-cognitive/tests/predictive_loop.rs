@@ -17,6 +17,8 @@
 //! alternance temporelle).
 
 #![cfg(all(feature = "engram", feature = "substrate"))]
+// Noms à un caractère = notation A/B/C/D de l'expérience cognitive (lisible).
+#![allow(clippy::many_single_char_names)]
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

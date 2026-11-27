@@ -44,7 +44,6 @@ use super::types::{Engram, EngramId};
 use obrain_substrate::{
     EngramIncoherence, SubstrateError, SubstrateResult, Writer as SubstrateWriter, engram_bit_mask,
 };
-#[cfg(feature = "substrate")]
 use parking_lot::RwLock as PlRwLock;
 
 /// Label used for engram nodes in the backing graph store.

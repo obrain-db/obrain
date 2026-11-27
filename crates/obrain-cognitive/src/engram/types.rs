@@ -77,10 +77,10 @@ pub struct Engram {
     /// Number of times this engram has been recalled.
     pub recall_count: u32,
 
-    /// Revision canonique PERSISTANTE de CETTE connaissance (autorite unique du
-    /// contrat d identite d observation). Avancee par toute mutation qui change
-    /// l etat canonique (voir EngramStore::mutate). serde(default) = 0 pour
-    /// les engrams anterieurs au champ.
+    /// Révision canonique PERSISTANTE de CETTE connaissance (autorité unique du
+    /// contrat d'identité d'observation). Avancée par toute mutation qui change
+    /// l'état canonique (voir EngramStore::mutate). `serde(default)` = 0 pour
+    /// les engrams antérieurs au champ.
     #[serde(default)]
     pub revision: u64,
 

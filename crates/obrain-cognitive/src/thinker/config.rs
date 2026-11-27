@@ -699,3 +699,88 @@ mod tests {
         assert!(cfg.consolidator.enabled);
     }
 }
+
+#[cfg(test)]
+mod tests_evenements_migration {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::Visit;
+    use tracing::subscriber::with_default;
+
+    /// Souscripteur minimal qui capture (niveau, message) : le même motif que
+    /// `JournalTest` de `slot_remap.rs` — il prouve que l'événement est ÉMIS,
+    /// donc que les champs (facteur, période, demi-vie) sont ÉVALUÉS.
+    struct Journal(Mutex<Vec<(tracing::Level, String)>>);
+
+    struct CapteurMessage<'a>(&'a mut Option<String>);
+    impl Visit for CapteurMessage<'_> {
+        fn record_debug(&mut self, champ: &tracing::field::Field, valeur: &dyn std::fmt::Debug) {
+            if champ.name() == "message" {
+                *self.0 = Some(format!("{valeur:?}"));
+            }
+        }
+    }
+
+    impl tracing::Subscriber for Journal {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, evenement: &tracing::Event<'_>) {
+            let mut message = None;
+            evenement.record(&mut CapteurMessage(&mut message));
+            if let Some(m) = message {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((*evenement.metadata().level(), m));
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+        fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+            Some(tracing::level_filters::LevelFilter::TRACE)
+        }
+    }
+
+    fn inner(text: &str) -> Duration {
+        let mut cfg: ThinkersConfig = toml::from_str(text).expect("parse");
+        cfg.recompute_runtime();
+        cfg.consolidator.inner().half_life
+    }
+
+    /// La migration `decay_factor` ÉMET les événements annoncés : WARN quand la
+    /// conversion est possible, ERROR sans période, ERROR hors de (0,1).
+    #[test]
+    fn la_migration_decay_factor_emet_les_evenements_annonces() {
+        let journal = Arc::new(Journal(Mutex::new(Vec::new())));
+        with_default(journal.clone(), || {
+            // warn : decay_factor + interval_secs → migré.
+            inner("[consolidator]\nenabled = true\ndecay_factor = 0.95\ninterval_secs = 120\n");
+            // error : decay_factor sans période.
+            inner("[consolidator]\nenabled = true\ndecay_factor = 0.99\n");
+            // error : decay_factor hors de (0,1).
+            inner("[consolidator]\nenabled = true\ndecay_factor = 1.5\n");
+        });
+        let tout = journal.0.lock().unwrap();
+        assert!(
+            tout.iter()
+                .any(|(n, m)| *n == tracing::Level::WARN && m.contains("MIGRÉ")),
+            "un WARN de migration doit être émis : {tout:?}"
+        );
+        assert!(
+            tout.iter()
+                .any(|(n, m)| *n == tracing::Level::ERROR && m.contains("INCOMPATIBLE")),
+            "un ERROR d'incompatibilité sans période doit être émis : {tout:?}"
+        );
+        assert!(
+            tout.iter()
+                .any(|(n, m)| *n == tracing::Level::ERROR && m.contains("hors de (0,1)")),
+            "un ERROR hors de (0,1) doit être émis : {tout:?}"
+        );
+    }
+}

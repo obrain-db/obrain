@@ -898,6 +898,38 @@ mod tests {
     }
 
     #[test]
+    fn reconsolidate_observation_invalide_ne_modifie_pas_l_etat() {
+        let id = EngramId(1);
+        let original = Engram::new(id, vec![(NodeId(1), 1.0), (NodeId(2), 0.5)]);
+
+        // Erreur de prédiction NaN : observation invalide, AUCUNE transformation.
+        let mut nan = original.clone();
+        reconsolidate(&mut nan, &[NodeId(99)], f64::NAN);
+        assert_eq!(nan.ensemble, original.ensemble, "NaN : ensemble inchangé");
+        assert_eq!(nan.strength, original.strength, "NaN : force inchangée");
+        assert_eq!(
+            nan.recall_count, original.recall_count,
+            "NaN : compteur inchangé"
+        );
+
+        // Erreur de prédiction négative : même garde, aucune transformation.
+        let mut neg = original.clone();
+        reconsolidate(&mut neg, &[NodeId(99)], -0.5);
+        assert_eq!(
+            neg.ensemble, original.ensemble,
+            "négative : ensemble inchangé"
+        );
+        assert_eq!(
+            neg.strength, original.strength,
+            "négative : force inchangée"
+        );
+        assert_eq!(
+            neg.recall_count, original.recall_count,
+            "négative : compteur inchangé"
+        );
+    }
+
+    #[test]
     fn cosine_similarity_identical_vectors() {
         let v = vec![1.0, 2.0, 3.0];
         let sim = cosine_similarity(&v, &v);

@@ -3162,6 +3162,29 @@ pub fn noeuds_hydrates() -> u64 {
     NOEUDS_HYDRATES.with(std::cell::Cell::get)
 }
 
+/// Frontière de commit **par fil**, sans verrou — et **bornée**.
+///
+/// Un seul `u64` par fil (`Cell<Option<u64>>`), écrasé à chaque scellement : plus de
+/// `HashMap` par transaction qui ne se vidait jamais (rétention non bornée, obrain#417).
+/// Le fil qui scelle un commit est celui qui l'acquitte, d'où le thread-local ; aucun
+/// verrou, aucune sérialisation des commits — un verrou sur ce chemin masquerait le défaut.
+///
+/// Limite assumée : la cellule est **par fil**, pas par base — deux bases scellées sur le
+/// même fil partagent la même cellule. Acceptable pour une instrumentation de banc.
+mod frontiere_par_tx {
+    thread_local! {
+        static DERNIERE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn enregistrer(fin_frame: u64) {
+        DERNIERE.with(|c| c.set(Some(fin_frame)));
+    }
+
+    pub(super) fn derniere() -> Option<u64> {
+        DERNIERE.with(|c| c.get())
+    }
+}
+
 
 
 /// Issue d'une application transactionnelle d'événement (générique, expérimentale).
@@ -9118,6 +9141,23 @@ impl SubstrateStore {
         self.writer.fsync_wal()
     }
 
+    /// Fin (exclusive) de la frame du dernier `TxCommit` scellé **sur ce fil**, en octets
+    /// de WAL.
+    ///
+    /// Instrumentation (banc this-harness) : un unique `u64` par fil, écrasé à chaque
+    /// scellement — la rétention est bornée (plus de `HashMap` par transaction qui ne se
+    /// vidait jamais). Stockage **thread-local** : aucun verrou, aucune sérialisation des
+    /// commits — ce qui compte, puisqu'un verrou sur ce chemin masquerait précisément le
+    /// défaut recherché. Limite : le fil qui scelle un commit est celui qui l'acquitte ;
+    /// deux bases scellées sur le même fil partagent la même cellule (pas d'isolation
+    /// inter-bases — acceptable pour une instrumentation de banc).
+    ///
+    /// À comparer à [`Self::wal_octets_durables`], dans la même unité (octets de WAL).
+    #[doc(hidden)]
+    pub fn frontiere_du_commit_du_fil(&self) -> Option<u64> {
+        frontiere_par_tx::derniere()
+    }
+
     /// ── ORACLE DE DURABILITÉ (test/diagnostic) ─────────────────────────────
     /// Offset de fin du WAL couvert par un `fsync` TERMINÉ. Un `commit()`
     /// acquitté sous `EveryCommit` doit, au moment où il rend la main, avoir la
@@ -9126,7 +9166,6 @@ impl SubstrateStore {
     /// peut faire d'un `fsync` : un `kill -9` ne vide pas le cache de pages, et
     /// la réouverture après kill passe donc AVEC ou SANS fsync (voir
     /// `obrain-engine/tests/durabilite_commit_kill9.rs`).
-    #[doc(hidden)]
     pub fn wal_octets_durables(&self) -> u64 {
         self.writer.wal().octets_durables()
     }
@@ -27924,15 +27963,19 @@ impl GraphStoreMut for SubstrateStore {
                 tx: transaction_id.0,
             },
         };
-        self.writer
+        let (position, longueur) = self
+            .writer
             .wal()
             .append_encoded(&rec)
-            .map(|_| ())
             .map_err(|e| {
                 obrain_common::utils::error::Error::Internal(format!(
                     "scellement du commit dans le WAL : {e}"
                 ))
             })?;
+        // Instrumentation (banc this-harness) : publier la fin de la frame sur CE FIL
+        // (thread-local, sans verrou), pour vérifier la couverture durable sans passer
+        // par `taille_wal()`, qui inclut les frames d'un écrivain concurrent.
+        frontiere_par_tx::enregistrer(position + longueur as u64);
         // (obrain#164) `TxCommit` écrit : la transaction est close.
         self.tx_avec_valeur_avant.lock().remove(&transaction_id.0);
         Ok(())
@@ -51788,4 +51831,45 @@ fn collision_hlc_v1_legacy_reste_ambigue_entre_domaines() {
          une référence ancienne reste ambiguë entre domaines (jamais une confirmation fictive)",
     );
 }
+}
+
+#[cfg(test)]
+mod tests_type_synapse_bien_connu {
+    use super::*;
+
+    /// Le type « SYNAPSE » est résolu par son id bien connu (1) même quand le
+    /// dictionnaire nom↔id n'a pas encore été flushé (panne avant flush) :
+    /// `name_for` retombe sur le nom canonique, `id_for` sur l'id réservé s'il
+    /// est libre ou déjà porté par SYNAPSE.
+    #[test]
+    fn le_type_synapse_est_resolu_par_son_id_bien_connu() {
+        let reg = EdgeTypeRegistry::default();
+        // Dictionnaire vide : le nom reste lisible via l'id bien connu.
+        let nom = reg.name_for(crate::record::SYNAPSE_EDGE_TYPE_ID);
+        assert!(nom.is_some(), "id bien connu résoluble sans dictionnaire");
+        assert_eq!(
+            nom.as_ref().unwrap().as_str(),
+            crate::record::SYNAPSE_EDGE_TYPE_NAME
+        );
+        // Un id inconnu quelconque reste None.
+        assert!(reg.name_for(999).is_none());
+
+        // Id bien connu libre : `id_for` rend l'id réservé.
+        assert_eq!(
+            reg.id_for(crate::record::SYNAPSE_EDGE_TYPE_NAME),
+            Some(crate::record::SYNAPSE_EDGE_TYPE_ID)
+        );
+
+        // Id bien connu déjà porté par SYNAPSE (mais nom absent du
+        // dictionnaire) : toujours résolu — le cas « panne avant flush ».
+        let mut reg2 = EdgeTypeRegistry::default();
+        reg2.par_id.insert(
+            crate::record::SYNAPSE_EDGE_TYPE_ID,
+            ArcStr::from(crate::record::SYNAPSE_EDGE_TYPE_NAME),
+        );
+        assert_eq!(
+            reg2.id_for(crate::record::SYNAPSE_EDGE_TYPE_NAME),
+            Some(crate::record::SYNAPSE_EDGE_TYPE_ID)
+        );
+    }
 }
