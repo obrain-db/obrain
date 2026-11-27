@@ -9028,6 +9028,33 @@ impl SubstrateStore {
         *self.domaine_id.read()
     }
 
+    /// Régime d'autorité du domaine courant : l'identité servie par
+    /// [`Self::domaine_id`] est-elle ÉPHÉMÈRE (non persistée, régénérée à la
+    /// prochaine réouverture) ou DURABLE (persistée) ? Observabilité PURE, en
+    /// lecture seule — aucune écriture, aucune autorité transactionnelle : le
+    /// consommateur peut l'interroger AVANT de publier pour savoir si une
+    /// référence émise maintenant survivra à une réouverture. Ne change pas la
+    /// sémantique de [`Self::domaine_id`].
+    ///
+    /// * store NON-mémoire : `true` ssi `domaine.id` est ABSENT (l'identité est
+    ///   servie en éphémère à la réouverture, cf. `domaine_id::decider`) ;
+    ///   `false` si l'identité est persistée. `domaine.id` est LE fichier
+    ///   d'identité ; `domaine.init` n'en est que le marqueur d'initialisation
+    ///   (le cas « `domaine.id` présent + `domaine.init` absent » — legacy —
+    ///   reste une identité DURABLE, migrée à la prochaine réouverture en
+    ///   écriture ; le cas inverse est refusé à l'ouverture, jamais servi).
+    /// * store MÉMOIRE : toujours `true` — aucun répertoire, l'identité est
+    ///   tirée en mémoire à chaque ouverture (in-process uniquement, aucune
+    ///   invalidation par un pair possible).
+    pub fn domaine_est_ephemere(&self) -> bool {
+        let sub = self.substrate.lock();
+        if sub.is_memory() {
+            return true;
+        }
+        let chemin_id = sub.path().join(crate::domaine_id::FICHIER_DOMAINE_ID);
+        !chemin_id.exists()
+    }
+
     /// Fork DÉCLARÉ du domaine : tire et persiste un NOUVEAU `domaine_id`
     /// (`domaine.id`), distinct de l'actuel. C'est l'opération explicite qui
     /// distingue un fork d'une simple copie du répertoire (laquelle partage le
