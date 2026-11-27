@@ -699,26 +699,20 @@ impl SubstrateAtomicEventLedger {
         // persistée AVEC l'identité, SANS consulter la projection courante.
         let resolution = self
             .store
-            .resoudre_reference(reference)
+            .resoudre_effet_historique(
+                reference.cible(),
+                CLE_EFFET,
+                reference.auteur(),
+                reference.horloge(),
+            )
             .map_err(err_substrat)?;
-        // L'effet (CLE_EFFET) est le second effet de la tentative (CLE_REVISION
-        // en premier). Repéré par clé, jamais par position implicite.
-        let Some(i_effet) = resolution.par_cle.iter().position(|e| e.cle == CLE_EFFET) else {
-            return Ok(ResolvedState::Indeterminate {
-                definition: payload.definition.clone(),
-                state: payload.effet.clone(),
-                revision: payload.revision,
-            });
-        };
-        match resolution.verdict_effet(i_effet) {
-            VerdictEffet::EngageEtCourant
-            | VerdictEffet::EngagePuisSupplante
-            | VerdictEffet::EngagePuisSupprime => Ok(ResolvedState::Applied {
+        match resolution {
+            ResolutionEffet::Engage => Ok(ResolvedState::Applied {
                 definition: payload.definition.clone(),
                 state: payload.effet.clone(),
                 revision: payload.revision,
             }),
-            VerdictEffet::Indetermine => Ok(ResolvedState::Indeterminate {
+            ResolutionEffet::Indetermine => Ok(ResolvedState::Indeterminate {
                 definition: payload.definition.clone(),
                 state: payload.effet.clone(),
                 revision: payload.revision,
