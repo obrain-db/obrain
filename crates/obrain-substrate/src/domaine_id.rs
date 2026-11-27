@@ -491,6 +491,21 @@ fn verrouiller_domaine(dir: &Path) -> io::Result<Box<dyn crate::es::FichierVerro
     Ok(verrou)
 }
 
+/// Prend le verrou PARTAGÉ du domaine (fichier stable `substrate.domaine.lock`).
+/// Compatible entre lecteurs, exclusif vis-à-vis du fork (l'exclusif de
+/// [`verrouiller_domaine`]). C'est le verrou des opérations qui RELISENT
+/// l'identité sans la réécrire : la publication conditionnelle (garde de domaine
+/// de `store::publier_si_precondition_intacte`) et l'export d'instantané
+/// (`instantane::exporter_avec_dict`). Un fork (exclusif) ne peut donc pas
+/// s'intercaler entre la relecture et la bascule de tête / la copie des fichiers.
+pub(crate) fn verrouiller_domaine_partage(
+    dir: &Path,
+) -> io::Result<Box<dyn crate::es::FichierVerrou>> {
+    let verrou = crate::es::espace().ouvrir_verrou(&dir.join(FICHIER_DOMAINE_VERROU))?;
+    verrou.partage()?;
+    Ok(verrou)
+}
+
 /// Action d'écriture décidée par la matrice, exécutée SOUS verrou (écrivain).
 enum Ecriture {
     /// Cas « legacy-domaine » : `domaine.id` présent, `domaine.init` absent.

@@ -1282,6 +1282,44 @@ pub(crate) fn point_de_crash(nom: &str) {
 #[inline(always)]
 pub(crate) fn point_de_crash(_nom: &str) {}
 
+/// (obrain#334/#418) POINT DE SUSPENSION REPRENABLE — compilé seulement avec la
+/// feature `points-de-crash` (jamais en production). Sœur de [`point_de_crash`]
+/// mais REPRENABLE : au lieu de dormir jusqu'au `kill -9`, le processus pose le
+/// marqueur, puis attend l'apparition d'un fichier de REPRISE, puis continue.
+/// Cela permet de prouver l'EXCLUSION MUTUELLE d'un verrou tenu en RAII : le
+/// processus suspendu TIENT encore son verrou (partagé ou exclusif), un pair qui
+/// tente l'autre verrou BLOQUE, puis la reprise libère la main et le pair aboutit.
+///
+/// Consigne : `OBRAIN_SUBSTRATE_POINT_REPRISE=<nom>:<marqueur>:<fichier_reprise>`.
+/// Le nom porte des `:` ; le marqueur et le fichier de reprise (deux derniers
+/// champs) n'en portent pas.
+#[cfg(feature = "points-de-crash")]
+pub(crate) fn point_de_reprise(nom: &str) {
+    static CONSIGNE: std::sync::OnceLock<Option<(String, std::path::PathBuf, std::path::PathBuf)>> =
+        std::sync::OnceLock::new();
+    let consigne = CONSIGNE.get_or_init(|| {
+        let v = std::env::var("OBRAIN_SUBSTRATE_POINT_REPRISE").ok()?;
+        let (nom_et_marqueur, reprise) = v.rsplit_once(':')?;
+        let (n, m) = nom_et_marqueur.rsplit_once(':')?;
+        Some((
+            n.to_string(),
+            std::path::PathBuf::from(m),
+            std::path::PathBuf::from(reprise),
+        ))
+    });
+    if let Some((n, marqueur, reprise)) = consigne
+        && n == nom
+    {
+        let _ = std::fs::write(marqueur, std::process::id().to_string());
+        while !reprise.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+#[cfg(not(feature = "points-de-crash"))]
+#[inline(always)]
+pub(crate) fn point_de_reprise(_nom: &str) {}
+
 /// Nombre d'emplacements dont une zone peut manquer sans que l'ouverture en
 /// lecture seule la dise tronquée (slots réservés, pas encore écrits au flush).
 const TOLERANCE_ZONE_TRONQUEE: u64 = 64;
@@ -4401,22 +4439,39 @@ impl SubstrateStore {
                 "publier_si_precondition_intacte : transformation déjà publiée".to_string(),
             ));
         }
-        // GARDE DE DOMAINE (#418) : la transformation a CAPTURÉ l'identité de
-        // domaine à la PRÉPARATION. Si un AUTRE processus a fork le domaine
-        // entre-temps, le domaine PERSISTANT a changé : publier sous l'ancienne
-        // origine produirait un commit fantôme (aucun résolveur au domaine
-        // courant ne l'accepterait — voir `resoudre_reference`). Refus net,
-        // rien n'est écrit. On relit le FICHIER, pas le cache : le `domaine_id`
-        // d'un store ouvert ne voit pas le fork d'un pair.
-        if prep.domaine != 0 {
-            let (est_memoire, chemin) = {
-                let sub = self.substrate.lock();
-                (sub.is_memory(), sub.path().to_path_buf())
+        // ── GARDE DE DOMAINE ATOMISÉE PAR VERROU PARTAGÉ (#418, frontière 1) ──
+        // La transformation a CAPTURÉ l'identité de domaine à la PRÉPARATION. Si
+        // un AUTRE processus a fork le domaine entre-temps, le domaine PERSISTANT
+        // a changé : publier sous l'ancienne origine produirait un commit fantôme
+        // (aucun résolveur au domaine courant ne l'accepterait — voir
+        // `resoudre_reference`). Refus net, rien n'est écrit. On relit le FICHIER,
+        // pas le cache : le `domaine_id` d'un store ouvert ne voit pas le fork
+        // d'un pair.
+        //
+        // TOCTOU FERMÉ (#334/#418) : la relecture ET la bascule de tête sont
+        // couvertes par le verrou PARTAGÉ du domaine (RAII, tenu jusqu'à la fin
+        // de la fonction). Le fork prend le verrou EXCLUSIF pendant TOUTE sa
+        // réécriture : soit la publication commit AVANT le fork (confirmation
+        // légitime sous D0), soit elle attend le fork puis relit D1 et refuse.
+        // Les publications concurrentes (verrous partagés compatibles) ne se
+        // bloquent pas entre elles.
+        let (est_memoire, chemin_domaine) = {
+            let sub = self.substrate.lock();
+            (sub.is_memory(), sub.path().to_path_buf())
+        };
+        let _verrou_partage: Option<Box<dyn crate::es::FichierVerrou>> =
+            if prep.domaine != 0 && !est_memoire {
+                Some(crate::domaine_id::verrouiller_domaine_partage(
+                    &chemin_domaine,
+                )?)
+            } else {
+                None
             };
+        if prep.domaine != 0 {
             let courant = if est_memoire {
                 self.domaine_id()
             } else {
-                match crate::domaine_id::lire(&chemin)? {
+                match crate::domaine_id::lire(&chemin_domaine)? {
                     Some(id) => id,
                     None => self.domaine_id(),
                 }
@@ -4427,6 +4482,10 @@ impl SubstrateStore {
                     courant,
                 });
             }
+            // Seam test-only (feature `points-de-crash`) : suspend APRÈS la prise
+            // du verrou partagé + garde, AVANT la bascule de tête. Un fork
+            // concurrent (exclusif) bloque ici tant que le verrou partagé est tenu.
+            crate::store::point_de_reprise("domaine:publication:verrou_partage_tenu");
         }
         // Validation : la précondition LIÉE (capturée à la préparation) est
         // relue telle quelle.
