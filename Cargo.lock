@@ -2582,6 +2582,7 @@ dependencies = [
  "dashmap",
  "foldhash",
  "fs2",
+ "getrandom 0.4.3",
  "libc",
  "memmap2",
  "obrain-bases-banc",
