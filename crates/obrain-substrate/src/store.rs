@@ -48648,7 +48648,7 @@ mod fenetre_remplacement_blob {
 mod application_evenement {
     use super::*;
 
-    fn creer_noeud(store: &SubstrateStore) -> NodeId {
+    fn creer_noeud_ressource(store: &SubstrateStore) -> NodeId {
         let id = store.create_node(&["ressource"]);
         store.set_node_property(id, "revision", Value::from("rev0"));
         id
@@ -48658,7 +48658,7 @@ mod application_evenement {
     fn a_premiere_application_etat_et_preuve_presents() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
-        let id = creer_noeud(&store);
+        let id = creer_noeud_ressource(&store);
         let r = appliquer_evenement(&store, id, "e1", "def-e1", "rev0", "rev1", Value::Int64(7))
             .unwrap();
         assert_eq!(r, IssueEvenement::Applique);
@@ -48676,7 +48676,7 @@ mod application_evenement {
     fn b_rejeu_identique_aucun_nouvel_effet() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
-        let id = creer_noeud(&store);
+        let id = creer_noeud_ressource(&store);
         appliquer_evenement(&store, id, "e1", "def-e1", "rev0", "rev1", Value::Int64(7)).unwrap();
         let r = appliquer_evenement(&store, id, "e1", "def-e1", "rev1", "rev2", Value::Int64(9))
             .unwrap();
@@ -48692,7 +48692,7 @@ mod application_evenement {
     fn c_meme_identite_contenu_different_conflit() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
-        let id = creer_noeud(&store);
+        let id = creer_noeud_ressource(&store);
         appliquer_evenement(&store, id, "e1", "def-a", "rev0", "rev1", Value::Int64(1)).unwrap();
         let r = appliquer_evenement(&store, id, "e1", "def-b", "rev1", "rev2", Value::Int64(2))
             .unwrap();
@@ -48703,7 +48703,7 @@ mod application_evenement {
     fn d_conflit_de_revision_refus() {
         let td = tempfile::tempdir().unwrap();
         let store = SubstrateStore::create(td.path().join("kb")).unwrap();
-        let id = creer_noeud(&store);
+        let id = creer_noeud_ressource(&store);
         let r = appliquer_evenement(
             &store,
             id,
