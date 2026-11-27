@@ -136,6 +136,20 @@ pub fn exporter(sub: &SubstrateFile) -> SubstrateResult<Vec<u8>> {
 /// Export avec dictionnaire — la forme COMPLÈTE, celle qu'utilise le store
 /// (`SubstrateStore::instantane`).
 pub fn exporter_avec_dict(sub: &SubstrateFile, dict: Option<&[u8]>) -> SubstrateResult<Vec<u8>> {
+    // ── ATOMICITÉ VIS-À-VIS DU FORK (#334/#418, frontière 2) ──
+    // Le verrou PARTAGÉ du domaine est tenu pendant TOUT l'export : de
+    // l'énumération des zones (`zone_names`) à la copie du dernier fichier. Un
+    // fork (verrou EXCLUSIF) ne peut donc pas déchirer la paire
+    // `domaine.id`/`domaine.init` entre l'énumération et la copie — la preuve de
+    // cohérence n'est PAS la seule exclusion de fichiers de `zone_names`, c'est
+    // l'exclusion mutuelle du verrou. En mémoire : pas de répertoire, pas de
+    // pair possible, pas de verrou.
+    let _verrou_partage = if sub.is_memory() {
+        None
+    } else {
+        Some(crate::domaine_id::verrouiller_domaine_partage(sub.path())?)
+    };
+
     let meta_octets = meta_bytes(sub);
 
     let mut zones: Vec<ZoneCaptee> = Vec::new();
@@ -282,6 +296,57 @@ pub fn restaurer(sub: &mut SubstrateFile, octets: &[u8]) -> SubstrateResult<Stat
         slots_noeuds,
         slots_aretes,
     })
+}
+
+/// L'instantané porte-t-il la paire d'identité `domaine.id` + `domaine.init` ?
+///
+/// Lit le manifeste SEUL (aucune restauration) : la continuité d'origine d'une
+/// restauration DÉCLARÉE CONTINUE dépend de la présence de CES DEUX zones. Un
+/// instantané pris PENDANT un fork (paire exclue par `file::zone_names`) rend
+/// `Ok(false)` : la continuité est indisponible, pas la donnée.
+pub fn porte_paire_identite(octets: &[u8]) -> SubstrateResult<bool> {
+    let mut cur = Lecteur::nouveau(octets);
+    if cur.lire(8)? != MAGIC {
+        return Err(crate::error::SubstrateError::BadMagic);
+    }
+    let _version = cur.u32()?;
+    let meta_len = cur.u32()? as usize;
+    let _meta = cur.lire(meta_len)?;
+    let dict_len = cur.u32()? as usize;
+    let _dict_crc = cur.u32()?;
+    let _dict = cur.lire(dict_len)?;
+    let n_zones = cur.u32()?;
+    let (mut a_id, mut a_init) = (false, false);
+    for _ in 0..n_zones {
+        let nom_len = cur.u16()? as usize;
+        let nom = String::from_utf8_lossy(cur.lire(nom_len)?).into_owned();
+        let _len_logique = cur.u64()?;
+        let len_charge = cur.u64()?;
+        let _crc = cur.u32()?;
+        cur.sauter(len_charge as usize)?;
+        if nom == crate::domaine_id::FICHIER_DOMAINE_ID {
+            a_id = true;
+        } else if nom == crate::domaine_id::FICHIER_DOMAINE_INIT {
+            a_init = true;
+        }
+    }
+    Ok(a_id && a_init)
+}
+
+/// Restauration DÉCLARÉE CONTINUE : comme [`restaurer`], mais EXIGE que l'image
+/// porte la paire `domaine.id` + `domaine.init`. Sans elle, la base restaurée
+/// s'ouvrirait sur une identité ÉPHÉMÈRE (continuité d'origine perdue
+/// silencieusement) : [`crate::error::SubstrateError::ContinuiteIndisponible`]
+/// est rendue AVANT toute écriture. Une restauration NON-continue (copie brute)
+/// reste [`restaurer`], permissive — le distingue est LISIBLE par le nom.
+pub fn restaurer_continue(
+    sub: &mut SubstrateFile,
+    octets: &[u8],
+) -> SubstrateResult<StatsInstantane> {
+    if !porte_paire_identite(octets)? {
+        return Err(crate::error::SubstrateError::ContinuiteIndisponible);
+    }
+    restaurer(sub, octets)
 }
 
 /// Statistiques d'un instantané SANS le restaurer (lecture du manifeste seul).

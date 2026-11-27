@@ -437,6 +437,23 @@ pub enum SubstrateError {
     )]
     DomaineForke { prepare_sous: u128, courant: u128 },
 
+    /// ── RESTAURATION CONTINUE REFUSÉE : L'IMAGE NE PORTE PAS L'IDENTITÉ ───
+    ///
+    /// Une restauration DÉCLARÉE CONTINUE (`instantane::restaurer_continue`)
+    /// exige que l'image transporte la paire `domaine.id` + `domaine.init`
+    /// (identité persistée cohérente). Si elle ne la porte pas (instantané pris
+    /// PENDANT un fork — la paire en cours de réécriture est exclue, cf.
+    /// `file::zone_names`), restaurer produirait une base ÉPHÉMÈRE : la
+    /// continuité d'origine serait perdue SILENCIEUSEMENT. Refus explicite —
+    /// l'appelant choisit entre une restauration sans continuité (`restaurer`)
+    /// ou le rétablissement d'une identité par migration legacy explicite.
+    #[error(
+        "restauration continue refusée : l'instantané ne porte pas la paire \
+         domaine.id + domaine.init (continuité d'origine indisponible) — \
+         restaurer sans continuité, ou matérialiser une identité explicitement"
+    )]
+    ContinuiteIndisponible,
+
     /// Le parcours a ete INTERROMPU par une annulation cooperative.
     ///
     /// N'est PAS une erreur de stockage : rien n'est corrompu, rien n'a
