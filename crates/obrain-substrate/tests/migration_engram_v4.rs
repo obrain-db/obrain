@@ -11,6 +11,8 @@ use obrain_substrate::migration::{ecrire_version_meta, lire_version_meta, migrer
 use obrain_substrate::wal_io::SyncMode;
 use obrain_substrate::{SubstrateFile, Writer};
 
+mod common;
+
 /// Crée un store, applique `f` (qui écrit des engrammes), le FERME, puis
 /// recule la version meta à 3. Rend le répertoire prêt à migrer.
 fn store_v3<F: FnOnce(&Writer)>(dir: &std::path::Path, f: F) {
@@ -64,7 +66,7 @@ fn migre_v3_ambigu_preserve_pas_certifie() {
     store_v3(&dir, |w| {
         // AMBIGU : membres + poids NON LIÉS (legacy positionnel 0x76).
         w.set_engram_members(7, vec![1, 2, 3]).unwrap();
-        w.set_engram_weights_legacy(7, vec![0.2, 0.3, 0.5]).unwrap();
+        common::set_engram_weights_legacy(w, 7, vec![0.2, 0.3, 0.5]).unwrap();
     });
 
     migrer_repertoire(&dir).expect("migration 3→4 (ambigu préservé)");

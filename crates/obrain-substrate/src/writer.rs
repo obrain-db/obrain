@@ -2846,8 +2846,8 @@ impl Writer {
     /// rend `None` sans membres). Elle n'existe que pour FABRIQUER un état
     /// legacy à des fins de test (migration, non-recertification au remap,
     /// reconstruction au rejeu).
-    #[doc(hidden)]
-    pub fn set_engram_weights_legacy(
+    #[cfg(test)]
+    pub(crate) fn set_engram_weights_legacy(
         &self,
         engram_id: u16,
         weights: Vec<f32>,

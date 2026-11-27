@@ -12,7 +12,8 @@ use obrain_cognitive::engram::{
     EngramId, EngramManager, EngramManagerConfig, RejectCause, RevisionError, StoreError,
 };
 use obrain_common::types::NodeId;
-use obrain_substrate::{SubstrateFile, SyncMode, Writer as SubstrateWriter};
+use obrain_substrate::engram::EngramZone;
+use obrain_substrate::{SubstrateFile, SyncMode, Writer as SubstrateWriter, Zone};
 
 fn weight_of(ens: &[(NodeId, f64)], n: NodeId) -> f64 {
     ens.iter().find(|(m, _)| *m == n).map_or(0.0, |(_, w)| *w)
@@ -791,7 +792,12 @@ fn incoherence_membres_poids_rejetee() {
         // 1 membre, 2 poids : écrit via les setters séparés (set_engram_state
         // refuse la longueur incohérente).
         writer.set_engram_members(1, vec![7]).unwrap();
-        writer.set_engram_weights_legacy(1, vec![1.0, 2.0]).unwrap();
+        let mut zf = writer
+            .substrate()
+            .lock()
+            .open_zone(Zone::EngramWeights)
+            .unwrap();
+        EngramZone::set_weights_raw(&mut zf, 1, &[1.0f32, 2.0f32]).unwrap();
     }
     let manager = EngramManager::new(
         EngramManagerConfig::default(),

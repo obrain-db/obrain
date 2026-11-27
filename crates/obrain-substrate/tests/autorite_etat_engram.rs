@@ -37,6 +37,8 @@ use obrain_substrate::wal_io::{SyncMode, WalReader};
 use obrain_substrate::zone;
 use obrain_substrate::{SubstrateError, SubstrateFile, Writer};
 
+mod common;
+
 /// Le couple tel que l'API le rend : membres, puis poids (`None` si la zone des
 /// poids n'a jamais été initialisée — base legacy).
 type Etat = Option<(Vec<u32>, Option<Vec<f32>>)>;
@@ -700,7 +702,7 @@ fn poids_non_lies_legacy_sont_refuses_a_la_lecture() {
 
     // Membres + poids NON LIÉS (chemin legacy 0x76).
     w.set_engram_members(7, vec![1, 2, 3]).unwrap();
-    w.set_engram_weights_legacy(7, vec![0.2, 0.3, 0.5]).unwrap();
+    common::set_engram_weights_legacy(&w, 7, vec![0.2, 0.3, 0.5]).unwrap();
 
     // La lecture du couple REFUSE : poids non liés = non qualifiés.
     assert!(

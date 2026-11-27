@@ -9,7 +9,8 @@ use std::sync::Arc;
 use obrain_cognitive::InMemoryVectorIndex;
 use obrain_cognitive::engram::{EngramId, EngramManager, EngramManagerConfig, EngramStore};
 use obrain_common::types::NodeId;
-use obrain_substrate::{SubstrateFile, SyncMode, Writer as SubstrateWriter};
+use obrain_substrate::engram::EngramZone;
+use obrain_substrate::{SubstrateFile, SyncMode, Writer as SubstrateWriter, Zone};
 
 fn make_writer() -> (Arc<SubstrateWriter>, tempfile::TempDir) {
     let td = tempfile::tempdir().unwrap();
@@ -62,7 +63,12 @@ fn load_from_substrate_quarantaine_sur_poids_incoherents() {
     // État incohérent injecté directement : 2 membres, 1 seul poids.
     // (contourne `set_engram_state` qui refuse membres.len() != poids.len()).
     writer.set_engram_members(1, vec![10, 20]).unwrap();
-    writer.set_engram_weights_legacy(1, vec![1.0]).unwrap();
+    let mut zf = writer
+        .substrate()
+        .lock()
+        .open_zone(Zone::EngramWeights)
+        .unwrap();
+    EngramZone::set_weights_raw(&mut zf, 1, &[1.0f32]).unwrap();
 
     let store = EngramStore::new(None);
     store.attach_substrate(writer);
