@@ -25,12 +25,165 @@ Ce que la v0.0.1 GÈLE, et où chaque fait se vérifie :
 | Rétrograder un binaire | **checkpoint forcé AVANT tout downgrade** : un binaire antérieur s'arrête sur un opcode WAL inconnu (0x54/0x55 repermutations V2 ; 0x56–0x58 frontières de transaction, D-DUR 2026-11-01) | `slot_remap.rs` §« Retrograder un binaire », `wal.rs` |
 | Format mono-fichier `.obrain` | **n'existe plus** : le module `obrain-adapters::storage::file` (format v1/v2 mono-fichier) a été retiré à la bascule substrat (T17) ; ses sources orphelines ont été supprimées le 2026-11-01. Le seul format on-disk est le répertoire `substrate.*` | `obrain-adapters/src/storage/mod.rs` |
 | `schema_crc32` | écrit, **jamais vérifié à la lecture** (connu, non traité en v0.0.1) | `meta.rs` |
+| Identité de domaine (`domaine.id`) | magic `OBRD1\n` (6 octets) + 16 octets (u128 big-endian, UUID v4), total **22 octets** — l'identité persistante de la base | `domaine_id.rs` : `ENTETE`, `TAILLE`, `lire`, `ecrire_atomique` |
+| Marqueur d'initialisation (`domaine.init`) | magic `OBRI1\n` (6 octets) + 16 octets (empreinte 128 bits, u128 big-endian), total **22 octets** | `domaine_id.rs` : `ENTETE_INIT`, `TAILLE_INIT`, `lire_init` |
+| Journal de fork (`domaine.fork`) | magic `OBRF1\n` (6 octets) + 16 octets (nouveau domaine, u128 big-endian), total **22 octets** — transitoire, jamais transporté | `domaine_id.rs` : `ENTETE_FORK`, `TAILLE_FORK`, `lire_journal_fork` |
+| Verrou de domaine (`substrate.domaine.lock`) | verrou `flock` EXCLUSIF, fichier stable, contenu sans signification — exclu de `zone_names` | `domaine_id.rs` : `FICHIER_DOMAINE_VERROU`, `verrouiller_domaine` ; `es.rs` : `FichierVerrou` |
 | `reserved` non nul | aucun avertissement implémenté (la §12 le promettait) | — |
 
 Ce que la v0.0.1 ne promet PAS : la compatibilité ascendante d'un `substrate.wal` non checkpointé entre versions mineures du binaire (règle du checkpoint forcé) ; la lecture d'un répertoire écrit par un binaire plus récent.
 
 ---
 
+## 0.1 Format d'identité de domaine (v0.0.1, relu dans le code)
+
+Le protocole d'identité de domaine (#334/#418) persiste l'identité de la BASE
+dans **trois fichiers** du répertoire substrat — `domaine.id`, `domaine.init`,
+`domaine.fork` — plus un **verrou** `substrate.domaine.lock`. Sources de vérité :
+`crates/obrain-substrate/src/domaine_id.rs` (entête de module + constantes +
+fonctions), `store.rs` (`DomaineOuverture`, `forker_domaine`,
+`migrer_legacy_domaine`, garde de publication), `file.rs::zone_names` (exclusion
+du verrou/journal de l'instantané), `instantane.rs` (transport de l'identité),
+`error.rs` (`SubstrateError::DomaineForke`).
+
+### 0.1.1 Les trois fichiers et leurs magics (réels, lus dans le code)
+
+| Fichier | Entête (6 octets) | Charge utile | Longueur totale | Rôle |
+|---|---|---|---|---|
+| `domaine.id` | `OBRD1\n` (magic `OBRD` + version `1` + `\n`) | l'identité de domaine : u128, UUID v4 RFC 4122, **16 octets big-endian** | **22 octets** | identité persistante de la BASE — la base, pas l'écrivain ni la tentative |
+| `domaine.init` | `OBRI1\n` (magic `OBRI` + version `1` + `\n`) | l'EMPREINTE COMPLÈTE du `domaine_id` sur **16 octets** (128 bits, big-endian) | **22 octets** | marqueur DURABLE et VERSIONNÉ d'initialisation — atteste « cette base a été identifiée » indépendamment de toute donnée |
+| `domaine.fork` | `OBRF1\n` (magic `OBRF` + version `1` + `\n`) | le NOUVEAU domaine vers lequel un fork interrompu doit converger (u128, 16 octets big-endian) | **22 octets** | journal de fork TRANSITOIRE — posé avant la réécriture de l'identité, retiré après |
+
+Chaque magic est un `const ENTETE*: &[u8; 6]` dans `domaine_id.rs` (`ENTETE =
+b"OBRD1\n"` ligne 186, `ENTETE_INIT = b"OBRI1\n"` ligne 192, `ENTETE_FORK =
+b"OBRF1\n"` ligne 198) ; chaque longueur totale est `const TAILLE*: usize = 6 +
+16` (lignes 189, 195, 201). **La charge utile fait 16 octets (128 bits), jamais
+8** — voir §0.1.6 pour la compatibilité.
+
+- **`OBRD`** : le magic de `domaine.id`, **réel dans le code** (ce n'est pas un
+  nom historique à remplacer). Contenu exact : 6 octets d'entête `OBRD1\n` puis
+  16 octets = l'`u128` big-endian (UUID RFC 4122, bits version=4 / variant=0b10).
+  Rôle : porter l'identité de la base, relue à chaque ouverture, réécrite par le
+  fork déclaré (`forker`).
+- **`OBRI`** : le magic de `domaine.init`. Format EXACT : `OBRI1\n` + **16
+  octets** (l'empreinte = l'identité COMPLÈTE, u128 big-endian — `empreinte()`
+  rend `id.to_be_bytes()`, ligne 261). **N = 16 (128 bits), et non 8** : un
+  préfixe 64 bits ferait partager le même marqueur par deux domaines distincts.
+- **`OBRF`** : le magic de `domaine.fork`. Format exact : `OBRF1\n` + 16 octets
+  (le nouveau domaine). Moment de pose/retrait : posé AVANT de réécrire
+  `domaine.id`/`domaine.init` lors d'un fork, retiré APRÈS (`forker`, ligne 699).
+
+### 0.1.2 Le verrou `substrate.domaine.lock`
+
+- **Nature** : `flock` EXCLUSIF (via `fs2`, trait `FichierVerrou` dans `es.rs`),
+  un verrou inter-PROCESSUS posé sur un fichier STABLE jamais renommé
+  (`verrouiller_domaine`, `domaine_id.rs` ligne 488). Même famille que les fences
+  du checkpoint et du dictionnaire.
+- **Périmètre** : sérialise la matérialisation, la migration, le fork et la
+  récupération de fork entre processus. Le contenu du fichier est **sans
+  signification** (jamais lu).
+- **Jamais transporté** : exclu de `zone_names` (`file.rs` ligne 2602), donc
+  absent de tout instantané — transporter un verrou recréerait un `flock` fantôme
+  sur le store restauré.
+
+### 0.1.3 Ordre des écritures, durabilité, états intermédiaires
+
+Chaque fichier est écrit par **publication atomique** :
+1. écrire `<fichier>.tmp` avec `sync_all` (données + métadonnées) —
+   `ecrire_synchronise` de `es.rs` ;
+2. `rename` du `.tmp` vers le final (atomique POSIX) ;
+3. `sync_all` du RÉPERTOIRE (durabilité du rename) — `synchroniser_repertoire`.
+
+Un lecteur concurrent ne voit jamais un fichier partiel. Les `.tmp`
+(`domaine.id.tmp`, `domaine.init.tmp`, `domaine.fork.tmp`) sont transitoires et
+exclus de `zone_names`.
+
+**Ordre des écritures** :
+- **Matérialisation** (création ou migration legacy) : écrire `domaine.id`
+  d'abord, puis `domaine.init` (`executer` → `Materialiser`, ligne 581).
+- **Fork** : `ecrire_journal_fork` (journal AVANT tout) → `ecrire_atomique` (id)
+  → `ecrire_init_atomique` (init) → `effacer_journal_fork` (retrait APRÈS), le
+  tout sous verrou (`forker`, ligne 699). Le journal doit être durable AVANT la
+  première réécriture, sinon un crash entre le journal et l'identité ne serait
+  pas récupérable.
+
+### 0.1.4 Récupération (la matrice), migration, restauration
+
+- **Matrice de décision à l'ouverture** (tableau complet en tête de
+  `domaine_id.rs`) : `domaine.id`+`domaine.init` concordants → LUE ; `id` présent
+  sans `init` → MIGRER (écrire l'empreinte du domaine EXISTANT, jamais une
+  identité neuve) ; `id` ABSENT avec `init` présent → **refus explicite**
+  (identité perdue, même base VIDE) ; les deux absents → MATÉRIALISER (création)
+  ou ÉPHÉMÈRE (réouverture/lecture seule) ; empreinte DISCORDANTE → refus.
+- **Régimes** : `DomaineOuverture { Creation, Reouverture }` (`store.rs` ligne
+  3939). `create` → `Creation` (matérialise) ; `open` → `Reouverture` (éphémère
+  sur « les deux absents », jamais de réattribution) ; lecture seule →
+  `lire_ou_ephemere` (aucune écriture).
+- **Récupération de fork interrompu** (`recuperer_fork_interrompu`, ligne 601) :
+  idempotente, sous verrou, force `domaine.id`+`domaine.init` à converger vers le
+  journal puis retire le journal. Un journal corrompu (longueur, magic ou valeur
+  nulle) est un refus explicite, jamais un effacement silencieux.
+- **Migration** : `migrer_legacy_domaine()` (`store.rs` ligne 9000) et
+  `migrer_legacy()` (`domaine_id.rs` ligne 658) — l'opération EXPLICITE qui
+  matérialise une identité persistée sur une base legacy à l'historique inconnu.
+- **Restauration** : `domaine.id` et `domaine.init` sont transportés par
+  l'instantané (`instantane.rs`, contrat de continuité — restaurer = écraser la
+  base par la copie, identité comprise). SEULS le verrou et le journal en sont
+  exclus. Si `domaine.fork` est présent au moment de la capture, la paire
+  id+init est exclue AUSSI (`file.rs` lignes 2596-2607) : un instantané pris
+  pendant un fork ne porte pas l'identité (jamais une paire incohérente sans
+  contexte de récupération).
+
+### 0.1.5 Limites (documentées dans le code)
+
+1. Une copie intégrale NON déclarée (`cp -a`) partage le MÊME `domaine_id` — la
+   distinguer exige `forker` (structurel : « déplacer » et « copier » produisent
+   des répertoires byte-identiques, seule l'intention de l'opérateur les
+   distingue).
+2. La suppression des DEUX fichiers (`domaine.id` ET `domaine.init`) rend la base
+   indistinguable d'un legacy jamais identifié ; en réouverture on ne la
+   ré-identifie plus (identité éphémère, `migrer_legacy` exigée). Seule la perte
+   de `domaine.id` SEUL (marqueur restant) est refusée.
+3. **Garde de publication** (`store.rs` ligne ~4409) : avant de publier, on relit
+   `domaine.id` du FICHIER (pas du cache mémoire du store ouvert) ; si un pair a
+   fork le domaine entre-temps, publication refusée `SubstrateError::DomaineForke`
+   (`error.rs` ligne 438) — pas de commit fantôme.
+4. **Interruption ≠ perte électrique** : le protocole rend une interruption
+   (kill -9) récupérable par les deux `rename` atomiques + le journal ; il ne
+   couvre pas la perte électrique d'une écriture non arrivée au disque. La
+   visibilité inter-processus d'un `domaine.id` réécrit passe par le cache de
+   pages — d'où la relecture du FICHIER par la garde (point 3), jamais du cache
+   mémoire du store ouvert.
+
+### 0.1.6 Compatibilité des versions (8 octets → 16 octets)
+
+**Le même entête `OBRI1` ne rend pas deux formats compatibles.** L'entête
+`OBRI1\n` encode le magic (`OBRI`) et la VERSION (`1`, 5ᵉ octet) mais **pas la
+longueur de la charge utile** : un `domaine.init` « historique » à 8 octets
+(préfixe 64 bits, évoqué dans le RFC #334) porterait le MÊME entête `OBRI1` que
+le format réel à 16 octets, tout en étant un format DIFFÉRENT.
+
+**Ce que le code fait réellement** d'une lecture d'un `domaine.init` de 8 octets
+(ou de toute longueur ≠ 22) : **REFUS explicite** (`InvalidData`), pas de
+relecture ni de régénération. `lire_init` (ligne 320) lit le fichier jusqu'au
+bout puis exige `buf.len() == TAILLE_INIT` (22) : un fichier de 8 octets — ou de
+14 octets (`OBRI1\n` + 8) — échoue avec « `domaine.init : 22 octets attendus
+(entête 6 + empreinte 16), N lus` ». Même traitement pour `domaine.id` (`lire`,
+ligne 273) et `domaine.fork` (`lire_journal_fork`, ligne 364) : longueur stricte
++ entête stricte + valeur non nulle, chaque écart étant un refus nommé.
+
+**Ce qu'il FAUT faire** (règle à tenir) : tout changement de disposition d'un de
+ces fichiers — en particulier la taille de la charge utile — **doit incrémenter
+la version dans l'entête** (`OBRI2\n`, `OBRD2\n`, …), jamais réutiliser le même
+chiffre avec une charge différente. Le code compare 6 octets d'entête (version
+comprise) : une version inconnue est refusée (`InvalidData` « entête inconnue »)
+avant toute interprétation de la charge. **Aucune migration en place ne convertit
+un marqueur 8 octets en 16 octets** : un tel artefact, s'il existait, serait
+refusé et l'opérateur devrait le re-matérialiser explicitement — les seules
+migrations implémentées sont « id sans init → écrire init » et « les deux absents
+→ matérialiser ».
+
+---
 ## 1. File layout
 
 A Substrate database is a directory:
