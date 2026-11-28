@@ -43,6 +43,8 @@ pub use observation::{
     ResultingState, SourceRevision,
 };
 
+#[cfg(feature = "substrate")]
+mod incarnation;
 #[cfg(all(feature = "engram", feature = "substrate"))]
 mod observation_substrate;
 #[cfg(all(feature = "engram", feature = "substrate"))]

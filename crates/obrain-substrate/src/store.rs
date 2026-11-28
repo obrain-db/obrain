@@ -18328,6 +18328,46 @@ impl SubstrateStore {
         }
     }
 
+    /// Réserve un identifiant d'engramme sur l'allocateur NATIF (monotone,
+    /// persisté dans le dict, borne partagée entre processus quand elle
+    /// existe). Contrairement à [`Self::seed_engram`], n'écrit aucun membre :
+    /// l'appelant (couche cognitive) mirroite lui-même l'ensemble.
+    ///
+    /// L'identifiant rendu n'est JAMAIS réutilisé, y compris après retrait de
+    /// l'engramme, fermeture et réouverture : c'est ce qui en fait une
+    /// incarnation attestable.
+    pub fn reserve_engram_id(&self) -> SubstrateResult<u16> {
+        self.alloc_engram_id()
+    }
+
+    /// Élève le plancher de l'allocateur à `next` (prochain id à rendre) sans
+    /// jamais le baisser. Sert à une base dont des engrammes ont été formés
+    /// par un compteur local (sans passer par l'allocateur natif, donc dict à
+    /// 1) : sans ce relèvement, la première réservation native rendrait
+    /// l'identifiant d'un engramme existant. Au-delà de `u16::MAX`,
+    /// l'allocateur est déclaré épuisé (sentinelle 0), comme à l'allocation.
+    pub fn raise_engram_floor(&self, next: u64) {
+        if next > u64::from(u16::MAX) {
+            self.next_engram_id.store(0, Ordering::Release);
+            return;
+        }
+        let cible = next as u16;
+        // Boucle CAS (MSRV 1.91 : ni `fetch_update` déprécié ni `try_update`).
+        let mut cur = self.next_engram_id.load(Ordering::Acquire);
+        // 0 = épuisé : jamais ressuscité.
+        while cur != 0 && cur < cible {
+            match self.next_engram_id.compare_exchange_weak(
+                cur,
+                cible,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(v) => cur = v,
+            }
+        }
+    }
+
     /// Inspect the current engram-id high-water mark (next id to allocate).
     /// Useful for tests and for checkpoint/snapshot machinery.
     pub fn next_engram_id(&self) -> u16 {

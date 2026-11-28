@@ -42,7 +42,8 @@ use super::types::{Engram, EngramId};
 
 #[cfg(feature = "substrate")]
 use obrain_substrate::{
-    EngramIncoherence, SubstrateError, SubstrateResult, Writer as SubstrateWriter, engram_bit_mask,
+    EngramIncoherence, SubstrateError, SubstrateResult, SubstrateStore, Writer as SubstrateWriter,
+    engram_bit_mask,
 };
 use parking_lot::RwLock as PlRwLock;
 
@@ -89,6 +90,16 @@ pub struct EngramStore {
     /// Optional substrate writer for side-table + bitset mirror (T7 Step 2).
     #[cfg(feature = "substrate")]
     substrate: PlRwLock<Option<Arc<SubstrateWriter>>>,
+    /// Store substrat NATIF (optionnel) : source de l'allocateur d'identifiants
+    /// monotone et de la liaison d'incarnation durable. Sans lui, le compteur
+    /// local est seul (identifiants réutilisables, aucune incarnation attestée).
+    #[cfg(feature = "substrate")]
+    natif: PlRwLock<Option<Arc<SubstrateStore>>>,
+    /// Identifiants réservés sur l'allocateur natif, PAS ENCORE attestés : leur
+    /// état natif n'a pas été publié (réservation seule, miroir en échec). Une
+    /// incarnation n'est écrite qu'après un miroir réussi.
+    #[cfg(feature = "substrate")]
+    reserves: parking_lot::Mutex<HashSet<u64>>,
     /// Injection de faute (test) : fait échouer `add_engram_bit` APRÈS un
     /// `set_engram_state` réussi — reproduit l'écriture partielle du substrat.
     #[cfg(feature = "fault-injection")]
@@ -157,6 +168,9 @@ pub struct LoadReport {
     pub degraded: Vec<(EngramId, String)>,
     /// Engrammes rejetés, avec leur identifiant ET la cause.
     pub rejected: Vec<(EngramId, RejectCause)>,
+    /// Retraits INTERROMPUS achevés au chargement : incarnation éteinte mais
+    /// slot encore occupé ; le slot a été vidé, l'engramme n'est pas chargé.
+    pub retraits_acheves: Vec<EngramId>,
     /// Défaillance GLOBALE de la zone d'engrammes (magic/version/taille
     /// invalides) : le chargement s'est arrêté SANS balayer les 65 535
     /// identifiants. En sa présence, `rejected` est VIDE (une zone morte n'est
@@ -207,6 +221,10 @@ impl EngramStore {
             projection: PlRwLock::new(None),
             #[cfg(feature = "substrate")]
             substrate: PlRwLock::new(None),
+            #[cfg(feature = "substrate")]
+            natif: PlRwLock::new(None),
+            #[cfg(feature = "substrate")]
+            reserves: parking_lot::Mutex::new(HashSet::new()),
             #[cfg(feature = "substrate")]
             degraded: PlRwLock::new(HashSet::new()),
             #[cfg(feature = "fault-injection")]
@@ -290,7 +308,26 @@ impl EngramStore {
     /// writer.
     #[cfg(feature = "substrate")]
     pub fn attach_substrate(&self, writer: Arc<SubstrateWriter>) {
+        // Un attachement HISTORIQUE élimine le store natif précédent : sans
+        // cela, l'allocateur et les attestations continueraient de viser un
+        // autre store (donc un autre domaine) que celui du miroir.
+        *self.natif.write() = None;
+        self.reserves.lock().clear();
         *self.substrate.write() = Some(writer);
+    }
+
+    /// Attache un store substrat NATIF : son écrivain sert de miroir (comme
+    /// [`Self::attach_substrate`]) ET son allocateur d'engrammes (monotone,
+    /// persisté, jamais réutilisé après suppression/réouverture) devient la
+    /// source des identifiants. Chaque identifiant alloué reçoit une liaison
+    /// d'incarnation durable (voir `incarnation`). Appeler ensuite
+    /// [`Self::load_from_substrate`] pour relever le plancher de l'allocateur
+    /// au-dessus des engrammes déjà présents (formés par l'ancien compteur local).
+    #[cfg(feature = "substrate")]
+    pub fn attach_substrate_store(&self, store: Arc<SubstrateStore>) {
+        self.reserves.lock().clear();
+        *self.substrate.write() = Some(store.writer_arc());
+        *self.natif.write() = Some(store);
     }
 
     /// Returns `true` when a substrate writer is attached.
@@ -300,7 +337,30 @@ impl EngramStore {
     }
 
     /// Returns the next unique [`EngramId`] and advances the counter.
+    ///
+    /// Avec un store natif attaché ([`Self::attach_substrate_store`]), l'id vient
+    /// de l'allocateur NATIF (monotone, persisté) et reçoit sa liaison
+    /// d'incarnation durable ; un id déjà présent au cache (engramme legacy) est
+    /// sauté. Si l'allocateur refuse (épuisement), repli sur le compteur local :
+    /// cet id n'aura AUCUNE incarnation attestée (refus sûr côté registre).
     pub fn next_id(&self) -> EngramId {
+        #[cfg(feature = "substrate")]
+        if let Some(natif) = self.natif.read().clone() {
+            // Borné : le cache ne peut pas contenir plus de 65 535 ids.
+            for _ in 0..=u16::MAX as usize {
+                match natif.reserve_engram_id() {
+                    Ok(id) if self.cache.contains_key(&EngramId(u64::from(id))) => continue,
+                    Ok(id) => {
+                        // Réservation SEULE : aucune incarnation tant que l'état
+                        // natif n'est pas publié (voir `mirror_substrate_insert`).
+                        self.reserves.lock().insert(u64::from(id));
+                        self.next_id.fetch_max(u64::from(id) + 1, Ordering::Relaxed);
+                        return EngramId(u64::from(id));
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         EngramId(id)
     }
@@ -419,7 +479,38 @@ impl EngramStore {
     }
 
     /// Removes and returns the engram with the given `id`, if present.
+    ///
+    /// Avec un store natif, le retrait est FALLIBLE : si l'incarnation durable ne
+    /// peut pas être éteinte par le chemin canonique, l'engramme est CONSERVÉ
+    /// (cache, slot, réservation) et `None` est rendu après une erreur
+    /// journalisée. Utiliser [`Self::try_remove`] pour distinguer ce refus
+    /// d'une absence.
     pub fn remove(&self, id: EngramId) -> Option<Engram> {
+        match self.try_remove(id) {
+            Ok(removed) => removed,
+            Err(e) => {
+                tracing::error!(engram_id = id.0, error = ?e, "retrait d'engramme REFUSÉ : état conservé");
+                None
+            }
+        }
+    }
+
+    /// Retrait avec résultat. ORDRE (sûr à la coupure) :
+    /// 1. éteindre l'incarnation durable (chemin canonique, précondition
+    ///    stricte) — en cas d'échec, RIEN n'est touché et l'erreur est rendue ;
+    /// 2. retirer du cache / du stockage ;
+    /// 3. vider le slot natif (membres + poids).
+    ///
+    /// Une coupure entre 1 et 3 laisse une incarnation éteinte avec un slot
+    /// encore occupé : [`Self::load_from_substrate`] ACHÈVE alors le retrait
+    /// (l'engramme ne ressuscite pas).
+    pub fn try_remove(&self, id: EngramId) -> Result<Option<Engram>, StoreError> {
+        #[cfg(feature = "substrate")]
+        if self.cache.contains_key(&id)
+            && let Some(natif) = self.natif.read().clone()
+        {
+            super::incarnation::retirer(&natif, id.0).map_err(StoreError::PersistenceFailed)?;
+        }
         self.revision.fetch_add(1, Ordering::Relaxed);
         let removed = self.cache.remove(&id).map(|(_, engram)| engram);
         if removed.is_some()
@@ -434,9 +525,10 @@ impl EngramStore {
         // lookup in `recall`.
         #[cfg(feature = "substrate")]
         if removed.is_some() {
+            self.reserves.lock().remove(&id.0);
             self.mirror_substrate_remove(id);
         }
-        removed
+        Ok(removed)
     }
 
     /// Rehydrates the cache from persisted `:Engram` nodes in the backing
@@ -529,6 +621,15 @@ impl EngramStore {
         // lui, croît de façon monotone (même contrat que load_from_graph).
         let mut degraded_local: HashSet<EngramId> = HashSet::new();
         let mut max_id: u64 = 0;
+        // Incarnations ÉTEINTES (un balayage) : un slot encore occupé pour une
+        // incarnation éteinte est un retrait INTERROMPU entre le marqueur et
+        // l'effacement du slot.
+        let eteintes = self
+            .natif
+            .read()
+            .as_ref()
+            .map(|n| super::incarnation::retirees(n))
+            .unwrap_or_default();
         for eid_u16 in 1u16..=u16::MAX {
             // Lecture COHÉRENTE membres+poids sous un même verrou (pas de
             // fenêtre d'entrelacement entre deux lectures séparées).
@@ -582,6 +683,20 @@ impl EngramStore {
             // les poids sont incohérents ou absents).
             max_id = max_id.max(eid_u16 as u64);
             let eid = EngramId(eid_u16 as u64);
+            if eteintes.contains(&(eid_u16 as u64)) {
+                // Retrait interrompu : on l'ACHÈVE (vider le slot), sans
+                // jamais charger l'engramme. L'id reste réservé (max_id).
+                match writer.set_engram_state(eid_u16, Vec::new(), Vec::new()) {
+                    Ok(()) => report.retraits_acheves.push(eid),
+                    Err(e) => {
+                        tracing::error!(engram_id = eid_u16, error = %e, "achèvement du retrait impossible : engramme écarté, slot conservé");
+                        report
+                            .rejected
+                            .push((eid, RejectCause::ReadError(e.to_string())));
+                    }
+                }
+                continue;
+            }
             // Restaure les poids (état dynamique) depuis la zone parallèle.
             let ensemble: Vec<(NodeId, f64)> = match weights {
                 Some(ws) if ws.len() == members.len() => members
@@ -668,6 +783,12 @@ impl EngramStore {
             if next > current {
                 self.next_id.store(next, Ordering::Relaxed);
             }
+            // Base formée par l'ancien compteur local : le dict natif est resté
+            // à 1. Relever son plancher, sinon la première réservation native
+            // rendrait l'id d'un engramme existant.
+            if let Some(natif) = self.natif.read().as_ref() {
+                natif.raise_engram_floor(next);
+            }
         }
         // ── UN CHARGEMENT EST UNE MUTATION : LA RÉVISION LE DIT ──────────────
         // Défaut mesuré (2026-09-11) : `revision` n'était incrémenté que par
@@ -739,14 +860,21 @@ impl EngramStore {
         }
         // Peek the next id without bumping the counter so we can fail before
         // mutating state.
+        let native = self.natif.read().is_some();
         let peek = self.next_id.load(Ordering::Relaxed);
-        if peek == 0 || peek > MAX_SUBSTRATE_ENGRAM_ID {
+        if !native && (peek == 0 || peek > MAX_SUBSTRATE_ENGRAM_ID) {
             return Err(SubstrateError::WalBadFrame(format!(
                 "engram id {peek} overflows substrate u16 namespace (max {})",
                 MAX_SUBSTRATE_ENGRAM_ID
             )));
         }
         let eid = self.next_id();
+        if eid.0 == 0 || eid.0 > MAX_SUBSTRATE_ENGRAM_ID {
+            return Err(SubstrateError::WalBadFrame(format!(
+                "engram id {} overflows substrate u16 namespace (max {})",
+                eid.0, MAX_SUBSTRATE_ENGRAM_ID
+            )));
+        }
         let ensemble: Vec<(NodeId, f64)> = nids.iter().map(|&n| (n, 1.0)).collect();
         let engram = Engram::new(eid, ensemble);
         // `insert` handles: cache population, optional JSON write-through,
@@ -1088,6 +1216,25 @@ impl EngramStore {
         // devient jamais une autorité périmée qui survivrait à une réparation
         // effective.
         self.degraded.write().remove(&engram.id);
+        // INCARNATION : l'état natif est publié (membres + bits). Seulement
+        // maintenant, un identifiant issu de l'allocateur natif devient une
+        // incarnation attestée. Un échec d'attestation laisse l'engramme
+        // non attesté (refus sûr côté registre) ; la réservation est conservée
+        // pour qu'un prochain miroir réussi retente.
+        if let Some(natif) = self.natif.read().clone()
+            && self.reserves.lock().contains(&engram.id.0)
+        {
+            match super::incarnation::attester(&natif, engram.id.0) {
+                Ok(_) => {
+                    self.reserves.lock().remove(&engram.id.0);
+                }
+                Err(e) => tracing::warn!(
+                    engram_id = engram.id.0,
+                    error = %e,
+                    "incarnation d'engramme non attestée"
+                ),
+            }
+        }
         Ok(())
     }
 

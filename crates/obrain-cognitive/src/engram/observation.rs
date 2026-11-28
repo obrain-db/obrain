@@ -435,6 +435,12 @@ pub trait AtomicEventLedger: Send + Sync {
     /// Abandon conditionnel (refusé si déjà appliquée).
     fn abandon(&self, event_id: &[u8; 16]) -> Result<AbandonOutcome, String>;
 
+    /// Domaine substrat (`domaine.id`) dont ce registre est l'autorité durable,
+    /// s'il en a un. `None` : registre non adossé à un store (mémoire).
+    fn domaine_substrat(&self) -> Option<u128> {
+        None
+    }
+
     /// Confirme qu'une FORMATION réservée a bien produit son effet (passe
     /// l'effet de PENDING à DONE). Rend `true` si la transition a eu lieu.
     fn complete_formation(&self, event_id: &[u8; 16]) -> Result<bool, String>;
@@ -447,6 +453,10 @@ pub trait AtomicEventLedger: Send + Sync {
 /// Délégation `Arc<T>` : permet de détenir `Arc<dyn AtomicEventLedger>` (le
 /// manager) et d'en construire un adaptateur sans connaître le type concret.
 impl<T: AtomicEventLedger + ?Sized> AtomicEventLedger for std::sync::Arc<T> {
+    fn domaine_substrat(&self) -> Option<u128> {
+        (**self).domaine_substrat()
+    }
+
     fn resource_revision(&self, resource_id: &[u8]) -> Result<u64, String> {
         (**self).resource_revision(resource_id)
     }
