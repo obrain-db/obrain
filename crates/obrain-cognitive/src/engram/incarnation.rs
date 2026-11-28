@@ -26,6 +26,7 @@
 //! de choisir.
 
 use obrain_common::types::{NodeId, Value};
+use obrain_core::graph::traits::GraphStoreMut;
 use obrain_substrate::{EtatPropriete, IssuePublication, ModePublication, SubstrateStore};
 
 /// Label RÉSERVÉ du nœud d'incarnation.
