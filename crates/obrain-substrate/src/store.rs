@@ -18342,10 +18342,11 @@ impl SubstrateStore {
 
     /// Élève le plancher de l'allocateur à `next` (prochain id à rendre) sans
     /// jamais le baisser. Sert à une base dont des engrammes ont été formés
-    /// par un compteur local (sans passer par l'allocateur natif, donc dict à
-    /// 1) : sans ce relèvement, la première réservation native rendrait
-    /// l'identifiant d'un engramme existant. Au-delà de `u16::MAX`,
-    /// l'allocateur est déclaré épuisé (sentinelle 0), comme à l'allocation.
+    /// par un compteur local, sans passer par l'allocateur natif (le dict reste
+    /// donc au plancher initial) : sans ce relèvement, la première réservation
+    /// native rendrait l'identifiant d'un engramme existant. Au-delà de
+    /// `u16::MAX`, l'allocateur est déclaré épuisé (sentinelle 0), comme à
+    /// l'allocation.
     pub fn raise_engram_floor(&self, next: u64) {
         if next > u64::from(u16::MAX) {
             self.next_engram_id.store(0, Ordering::Release);

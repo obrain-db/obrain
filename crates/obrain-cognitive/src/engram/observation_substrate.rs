@@ -2426,7 +2426,7 @@ mod tests {
         };
         ledger.attendre_suspension_engagement();
         // Retrait pendant la suspension (identité commise, effet pas encore).
-        incarnation::retirer(ledger.store(), 5);
+        incarnation::retirer(ledger.store(), 5).expect("retrait de l'incarnation");
         ledger.relacher_suspension_engagement();
         let err = t.join().unwrap().expect_err("retrait concurrent");
         assert!(
@@ -2471,7 +2471,7 @@ mod tests {
                 .unwrap(),
             LedgerOutcome::Applied
         );
-        incarnation::retirer(ledger.store(), 6);
+        incarnation::retirer(ledger.store(), 6).expect("retrait de l'incarnation");
         assert!(matches!(
             ledger.resolve(&oid(1)).unwrap(),
             ResolvedState::Applied { .. }
@@ -2537,7 +2537,7 @@ mod tests {
     #[test]
     fn vie_mal_typee_ou_identite_illisible_refusees() {
         let (ledger, noeud, rid) = ledger_incarne(8);
-        let store = ledger.store().clone();
+        let store = ledger.store();
         store.set_node_property(noeud, "_retiree", Value::from(1i64));
         let err = ledger
             .apply_event(&oid(1), &rid, b"def", 0, &effet_revision(noeud, 1), 1)
@@ -2572,7 +2572,7 @@ mod tests {
     #[test]
     fn rejeu_sur_une_autre_ressource_refuse_pour_engramme() {
         let (ledger, noeud_e, rid_e) = ledger_incarne(11);
-        let store = ledger.store().clone();
+        let store = ledger.store();
         let vrai = store.create_node(&["ressource"]);
         let rid_n = ressource_bytes(vrai);
 
