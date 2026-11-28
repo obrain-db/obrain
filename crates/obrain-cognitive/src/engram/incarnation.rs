@@ -254,6 +254,7 @@ pub(crate) fn retirer(store: &SubstrateStore, engram_id: u64) -> Result<(), Stri
 mod tests {
     use super::*;
     use crate::engram::store::EngramStore;
+    use crate::engram::types::EngramId;
     use std::sync::Arc;
 
     fn natif_disque(chemin: &std::path::Path, creer: bool) -> (Arc<SubstrateStore>, EngramStore) {

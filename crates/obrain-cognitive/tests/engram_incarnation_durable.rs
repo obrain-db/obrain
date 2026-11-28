@@ -181,7 +181,7 @@ fn voisin_legacy_refuse_et_natif_distinct() {
     let o = obs(10);
     match applique(&m, o, legacy, &[NodeId(2)], 0) {
         Err(RevisionError::PersistenceFailed(msg)) => {
-            assert!(msg.contains("incarnation durable"), "{msg}")
+            assert!(msg.contains("incarnation durable"), "{msg}");
         }
         autre => panic!("refus nommé attendu, reçu {autre:?}"),
     }
@@ -352,7 +352,7 @@ fn reservation_seule_et_etat_sans_attestation_non_revisables() {
             .insert(Engram::new(sans, vec![(NodeId(1), 1.0), (NodeId(2), 1.0)]));
         match m.revise_with_id(obs(41), sans, &[NodeId(3)], 0.5, SourceRevision(0)) {
             Err(RevisionError::PersistenceFailed(msg)) => {
-                assert!(msg.contains("incarnation durable"), "{msg}")
+                assert!(msg.contains("incarnation durable"), "{msg}");
             }
             autre => panic!("refus nommé attendu : {autre:?}"),
         }
