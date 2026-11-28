@@ -69,7 +69,10 @@ fn quiesce(db: &ObrainDB) {
 }
 
 #[test]
-#[ignore = "rappel strict dépend de Lot 2 (dédup) + Lot 5 (contrat de rappel), pas Lot 1 ; la persistance est couverte par parite_etat_cognitif"]
+#[ignore = "BLOQUÉ sur une preuve NATIVE de filiation : le chemin de formation ne produit aucune provenance \
+            (`Engram::source_episodes` reste vide, le pont refuse une identité d'observation sur une formation \
+            simple), donc rien ne permet d'affirmer que {a,b} est une version ANTÉRIEURE de {a,b,c}. Constat \
+            mesuré et diagnostic d'ambiguïté dans tests/engram_continuite_provenance.rs ; assertion inchangée"]
 fn chaine_e2e_observation_vers_rappel_persistant() {
     let dir = tempfile::tempdir().expect("tempdir");
     let chemin = dir.path().join("base");

@@ -343,7 +343,7 @@ pub use stigmergy::{
 
 #[cfg(feature = "engram")]
 pub use engram::{
-    ActivatedEngram, CoActivationDetector, CognitiveMetrics, CompetitionResult,
+    ActivatedEngram, AmbiguiteImbriquee, CoActivationDetector, CognitiveMetrics, CompetitionResult,
     CrystallizationConfig, CrystallizationDetector, CrystallizationProposal, CrystallizationResult,
     DetailLevel, EngramFormationTrigger, EngramManager, EngramMetricsCollector, EngramStore,
     FormationConfig, FsrsConfig, FsrsScheduler, HebbianWithSurprise, HomeostasisConfig,
@@ -351,7 +351,8 @@ pub use engram::{
     HybridRecallError, HybridStats, IMMUNE_FP_RATE_THRESHOLD, LABEL_CRYSTALLIZED_NOTE,
     LOW_PRECISION_BETA_THRESHOLD, MmrResult, REL_CRYSTALLIZED_IN, RecallEngine, RecallResult,
     RecallVariant, ReviewRating, SpectralEncoder, WarmupConfig, WarmupSelector, crystallize,
-    generate_summary, hopfield_retrieve, max_marginal_relevance, softmax_compete,
+    diagnostiquer_imbrications, generate_summary, hopfield_retrieve, max_marginal_relevance,
+    softmax_compete,
 };
 
 #[cfg(feature = "immune")]

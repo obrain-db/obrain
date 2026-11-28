@@ -80,8 +80,8 @@ pub use hybrid_recall::{
 mod recall;
 #[cfg(feature = "engram")]
 pub use recall::{
-    ActivatedEngram, DetailLevel, RecallEngine, RecallResult, WarmupConfig, WarmupSelector,
-    reconsolidate,
+    ActivatedEngram, AmbiguiteImbriquee, DetailLevel, RecallEngine, RecallResult, WarmupConfig,
+    WarmupSelector, diagnostiquer_imbrications, reconsolidate,
 };
 // NOTE : `reconsolidate_adaptive` n'est PAS re-exporte. C'est une brique interne
 // qui suppose des parametres DEJA valides ; le point d'entree public est
