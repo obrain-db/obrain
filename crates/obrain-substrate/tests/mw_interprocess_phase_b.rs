@@ -1036,7 +1036,10 @@ fn t8b_les_pages_d_un_ecrivain_tue_restent_reservees_et_un_troisieme_alloue_au_d
     }
     const TEST: &str =
         "t8b_les_pages_d_un_ecrivain_tue_restent_reservees_et_un_troisieme_alloue_au_dela";
-    let td = tempfile::tempdir().unwrap();
+    let mut td = tempfile::Builder::new()
+        .prefix("obrain-t8b-")
+        .tempdir()
+        .unwrap();
     let dir = td.path().join("store-t8b");
     creer_store(&dir);
     let lancer = |role: &str, tag: &str, n: u64| {
@@ -1059,6 +1062,29 @@ fn t8b_les_pages_d_un_ecrivain_tue_restent_reservees_et_un_troisieme_alloue_au_d
     a.terminer();
     assert_eq!(ids_a.len(), 200);
     assert_eq!(ids_d.len(), 100);
+
+    // #439 : la première ouverture rejoue le WAL et peut modifier le store.
+    // Capturer l'état brut seulement quand la campagne le demande, après la
+    // fin des deux enfants pour ne pas modifier leur ordonnancement.
+    let capturer = std::env::var("OBRAIN_T8B_CAPTURE").as_deref() == Ok("1");
+    if capturer {
+        td.disable_cleanup(true);
+        eprintln!("T8b, preuve en cas d’échec : {}", td.path().display());
+        let avant = td.path().join("avant-ouverture");
+        std::fs::create_dir(&avant).expect("répertoire de capture T8b");
+        for entree in std::fs::read_dir(&dir).expect("fichiers du store T8b") {
+            let entree = entree.expect("fichier du store T8b");
+            if entree.file_type().expect("type du fichier T8b").is_file() {
+                std::fs::copy(entree.path(), avant.join(entree.file_name()))
+                    .expect("copie avant rejeu du WAL");
+            }
+        }
+        std::fs::write(
+            td.path().join("ids.txt"),
+            format!("A {ids_a:?}\nD {ids_d:?}\n"),
+        )
+        .expect("identifiants annoncés par les écrivains");
+    }
 
     {
         let s = SubstrateStore::open(&dir).expect("réouverture exclusive après le mort");
@@ -1092,6 +1118,71 @@ fn t8b_les_pages_d_un_ecrivain_tue_restent_reservees_et_un_troisieme_alloue_au_d
          (premiers écarts : {:#?})",
         &ecarts[..ecarts.len().min(6)]
     );
+    td.disable_cleanup(false);
+}
+
+/// #439 : le rejeu d'une insertion ne doit pas effacer une tête de propriétés
+/// qu'un pair publie PENDANT la fenêtre lecture→écriture du rejeu.
+///
+/// Séquence forcée, sans dépendre de l'ordonnancement : le rejeu s'arrête au
+/// seam `rejeu:insertion:noeud:avant_ecriture` — le DERNIER point avant qu'il
+/// n'écrive le record de nœud —, le pair publie `alpha`, puis le rejeu reprend
+/// et écrit le record. Le seam n'existe qu'à cet endroit du code : il ne peut
+/// pas se déclencher après l'écriture, et le pair n'écrit qu'une fois le
+/// marqueur de pause vu.
+///
+/// Les deux logiques s'opposent sur la MÊME fenêtre :
+/// - `main` relit le record entier puis réécrit ses 40 octets ; le seam y est
+///   posé juste avant le `copy_from_slice`, donc APRÈS la lecture : la tête
+///   publiée pendant la pause est écrasée → `alpha` perdu (`None`) ;
+/// - corrigé : seuls `label_bitset`/`tenant_id`/`flags` sont écrits, la tête
+///   survit → `alpha` présent.
+#[cfg(feature = "points-de-crash")]
+#[test]
+fn t8d_le_rejeu_d_une_insertion_nefface_pas_une_tete_de_proprietes_publiee() {
+    if role().is_some() {
+        SubstrateStore::open_shared_write(env_obligatoire("MWB_DIR"))
+            .expect("ouverture partagée du pair");
+        return;
+    }
+    let td = tempfile::tempdir().expect("tempdir");
+    let dir = td.path().join("store");
+    creer_store(&dir);
+    let a = SubstrateStore::open_shared_write(&dir).expect("premier écrivain");
+    let n = a.create_node(&["MW"]);
+    let pause = td.path().join("pause");
+    let reprise = td.path().join("reprise");
+    let b = Enfant::lancer(
+        "t8d_le_rejeu_d_une_insertion_nefface_pas_une_tete_de_proprietes_publiee",
+        &[
+            ("MWB_ROLE", "rejoue".into()),
+            ("MWB_DIR", dir.display().to_string()),
+            (
+                "OBRAIN_SUBSTRATE_POINT_REPRISE",
+                format!(
+                    "rejeu:insertion:noeud:avant_ecriture:{}:{}",
+                    pause.display(),
+                    reprise.display()
+                ),
+            ),
+        ],
+    );
+    attendre_fichier(&pause, "la fenêtre lecture→écriture du rejeu");
+    let cles = ["alpha", "beta", "gamma"];
+    // `alpha` est publié DANS la fenêtre : c'est la valeur que la réécriture
+    // du record entier effaçait. `beta`/`gamma` sont posées après la reprise
+    // et servent de témoins que la propriété reste utilisable ensuite.
+    a.set_node_property(n, cles[0], Value::String(valeur_t8("A", 0, cles[0]).into()));
+    std::fs::write(&reprise, b"ok").expect("reprendre le rejeu");
+    b.terminer();
+    for cle in &cles[1..] {
+        a.set_node_property(n, cle, Value::String(valeur_t8("A", 0, cle).into()));
+    }
+    drop(a);
+
+    let s = SubstrateStore::open(&dir).expect("réouverture exclusive");
+    let ecarts = ecarts_t8(&s, "A", &[n.0]);
+    assert!(ecarts.is_empty(), "{ecarts:?}");
 }
 
 // ===========================================================================
