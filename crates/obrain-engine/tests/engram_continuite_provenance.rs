@@ -292,10 +292,18 @@ fn indice_a_c_ne_signale_pas_l_imbrication() {
     );
 }
 
-/// L'ensemble indépendant (autre trio) n'est ni effondré ni signalé : le
-/// diagnostic ne fabrique aucune ambiguïté là où il n'y en a pas.
+/// Les deux trios disjoints ne se MÉLANGENT jamais dans le diagnostic : une
+/// ambiguïté ne cite que des ensembles qui expliquent l'indice donné.
+///
+/// NOTE : ce test ne couvre PAS « petit engramme indépendant partageant des
+/// nœuds avec le grand ». Le diagnostic signale VOLONTAIREMENT toute paire
+/// imbriquée expliquant les mêmes indices, indépendante ou non — c'est son rôle :
+/// dire que le signal ne peut pas les distinguer. L'indépendance, elle, est
+/// garantie ailleurs : le diagnostic ne retire jamais un candidat (couvert par
+/// le test unitaire `imbrication::le_diagnostic_ne_modifie_pas_les_resultats` et
+/// le test `nested_independant_est_signalé_mais_preserve`).
 #[test]
-fn ensemble_independant_non_signale() {
+fn les_deux_trios_ne_se_melangent_pas() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = base_de_reference(&dir.path().join("base"));
     let session = db.session();

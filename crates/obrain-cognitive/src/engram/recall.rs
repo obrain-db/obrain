@@ -89,6 +89,12 @@ pub struct RecallResult {
 /// inclusion d'ensembles ou une provenance non produite serait une inférence
 /// déguisée en preuve ; le diagnostic la laisse donc visible au lieu de la
 /// masquer.
+///
+/// Le diagnostic est VOLONTAIREMENT agnostique de la provenance : il signale
+/// toute paire imbriquée expliquant les mêmes indices, qu'elle soit une étape ou
+/// une mémoire réellement indépendante — précisément parce que le signal ne peut
+/// pas les distinguer. L'indépendance, elle, est préservée par le fait qu'il ne
+/// RETIRE jamais un candidat : la liste rendue est intacte.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AmbiguiteImbriquee {
     /// Le plus PETIT des deux ensembles (celui qui gagne aujourd'hui sur un
@@ -107,9 +113,12 @@ pub struct AmbiguiteImbriquee {
 /// Repère, dans une liste de résultats DÉJÀ bornée, les paires imbriquées qui
 /// expliquent exactement les mêmes indices.
 ///
-/// Coût : `O(k² · |indices|)` sur la liste rendue — aucun accès au store, aucun
-/// clone d'engramme, aucune modification du classement. Les anciennes API sont
-/// inchangées : ce diagnostic est un appel SÉPARÉ sur les résultats obtenus.
+/// Coût : `O(k² · (|ensemble| + |indices|))` sur la liste rendue, où `|ensemble|`
+/// est la taille du plus grand des deux candidats comparés — car chaque paire
+/// construit deux ensembles de membres (`HashSet<NodeId>`) puis deux
+/// intersections. Aucun accès au store, aucun clone d'engramme, aucune
+/// modification du classement. Les anciennes API sont inchangées : ce diagnostic
+/// est un appel SÉPARÉ sur les résultats obtenus.
 pub fn diagnostiquer_imbrications(
     cues: &[NodeId],
     resultats: &[RecallResult],
@@ -1338,6 +1347,48 @@ mod imbrication {
             resultats.iter().map(|r| r.engram_id).collect::<Vec<_>>(),
             copie.iter().map(|r| r.engram_id).collect::<Vec<_>>(),
             "l'ordre et le contenu rendus sont intacts"
+        );
+    }
+}
+
+#[cfg(test)]
+mod independance {
+    use super::*;
+    use crate::engram::types::EpisodeId;
+
+    fn resultat(id: u64, noeuds: &[u64], episodes: &[u64]) -> RecallResult {
+        let mut e = Engram::new(
+            EngramId(id),
+            noeuds.iter().map(|n| (NodeId(*n), 1.0)).collect(),
+        );
+        e.source_episodes = episodes.iter().map(|x| EpisodeId(*x)).collect();
+        RecallResult {
+            engram_id: EngramId(id),
+            confidence: 0.5,
+            engram: e,
+        }
+    }
+
+    /// Une paire imbriquée mais RÉELLEMENT indépendante (provenance distincte)
+    /// est quand même signalée comme ambiguë — c'est le contrat : le signal ne
+    /// peut pas les distinguer. Et surtout : elle n'est PAS retirée.
+    #[test]
+    fn imbrique_independant_est_signale_mais_preserve() {
+        let resultats = vec![
+            resultat(1, &[1, 2], &[100, 101, 102]),
+            resultat(2, &[1, 2, 3], &[200, 201, 202, 203]),
+        ];
+        let avant = resultats.iter().map(|r| r.engram_id).collect::<Vec<_>>();
+        let ambiguites = diagnostiquer_imbrications(&[NodeId(1)], &resultats);
+        assert_eq!(
+            ambiguites.len(),
+            1,
+            "l'ambiguïté est signalée : {ambiguites:?}"
+        );
+        let apres = resultats.iter().map(|r| r.engram_id).collect::<Vec<_>>();
+        assert_eq!(
+            avant, apres,
+            "la liste est INTACTE : un petit engramme indépendant n'est jamais retiré"
         );
     }
 }
