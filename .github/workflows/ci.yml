@@ -10,7 +10,13 @@ name: CI
 on:
   push:
     branches: [main]
+  # `ready_for_review` : une PR ouverte en brouillon ne lance AUCUN job (#141,
+  # garde `draft == false` ci-dessous) ; sans ce type, la passer « prête »
+  # ne déclenchait rien — le contrôle du code neuf (réservé aux runs
+  # `pull_request`) n'avait lieu qu'au prochain push. opened / synchronize /
+  # reopened sont les types par défaut, conservés à l'identique.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   # ── DÉCLENCHEMENT MANUEL (2026-11-13) ────────────────────────────────────
   # #141 fait qu'une PR en draft ne lance plus aucun job : une PR draft n'a donc
   # aucune couverture CI. Ce déclenchement rend la CI lançable à la main sur une

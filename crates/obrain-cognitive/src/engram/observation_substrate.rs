@@ -86,9 +86,10 @@ use obrain_substrate::{
     SubstrateStore, VerdictEffet,
 };
 
+use super::incarnation::{self, Liaison};
 use super::observation::{
     AbandonOutcome, AtomicEventLedger, EFFECT_FORMATION_DONE, EFFECT_FORMATION_PENDING,
-    LedgerOutcome, ResolvedState,
+    LedgerOutcome, ResolvedState, est_ressource_engramme,
 };
 
 /// Clé de la révision courante d'une ressource.
@@ -273,6 +274,36 @@ fn err_substrat(e: obrain_substrate::SubstrateError) -> String {
     e.to_string()
 }
 
+/// Refus SÛR : une ressource d'engramme TYPÉE (`E:`) sans incarnation durable
+/// attestée n'a pas de cible canonique. Jamais de correspondance numérique ni
+/// d'héritage d'effet par égalité de slot.
+fn err_ressource_engramme_sans_incarnation() -> String {
+    "ressource d'engramme sans incarnation durable : refus sûr (cible canonique non attestée)"
+        .to_string()
+}
+
+fn err_incarnation_eteinte() -> String {
+    "incarnation d'engramme éteinte : observation obsolète refusée".to_string()
+}
+
+fn err_liaison_refusee(l: &Liaison) -> String {
+    match l {
+        Liaison::Absente => err_ressource_engramme_sans_incarnation(),
+        Liaison::Ambigue => {
+            "incarnation d'engramme ambiguë (plusieurs liaisons) : refus sûr".to_string()
+        }
+        Liaison::Illisible(e) => format!("incarnation d'engramme illisible : refus sûr ({e})"),
+        Liaison::Vivante(_) | Liaison::Retiree(_) => String::new(),
+    }
+}
+
+/// Identifiant d'engramme d'une ressource `E:<id>` (longueur déjà vérifiée).
+fn id_engramme(resource_id: &[u8]) -> u64 {
+    let mut octets = [0u8; 8];
+    octets.copy_from_slice(&resource_id[resource_id.len() - 8..]);
+    u64::from_be_bytes(octets)
+}
+
 /// Crochet de suspension d'engagement (test-only, PAR LEDGER — jamais global) :
 /// une suspension sur un ledger n'affecte jamais un autre ledger ni un autre
 /// test du même processus.
@@ -328,6 +359,38 @@ impl SubstrateAtomicEventLedger {
         Ok(id)
     }
 
+    /// Cible substrat d'une ressource de révision, pour ÉCRIRE.
+    ///
+    /// * `NodeId` big-endian (8 octets) : le nœud lui-même.
+    /// * `E:<id>` : le nœud d'INCARNATION VIVANTE attesté de l'engramme (liaison
+    ///   durable écrite après publication de l'état natif). Sans liaison
+    ///   (legacy, réservation orpheline), éteinte, ambiguë ou illisible : refus
+    ///   NOMMÉ, jamais de correspondance numérique avec un nœud de même numéro.
+    fn cible(&self, resource_id: &[u8]) -> Result<NodeId, String> {
+        if !est_ressource_engramme(resource_id) {
+            return decoder_cible(resource_id);
+        }
+        match incarnation::lier(&self.store, id_engramme(resource_id)) {
+            Liaison::Vivante(n) => Ok(n),
+            Liaison::Retiree(_) => Err(err_incarnation_eteinte()),
+            autre => Err(err_liaison_refusee(&autre)),
+        }
+    }
+
+    /// Cible substrat pour LIRE LA PREUVE HISTORIQUE (résolution, classement) :
+    /// comme [`Self::cible`] mais une incarnation ÉTEINTE reste lisible — le
+    /// droit d'écrire s'éteint avec l'engramme, la preuve de ce qui a été
+    /// engagé, non.
+    fn cible_historique(&self, resource_id: &[u8]) -> Result<NodeId, String> {
+        if !est_ressource_engramme(resource_id) {
+            return decoder_cible(resource_id);
+        }
+        match incarnation::lier(&self.store, id_engramme(resource_id)) {
+            Liaison::Vivante(n) | Liaison::Retiree(n) => Ok(n),
+            autre => Err(err_liaison_refusee(&autre)),
+        }
+    }
+
     /// Lit et décode l'enregistrement canonique d'une identité, s'il existe.
     fn lire_record(
         &self,
@@ -367,6 +430,21 @@ impl SubstrateAtomicEventLedger {
         // Routage par la FORME de la ressource : une révision vise un nœud
         // substrat (NodeId big-endian 8 octets) ; une formation vise une
         // ressource SYNTHÉTIQUE (b"F:<16 octets>"), sans nœud substrat.
+        // Une ressource d'engramme TYPÉE est TOUJOURS une révision : son refus
+        // (sans incarnation, éteinte, ambiguë) est PROPAGÉ, jamais rabattu sur
+        // le chemin « formation ».
+        if est_ressource_engramme(resource_id) {
+            let cible = self.cible(resource_id)?;
+            return self.apply_revision_durable(
+                cible,
+                event_id,
+                resource_id,
+                definition,
+                precondition_revision,
+                resulting_state,
+                resulting_revision,
+            );
+        }
         match decoder_cible(resource_id) {
             Ok(cible) => self.apply_revision_durable(
                 cible,
@@ -490,6 +568,9 @@ impl SubstrateAtomicEventLedger {
         }
         let autorite = self.autorite_canonique()?;
         let cle_ev = cle_evenement(event_id);
+        // Révision d'ENGRAMME : identité et vie de l'incarnation entrent dans la
+        // précondition stricte de la matérialisation.
+        let engramme = est_ressource_engramme(resource_id).then(|| id_engramme(resource_id));
 
         for _ in 0..NB_REESSAIS {
             // ── Étape A : déduplication GLOBALE (nœud autorité). ──
@@ -507,7 +588,40 @@ impl SubstrateAtomicEventLedger {
                         let Some(p) = payload else {
                             return Err("enregistrement d'événement sans charge".to_string());
                         };
+                        // Dès qu'UNE des deux ressources est un engramme typé, une
+                        // identité enregistrée pour une AUTRE ressource n'est ni
+                        // rejouée ni classée : sinon le cache de l'engramme
+                        // pourrait être « réparé » d'un effet légitimement engagé
+                        // sur un vrai nœud sans rapport (NodeId→E: et inverse).
+                        // Node→Node garde la déduplication globale historique.
+                        if (engramme.is_some() || est_ressource_engramme(&p.resource))
+                            && p.resource != resource_id
+                        {
+                            return Err(
+                                "identité d'observation enregistrée pour une autre ressource : rejeu refusé (engramme typé)"
+                                    .to_string(),
+                            );
+                        }
                         if p.definition == definition {
+                            // Un record d'identité SEUL (arrêt entre l'étape
+                            // d'identité et la matérialisation) n'est PAS une
+                            // preuve d'effet pour un engramme : on ne rend
+                            // `AlreadyApplied` (donc `Replayed`, qui répare) que
+                            // si l'effet est historiquement CLASSÉ appliqué ;
+                            // sinon `Indeterminate`, sans réparation sur une
+                            // fausse preuve.
+                            if engramme.is_some() || est_ressource_engramme(&p.resource) {
+                                return match self.classifier_revision(&p)? {
+                                    ResolvedState::Applied { .. } => Ok((
+                                        LedgerOutcome::AlreadyApplied {
+                                            state: p.effet,
+                                            revision: p.revision,
+                                        },
+                                        None,
+                                    )),
+                                    _ => Ok((LedgerOutcome::Indeterminate, None)),
+                                };
+                            }
                             Ok((
                                 LedgerOutcome::AlreadyApplied {
                                     state: p.effet,
@@ -545,10 +659,30 @@ impl SubstrateAtomicEventLedger {
             //    l'écriture sur le nœud ressource est produite AVANT le commit
             //    d'identité pour pouvoir y être persévérée. Rien n'est publié
             //    ici (chaîne privée invisible). ──
+            let cles_res: &[&str] = if engramme.is_some() {
+                &[
+                    CLE_REVISION,
+                    CLE_EFFET,
+                    incarnation::CLES_IDENTITE_VIE[0],
+                    incarnation::CLES_IDENTITE_VIE[1],
+                ]
+            } else {
+                &[CLE_REVISION, CLE_EFFET]
+            };
             let pre_res = self
                 .store
-                .capturer_precondition(cible, &[CLE_REVISION, CLE_EFFET])
+                .capturer_precondition(cible, cles_res)
                 .map_err(err_substrat)?;
+            // Identité ET vie lues dans la MÊME capture que la précondition
+            // stricte : un retrait postérieur invalide la publication. Refus
+            // AVANT tout commit d'identité.
+            if let Some(eid) = engramme {
+                incarnation::verifier_capture(
+                    pre_res.valeur_capturee(incarnation::CLES_IDENTITE_VIE[0]),
+                    pre_res.valeur_capturee(incarnation::CLES_IDENTITE_VIE[1]),
+                    eid,
+                )?;
+            }
             let courant = pre_res
                 .valeur_capturee(CLE_REVISION)
                 .and_then(|v| v.as_int64())
@@ -622,6 +756,18 @@ impl SubstrateAtomicEventLedger {
                     return Ok((LedgerOutcome::Indeterminate, Some(reference)));
                 }
                 IssuePublication::ConflitPrecondition => {
+                    // Retrait concurrent : la vie de l'incarnation a changé entre
+                    // la capture et la publication. L'identité est commise mais
+                    // l'effet NE l'est PAS : « engagé non matérialisé », jamais
+                    // présenté comme une simple révision périmée.
+                    if let Some(eid) = engramme
+                        && !matches!(incarnation::lier(&self.store, eid), Liaison::Vivante(n) if n == cible)
+                    {
+                        return Err(format!(
+                            "{} (identité commise, effet non matérialisé)",
+                            err_incarnation_eteinte()
+                        ));
+                    }
                     // Course : la révision a avancé entre la préparation et la
                     // publication. L'identité est DÉJÀ commise AVEC la référence :
                     // « engagé non matérialisé », récupérable. Un rejeu réparera.
@@ -651,7 +797,7 @@ impl SubstrateAtomicEventLedger {
         resource_id: &[u8],
         event_id: &[u8; 16],
     ) -> Result<ResolvedState, String> {
-        decoder_cible(resource_id)?;
+        self.cible_historique(resource_id)?;
         let Some((prefixe, payload)) = self.lire_record(event_id)? else {
             return Ok(ResolvedState::NotApplied);
         };
@@ -707,7 +853,7 @@ impl SubstrateAtomicEventLedger {
         //    référence incohérente ou étrangère) ──
 
         // CIBLE : la référence doit viser le nœud ressource du payload.
-        let Ok(cible_payload) = decoder_cible(&payload.resource) else {
+        let Ok(cible_payload) = self.cible_historique(&payload.resource) else {
             return Ok(indetermine()); // ressource non-NodeId : incohérente
         };
         if reference.cible() != cible_payload {
@@ -799,7 +945,7 @@ impl SubstrateAtomicEventLedger {
     ) -> Result<AbandonOutcome, String> {
         // La ressource doit être un NodeId (refus nommé sinon) ; l'abandon,
         // lui, s'opère sur le nœud autorité (l'identité y est globale).
-        let _cible = decoder_cible(resource_id)?;
+        let _cible = self.cible_historique(resource_id)?;
         let autorite = self.autorite_canonique()?;
         let cle_ev = cle_evenement(event_id);
         for _ in 0..NB_REESSAIS {
@@ -903,8 +1049,12 @@ impl SubstrateAtomicEventLedger {
 }
 
 impl AtomicEventLedger for SubstrateAtomicEventLedger {
+    fn domaine_substrat(&self) -> Option<u128> {
+        Some(self.store.domaine_id())
+    }
+
     fn resource_revision(&self, resource_id: &[u8]) -> Result<u64, String> {
-        let cible = decoder_cible(resource_id)?;
+        let cible = self.cible(resource_id)?;
         match self
             .store
             .lire_etat_propriete(cible, CLE_REVISION)
@@ -916,7 +1066,7 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
     }
 
     fn resource_state(&self, resource_id: &[u8]) -> Result<Option<(Vec<u8>, u64)>, String> {
-        let cible = decoder_cible(resource_id)?;
+        let cible = self.cible(resource_id)?;
         let effet = match self
             .store
             .lire_etat_propriete(cible, CLE_EFFET)
@@ -977,8 +1127,24 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
                 let Some(p) = payload else {
                     return Err("enregistrement d'événement sans charge".to_string());
                 };
-                // Formation (ressource synthétique non-NodeId) : pas de
-                // projection ressource à comparer — l'effet est entièrement
+                // Ressource TYPÉE d'engramme (`E:`) sans incarnation durable
+                // attestée : JAMAIS confirmée (indéterminé) — un enregistrement
+                // non attesté ne peut pas être résolu en `Applied`.
+                // Avec incarnation ATTESTÉE et vivante, la révision est classée
+                // par la preuve transactionnelle historique, comme toute
+                // révision de nœud ; éteinte, ambiguë ou absente → indéterminé.
+                if est_ressource_engramme(&p.resource) {
+                    if self.cible_historique(&p.resource).is_err() {
+                        return Ok(ResolvedState::Indeterminate {
+                            definition: p.definition,
+                            state: p.effet,
+                            revision: p.revision,
+                        });
+                    }
+                    return self.classifier_revision(&p);
+                }
+                // Formation (ressource synthétique non-NodeId, non-`E:`) : pas
+                // de projection ressource à comparer — l'effet est entièrement
                 // porté par l'identité (une seule écriture canonique).
                 if decoder_cible(&p.resource).is_err() {
                     return Ok(ResolvedState::Applied {
@@ -2194,6 +2360,262 @@ mod tests {
         assert!(matches!(
             ledger.classifier_revision(&payload).unwrap(),
             ResolvedState::Indeterminate { .. }
+        ));
+    }
+
+    // 26) RÉSOLUTION d'une ressource d'engramme TYPÉE (E:, longueur exacte) :
+    //     JAMAIS confirmée (Indeterminate) — un enregistrement non attesté ne
+    //     peut pas être résolu en `Applied`, contrairement à une formation.
+    #[test]
+    fn resolve_ressource_engramme_non_attestee_indetermine() {
+        let (ledger, _id) = ledger_memoire();
+        let ev = oid(260);
+        // Ressource TYPÉE d'engramme sans incarnation : `E:` + u64 (10 octets).
+        let mut ressource = Vec::new();
+        ressource.extend_from_slice(b"E:");
+        ressource.extend_from_slice(&2u64.to_be_bytes());
+        assert!(est_ressource_engramme(&ressource));
+        // Écrit MANUELLEMENT un enregistrement APPLIQUE avec cette ressource
+        // (simule un store étranger/ancien ayant engagé une ressource sans
+        // incarnation attestée).
+        let record = encode_record(RECORD_APPLIQUE, &ressource, b"def", b"eff", 1, None);
+        let autorite = ledger.autorite_canonique().unwrap();
+        ledger
+            .store()
+            .set_node_property(autorite, &cle_evenement(&ev), Value::from(record));
+        // resolve : Indeterminate, jamais Applied.
+        assert!(matches!(
+            ledger.resolve(&ev).unwrap(),
+            ResolvedState::Indeterminate { .. }
+        ));
+    }
+
+    // ── Incarnation d'engramme : retrait concurrent, preuve historique ───────
+
+    fn ressource_e(id: u64) -> Vec<u8> {
+        let mut r = b"E:".to_vec();
+        r.extend_from_slice(&id.to_be_bytes());
+        r
+    }
+
+    fn ledger_incarne(id: u64) -> (Arc<SubstrateAtomicEventLedger>, NodeId, Vec<u8>) {
+        let store = Arc::new(SubstrateStore::open_memory().unwrap());
+        let noeud = incarnation::attester(&store, id).unwrap();
+        (
+            Arc::new(SubstrateAtomicEventLedger::new(store)),
+            noeud,
+            ressource_e(id),
+        )
+    }
+
+    // 27) RETRAIT CONCURRENT : l'incarnation est éteinte ENTRE le commit
+    //     d'identité et la matérialisation. La vie est dans la précondition
+    //     stricte : la publication échoue, l'effet n'est JAMAIS écrit, l'erreur
+    //     dit « éteinte » (pas une simple révision périmée), et la résolution
+    //     reste indéterminée (jamais Applied).
+    #[test]
+    fn retrait_concurrent_entre_identite_et_materialisation() {
+        let (ledger, noeud, rid) = ledger_incarne(5);
+        let eff = effet_revision(noeud, 1);
+        ledger.armer_suspension_engagement();
+        let t = {
+            let ledger = Arc::clone(&ledger);
+            let rid = rid.clone();
+            let eff = eff.clone();
+            std::thread::spawn(move || ledger.apply_event(&oid(1), &rid, b"def", 0, &eff, 1))
+        };
+        ledger.attendre_suspension_engagement();
+        // Retrait pendant la suspension (identité commise, effet pas encore).
+        incarnation::retirer(ledger.store(), 5).expect("retrait de l'incarnation");
+        ledger.relacher_suspension_engagement();
+        let err = t.join().unwrap().expect_err("retrait concurrent");
+        assert!(
+            err.contains("éteinte") && err.contains("non matérialisé"),
+            "{err}"
+        );
+        // L'effet n'a PAS été écrit sur le nœud d'incarnation.
+        for cle in [CLE_REVISION, CLE_EFFET] {
+            assert!(matches!(
+                ledger.store().lire_etat_propriete(noeud, cle).unwrap(),
+                EtatPropriete::Absente
+            ));
+        }
+        // Résolution : jamais Applied (preuve d'effet absente), identique des
+        // deux façons.
+        assert!(matches!(
+            ledger.resolve(&oid(1)).unwrap(),
+            ResolvedState::Indeterminate { .. }
+        ));
+        assert!(matches!(
+            ledger.resolve_on(&rid, &oid(1)).unwrap(),
+            ResolvedState::Indeterminate { .. }
+        ));
+        // Un rejeu après retrait reste refusé (droit d'écrire éteint).
+        assert!(
+            ledger
+                .apply_event(&oid(1), &rid, b"def", 0, &eff, 1)
+                .is_err()
+        );
+    }
+
+    // 28) PREUVE HISTORIQUE ≠ DROIT D'ÉCRIRE : un effet engagé avant le retrait
+    //     reste `Applied` à la résolution (même domaine/référence), alors que
+    //     toute nouvelle écriture est refusée.
+    #[test]
+    fn resolution_garde_l_engagement_historique_d_une_cible_retiree() {
+        let (ledger, noeud, rid) = ledger_incarne(6);
+        let eff = effet_revision(noeud, 1);
+        assert_eq!(
+            ledger
+                .apply_event(&oid(1), &rid, b"def", 0, &eff, 1)
+                .unwrap(),
+            LedgerOutcome::Applied
+        );
+        incarnation::retirer(ledger.store(), 6).expect("retrait de l'incarnation");
+        assert!(matches!(
+            ledger.resolve(&oid(1)).unwrap(),
+            ResolvedState::Applied { .. }
+        ));
+        assert!(matches!(
+            ledger.resolve_on(&rid, &oid(1)).unwrap(),
+            ResolvedState::Applied { .. }
+        ));
+        // Nouvelle écriture : refusée.
+        assert!(
+            ledger
+                .apply_event(&oid(2), &rid, b"def2", 1, &effet_revision(noeud, 2), 2)
+                .is_err()
+        );
+    }
+
+    // 29) RECORD D'IDENTITÉ SEUL (K2 commise puis supplantée par K1 avant sa
+    //     matérialisation) : pour un engramme, le rejeu de K2 ne rend PAS
+    //     AlreadyApplied (donc pas de réparation sur une fausse preuve) mais
+    //     Indeterminate.
+    #[test]
+    fn record_seul_d_engramme_ne_donne_pas_already_applied() {
+        let (ledger, noeud, rid) = ledger_incarne(7);
+        let eff1 = effet_revision(noeud, 1);
+        let eff2 = effet_revision(noeud, 2);
+        ledger.armer_suspension_engagement();
+        let t2 = {
+            let ledger = Arc::clone(&ledger);
+            let rid = rid.clone();
+            let eff2 = eff2.clone();
+            std::thread::spawn(move || ledger.apply_event(&oid(2), &rid, b"def-K2", 0, &eff2, 1))
+        };
+        ledger.attendre_suspension_engagement();
+        assert_eq!(
+            ledger
+                .apply_event(&oid(1), &rid, b"def-K1", 0, &eff1, 1)
+                .unwrap(),
+            LedgerOutcome::Applied
+        );
+        ledger.relacher_suspension_engagement();
+        assert!(matches!(
+            t2.join().unwrap().unwrap(),
+            LedgerOutcome::PreconditionFailed { .. }
+        ));
+        // Rejeu de K2 (même définition) : record seul, effet jamais engagé.
+        assert_eq!(
+            ledger
+                .apply_event(&oid(2), &rid, b"def-K2", 1, &eff2, 2)
+                .unwrap(),
+            LedgerOutcome::Indeterminate,
+            "un record seul ne vaut pas AlreadyApplied pour un engramme"
+        );
+        // K1, elle, est bien engagée : son rejeu est reconnu.
+        assert!(matches!(
+            ledger
+                .apply_event(&oid(1), &rid, b"def-K1", 0, &eff1, 1)
+                .unwrap(),
+            LedgerOutcome::AlreadyApplied { .. }
+        ));
+    }
+
+    // 30) VIE ILLISIBLE / MAL TYPÉE : refus, jamais lue comme « vivante ».
+    #[test]
+    fn vie_mal_typee_ou_identite_illisible_refusees() {
+        let (ledger, noeud, rid) = ledger_incarne(8);
+        let store = ledger.store();
+        store.set_node_property(noeud, "_retiree", Value::from(1i64));
+        let err = ledger
+            .apply_event(&oid(1), &rid, b"def", 0, &effet_revision(noeud, 1), 1)
+            .expect_err("vie mal typée");
+        assert!(
+            err.contains("illisible") || err.contains("mal typée"),
+            "{err}"
+        );
+        assert!(ledger.resource_revision(&rid).is_err());
+        // La preuve historique est elle aussi refusée : une vie illisible ne
+        // se lit jamais comme « vivante » ni comme « éteinte ».
+        assert!(ledger.resolve_on(&rid, &oid(1)).is_err());
+
+        // Nœud d'incarnation à identité MAL TYPÉE : toute lecture est refusée
+        // (on ne devine pas à qui il appartient).
+        let (ledger2, _n2, rid2) = ledger_incarne(9);
+        let intrus = ledger2.store().create_node(&["__engram_incarnation__"]);
+        ledger2
+            .store()
+            .set_node_property(intrus, "_engram_id", Value::from("neuf"));
+        assert!(ledger2.resource_revision(&rid2).is_err());
+        // Un nœud ORPHELIN (sans identité) n'empoisonne pas.
+        let (ledger3, _n3, rid3) = ledger_incarne(10);
+        ledger3.store().create_node(&["__engram_incarnation__"]);
+        assert_eq!(ledger3.resource_revision(&rid3).unwrap(), 0);
+    }
+
+    // 31) REJEU SUR UNE AUTRE RESSOURCE : dès qu'une des deux ressources est un
+    //     engramme typé, l'identité enregistrée ailleurs n'est ni rejouée ni
+    //     classée (NodeId→E: et E:→NodeId). Node→Node garde la déduplication
+    //     globale historique.
+    #[test]
+    fn rejeu_sur_une_autre_ressource_refuse_pour_engramme() {
+        let (ledger, noeud_e, rid_e) = ledger_incarne(11);
+        let store = ledger.store();
+        let vrai = store.create_node(&["ressource"]);
+        let rid_n = ressource_bytes(vrai);
+
+        // NodeId → E:
+        assert_eq!(
+            ledger
+                .apply_event(&oid(1), &rid_n, b"def", 0, &effet_revision(vrai, 1), 1)
+                .unwrap(),
+            LedgerOutcome::Applied
+        );
+        let err = ledger
+            .apply_event(&oid(1), &rid_e, b"def", 0, &effet_revision(noeud_e, 1), 1)
+            .expect_err("Node→E: refusé");
+        assert!(err.contains("autre ressource"), "{err}");
+        // L'engramme n'a reçu aucun effet.
+        assert_eq!(ledger.resource_revision(&rid_e).unwrap(), 0);
+
+        // E: → NodeId
+        assert_eq!(
+            ledger
+                .apply_event(&oid(2), &rid_e, b"def", 0, &effet_revision(noeud_e, 2), 1)
+                .unwrap(),
+            LedgerOutcome::Applied
+        );
+        let err = ledger
+            .apply_event(&oid(2), &rid_n, b"def", 1, &effet_revision(vrai, 2), 2)
+            .expect_err("E:→Node refusé");
+        assert!(err.contains("autre ressource"), "{err}");
+
+        // Node→Node (autre nœud) : déduplication globale HISTORIQUE préservée.
+        let autre = store.create_node(&["ressource"]);
+        assert!(matches!(
+            ledger
+                .apply_event(
+                    &oid(1),
+                    &ressource_bytes(autre),
+                    b"def",
+                    0,
+                    &effet_revision(autre, 1),
+                    1
+                )
+                .unwrap(),
+            LedgerOutcome::AlreadyApplied { .. }
         ));
     }
 }

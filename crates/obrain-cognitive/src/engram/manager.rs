@@ -22,7 +22,7 @@ use super::hopfield::{
 use super::observation::{
     AtomicEventLedger, CognitiveObservationAdapter, InMemoryAtomicEventLedger,
     ObservationDefinition, ObservationId, ObservationOutcome, ResolvedState, ResultingState,
-    SourceRevision,
+    SourceRevision, ressource_engramme,
 };
 use super::observe::EngramMetricsCollector;
 use super::recall::{
@@ -98,7 +98,11 @@ pub struct EngramManager {
     /// Registre transactionnel d'identité d'observation (contrat RFC d59af717).
     /// Par défaut l'implémentation de RÉFÉRENCE en mémoire — la primitive
     /// durable du substrat la remplacera via [`Self::with_observation_ledger`].
-    observation_ledger: Arc<dyn AtomicEventLedger>,
+    observation_ledger: parking_lot::RwLock<Arc<dyn AtomicEventLedger>>,
+    /// `true` quand le registre a été COMPOSÉ par [`Self::attach_substrate_natif`]
+    /// (même store, donc même domaine que l'attachement). Un attachement
+    /// historique ultérieur le retire.
+    ledger_natif: std::sync::atomic::AtomicBool,
 }
 
 /// Résultat d'une révision cohérente : identifie le nouvel état (révision,
@@ -366,15 +370,18 @@ impl EngramManager {
             metrics,
             vector_index,
             revise_locks: Mutex::new(HashMap::new()),
-            observation_ledger: Arc::new(InMemoryAtomicEventLedger::new()),
+            observation_ledger: parking_lot::RwLock::new(
+                Arc::new(InMemoryAtomicEventLedger::new()),
+            ),
+            ledger_natif: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     /// Remplace le registre d'observations (injecter la primitive durable du
     /// substrat quand elle existe ; sinon l'implémentation de RÉFÉRENCE en
     /// mémoire reste active et n'est JAMAIS présentée comme durable).
-    pub fn with_observation_ledger(mut self, ledger: Arc<dyn AtomicEventLedger>) -> Self {
-        self.observation_ledger = ledger;
+    pub fn with_observation_ledger(self, ledger: Arc<dyn AtomicEventLedger>) -> Self {
+        *self.observation_ledger.write() = ledger;
         self
     }
 
@@ -382,13 +389,17 @@ impl EngramManager {
     /// registre transactionnel. À passer comme `source_revision` à
     /// [`Self::revise_with_id`].
     pub fn observation_revision(&self, engram_id: EngramId) -> Result<u64, String> {
-        self.observation_ledger
-            .resource_revision(&engram_id.0.to_be_bytes())
+        self.observation_ledger()
+            .resource_revision(&ressource_engramme(engram_id))
     }
 
     /// Accès (crate) à la primitive d'observation, pour le pont.
     pub(crate) fn observation_ledger_arc(&self) -> Arc<dyn AtomicEventLedger> {
-        self.observation_ledger.clone()
+        self.observation_ledger()
+    }
+
+    fn observation_ledger(&self) -> Arc<dyn AtomicEventLedger> {
+        self.observation_ledger.read().clone()
     }
 
     /// Returns a reference to the shared engram store.
@@ -400,9 +411,74 @@ impl EngramManager {
     /// formés par `record_activation` sont PERSISTÉS dans les zones
     /// `engram_members`/`engram_bitset` (survivent au redémarrage —
     /// prod-readiness §9.5 point 2). Au boot, recharge les engrams persistés.
+    ///
+    /// Les identifiants restent ceux du compteur LOCAL (réutilisables) : aucune
+    /// incarnation durable n'est attestée. Préférer [`Self::attach_substrate_store`].
     #[cfg(feature = "substrate")]
     pub fn attach_substrate(&self, writer: Arc<obrain_substrate::Writer>) -> LoadReport {
         self.store.attach_substrate(writer);
+        // Le registre composé par un attachement natif visait l'ANCIEN store :
+        // il ne doit pas survivre à son remplacement. Retour au registre de
+        // référence en mémoire (jamais présenté comme durable).
+        if self
+            .ledger_natif
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            *self.observation_ledger.write() = Arc::new(InMemoryAtomicEventLedger::new());
+        }
+        self.recharger_apres_attache()
+    }
+
+    /// Attache un store substrat NATIF : miroir des engrammes ET allocateur
+    /// d'identifiants monotone avec liaison d'incarnation durable (voir
+    /// [`EngramStore::attach_substrate_store`]). Recharge les engrammes
+    /// persistés puis relève le plancher de l'allocateur au-dessus d'eux.
+    ///
+    /// Le registre d'observations n'est PAS modifié : s'il est durable, il doit
+    /// viser le MÊME domaine que `store`, sinon l'attachement est REFUSÉ (rien
+    /// n'est modifié). Pour composer attachement ET registre sur le même store,
+    /// utiliser [`Self::attach_substrate_natif`].
+    ///
+    /// # Errors
+    /// Registre durable d'un autre domaine que `store`.
+    #[cfg(feature = "substrate")]
+    pub fn attach_substrate_store(
+        &self,
+        store: Arc<obrain_substrate::SubstrateStore>,
+    ) -> Result<LoadReport, String> {
+        if let Some(domaine) = self.observation_ledger().domaine_substrat()
+            && domaine != store.domaine_id()
+        {
+            return Err(format!(
+                "registre d'observations d'un autre domaine ({domaine:032x}) que le store attaché ({:032x}) : attachement refusé",
+                store.domaine_id()
+            ));
+        }
+        self.store.attach_substrate_store(store);
+        Ok(self.recharger_apres_attache())
+    }
+
+    /// POINT D'ENTRÉE EXPLICITE de la persistance native d'engrammes : compose,
+    /// sur UN SEUL store (donc un seul domaine), le miroir substrat, l'allocateur
+    /// d'identifiants monotone, la liaison d'incarnation durable ET le registre
+    /// d'observations durable. C'est la voie qui rend une révision durable
+    /// possible ; l'attachement historique ([`Self::attach_substrate`]) reste le
+    /// défaut et n'atteste aucune incarnation.
+    #[cfg(feature = "substrate")]
+    pub fn attach_substrate_natif(
+        &self,
+        store: Arc<obrain_substrate::SubstrateStore>,
+    ) -> LoadReport {
+        *self.observation_ledger.write() =
+            Arc::new(super::SubstrateAtomicEventLedger::new(store.clone()));
+        self.ledger_natif
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.store.attach_substrate_store(store);
+        self.recharger_apres_attache()
+    }
+
+    #[cfg(feature = "substrate")]
+    fn recharger_apres_attache(&self) -> LoadReport {
         let report = self.store.load_from_substrate();
         if report.coherent > 0 || !report.degraded.is_empty() {
             // Re-dériver les signatures spectrales (projection de l'ensemble
@@ -929,9 +1005,9 @@ impl EngramManager {
     /// calcul. Sans cela, une nouvelle observation partirait d'un état obsolète
     /// et l'apprentissage déjà accepté serait perdu.
     fn catch_up_store(&self, engram_id: EngramId) -> Result<(), RevisionError> {
-        let resource = engram_id.0.to_be_bytes();
+        let resource = ressource_engramme(engram_id);
         let Some((effect, rec_rev)) = self
-            .observation_ledger
+            .observation_ledger()
             .resource_state(&resource)
             .map_err(RevisionError::PersistenceFailed)?
         else {
@@ -1014,7 +1090,7 @@ impl EngramManager {
         };
         let _guard = lock.lock();
 
-        let adapter = CognitiveObservationAdapter::new(self.observation_ledger.clone());
+        let adapter = CognitiveObservationAdapter::new(self.observation_ledger());
         // RATTRAPAGE avant tout calcul : une nouvelle observation ne doit
         // JAMAIS partir d'un état obsolète.
         self.catch_up_store(engram_id)?;
@@ -1040,7 +1116,7 @@ impl EngramManager {
             .apply(
                 observation_id,
                 engram_id,
-                &engram_id.0.to_be_bytes(),
+                &ressource_engramme(engram_id),
                 &definition,
                 source_revision,
                 &resulting_state,

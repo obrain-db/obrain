@@ -435,6 +435,12 @@ pub trait AtomicEventLedger: Send + Sync {
     /// Abandon conditionnel (refusé si déjà appliquée).
     fn abandon(&self, event_id: &[u8; 16]) -> Result<AbandonOutcome, String>;
 
+    /// Domaine substrat (`domaine.id`) dont ce registre est l'autorité durable,
+    /// s'il en a un. `None` : registre non adossé à un store (mémoire).
+    fn domaine_substrat(&self) -> Option<u128> {
+        None
+    }
+
     /// Confirme qu'une FORMATION réservée a bien produit son effet (passe
     /// l'effet de PENDING à DONE). Rend `true` si la transition a eu lieu.
     fn complete_formation(&self, event_id: &[u8; 16]) -> Result<bool, String>;
@@ -447,6 +453,10 @@ pub trait AtomicEventLedger: Send + Sync {
 /// Délégation `Arc<T>` : permet de détenir `Arc<dyn AtomicEventLedger>` (le
 /// manager) et d'en construire un adaptateur sans connaître le type concret.
 impl<T: AtomicEventLedger + ?Sized> AtomicEventLedger for std::sync::Arc<T> {
+    fn domaine_substrat(&self) -> Option<u128> {
+        (**self).domaine_substrat()
+    }
+
     fn resource_revision(&self, resource_id: &[u8]) -> Result<u64, String> {
         (**self).resource_revision(resource_id)
     }
@@ -502,6 +512,30 @@ pub(crate) const EFFECT_REVISION: u8 = 0x01;
 pub(crate) const EFFECT_FORMATION_DONE: u8 = 0x02;
 /// Préfixe d'effet : formation RÉSERVÉE, activation pas encore confirmée.
 pub(crate) const EFFECT_FORMATION_PENDING: u8 = 0x03;
+
+/// Préfixe de ressource TYPÉE d'engramme (révision) : distinct d'un `NodeId`
+/// (8 octets) ET de la formation (`F:`). Sans incarnation durable attestée, la
+/// forme réduite `E:<id>` est REFUSÉE par le registre durable (refus sûr,
+/// jamais de correspondance numérique ni d'héritage d'effet).
+pub(crate) const PREFIXE_RESSOURCE_ENGRAMME: &[u8] = b"E:";
+
+/// Ressource TYPÉE d'une révision d'engramme, SANS incarnation durable :
+/// `E:<id>`. Le registre DURABLE la refuse (aucune incarnation attestée) ; le
+/// registre MÉMOIRE la traite comme clé opaque (jamais décodée en `NodeId`).
+pub(crate) fn ressource_engramme(engram_id: EngramId) -> Vec<u8> {
+    let mut r = Vec::with_capacity(PREFIXE_RESSOURCE_ENGRAMME.len() + 8);
+    r.extend_from_slice(PREFIXE_RESSOURCE_ENGRAMME);
+    r.extend_from_slice(&engram_id.0.to_be_bytes());
+    r
+}
+
+/// Reconnaît la ressource TYPÉE d'engramme par sa LONGUEUR EXACTE
+/// (`E:` + u64) : la distinguer d'une formation historique (`F:`+16) ou d'une
+/// ressource synthétique quelconque, à la publication ET à la résolution.
+pub(crate) fn est_ressource_engramme(resource_id: &[u8]) -> bool {
+    resource_id.len() == PREFIXE_RESSOURCE_ENGRAMME.len() + 8
+        && resource_id.starts_with(PREFIXE_RESSOURCE_ENGRAMME)
+}
 
 impl<L: AtomicEventLedger> CognitiveObservationAdapter<L> {
     /// Construit un adaptateur au-dessus d'une primitive d'observation.
