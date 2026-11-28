@@ -294,28 +294,37 @@ mod tests {
             fermer(st);
             a
         };
-        for passe in 0..2 {
+        let slot_vide = |st: &SubstrateStore, id: EngramId| {
+            st.writer()
+                .read_engram_state(id.0 as u16)
+                .unwrap()
+                .is_none_or(|(membres, _)| membres.is_empty())
+        };
+        // Passe 0 : le retrait interrompu est ACHEVÉ ; A ne revient pas.
+        let b = {
             let (st, es) = natif_disque(&chemin, false);
             let rapport = es.load_from_substrate();
-            assert_eq!(es.count(), 0, "passe {passe} : pas de résurrection");
+            assert_eq!(rapport.retraits_acheves, vec![a], "retrait réparé");
             assert_eq!(rapport.coherent, 0);
-            if passe == 0 {
-                assert_eq!(rapport.retraits_acheves, vec![a], "retrait achevé");
-            }
-            assert!(
-                st.writer().read_engram_state(a.0 as u16).unwrap().is_none()
-                    || st
-                        .writer()
-                        .read_engram_state(a.0 as u16)
-                        .unwrap()
-                        .is_some_and(|(m, _)| m.is_empty()),
-                "slot vidé"
-            );
-            // L'id éteint n'est jamais réattribué.
+            assert!(es.get(a).is_none(), "passe 0 : A absent du cache");
+            assert!(slot_vide(&st, a), "passe 0 : slot de A vide");
+            assert_eq!(es.count(), 0);
+            // L'id éteint n'est jamais réattribué ; B est un engramme VIVANT.
             let b = es.form(&[NodeId(1), NodeId(3)]).unwrap();
-            assert!(b.0 > a.0, "passe {passe} : {b} > {a}");
+            assert!(b.0 > a.0, "B ({b}) > A ({a})");
+            assert!(matches!(lier(&st, b.0), Liaison::Vivante(_)));
             fermer(st);
-        }
+            b
+        };
+        // Passe 1 : A reste absent, rien à réparer, B est présent et UNIQUE.
+        let (st, es) = natif_disque(&chemin, false);
+        let rapport = es.load_from_substrate();
+        assert!(rapport.retraits_acheves.is_empty(), "plus rien à réparer");
+        assert!(es.get(a).is_none(), "passe 1 : A absent du cache");
+        assert!(slot_vide(&st, a), "passe 1 : slot de A vide");
+        assert!(es.get(b).is_some(), "passe 1 : B présent");
+        assert_eq!(es.count(), 1, "passe 1 : B seul (A n'est pas revenu)");
+        assert_eq!(rapport.coherent, 1);
     }
 
     /// ÉCHEC du chemin canonique de retrait (liaison ambiguë) : le retrait est
