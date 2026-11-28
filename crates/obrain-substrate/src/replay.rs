@@ -799,43 +799,11 @@ fn apply(
         WalPayload::NodeInsert {
             node_id,
             label_bitset,
-        } => {
-            touches.noter(*node_id);
-            if nodes.is_none() {
-                *nodes = Some(substrate.open_zone(Zone::Nodes)?);
-            }
-            let zf = nodes.as_mut().unwrap();
-            let offset = (*node_id as usize) * NodeRecord::SIZE;
-            ensure_room(zf, offset + NodeRecord::SIZE, 1 << 20)?;
-            // The WAL records the *label_bitset* specifically for NodeInsert;
-            // the rest of the NodeRecord is filled in later by subsequent
-            // records (NodeUpdate, EnergyReinforce, etc.). Idempotent: writing
-            // the same label_bitset twice is a no-op.
-            let existing: &NodeRecord =
-                bytemuck::from_bytes(&zf.as_slice()[offset..offset + NodeRecord::SIZE]);
-            let mut updated = *existing;
-            updated.label_bitset = *label_bitset;
-            // (jalon 1) un NodeInsert rejoue est un record reellement ecrit.
-            updated.flags |= crate::record::node_flags::ALLOCATED;
-            // (jalon 2) trame ANCIENNE, sans tenant : le tenant existant est
-            // PRESERVE (zone vierge -> 0 = public, coherent avec la
-            // migration en bloc declaree). Les writers v3 emettent
-            // NodeInsertV3.
-            // (obrain#350) Une entité d'une transaction EN VOL ne redevient jamais
-            // vivante, même un instant : ce record réécrit les `flags`, et le
-            // tombstone d'un rejeu précédent serait effacé dans les zones partagées.
-            if ecartes.noeuds.contains(node_id) {
-                updated.set_tombstoned();
-            }
-            zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]
-                .copy_from_slice(bytemuck::bytes_of(&updated));
-            Ok(Applied::Yes)
         }
-
-        WalPayload::NodeInsertV3 {
+        | WalPayload::NodeInsertV3 {
             node_id,
             label_bitset,
-            tenant_id,
+            ..
         } => {
             touches.noter(*node_id);
             if nodes.is_none() {
@@ -844,21 +812,23 @@ fn apply(
             let zf = nodes.as_mut().unwrap();
             let offset = (*node_id as usize) * NodeRecord::SIZE;
             ensure_room(zf, offset + NodeRecord::SIZE, 1 << 20)?;
-            let existing: &NodeRecord =
-                bytemuck::from_bytes(&zf.as_slice()[offset..offset + NodeRecord::SIZE]);
-            let mut updated = *existing;
-            updated.label_bitset = *label_bitset;
-            updated.flags |= crate::record::node_flags::ALLOCATED;
-            // (jalon 2) la trame V3 restaure l'appartenance.
-            updated.tenant_id = *tenant_id;
-            // (obrain#350) Une entité d'une transaction EN VOL ne redevient jamais
-            // vivante, même un instant : ce record réécrit les `flags`, et le
-            // tombstone d'un rejeu précédent serait effacé dans les zones partagées.
-            if ecartes.noeuds.contains(node_id) {
-                updated.set_tombstoned();
+            // #439 : un écrivain partagé peut poser `first_prop_off` entre
+            // la lecture du WAL et l'application de son insertion. Écrire
+            // les seuls champs de la trame préserve sa tête et ses arêtes.
+            crate::store::point_de_reprise("rejeu:insertion:noeud:avant_pose");
+            let record: &mut NodeRecord =
+                bytemuck::from_bytes_mut(&mut zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]);
+            record.label_bitset = *label_bitset;
+            if let WalPayload::NodeInsertV3 { tenant_id, .. } = &rec.payload {
+                record.tenant_id = *tenant_id;
             }
-            zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]
-                .copy_from_slice(bytemuck::bytes_of(&updated));
+            // #350 : poser les deux bits ensemble pour qu'une transaction
+            // abandonnée ne rende jamais son nœud visible pendant le rejeu.
+            let mut flags = record.flags | crate::record::node_flags::ALLOCATED;
+            if ecartes.noeuds.contains(node_id) {
+                flags |= crate::record::node_flags::TOMBSTONED;
+            }
+            record.flags = flags;
             Ok(Applied::Yes)
         }
 
