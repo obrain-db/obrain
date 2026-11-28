@@ -531,15 +531,6 @@ impl Writer {
         })?;
         self.index_labels.noter(idx, bits);
 
-        // Sonde : suspendre APRÈS la naissance (nœud visible, complet) et AVANT
-        // le scellement WAL — un lecteur indépendant peut l'observer.
-        #[cfg(test)]
-        if let Some(cell) = APRES_NAISSANCE_AVANT_SCELLEMENT.get()
-            && let Some(f) = cell.lock().unwrap().as_ref()
-        {
-            f(idx);
-        }
-
         // 2. SCELLEMENT + naissance durable — UNE écriture atomique : TxCommit et
         //    NodeUpdateV3 (ALLOCATED) partent ensemble, jamais l'un sans l'autre.
         let txcommit = WalRecord {
@@ -4382,14 +4373,6 @@ thread_local! {
 pub(crate) fn armer_echec_append_scellement(v: bool) {
     ECHEC_APPEND_SCELLEMENT.with(|c| c.set(v));
 }
-
-// Suspension : `sceller_noeud` marque un point APRÈS la naissance mmap et AVANT
-// l'append WAL — un lecteur indépendant observe le nœud « né mais non scellé ».
-#[cfg(test)]
-#[allow(clippy::type_complexity)]
-pub(crate) static APRES_NAISSANCE_AVANT_SCELLEMENT: std::sync::OnceLock<
-    std::sync::Mutex<Option<Box<dyn Fn(u32) + Send>>>,
-> = std::sync::OnceLock::new();
 
 /// Bits que l'écriture de `nouveau` à `offset` doit noter dans l'index de
 /// labels, d'après le record qu'elle remplace (zéros au-delà de la zone).

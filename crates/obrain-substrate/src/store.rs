@@ -4169,6 +4169,11 @@ impl SubstrateStore {
         let _un_ecrivain = self.verrou_ecriture_noeud(reference.cible).lock();
         let mut par_cle = Vec::with_capacity(reference.effets.len());
         for (i, cle) in reference.effets.iter().enumerate() {
+            // `i` n'est lu que sous `#[cfg(test)]` (suspension après la
+            // première clé) : le lire ici aussi empêche le compilateur de
+            // signaler un « unused variable » en compilation non-test
+            // (`-D warnings` de la CI).
+            let _ = i;
             let etat = self.resoudre_effet_historique_verrouille(
                 reference.cible,
                 cle,
@@ -28166,8 +28171,6 @@ impl SubstrateStore {
         }
     }
 
-
-
     /// Chemin de mutation interne de propriété de nœud, DURABLE ou best-effort
     /// selon `strict`. `vivant_exige = false` autorise l'écriture sur un nœud
     /// « en vol » (naissance différée, pas encore ALLOCATED).
@@ -47905,6 +47908,19 @@ impl SubstrateStore {
         // Compteurs + observateurs en mémoire (aucun ne peut échouer) ; la
         // naissance est déjà durable (NodeUpdateV3) et posée en mmap.
         self.finaliser_noeud_compteurs(id, bitset);
+        // Les propriétés ont été écrites « en vol » avec `vivant_exige=false`
+        // (pas d'exigence de visibilité, donc pas de notification pendant la
+        // construction) : on notifie les observateurs APRÈS la naissance, quand
+        // le nœud est vivant et complet. C'est le pendant exact des `notify_*`
+        // que `set_node_property` émet sur le chemin non différé ; sans lui, les
+        // index en mémoire (vecteur, plein texte, cognitif) ne voient jamais les
+        // propriétés d'un nœud créé atomiquement.
+        for (k, v) in properties.iter() {
+            if let Value::Vector(vec) = v {
+                self.notify_vector_written(id, k.as_str(), vec);
+            }
+            self.notify_node_property_set(id, k.as_str());
+        }
         Ok(id)
     }
 }
@@ -53795,60 +53811,59 @@ mod reservation_tests {
         assert_eq!(s2.node_ids().len(), 1, "exactement un nœud");
     }
 
-    /// FENÊTRE « né mais non scellé » (réserves #419) : un lecteur indépendant,
-    /// entre la naissance mmap et le scellement WAL, observe un nœud COMPLET
-    /// (propriétés + ALLOCATED) mais pas encore confirmé durable. C'est la
-    /// fenêtre résiduelle, honnêtement exposée (pas de nœud partiel).
+    /// NAISSANCE DIFFÉRÉE (contrat #435) : un nœud « en vol » (créé, propriétés
+    /// posées, NON scellé) n'est PAS exposé comme complet — il n'est visible et
+    /// complet qu'APRÈS le scellement (`sceller_noeud`). Deux facettes, sans
+    /// sonde globale (donc sans course entre tests) :
+    ///  1. une construction qui échoue au milieu laisse un nœud « en vol »
+    ///     INVISIBLE aux chemins de lecture — aucun nœud partiel présenté ;
+    ///  2. une construction qui aboutit rend un nœud COMPLET et visible, et
+    ///     l'identité réservée est conservée via l'index de réservation (PAS
+    ///     via une visibilité transitoire du nœud avant engagement).
     #[test]
-    fn lecteur_independant_voit_un_noeud_complet_avant_scellement() {
+    fn naissance_differee_invisible_avant_scellement_puis_complet_apres() {
         let td = tempfile::tempdir().unwrap();
-        let s = Arc::new(SubstrateStore::create(td.path()).unwrap());
+        let s = SubstrateStore::create(td.path()).unwrap();
 
-        let (tx_noeud, rx_noeud) = std::sync::mpsc::channel::<u32>();
-        let (tx_liberer, rx_liberer) = std::sync::mpsc::channel::<()>();
-        {
-            let cell = crate::writer::APRES_NAISSANCE_AVANT_SCELLEMENT
-                .get_or_init(|| std::sync::Mutex::new(None));
-            *cell.lock().unwrap() = Some(Box::new(move |id: u32| {
-                let _ = tx_noeud.send(id);
-                let _ = rx_liberer.recv();
-            }));
-        }
+        // Facette 1 — AVANT le scellement (échec de durabilité au milieu de la
+        // construction) : le nœud « en vol » n'est pas exposé.
+        ECHEC_APPEND_V2_CLE.with(|c| c.set(Some(crate::reservation::PROP_CLE)));
+        let r = s.reserver_identite(KIND, CLE, DEFINITION, construction);
+        assert!(r.is_err(), "échec au milieu de la construction : {r:?}");
+        ECHEC_APPEND_V2_CLE.with(|c| c.set(None));
+        assert_eq!(
+            s.node_ids(),
+            Vec::<NodeId>::new(),
+            "avant scellement : aucun nœud exposé aux chemins de lecture"
+        );
 
-        let s2 = Arc::clone(&s);
-        let fil =
-            std::thread::spawn(move || s2.reserver_identite(KIND, CLE, DEFINITION, construction));
-
-        let id = rx_noeud
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("naissance posée avant le scellement");
-        let nid = NodeId(u64::from(id));
-
-        // Lecteur INDÉPENDANT : le nœud est NÉ (visible) et COMPLET, mais pas
-        // encore scellé.
+        // Facette 2 — APRÈS le scellement : le nœud est COMPLET, visible, et
+        // l'identité est conservée dans l'index de réservation.
+        let cree = s
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        let crate::reservation::IssueReservation::Cree(slot) = cree else {
+            panic!("attendu Cree : {cree:?}");
+        };
+        let nid = NodeId(u64::from(slot));
         assert_eq!(
             s.node_ids(),
             vec![nid],
-            "nœud né (visible) dans la fenêtre avant le scellement"
+            "après scellement : le nœud est visible"
         );
         assert_eq!(
             s.get_node_property(nid, &PropertyKey::new("payload")),
             Some(Value::Int64(1)),
-            "nœud complet (propriétés posées), pas partiel"
+            "après scellement : nœud complet (propriétés posées), pas partiel"
         );
-
-        tx_liberer.send(()).unwrap();
-        *crate::writer::APRES_NAISSANCE_AVANT_SCELLEMENT
-            .get()
-            .unwrap()
-            .lock()
-            .unwrap() = None;
-
-        let issue = fil.join().unwrap().unwrap();
-        assert!(matches!(
-            issue,
-            crate::reservation::IssueReservation::Cree(_)
-        ));
+        let retrouve = s
+            .reserver_identite(KIND, CLE, DEFINITION, construction)
+            .unwrap();
+        assert_eq!(
+            retrouve,
+            crate::reservation::IssueReservation::Existante(slot),
+            "l'identité réservée est consultable dans l'index de réservation"
+        );
     }
 
     /// Échec CERTAIN du scellement (append WAL) APRÈS la naissance mmap : le
