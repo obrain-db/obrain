@@ -113,50 +113,53 @@ pub struct AmbiguiteImbriquee {
 /// Repère, dans une liste de résultats DÉJÀ bornée, les paires imbriquées qui
 /// expliquent exactement les mêmes indices.
 ///
-/// Coût : `O(k² · (|ensemble| + |indices|))` sur la liste rendue, où `|ensemble|`
-/// est la taille du plus grand des deux candidats comparés — car chaque paire
-/// construit deux ensembles de membres (`HashSet<NodeId>`) puis deux
-/// intersections. Aucun accès au store, aucun clone d'engramme, aucune
-/// modification du classement. Les anciennes API sont inchangées : ce diagnostic
-/// est un appel SÉPARÉ sur les résultats obtenus.
+/// Coût : un PRÉCALCUL `O(k · (|ensemble| + |indices|))` — un ensemble de
+/// membres puis son intersection avec les indices, PAR candidat — puis
+/// `O(k² · (|ensemble| + |indices|))` de comparaisons paires sur ces ensembles
+/// déjà construits (`is_subset` + comparaison d'intersections). Aucun accès au
+/// store, aucun clone d'engramme, aucune modification du classement. Les
+/// anciennes API sont inchangées : ce diagnostic est un appel SÉPARÉ sur les
+/// résultats obtenus.
 pub fn diagnostiquer_imbrications(
     cues: &[NodeId],
     resultats: &[RecallResult],
 ) -> Vec<AmbiguiteImbriquee> {
     let indices: HashSet<NodeId> = cues.iter().copied().collect();
+
+    // PRÉCALCUL — une fois par candidat, pas par paire. Ce sont ces constructions
+    // (ensembles de membres, puis intersection avec les indices) qui dominent le
+    // coût réel ; les décrire « O(k² · |indices|) » les omettait.
+    let membres: Vec<HashSet<NodeId>> = resultats
+        .iter()
+        .map(|r| r.engram.node_ids().into_iter().collect())
+        .collect();
+    let expliques: Vec<HashSet<NodeId>> = membres
+        .iter()
+        .map(|m| m.intersection(&indices).copied().collect())
+        .collect();
+
     let mut ambiguites: Vec<AmbiguiteImbriquee> = Vec::new();
     for i in 0..resultats.len() {
         for j in (i + 1)..resultats.len() {
-            let a = &resultats[i];
-            let b = &resultats[j];
-            let noeuds_a: HashSet<NodeId> = a.engram.node_ids().into_iter().collect();
-            let noeuds_b: HashSet<NodeId> = b.engram.node_ids().into_iter().collect();
             let (petit, grand, rang_petit, rang_grand) =
-                if noeuds_a.len() < noeuds_b.len() && noeuds_a.is_subset(&noeuds_b) {
-                    (a, b, i, j)
-                } else if noeuds_b.len() < noeuds_a.len() && noeuds_b.is_subset(&noeuds_a) {
-                    (b, a, j, i)
+                if membres[i].len() < membres[j].len() && membres[i].is_subset(&membres[j]) {
+                    (i, j, i, j)
+                } else if membres[j].len() < membres[i].len() && membres[j].is_subset(&membres[i]) {
+                    (j, i, j, i)
                 } else {
                     continue;
                 };
-            let petits_noeuds: HashSet<NodeId> = petit.engram.node_ids().into_iter().collect();
-            let grands_noeuds: HashSet<NodeId> = grand.engram.node_ids().into_iter().collect();
-            // Ce que CHAQUE ensemble explique des indices observés.
-            let expliques_petit: HashSet<NodeId> =
-                petits_noeuds.intersection(&indices).copied().collect();
-            let expliques_grand: HashSet<NodeId> =
-                grands_noeuds.intersection(&indices).copied().collect();
             // Le signal ne vaut que si les deux expliquent EXACTEMENT la même
             // chose : sur un indice que seul le grand contient, il n'y a pas
             // d'ambiguïté — le grand est simplement mieux informé.
-            if expliques_petit.is_empty() || expliques_petit != expliques_grand {
+            if expliques[petit].is_empty() || expliques[petit] != expliques[grand] {
                 continue;
             }
-            let mut communs: Vec<NodeId> = expliques_petit.into_iter().collect();
+            let mut communs: Vec<NodeId> = expliques[petit].iter().copied().collect();
             communs.sort_unstable();
             ambiguites.push(AmbiguiteImbriquee {
-                fragment: petit.engram.id,
-                complet: grand.engram.id,
+                fragment: resultats[petit].engram.id,
+                complet: resultats[grand].engram.id,
                 indices_communs: communs,
                 rang_fragment: rang_petit,
                 rang_complet: rang_grand,
@@ -165,7 +168,6 @@ pub fn diagnostiquer_imbrications(
     }
     ambiguites
 }
-
 // ---------------------------------------------------------------------------
 // RecallEngine
 // ---------------------------------------------------------------------------

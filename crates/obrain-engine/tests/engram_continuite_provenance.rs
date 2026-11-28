@@ -404,3 +404,127 @@ fn reouverture_conserve_resultats_et_diagnostic() {
         "toujours aucune provenance après réouverture"
     );
 }
+
+/// LA VRAIE CONTRE-ÉPREUVE : deux observations DISTINCTES, formées volontairement
+/// via `form_observation_with` avec deux identités stables, dans les deux ordres.
+///
+/// Le signal d'ambiguïté sur `[a]` est LÉGITIME (les deux expliquent `[a]`) : il
+/// ne doit ni effacer la paire, ni l'attribuer au trio. Chacun garde sa cle
+/// structurelle, chacun reste rappelable, avant comme après réouverture.
+#[test]
+fn deux_observations_distinctes_formees_volontairement_survivent() {
+    for ordre in ["paire d'abord", "trio d'abord"] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let chemin = dir.path().join("base");
+        {
+            let db = ObrainDB::open_substrate_observed(&chemin).expect("open");
+            let session = db.session();
+            session
+                .execute("CREATE (:Item {name:'a'}), (:Item {name:'b'}), (:Item {name:'c'})")
+                .expect("create");
+            quiesce(&db);
+            let a = id_de(&session, "a");
+            let b = id_de(&session, "b");
+            let c = id_de(&session, "c");
+            let mgr = db
+                .cognitive_engine()
+                .expect("moteur")
+                .engram_manager()
+                .expect("manager");
+
+            let (id_paire, id_trio) = if ordre == "paire d'abord" {
+                let p = mgr.form_observation_with(&[a, b], Some("obs:paire"));
+                let t = mgr.form_observation_with(&[a, b, c], Some("obs:trio"));
+                (p, t)
+            } else {
+                let t = mgr.form_observation_with(&[a, b, c], Some("obs:trio"));
+                let p = mgr.form_observation_with(&[a, b], Some("obs:paire"));
+                (p, t)
+            };
+            assert_ne!(id_paire, id_trio, "{ordre} : deux identités distinctes");
+
+            let engs = mgr.store().list();
+            let paire = engs
+                .iter()
+                .find(|e| e.id == id_paire)
+                .unwrap_or_else(|| panic!("{ordre} : paire absente"));
+            let trio = engs
+                .iter()
+                .find(|e| e.id == id_trio)
+                .unwrap_or_else(|| panic!("{ordre} : trio absent"));
+            assert_eq!(paire.structural_key.as_deref(), Some("obs:paire"));
+            assert_eq!(trio.structural_key.as_deref(), Some("obs:trio"));
+
+            // Rappel sur [a] : les DEUX restent candidats, le diagnostic signale
+            // l'ambiguïté (légitime) mais n'en retire aucun.
+            let resultats = mgr.recall(&[a], 5);
+            let rendus: Vec<Vec<u64>> = resultats
+                .iter()
+                .map(|r| ensemble_trie(&r.engram.node_ids()))
+                .collect();
+            assert!(
+                rendus.contains(&ensemble_trie(&[a, b])),
+                "{ordre} : la paire reste rappelable (obtenu {rendus:?})"
+            );
+            assert!(
+                rendus.contains(&ensemble_trie(&[a, b, c])),
+                "{ordre} : le trio reste rappelable (obtenu {rendus:?})"
+            );
+            let ambiguites = diagnostiquer_imbrications(&[a], &resultats);
+            assert_eq!(
+                ambiguites.len(),
+                1,
+                "{ordre} : une ambiguïté signalée, sans attribution (obtenu {ambiguites:?})"
+            );
+            db.close().expect("close");
+        }
+
+        // RÉOUVERTURE : les deux observations (leurs ENSEMBLES) survivent et
+        // restent rappelables — mais la mesure révèle un TROU DE DURABILITÉ : la
+        // cle structurelle, seule identité stable native d'une observation, n'est
+        // PAS restaurée (None des deux côtés). C'est exactement la preuve de
+        // filiation non-durable qui tient le top-1 strict au rouge.
+        let db2 = ObrainDB::open_substrate_observed(&chemin).expect("reopen");
+        let session2 = db2.session();
+        let a2 = id_de(&session2, "a");
+        let b2 = id_de(&session2, "b");
+        let c2 = id_de(&session2, "c");
+        let mgr2 = db2
+            .cognitive_engine()
+            .expect("moteur2")
+            .engram_manager()
+            .expect("manager2");
+        let clefs: Vec<Option<String>> = mgr2
+            .store()
+            .list()
+            .iter()
+            .map(|e| e.structural_key.clone())
+            .collect();
+        assert_eq!(
+            clefs,
+            vec![None, None],
+            "{ordre} : MESURÉ — la cle structurelle n'est pas persistée (obtenu {clefs:?})"
+        );
+        // Les ensembles, eux, survivent et restent rappelables.
+        let resultats2 = mgr2.recall(&[a2], 5);
+        let rendus2: Vec<Vec<u64>> = resultats2
+            .iter()
+            .map(|r| ensemble_trie(&r.engram.node_ids()))
+            .collect();
+        assert!(
+            rendus2.contains(&ensemble_trie(&[a2, b2])),
+            "{ordre} : la paire survit à la réouverture (obtenu {rendus2:?})"
+        );
+        assert!(
+            rendus2.contains(&ensemble_trie(&[a2, b2, c2])),
+            "{ordre} : le trio survit à la réouverture"
+        );
+        // Le diagnostic ne dépend que des ensembles : il signale toujours.
+        let ambiguites2 = diagnostiquer_imbrications(&[a2], &resultats2);
+        assert_eq!(
+            ambiguites2.len(),
+            1,
+            "{ordre} : même signal après réouverture"
+        );
+    }
+}
