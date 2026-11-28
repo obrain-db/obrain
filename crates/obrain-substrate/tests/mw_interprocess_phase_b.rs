@@ -1121,9 +1121,22 @@ fn t8b_les_pages_d_un_ecrivain_tue_restent_reservees_et_un_troisieme_alloue_au_d
     td.disable_cleanup(false);
 }
 
-/// #439 : un pair rejoint le store avec une fenêtre WAL qui se termine sur
-/// la création du nœud. Le premier écrivain publie sa tête de propriétés
-/// après le début du rejeu, puis le pair termine de rejouer la création.
+/// #439 : le rejeu d'une insertion ne doit pas effacer une tête de propriétés
+/// qu'un pair publie PENDANT la fenêtre lecture→écriture du rejeu.
+///
+/// Séquence forcée, sans dépendre de l'ordonnancement : le rejeu s'arrête au
+/// seam `rejeu:insertion:noeud:avant_ecriture` — le DERNIER point avant qu'il
+/// n'écrive le record de nœud —, le pair publie `alpha`, puis le rejeu reprend
+/// et écrit le record. Le seam n'existe qu'à cet endroit du code : il ne peut
+/// pas se déclencher après l'écriture, et le pair n'écrit qu'une fois le
+/// marqueur de pause vu.
+///
+/// Les deux logiques s'opposent sur la MÊME fenêtre :
+/// - `main` relit le record entier puis réécrit ses 40 octets ; le seam y est
+///   posé juste avant le `copy_from_slice`, donc APRÈS la lecture : la tête
+///   publiée pendant la pause est écrasée → `alpha` perdu (`None`) ;
+/// - corrigé : seuls `label_bitset`/`tenant_id`/`flags` sont écrits, la tête
+///   survit → `alpha` présent.
 #[cfg(feature = "points-de-crash")]
 #[test]
 fn t8d_le_rejeu_d_une_insertion_nefface_pas_une_tete_de_proprietes_publiee() {
@@ -1147,15 +1160,18 @@ fn t8d_le_rejeu_d_une_insertion_nefface_pas_une_tete_de_proprietes_publiee() {
             (
                 "OBRAIN_SUBSTRATE_POINT_REPRISE",
                 format!(
-                    "rejeu:insertion:noeud:avant_pose:{}:{}",
+                    "rejeu:insertion:noeud:avant_ecriture:{}:{}",
                     pause.display(),
                     reprise.display()
                 ),
             ),
         ],
     );
-    attendre_fichier(&pause, "la pause avant la pose au rejeu");
+    attendre_fichier(&pause, "la fenêtre lecture→écriture du rejeu");
     let cles = ["alpha", "beta", "gamma"];
+    // `alpha` est publié DANS la fenêtre : c'est la valeur que la réécriture
+    // du record entier effaçait. `beta`/`gamma` sont posées après la reprise
+    // et servent de témoins que la propriété reste utilisable ensuite.
     a.set_node_property(n, cles[0], Value::String(valeur_t8("A", 0, cles[0]).into()));
     std::fs::write(&reprise, b"ok").expect("reprendre le rejeu");
     b.terminer();

@@ -815,9 +815,14 @@ fn apply(
             // #439 : un écrivain partagé peut poser `first_prop_off` entre
             // la lecture du WAL et l'application de son insertion. Écrire
             // les seuls champs de la trame préserve sa tête et ses arêtes.
-            crate::store::point_de_reprise("rejeu:insertion:noeud:avant_pose");
             let record: &mut NodeRecord =
                 bytemuck::from_bytes_mut(&mut zf.as_slice_mut()[offset..offset + NodeRecord::SIZE]);
+            // Le seam est le DERNIER point avant que le rejeu n'écrive le
+            // record : c'est la fenêtre du défaut. Côté `main` il se place
+            // juste avant le `copy_from_slice` du record entier, donc APRÈS
+            // la lecture ; un pair qui publie sa tête pendant la pause la
+            // perd. Ici, seules les affectations de champs suivent.
+            crate::store::point_de_reprise("rejeu:insertion:noeud:avant_ecriture");
             record.label_bitset = *label_bitset;
             if let WalPayload::NodeInsertV3 { tenant_id, .. } = &rec.payload {
                 record.tenant_id = *tenant_id;
