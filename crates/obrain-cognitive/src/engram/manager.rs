@@ -22,7 +22,7 @@ use super::hopfield::{
 use super::observation::{
     AtomicEventLedger, CognitiveObservationAdapter, InMemoryAtomicEventLedger,
     ObservationDefinition, ObservationId, ObservationOutcome, ResolvedState, ResultingState,
-    SourceRevision,
+    SourceRevision, ressource_engramme,
 };
 use super::observe::EngramMetricsCollector;
 use super::recall::{
@@ -383,7 +383,7 @@ impl EngramManager {
     /// [`Self::revise_with_id`].
     pub fn observation_revision(&self, engram_id: EngramId) -> Result<u64, String> {
         self.observation_ledger
-            .resource_revision(&engram_id.0.to_be_bytes())
+            .resource_revision(&ressource_engramme(engram_id))
     }
 
     /// Accès (crate) à la primitive d'observation, pour le pont.
@@ -929,7 +929,7 @@ impl EngramManager {
     /// calcul. Sans cela, une nouvelle observation partirait d'un état obsolète
     /// et l'apprentissage déjà accepté serait perdu.
     fn catch_up_store(&self, engram_id: EngramId) -> Result<(), RevisionError> {
-        let resource = engram_id.0.to_be_bytes();
+        let resource = ressource_engramme(engram_id);
         let Some((effect, rec_rev)) = self
             .observation_ledger
             .resource_state(&resource)
@@ -1040,7 +1040,7 @@ impl EngramManager {
             .apply(
                 observation_id,
                 engram_id,
-                &engram_id.0.to_be_bytes(),
+                &ressource_engramme(engram_id),
                 &definition,
                 source_revision,
                 &resulting_state,

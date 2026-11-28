@@ -88,7 +88,7 @@ use obrain_substrate::{
 
 use super::observation::{
     AbandonOutcome, AtomicEventLedger, EFFECT_FORMATION_DONE, EFFECT_FORMATION_PENDING,
-    LedgerOutcome, ResolvedState,
+    LedgerOutcome, ResolvedState, est_ressource_engramme,
 };
 
 /// Clé de la révision courante d'une ressource.
@@ -273,6 +273,14 @@ fn err_substrat(e: obrain_substrate::SubstrateError) -> String {
     e.to_string()
 }
 
+/// Refus SÛR : une ressource d'engramme TYPÉE (`E:`) sans incarnation durable
+/// attestée n'a pas de cible canonique. Jamais de correspondance numérique ni
+/// d'héritage d'effet par égalité de slot.
+fn err_ressource_engramme_sans_incarnation() -> String {
+    "ressource d'engramme sans incarnation durable : refus sûr (cible canonique non attestée)"
+        .to_string()
+}
+
 /// Crochet de suspension d'engagement (test-only, PAR LEDGER — jamais global) :
 /// une suspension sur un ledger n'affecte jamais un autre ledger ni un autre
 /// test du même processus.
@@ -364,6 +372,9 @@ impl SubstrateAtomicEventLedger {
         resulting_state: &[u8],
         resulting_revision: u64,
     ) -> Result<(LedgerOutcome, Option<ReferenceTentative>), String> {
+        if est_ressource_engramme(resource_id) {
+            return Err(err_ressource_engramme_sans_incarnation());
+        }
         // Routage par la FORME de la ressource : une révision vise un nœud
         // substrat (NodeId big-endian 8 octets) ; une formation vise une
         // ressource SYNTHÉTIQUE (b"F:<16 octets>"), sans nœud substrat.
@@ -904,6 +915,9 @@ impl SubstrateAtomicEventLedger {
 
 impl AtomicEventLedger for SubstrateAtomicEventLedger {
     fn resource_revision(&self, resource_id: &[u8]) -> Result<u64, String> {
+        if est_ressource_engramme(resource_id) {
+            return Err(err_ressource_engramme_sans_incarnation());
+        }
         let cible = decoder_cible(resource_id)?;
         match self
             .store
@@ -916,6 +930,9 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
     }
 
     fn resource_state(&self, resource_id: &[u8]) -> Result<Option<(Vec<u8>, u64)>, String> {
+        if est_ressource_engramme(resource_id) {
+            return Err(err_ressource_engramme_sans_incarnation());
+        }
         let cible = decoder_cible(resource_id)?;
         let effet = match self
             .store
@@ -977,8 +994,18 @@ impl AtomicEventLedger for SubstrateAtomicEventLedger {
                 let Some(p) = payload else {
                     return Err("enregistrement d'événement sans charge".to_string());
                 };
-                // Formation (ressource synthétique non-NodeId) : pas de
-                // projection ressource à comparer — l'effet est entièrement
+                // Ressource TYPÉE d'engramme (`E:`) sans incarnation durable
+                // attestée : JAMAIS confirmée (indéterminé) — un enregistrement
+                // non attesté ne peut pas être résolu en `Applied`.
+                if est_ressource_engramme(&p.resource) {
+                    return Ok(ResolvedState::Indeterminate {
+                        definition: p.definition,
+                        state: p.effet,
+                        revision: p.revision,
+                    });
+                }
+                // Formation (ressource synthétique non-NodeId, non-`E:`) : pas
+                // de projection ressource à comparer — l'effet est entièrement
                 // porté par l'identité (une seule écriture canonique).
                 if decoder_cible(&p.resource).is_err() {
                     return Ok(ResolvedState::Applied {
@@ -2193,6 +2220,33 @@ mod tests {
         let payload = payload_revision(id, b"def", effet_revision(id, 7), 1, Some(incoherente));
         assert!(matches!(
             ledger.classifier_revision(&payload).unwrap(),
+            ResolvedState::Indeterminate { .. }
+        ));
+    }
+
+    // 26) RÉSOLUTION d'une ressource d'engramme TYPÉE (E:, longueur exacte) :
+    //     JAMAIS confirmée (Indeterminate) — un enregistrement non attesté ne
+    //     peut pas être résolu en `Applied`, contrairement à une formation.
+    #[test]
+    fn resolve_ressource_engramme_non_attestee_indetermine() {
+        let (ledger, _id) = ledger_memoire();
+        let ev = oid(260);
+        // Ressource TYPÉE d'engramme sans incarnation : `E:` + u64 (10 octets).
+        let mut ressource = Vec::new();
+        ressource.extend_from_slice(b"E:");
+        ressource.extend_from_slice(&2u64.to_be_bytes());
+        assert!(est_ressource_engramme(&ressource));
+        // Écrit MANUELLEMENT un enregistrement APPLIQUE avec cette ressource
+        // (simule un store étranger/ancien ayant engagé une ressource sans
+        // incarnation attestée).
+        let record = encode_record(RECORD_APPLIQUE, &ressource, b"def", b"eff", 1, None);
+        let autorite = ledger.autorite_canonique().unwrap();
+        ledger
+            .store()
+            .set_node_property(autorite, &cle_evenement(&ev), Value::from(record));
+        // resolve : Indeterminate, jamais Applied.
+        assert!(matches!(
+            ledger.resolve(&ev).unwrap(),
             ResolvedState::Indeterminate { .. }
         ));
     }
