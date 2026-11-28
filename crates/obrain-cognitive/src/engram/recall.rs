@@ -65,6 +65,99 @@ pub struct RecallResult {
 }
 
 // ---------------------------------------------------------------------------
+// Diagnostic d'ambiguïté : ensemble imbriqué expliquant les mêmes indices
+// ---------------------------------------------------------------------------
+
+/// Deux candidats dont l'un contient l'autre et qui expliquent **exactement les
+/// mêmes indices observés**.
+///
+/// # Ce que ce diagnostic dit, et ce qu'il ne dit pas
+///
+/// Il dit : « pour ces indices-là, un ensemble IMBRIQUÉ rend le même compte que
+/// l'ensemble plus large — les deux sont compatibles avec ce qui a été observé ».
+/// Il ne dit **pas** lequel est la bonne réponse, et il ne modifie ni le
+/// classement ni la liste rendue.
+///
+/// # Pourquoi aucune fusion n'est appliquée
+///
+/// Décider que le petit est une version ANTÉRIEURE du grand demande une preuve
+/// de filiation ORIENTÉE. Le chemin de formation observé n'en produit pas : des
+/// `source_episodes` identiques indiqueraient seulement des sources communes,
+/// ce qui n'atteste pas l'antériorité, et le renseignement de ce champ n'est pas
+/// fait par le producteur actuel (mesuré : vide sur tous les engrammes formés
+/// par `open_substrate_observed`). Effondrer le fragment sur un score, une
+/// inclusion d'ensembles ou une provenance non produite serait une inférence
+/// déguisée en preuve ; le diagnostic la laisse donc visible au lieu de la
+/// masquer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AmbiguiteImbriquee {
+    /// Le plus PETIT des deux ensembles (celui qui gagne aujourd'hui sur un
+    /// indice partiel à cause du biais `recouvrement / |ensemble|`).
+    pub fragment: EngramId,
+    /// Le plus GRAND, qui explique les mêmes indices.
+    pub complet: EngramId,
+    /// Les indices observés que les DEUX ensembles contiennent (non vide).
+    pub indices_communs: Vec<NodeId>,
+    /// Rang du fragment dans la liste rendue (0 = premier).
+    pub rang_fragment: usize,
+    /// Rang du complet dans la liste rendue.
+    pub rang_complet: usize,
+}
+
+/// Repère, dans une liste de résultats DÉJÀ bornée, les paires imbriquées qui
+/// expliquent exactement les mêmes indices.
+///
+/// Coût : `O(k² · |indices|)` sur la liste rendue — aucun accès au store, aucun
+/// clone d'engramme, aucune modification du classement. Les anciennes API sont
+/// inchangées : ce diagnostic est un appel SÉPARÉ sur les résultats obtenus.
+pub fn diagnostiquer_imbrications(
+    cues: &[NodeId],
+    resultats: &[RecallResult],
+) -> Vec<AmbiguiteImbriquee> {
+    let indices: HashSet<NodeId> = cues.iter().copied().collect();
+    let mut ambiguites: Vec<AmbiguiteImbriquee> = Vec::new();
+    for i in 0..resultats.len() {
+        for j in (i + 1)..resultats.len() {
+            let a = &resultats[i];
+            let b = &resultats[j];
+            let noeuds_a: HashSet<NodeId> = a.engram.node_ids().into_iter().collect();
+            let noeuds_b: HashSet<NodeId> = b.engram.node_ids().into_iter().collect();
+            let (petit, grand, rang_petit, rang_grand) =
+                if noeuds_a.len() < noeuds_b.len() && noeuds_a.is_subset(&noeuds_b) {
+                    (a, b, i, j)
+                } else if noeuds_b.len() < noeuds_a.len() && noeuds_b.is_subset(&noeuds_a) {
+                    (b, a, j, i)
+                } else {
+                    continue;
+                };
+            let petits_noeuds: HashSet<NodeId> = petit.engram.node_ids().into_iter().collect();
+            let grands_noeuds: HashSet<NodeId> = grand.engram.node_ids().into_iter().collect();
+            // Ce que CHAQUE ensemble explique des indices observés.
+            let expliques_petit: HashSet<NodeId> =
+                petits_noeuds.intersection(&indices).copied().collect();
+            let expliques_grand: HashSet<NodeId> =
+                grands_noeuds.intersection(&indices).copied().collect();
+            // Le signal ne vaut que si les deux expliquent EXACTEMENT la même
+            // chose : sur un indice que seul le grand contient, il n'y a pas
+            // d'ambiguïté — le grand est simplement mieux informé.
+            if expliques_petit.is_empty() || expliques_petit != expliques_grand {
+                continue;
+            }
+            let mut communs: Vec<NodeId> = expliques_petit.into_iter().collect();
+            communs.sort_unstable();
+            ambiguites.push(AmbiguiteImbriquee {
+                fragment: petit.engram.id,
+                complet: grand.engram.id,
+                indices_communs: communs,
+                rang_fragment: rang_petit,
+                rang_complet: rang_grand,
+            });
+        }
+    }
+    ambiguites
+}
+
+// ---------------------------------------------------------------------------
 // RecallEngine
 // ---------------------------------------------------------------------------
 
@@ -1156,6 +1249,95 @@ mod tests {
             .map_or((usize::MAX, 0.0), |(i, r)| (i, r.confidence));
         eprintln!(
             "E4 top_id={top_id} conf_base={top_conf_base:.6} conf_apres={conf_after:.6} rang={pos}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic d'imbrication : la fonction seule, sans moteur
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod imbrication {
+    use super::*;
+
+    fn resultat(id: u64, noeuds: &[u64], confiance: f64) -> RecallResult {
+        RecallResult {
+            engram_id: EngramId(id),
+            confidence: confiance,
+            engram: Engram::new(
+                EngramId(id),
+                noeuds.iter().map(|n| (NodeId(*n), 1.0)).collect(),
+            ),
+        }
+    }
+
+    /// Imbriqué ET mêmes indices expliqués → signalé.
+    #[test]
+    fn imbrique_avec_les_memes_indices_est_signale() {
+        let resultats = vec![resultat(1, &[1, 2], 0.5), resultat(2, &[1, 2, 3], 0.333)];
+        let ambiguites = diagnostiquer_imbrications(&[NodeId(1)], &resultats);
+        assert_eq!(ambiguites.len(), 1);
+        assert_eq!(ambiguites[0].fragment, EngramId(1));
+        assert_eq!(ambiguites[0].complet, EngramId(2));
+        assert_eq!(ambiguites[0].indices_communs, vec![NodeId(1)]);
+    }
+
+    /// Imbriqué mais le grand explique un indice de plus → PAS d'ambiguïté.
+    #[test]
+    fn imbrique_avec_un_indice_de_plus_n_est_pas_ambigu() {
+        let resultats = vec![resultat(1, &[1, 2], 0.5), resultat(2, &[1, 2, 3], 0.666)];
+        let ambiguites = diagnostiquer_imbrications(&[NodeId(1), NodeId(3)], &resultats);
+        assert!(
+            ambiguites.is_empty(),
+            "le grand est simplement mieux informé, pas ambigu : {ambiguites:?}"
+        );
+    }
+
+    /// Deux ensembles NON imbriqués ne sont jamais signalés, même partageant
+    /// des nœuds et les mêmes indices.
+    #[test]
+    fn ensembles_non_imbriques_ne_sont_pas_signales() {
+        let resultats = vec![resultat(1, &[1, 2], 0.5), resultat(2, &[1, 3], 0.5)];
+        assert_eq!(
+            diagnostiquer_imbrications(&[NodeId(1)], &resultats),
+            Vec::new(),
+            "aucune ambiguïté attendue"
+        );
+    }
+
+    /// Un seul candidat : rien à comparer.
+    #[test]
+    fn un_seul_candidat_ne_produit_rien() {
+        let resultats = vec![resultat(1, &[1, 2, 3], 0.9)];
+        assert_eq!(
+            diagnostiquer_imbrications(&[NodeId(1)], &resultats),
+            Vec::new(),
+            "un seul candidat : rien à comparer"
+        );
+    }
+
+    /// Aucun indice commun : l'imbrication existe mais n'explique rien.
+    #[test]
+    fn sans_indice_commun_rien_n_est_signale() {
+        let resultats = vec![resultat(1, &[1, 2], 0.5), resultat(2, &[1, 2, 3], 0.4)];
+        assert_eq!(
+            diagnostiquer_imbrications(&[NodeId(9)], &resultats),
+            Vec::new(),
+            "aucun indice commun"
+        );
+    }
+
+    /// Le diagnostic ne modifie pas la liste reçue (aucun retrait, aucun tri).
+    #[test]
+    fn le_diagnostic_ne_modifie_pas_les_resultats() {
+        let resultats = vec![resultat(1, &[1, 2], 0.5), resultat(2, &[1, 2, 3], 0.333)];
+        let copie = resultats.clone();
+        let _ = diagnostiquer_imbrications(&[NodeId(1)], &resultats);
+        assert_eq!(
+            resultats.iter().map(|r| r.engram_id).collect::<Vec<_>>(),
+            copie.iter().map(|r| r.engram_id).collect::<Vec<_>>(),
+            "l'ordre et le contenu rendus sont intacts"
         );
     }
 }
