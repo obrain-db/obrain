@@ -387,4 +387,112 @@ mod tests {
         retirer(&st, 3).unwrap(); // idempotent
         assert!(matches!(lier(&st, 3), Liaison::Retiree(_)));
     }
+
+    #[test]
+    fn retrait_en_lecture_seule_laisse_l_incarnation_vivante() {
+        let dossier = tempfile::tempdir().unwrap();
+        let chemin = dossier.path().join("base");
+        let mutateur = SubstrateStore::create(&chemin).unwrap();
+        let noeud = attester(&mutateur, 1).unwrap();
+        mutateur.flush().unwrap();
+        mutateur.close().unwrap();
+
+        let lecteur = SubstrateStore::open_read_only(&chemin).unwrap();
+        assert!(matches!(lier(&lecteur, 1), Liaison::Vivante(n) if n == noeud));
+        assert!(retirer(&lecteur, 1).is_err());
+        assert!(matches!(lier(&lecteur, 1), Liaison::Vivante(n) if n == noeud));
+    }
+
+    fn noeud_incarnation(st: &SubstrateStore, id: Value) -> NodeId {
+        let n = st.create_node(&[LABEL_INCARNATION]);
+        st.set_node_property(n, CLE_ID, id);
+        n
+    }
+
+    /// Garde sur les valeurs CAPTURÉES : identité absente / mal typée /
+    /// différente, vie éteinte, vie mal typée.
+    #[test]
+    fn verifier_capture_refuse_identite_et_vie_invalides() {
+        let cinq = Value::from(5i64);
+        assert!(verifier_capture(Some(&cinq), None, 5).is_ok());
+        assert!(verifier_capture(Some(&cinq), Some(&Value::from(false)), 5).is_ok());
+        assert!(verifier_capture(None, None, 5).is_err(), "identité absente");
+        assert!(verifier_capture(Some(&Value::from(6i64)), None, 5).is_err());
+        assert!(verifier_capture(Some(&Value::from("cinq")), None, 5).is_err());
+        let eteinte = verifier_capture(Some(&cinq), Some(&Value::from(true)), 5).unwrap_err();
+        assert!(eteinte.contains("éteinte"), "{eteinte}");
+        let mal = verifier_capture(Some(&cinq), Some(&Value::from(1i64)), 5).unwrap_err();
+        assert!(mal.contains("mal typée"), "{mal}");
+    }
+
+    /// Attestation et retrait REFUSÉS (sans rien écrire) sur une liaison
+    /// ambiguë ou illisible.
+    #[test]
+    fn attestation_et_retrait_refuses_sur_liaison_ambigue_ou_illisible() {
+        let st = SubstrateStore::open_memory().unwrap();
+        // Ambiguë : deux nœuds revendiquent l'identifiant 4.
+        noeud_incarnation(&st, Value::from(4i64));
+        noeud_incarnation(&st, Value::from(4i64));
+        assert!(matches!(lier(&st, 4), Liaison::Ambigue));
+        assert!(attester(&st, 4).unwrap_err().contains("ambiguë"));
+        assert!(retirer(&st, 4).unwrap_err().contains("ambiguë"));
+        // Illisible : un nœud d'incarnation à identité mal typée rend la
+        // lecture de TOUT identifiant illisible (on ne devine pas son titulaire).
+        noeud_incarnation(&st, Value::from("sept"));
+        assert!(matches!(lier(&st, 9), Liaison::Illisible(_)));
+        assert!(attester(&st, 9).unwrap_err().contains("illisible"));
+        assert!(retirer(&st, 9).unwrap_err().contains("illisible"));
+    }
+
+    /// Publication stricte : un conflit de précondition est RÉÉVALUÉ puis
+    /// réussit ; des conflits répétés échouent (borné) ; une garde qui refuse
+    /// ou un nœud inexistant échouent.
+    #[test]
+    fn publication_stricte_reevalue_un_conflit_puis_echoue_si_repete() {
+        let st = SubstrateStore::open_memory().unwrap();
+        let n = st.create_node(&["x"]);
+
+        // Un conflit (la clé change entre capture et publication), puis succès.
+        let essais = std::cell::Cell::new(0u32);
+        publier_strict(&st, n, "k", Value::from(100i64), &[], |_| {
+            if essais.get() == 0 {
+                st.set_node_property(n, "k", Value::from(1i64));
+            }
+            essais.set(essais.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(essais.get(), 2, "un conflit puis la réévaluation");
+
+        // Conflits RÉPÉTÉS : échec borné par NB_REESSAIS.
+        let compteur = std::cell::Cell::new(10i64);
+        let e = publier_strict(&st, n, "k2", Value::from(0i64), &[], |_| {
+            compteur.set(compteur.get() + 1);
+            st.set_node_property(n, "k2", Value::from(compteur.get()));
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(e.contains("conflits"), "{e}");
+        assert_eq!(compteur.get() - 10, NB_REESSAIS as i64);
+
+        // Garde qui refuse : rien n'est publié.
+        let refus = publier_strict(&st, n, "k3", Value::from(1i64), &[], |_| {
+            Err("refus de la garde".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(refus, "refus de la garde");
+
+        // Nœud inexistant : erreur, jamais une publication fantôme.
+        assert!(
+            publier_strict(
+                &st,
+                NodeId(987_654),
+                "k",
+                Value::from(1i64),
+                &[],
+                |_| Ok(())
+            )
+            .is_err()
+        );
+    }
 }

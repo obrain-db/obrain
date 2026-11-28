@@ -39,3 +39,35 @@ fn allocateur_natif_distinct_apres_retrait_et_reouverture() {
     );
     assert!(a < b, "l'allocateur natif doit être monotone (a={a} b={b})");
 }
+
+#[test]
+fn le_dernier_id_n_est_pas_reattribue_apres_reouverture() {
+    let dossier = tempfile::tempdir().unwrap();
+    let chemin = dossier.path().join("base");
+    let derniere_borne = u64::from(u16::MAX);
+
+    let store = SubstrateStore::create(&chemin).unwrap();
+    store.raise_engram_floor(derniere_borne);
+    store.raise_engram_floor(derniere_borne - 1);
+    assert_eq!(store.reserve_engram_id().unwrap(), u16::MAX);
+    assert!(store.reserve_engram_id().is_err());
+    store.flush().unwrap();
+    store.close().unwrap();
+
+    let store = SubstrateStore::open(&chemin).unwrap();
+    assert!(
+        store.reserve_engram_id().is_err(),
+        "le dernier identifiant natif reste consommé après réouverture"
+    );
+}
+
+#[test]
+fn relever_un_plancher_epuise_ne_rouvre_pas_l_allocation() {
+    let dossier = tempfile::tempdir().unwrap();
+    let chemin = dossier.path().join("base");
+    let store = SubstrateStore::create(&chemin).unwrap();
+
+    store.raise_engram_floor(u64::from(u16::MAX) + 1);
+    store.raise_engram_floor(u64::from(u16::MAX));
+    assert!(store.reserve_engram_id().is_err());
+}

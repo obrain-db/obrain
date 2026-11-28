@@ -14,10 +14,11 @@ use std::sync::Arc;
 
 use obrain_cognitive::InMemoryVectorIndex;
 use obrain_cognitive::engram::{
-    AtomicEventLedger, Engram, EngramId, EngramManager, EngramManagerConfig, ObservationId,
-    ObservationOutcome, ResolvedState, RevisionError, SourceRevision, SubstrateAtomicEventLedger,
+    AtomicEventLedger, Engram, EngramId, EngramManager, EngramManagerConfig,
+    InMemoryAtomicEventLedger, ObservationId, ObservationOutcome, ResolvedState, RevisionError,
+    SourceRevision, SubstrateAtomicEventLedger,
 };
-use obrain_common::types::NodeId;
+use obrain_common::types::{NodeId, Value};
 use obrain_core::graph::GraphStoreMut;
 use obrain_substrate::{EtatPropriete, SubstrateStore};
 
@@ -434,4 +435,59 @@ fn attachements_coherents_un_seul_domaine() {
 
 fn ledger_domaine(s: &Arc<SubstrateStore>) -> Option<u128> {
     SubstrateAtomicEventLedger::new(s.clone()).domaine_substrat()
+}
+
+/// Le registre MÉMOIRE n'est adossé à aucun domaine substrat.
+#[test]
+fn registre_memoire_sans_domaine_substrat() {
+    assert_eq!(InMemoryAtomicEventLedger::new().domaine_substrat(), None);
+}
+
+/// Attestation REFUSÉE (liaison ambiguë préexistante) : la formation réussit
+/// mais l'engramme n'est PAS révisable (refus nommé), état inchangé.
+#[test]
+fn attestation_refusee_sur_liaison_ambigue_rien_de_revisable() {
+    let store = Arc::new(SubstrateStore::open_memory().unwrap());
+    for _ in 0..3 {
+        store.create_node(&["membre"]);
+    }
+    // Deux nœuds revendiquent déjà l'identifiant 1 (prochain id natif).
+    for _ in 0..2 {
+        let n = store.create_node(&["__engram_incarnation__"]);
+        store.set_node_property(n, "_engram_id", Value::from(1i64));
+    }
+    let m = manager_natif(&store);
+    let id = m.store().form(&[NodeId(1), NodeId(2)]).expect("formation");
+    assert_eq!(id, EngramId(1));
+    match m.revise_with_id(obs(50), id, &[NodeId(3)], 0.5, SourceRevision(0)) {
+        Err(RevisionError::PersistenceFailed(msg)) => {
+            assert!(msg.contains("ambiguë"), "{msg}");
+        }
+        autre => panic!("refus nommé attendu : {autre:?}"),
+    }
+    assert_eq!(m.store().get(id).unwrap().revision, 0);
+}
+
+/// Allocateur natif ÉPUISÉ : repli sur le compteur local, jamais attesté, donc
+/// non révisable (refus nommé).
+#[test]
+fn allocateur_epuise_repli_local_non_atteste() {
+    let store = Arc::new(SubstrateStore::open_memory().unwrap());
+    for _ in 0..3 {
+        store.create_node(&["membre"]);
+    }
+    let m = manager_natif(&store);
+    store.raise_engram_floor(1 << 20); // au-delà de u16::MAX : épuisé
+    let id = m
+        .store()
+        .form(&[NodeId(1), NodeId(2)])
+        .expect("repli local");
+    assert_eq!(id, EngramId(1), "repli sur le compteur local");
+    assert_eq!(incarnations(&store), 0, "aucune attestation");
+    match m.revise_with_id(obs(51), id, &[NodeId(3)], 0.5, SourceRevision(0)) {
+        Err(RevisionError::PersistenceFailed(msg)) => {
+            assert!(msg.contains("incarnation durable"), "{msg}");
+        }
+        autre => panic!("refus nommé attendu : {autre:?}"),
+    }
 }

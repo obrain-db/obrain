@@ -1349,6 +1349,26 @@ mod tests {
         assert_eq!(store.list().len(), 5);
     }
 
+    #[cfg(feature = "substrate")]
+    #[test]
+    fn formation_refuse_un_identifiant_local_hors_plage_si_le_natif_est_epuise() {
+        let natif = Arc::new(SubstrateStore::open_memory().unwrap());
+        let store = EngramStore::new(None);
+        store.attach_substrate_store(natif.clone());
+
+        let hors_plage = u64::from(u16::MAX) + 1;
+        natif.raise_engram_floor(hors_plage);
+        store.next_id.store(hors_plage, Ordering::Relaxed);
+
+        let erreur = store.form(&[NodeId(1), NodeId(2)]).unwrap_err();
+        assert!(matches!(erreur, SubstrateError::WalBadFrame(_)));
+        assert_eq!(
+            store.count(),
+            0,
+            "une formation refusée ne crée aucun engramme"
+        );
+    }
+
     #[test]
     fn next_id_is_monotonic() {
         let store = EngramStore::new(None);
