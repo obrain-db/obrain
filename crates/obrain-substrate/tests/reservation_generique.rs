@@ -344,6 +344,36 @@ fn reconstruction_index_apres_reouverture_retrouve_toutes() {
     );
 }
 
+#[test]
+fn reconstruction_index_ignore_les_noeuds_sans_cle_de_reservation_utilisable() {
+    let td = tempfile::tempdir().unwrap();
+    let chemin = td.path().join("kb");
+    let (reserve, ordinaire, cle_vide) = {
+        let store = SubstrateStore::create(&chemin).unwrap();
+        let reserve = store
+            .reserver_identite(KIND, CLE, DEFINITION, construction_defaut)
+            .unwrap();
+        let ordinaire = store.create_node(&["ordinaire"]);
+        let cle_vide = store.create_node(&["ordinaire"]);
+        store.set_node_property(cle_vide, PROP_CLE, Value::Bytes(Arc::from([])));
+        store.close().unwrap();
+        (reserve, ordinaire, cle_vide)
+    };
+
+    let store = SubstrateStore::open(&chemin).unwrap();
+    let retrouve = store
+        .reserver_identite(KIND, CLE, DEFINITION, || {
+            panic!("la réservation valide doit être retrouvée à la réouverture")
+        })
+        .unwrap();
+    assert_eq!(retrouve, IssueReservation::Existante(reserve.identite()));
+    assert!(store.get_node(ordinaire).is_some());
+    assert_eq!(
+        store.get_node_property(cle_vide, &PropertyKey::new(PROP_CLE)),
+        Some(Value::Bytes(Arc::from([])))
+    );
+}
+
 /// L'identité rendue est un SLOT de nœud `u32` (borné par l'espace de slots du
 /// substrat) ; il résout en `NodeId(u64::from(slot))` vivant.
 #[test]
