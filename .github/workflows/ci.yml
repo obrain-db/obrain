@@ -1330,7 +1330,9 @@ jobs:
           if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
             find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +360 -exec rm -rf {} + 2>/dev/null || true
           fi
-          libre=$(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -dc '0-9')
+          # Le df BSD de macOS expose les blocs libres (1 Kio) en colonne 4
+          # dans la sortie POSIX, y compris si le montage contient des espaces.
+          libre=$(LC_ALL=C df -Pk "$RUNNER_TEMP" | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print int($4 / 1048576) }')
           echo "espace libre sur $RUNNER_TEMP : ${libre:-?} Go"
           seuil=20; [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] && seuil=10
           if [ "${libre:-0}" -lt "$seuil" ]; then echo "::error::moins de $seuil Go libres (${libre:-?} Go) : la CI s'arrête avant de remplir le disque"; exit 1; fi
